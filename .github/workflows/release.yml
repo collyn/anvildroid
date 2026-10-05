@@ -50,6 +50,8 @@ jobs:
           java-version: '17'
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools'
       - name: Install Android build stubs
         run: |
           command -v sdkmanager >/dev/null 2>&1 || { echo 'sdkmanager is missing on runner' >&2; exit 1; }
