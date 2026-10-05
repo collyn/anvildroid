@@ -27,6 +27,9 @@ install -m 0644 "$ROOT/target/shutdown/anvildroid-shutdown.jar" "$PKG/usr/local/
 cp -a "$ROOT/native/overlay/." "$PKG/usr/local/lib/anvildroid-controller/provision/"
 for f in anvildroid-apps.rc anvildroid-tasks.rc anvildroid-apps.sh anvildroid-tasks.sh; do install -m 0755 "$ROOT/native/$f" "$PKG/usr/local/lib/anvildroid-controller/provision/$f"; done
 install -m 0644 "$ROOT/target/native/overlay-key.p12" "$PKG/usr/local/lib/anvildroid-controller/provision/overlay-key.p12"
+install -D -m 0644 "$ROOT/target/native/init.waydroid.rc" "$PKG/usr/local/lib/anvildroid-controller/provision/system/etc/init/init.waydroid.rc"
+install -D -m 0644 "$ROOT/target/native/AnvilDroidCaption.apk" "$PKG/usr/local/lib/anvildroid-controller/provision/vendor/overlay/AnvilDroidCaption/AnvilDroidCaption.apk"
+install -m 0644 "$ROOT/target/native/framework-res.apk.sha256" "$PKG/usr/local/lib/anvildroid-controller/provision/framework-res.apk.sha256"
 install -D -m 0644 "$ROOT/packaging/systemd/anvildroid-controller.service" "$PKG/lib/systemd/system/anvildroid-controller.service"
 cat > "$PKG/DEBIAN/control" <<EOF
 Package: anvildroid-controller
@@ -37,7 +40,7 @@ Architecture: amd64
 Maintainer: AnvilDroid
 Description: AnvilDroid Android runtime controller
  GPU accelerated Waydroid runtime controller with BinderFS and Wayland support.
-Depends: python3, systemd, patchelf (>= 0.18)
+Depends: python3, systemd, patchelf (>= 0.18), libwebkit2gtk-4.1-0, libgtk-3-0, libglib2.0-0, libjavascriptcoregtk-4.1-0, libsoup-3.0-0, libpango-1.0-0, libcairo2, libgdk-pixbuf-2.0-0
 EOF
 cat > "$PKG/DEBIAN/postinst" <<'EOF'
 #!/bin/sh

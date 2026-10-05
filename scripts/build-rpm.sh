@@ -21,6 +21,7 @@ License: MIT
 URL: https://github.com/collyn/anvildroid
 BuildArch: x86_64
 Requires: python3, systemd, patchelf >= 0.18
+Requires: webkit2gtk4.1, gtk3, glib2, javascriptcoregtk4.1, libsoup3, pango, cairo, gdk-pixbuf2
 Requires(post): systemd
 Requires(preun): systemd
 

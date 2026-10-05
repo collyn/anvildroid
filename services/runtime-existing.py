@@ -30,6 +30,15 @@ gpu = module('runtime-gpu')
 linux = module('runtime-linux')
 storage = module('runtime-storage')
 GOOGLE_PACKAGES = ('com.android.vending', 'com.google.android.gms', 'com.google.android.gsf')
+ASSETS = Path('/usr/local/lib/anvildroid-controller')
+DESKTOP_ASSETS = {
+    'vendor/etc/init/anvildroid-apps.rc': ASSETS / 'provision/anvildroid-apps.rc',
+    'vendor/bin/anvildroid-apps.sh': ASSETS / 'provision/anvildroid-apps.sh',
+    'vendor/lib64/libanvildroid-window.so': ASSETS / 'libanvildroid-window.so',
+    'vendor/etc/init/anvildroid-tasks.rc': ASSETS / 'provision/anvildroid-tasks.rc',
+    'vendor/bin/anvildroid-tasks.sh': ASSETS / 'provision/anvildroid-tasks.sh',
+    'vendor/overlay/AnvilDroidCaption/AnvilDroidCaption.apk': ASSETS / 'provision/vendor/overlay/AnvilDroidCaption/AnvilDroidCaption.apk',
+}
 RESOURCE_KEYS = ('lxc.cgroup2.memory.max', 'lxc.cgroup2.memory.swap.max', 'lxc.cgroup2.cpu.max')
 ARM_KEYS = ('ro.product.cpu.abilist', 'ro.product.cpu.abilist32', 'ro.product.cpu.abilist64',
             'ro.dalvik.vm.native.bridge', 'ro.dalvik.vm.isa.arm', 'ro.dalvik.vm.isa.arm64',
@@ -133,6 +142,73 @@ class ExistingRuntime:
             raise RuntimeError('Waydroid configuration is not initialized')
         return cfg
 
+    def desktop_overlay(self):
+        root = self.work / 'overlay'
+        required = tuple(DESKTOP_ASSETS) + ('system/etc/init/init.waydroid.rc',)
+        return all((root / path).is_file() for path in required)
+
+    def desktop_info(self):
+        enabled = self.desktop_overlay()
+        return {'mode': 'desktop' if enabled else 'headless',
+                'effective_mode': 'desktop' if enabled and self.state() == 'RUNNING' else None,
+                'bridge_installed': enabled,
+                'detail': 'Native desktop bridge and caption overlay installed.' if enabled else
+                          'Install Desktop integration while Android is stopped.'}
+
+    def enable_desktop(self):
+        self.stopped()
+        root = self.work / 'rootfs'
+        source_init = root / 'system/etc/init/init.waydroid.rc'
+        marker = 'service vendor.hwcomposer-2-1 /vendor/bin/hw/android.hardware.graphics.composer@2.1-service --desktop_file_hint=Waydroid.desktop\n'
+        text = self.read(source_init)
+        if text.count(marker) != 1:
+            raise RuntimeError('This Waydroid image has no supported desktop composer service')
+        framework = root / 'system/framework/framework-res.apk'
+        overlay = self.work / 'overlay'
+        changes = {'system/etc/init/init.waydroid.rc': text.replace(marker, marker + '    setenv LD_PRELOAD /vendor/lib64/libanvildroid-window.so\n')}
+        for relative, source in DESKTOP_ASSETS.items():
+            if not source.is_file(): raise RuntimeError('Desktop integration asset is missing: ' + str(source))
+            changes[relative] = source.read_bytes()
+        expected = ASSETS / 'provision/framework-res.apk.sha256'
+        if expected.is_file() and hashlib.sha256(framework.read_bytes()).hexdigest() == expected.read_text().strip():
+            caption = changes['vendor/overlay/AnvilDroidCaption/AnvilDroidCaption.apk']
+        else:
+            if not shutil.which('aapt') or not shutil.which('apksigner'):
+                raise RuntimeError('This Waydroid image needs aapt and apksigner to build its Desktop caption overlay')
+            with tempfile.TemporaryDirectory(prefix='.existing-caption-', dir=self.store) as work:
+                unsigned = Path(work) / 'caption-unsigned.apk'; caption = Path(work) / 'caption.apk'
+                result = subprocess.run(['aapt', 'package', '-f', '-M', ASSETS / 'provision/overlay/AndroidManifest.xml',
+                                         '-S', ASSETS / 'provision/overlay/res', '-I', framework, '-F', unsigned],
+                                        capture_output=True, text=True, timeout=30)
+                if result.returncode: raise RuntimeError('Could not build Desktop caption: ' + result.stderr[-400:])
+                result = subprocess.run(['apksigner', 'sign', '--ks', ASSETS / 'provision/overlay-key.p12',
+                                         '--ks-pass', 'pass:anvildroid', '--out', caption, unsigned],
+                                        capture_output=True, text=True, timeout=30)
+                if result.returncode: raise RuntimeError('Could not sign Desktop caption: ' + result.stderr[-400:])
+                changes['vendor/overlay/AnvilDroidCaption/AnvilDroidCaption.apk'] = caption.read_bytes()
+        backup = self.store / ('existing-desktop-backup-' + str(time.time_ns()))
+        backup.mkdir(mode=0o700)
+        originals = {}
+        for relative in changes:
+            path = overlay / relative
+            if path.exists():
+                if path.is_symlink() or not path.is_file(): raise RuntimeError('Unsafe existing desktop overlay path')
+                originals[relative] = path.read_bytes()
+                target = backup / relative; target.parent.mkdir(parents=True, exist_ok=True); shutil.copyfile(path, target)
+        storage.atomic(backup / 'manifest.json', json.dumps({'files': list(changes), 'created_at': time.time()}).encode())
+        try:
+            for relative, value in changes.items():
+                self.replace_bytes(overlay / relative, value.encode() if isinstance(value, str) else value)
+        except Exception:
+            for relative in changes:
+                path = overlay / relative
+                if relative in originals: self.replace_bytes(path, originals[relative])
+                elif path.exists(): path.unlink()
+            shutil.rmtree(backup, ignore_errors=True)
+            raise
+        storage.sync_directory(overlay)
+        return self.desktop_info()
+
     def write_transaction(self, changes):
         """Back up originals before publishing; roll back a failed multi-file change."""
         originals = {path: self.read(path) for path in changes}
@@ -164,6 +240,19 @@ class ExistingRuntime:
         finally:
             Path(temporary).unlink(missing_ok=True)
 
+    @staticmethod
+    def replace_bytes(path, data):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else 0o644
+        fd, temporary = tempfile.mkstemp(prefix='.anvildroid-', dir=path.parent)
+        try:
+            with os.fdopen(fd, 'wb') as stream:
+                os.fchmod(stream.fileno(), mode)
+                stream.write(data); stream.flush(); os.fsync(stream.fileno())
+            os.replace(temporary, path); storage.sync_directory(path.parent)
+        finally:
+            Path(temporary).unlink(missing_ok=True)
+
     def record(self, session, saved):
         state = self.state()
         display_state = {'STOPPED': 'Stopped', 'RUNNING': 'Running', 'FROZEN': 'Frozen'}[state]
@@ -174,7 +263,7 @@ class ExistingRuntime:
         return {'id': 'default', 'name': saved.get('name', 'Existing runtime'),
                 'state': display_state,
                 'managed': bool(saved), 'job': None, 'backend': 'waydroid-system',
-                'display': {'mode': 'desktop', 'effective_mode': 'desktop' if state == 'RUNNING' else None}}
+                'display': self.desktop_info()}
 
     def resource_info(self):
         values = properties(self.read(self.work / 'lxc/waydroid/config'))
@@ -256,6 +345,10 @@ class ExistingRuntime:
         if op == 'gpu_info': return self.gpu_info()
         if op == 'arm_info': return self.arm_info()
         if op == 'display_info': return self.record(session, saved)['display']
+        if op == 'display_set':
+            if request.get('mode') != 'desktop':
+                raise RuntimeError('Existing runtime supports Desktop mode only after installing the AnvilDroid bridge')
+            return self.enable_desktop()
         if op == 'google_services':
             output = self.android('/system/bin/pm', 'list', 'packages', '--user', '0')
             lines = output.splitlines()

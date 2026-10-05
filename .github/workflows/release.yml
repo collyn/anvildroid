@@ -107,6 +107,8 @@ jobs:
             *) exit 2;;
           esac
           test -s "$file"
+          missing=$(ldd target/release/anvildroid-gui | sed -n '/not found/p')
+          test -z "$missing" || { echo "$missing" >&2; exit 1; }
           printf '%s\n' "$file" > package-path.txt
       - uses: actions/upload-artifact@v4
         with:

@@ -19,6 +19,7 @@ fi
 for file in target/native/init.waydroid.rc target/native/framework-res.apk; do
   test -r "$file" || { echo "Missing build input: $file" >&2; exit 1; }
 done
+sha256sum target/native/framework-res.apk | awk '{print $1}' > target/native/framework-res.apk.sha256
 unset CARGO_BUILD_TARGET
 cargo build --release --locked -p anvildroid-gui --target-dir target
 sh scripts/build-runtime-desktop.sh

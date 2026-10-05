@@ -32,4 +32,7 @@ for f in anvildroid-apps.rc anvildroid-tasks.rc anvildroid-apps.sh anvildroid-ta
   install -m 0755 "$ROOT/native/$f" "$DEST/usr/local/lib/anvildroid-controller/provision/$f"
 done
 install -m 0644 "$ROOT/target/native/overlay-key.p12" "$DEST/usr/local/lib/anvildroid-controller/provision/overlay-key.p12"
+install -D -m 0644 "$ROOT/target/native/init.waydroid.rc" "$DEST/usr/local/lib/anvildroid-controller/provision/system/etc/init/init.waydroid.rc"
+install -D -m 0644 "$ROOT/target/native/AnvilDroidCaption.apk" "$DEST/usr/local/lib/anvildroid-controller/provision/vendor/overlay/AnvilDroidCaption/AnvilDroidCaption.apk"
+install -m 0644 "$ROOT/target/native/framework-res.apk.sha256" "$DEST/usr/local/lib/anvildroid-controller/provision/framework-res.apk.sha256"
 install -m 0644 "$ROOT/packaging/systemd/anvildroid-controller.service" "$DEST/usr/lib/systemd/system/anvildroid-controller.service"

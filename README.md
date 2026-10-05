@@ -30,6 +30,10 @@ GPU settings and desktop windows.
   JDK, Android build tools, `patchelf`, `rpmbuild`, `zstd` and Debian packaging
   tools.
 
+Installed packages also need WebKitGTK 4.1, GTK3, GLib, JavaScriptCoreGTK 4.1,
+Soup 3, Pango, Cairo and GDK Pixbuf runtime libraries. Debian/RPM/Arch package
+metadata declares these dependencies.
+
 ## Build packages
 
 Prepare Android SDK API 23 and the pinned R8 jar, then run:

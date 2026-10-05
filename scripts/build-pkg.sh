@@ -22,6 +22,14 @@ license = MIT
 depend = python3
 depend = systemd
 depend = patchelf>=0.18
+depend = webkit2gtk-4.1
+depend = gtk3
+depend = glib2
+depend = javascriptcoregtk-4.1
+depend = libsoup3
+depend = pango
+depend = cairo
+depend = gdk-pixbuf2
 EOF
 cat > "$STAGE/.INSTALL" <<'EOF'
 post_install() {
