@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Keep framework IDs and a one-physical-pixel transparent spacer.
+     A visible caption measuring zero deadlocks Android 13's
+     BackdropFrameRenderer.redrawLocked -> ViewRootImpl.performDraw latch
+     during freeform resize. Native controls still belong to the host. -->
+<com.android.internal.widget.DecorCaptionView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical">
+    <LinearLayout android:id="@*android:id/caption" android:layout_width="match_parent" android:layout_height="1px"
+        android:background="@android:color/transparent"
+        android:clipChildren="true" android:clipToPadding="true" android:focusable="false">
+        <Button android:id="@*android:id/back_window" android:layout_width="0dp" android:layout_height="0dp" />
+        <Button android:id="@*android:id/pip_window" android:layout_width="0dp" android:layout_height="0dp" />
+        <Button android:id="@*android:id/minimize_window" android:layout_width="0dp" android:layout_height="0dp" />
+        <Button android:id="@*android:id/maximize_window" android:layout_width="0dp" android:layout_height="0dp" />
+        <Button android:id="@*android:id/close_window" android:layout_width="0dp" android:layout_height="0dp" />
+    </LinearLayout>
+</com.android.internal.widget.DecorCaptionView>

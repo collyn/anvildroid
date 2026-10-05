@@ -1,0 +1,4 @@
+waydroid.png: Waydroid project icon, copied without modification from the
+installed /usr/share/icons/hicolor/512x512/apps/waydroid.png.
+Upstream project: https://github.com/waydroid/waydroid
+Used only to identify the Waydroid full-Android-window entry, not AnvilDroid branding.

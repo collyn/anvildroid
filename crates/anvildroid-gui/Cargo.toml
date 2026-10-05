@@ -1,0 +1,20 @@
+[package]
+name = "anvildroid-gui"
+version.workspace = true
+edition = "2021"
+description = "AnvilDroid GUI — Tauri desktop application"
+publish = false
+
+[[bin]]
+name = "anvildroid-gui"
+path = "src/main.rs"
+
+[dependencies]
+anvildroid-core = { path = "../anvildroid-core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = ["devtools"] }
+tauri-plugin-dialog = "2"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }

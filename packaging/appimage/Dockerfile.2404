@@ -1,0 +1,19 @@
+# Build environment for AppImages whose bundled GTK/WebKit stack must keep
+# the glibc 2.39 baseline (Ubuntu 24.04) instead of the build host's glibc.
+# Bundled libs otherwise demand the build host's glibc symbols and the
+# AppImage refuses to start on Ubuntu 24.04 (GLIBC_2.42/2.43 not found).
+#
+# The Rust toolchain, cargo registry cache, the project tree and the host's
+# Android SDK are bind-mounted at run time (see scripts/package-appimage-2404.sh).
+# The JDK is installed here because the GUI build script also assembles the
+# touch-probe diagnostic APK (javac/java/keytool); aapt and apksigner come
+# from the mounted SDK.
+FROM ubuntu:24.04
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential ca-certificates file binutils perl pkg-config \
+        libgtk-3-dev libwebkit2gtk-4.1-dev librsvg2-dev libglib2.0-bin \
+        default-jdk-headless clang lld python3 \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -s ../lib/android-sdk/build-tools/debian/aapt /usr/bin/aapt \
+    && ln -s ../lib/android-sdk/build-tools/debian/apksigner /usr/bin/apksigner

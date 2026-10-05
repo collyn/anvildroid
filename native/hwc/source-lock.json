@@ -1,0 +1,8 @@
+{
+  "repository": "https://github.com/waydroid/android_hardware_waydroid.git",
+  "revision": "85f31a9103b84faba24eb7cbca47750d12e64e4b",
+  "branch_hint": "lineage-20",
+  "module": "hwcomposer.waydroid",
+  "status": "experimental-source-only-not-built-for-android",
+  "installed_reference_sha256": "00934e9739ce5d09c650d8bfc03c0788c986c8bbe37652d4d36abb61b368fded"
+}

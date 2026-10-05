@@ -1,0 +1,101 @@
+name: Release Debian package
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate release tag
+        id: version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          version=$(python3 scripts/release-version.py --tag "$RELEASE_TAG")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "debian=$(python3 scripts/release-version.py --debian)" >> "$GITHUB_OUTPUT"
+          if [[ "$version" == *-* ]]; then
+            echo 'prerelease=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'prerelease=false' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config \
+            libgtk-3-dev libwebkit2gtk-4.1-dev librsvg2-dev libssl-dev \
+            clang lld aapt apksigner patchelf e2fsprogs unzip curl
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Install Android build stubs
+        run: |
+          command -v sdkmanager >/dev/null 2>&1 || { echo 'sdkmanager is missing on runner' >&2; exit 1; }
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager 'platforms;android-23'
+          sudo mkdir -p /usr/lib/android-sdk/platforms/android-23
+          sudo ln -sf "$ANDROID_HOME/platforms/android-23/android.jar" /usr/lib/android-sdk/platforms/android-23/android.jar
+      - name: Prepare pinned Waydroid and R8 inputs
+        run: sh scripts/prepare-ci-inputs.sh
+      - name: Build Debian package
+        env:
+          DEBIAN_VERSION: ${{ steps.version.outputs.debian }}
+        run: |
+          sh scripts/build-deb.sh "$DEBIAN_VERSION"
+          package="target/releases/anvildroid-controller_${DEBIAN_VERSION}_amd64.deb"
+          test "$(dpkg-deb -f "$package" Version)" = "$DEBIAN_VERSION"
+          dpkg-deb --contents "$package"
+          cd target/releases
+          sha256sum "anvildroid-controller_${DEBIAN_VERSION}_amd64.deb" > SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: debian-release
+          path: |
+            target/releases/*.deb
+            target/releases/SHA256SUMS
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: debian-release
+          path: release
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_VERSION: ${{ needs.build.outputs.version }}
+          PRERELEASE: ${{ needs.build.outputs.prerelease }}
+        run: |
+          cd release
+          sha256sum --check SHA256SUMS
+          args=(--verify-tag --title "AnvilDroid $RELEASE_VERSION" --generate-notes)
+          if [[ "$PRERELEASE" == true ]]; then args+=(--prerelease); fi
+          gh release create "$RELEASE_TAG" "${args[@]}" ./*.deb SHA256SUMS

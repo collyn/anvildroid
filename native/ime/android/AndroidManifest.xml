@@ -1,0 +1,10 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="org.anvildroid.ime" android:versionCode="2" android:versionName="0.2">
+    <uses-sdk android:minSdkVersion="23" android:targetSdkVersion="33"/>
+    <application android:label="AnvilDroid Input" android:allowBackup="false" android:theme="@android:style/Theme.Material.Light.NoActionBar">
+        <service android:name=".BridgeIme" android:label="AnvilDroid host keyboard" android:permission="android.permission.BIND_INPUT_METHOD" android:exported="true">
+            <intent-filter><action android:name="android.view.InputMethod"/></intent-filter>
+            <meta-data android:name="android.view.im" android:resource="@xml/method"/>
+        </service>
+        <activity android:name=".SmokeActivity" android:label="AnvilDroid input test" android:exported="true"/>
+    </application>
+</manifest>

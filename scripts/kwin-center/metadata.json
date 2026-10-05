@@ -1,0 +1,12 @@
+{
+  "KPlugin": {
+    "Id": "anvildroid-center",
+    "Name": "AnvilDroid Center Windows",
+    "Description": "Center new Waydroid app windows and dialogs on the current display",
+    "Version": "1.2",
+    "License": "MIT"
+  },
+  "KPackageStructure": "KWin/Script",
+  "X-Plasma-API": "javascript",
+  "X-Plasma-MainScript": "code/main.js"
+}

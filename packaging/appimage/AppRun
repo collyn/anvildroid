@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+set -e
+appdir="$(dirname "$(readlink -f "$0")")"
+export APPDIR="$appdir"
+if [ "${ANVILDROID_SKIP_BOOTSTRAP:-0}" != 1 ]; then
+  # Install missing administrator-owned Waydroid support before opening GUI.
+  controller_ready=0
+  if [ -S /run/anvildroid/control.sock ]; then
+    /usr/bin/python3 -c 'import socket; s=socket.socket(socket.AF_UNIX); s.settimeout(1); s.connect("/run/anvildroid/control.sock")' >/dev/null 2>&1 && controller_ready=1 || true
+  fi
+  if [ "$controller_ready" -eq 0 ] && ! pkexec /usr/bin/python3 "$appdir/scripts/bootstrap-appimage.py"; then
+    echo 'AnvilDroid bootstrap failed; see the administrator/setup error above.' >&2
+    exit 1
+  fi
+fi
+if [ "${1:-}" = --cli ]; then
+  shift
+  exec "$appdir/usr/bin/anvildroid" "$@"
+fi
+for hook in "$appdir"/apprun-hooks/*.sh; do
+  if [ -r "$hook" ]; then
+    # GTK's deployment hook sets schema, image loader and theme paths.
+    source "$hook"
+  fi
+done
+# The bundled GTK hook defaults to X11 for old Tauri releases. Prefer the
+# native Wayland backend whenever the current user session exposes its socket.
+if [ -n "${WAYLAND_DISPLAY:-}" ] && [ -n "${XDG_RUNTIME_DIR:-}" ] &&
+   [ -S "${XDG_RUNTIME_DIR}/${WAYLAND_DISPLAY}" ]; then
+  export GDK_BACKEND=wayland
+  export QT_QPA_PLATFORM=wayland
+fi
+# Enable the runtime GPU safety guard.  It blocks the AMDGPU/Navi 33
+# minigbm combination known to reset the host display; opt in explicitly
+# with ANVIL_ALLOW_UNSTABLE_AMDGPU=1 when testing a newer Mesa/kernel.
+export ANVIL_GPU_SAFETY_GUARD=1
+export GIO_MODULE_DIR="$appdir/usr/lib/x86_64-linux-gnu/gio/modules"
+export GIO_EXTRA_MODULES="$GIO_MODULE_DIR"
+export GST_PLUGIN_SYSTEM_PATH_1_0="$appdir/usr/lib/gstreamer-1.0"
+export GST_PLUGIN_PATH_1_0="$GST_PLUGIN_SYSTEM_PATH_1_0"
+export GST_PLUGIN_SCANNER_1_0="$appdir/usr/libexec/gst-plugin-scanner"
+export LD_LIBRARY_PATH="$appdir/usr/lib:$appdir/usr/lib/x86_64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+# WebKitGTK's bundled process paths are relative to usr/ in this AppDir.
+cd "$appdir/usr"
+exec "$appdir/usr/bin/anvildroid-gui" "$@"

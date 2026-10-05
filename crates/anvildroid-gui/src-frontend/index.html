@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AnvilDroid</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="shell.css">
+  <link rel="stylesheet" href="management.css">
+</head>
+<body>
+  <div class="layout">
+    <nav class="sidebar" aria-label="Main navigation">
+      <div class="sidebar-scroll">
+      <div class="sidebar-brand">
+        <img src="brand.png" alt="" class="brand-mark">
+        <div><h2>Anvil<span>Droid</span></h2><p>Waydroid Manager for Linux</p></div>
+      </div>
+      <ul class="nav-list">
+        <li class="nav-item active" data-page="apps">
+          <span class="nav-icon"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg></span><span>Apps</span>
+        </li>
+        <li class="nav-item" data-page="runtime">
+          <span class="nav-icon"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="m12 2 9 5v10l-9 5-9-5V7zM3 7l9 5 9-5M12 12v10M7.5 4.5l9 5"/></svg></span><span>Runtimes</span>
+        </li>
+        <li class="nav-item" data-page="settings">
+          <span class="nav-icon"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.38a2 2 0 0 0-.73-2.73l-.15-.09a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg></span><span>Settings</span>
+        </li>
+        <li class="nav-item" data-page="controls" title="Resize-aware controls preview">
+          <span class="nav-icon"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M7 6h10c3 0 4 4 5 11 .2 2-2 3-3.5 1L16 15H8l-2.5 3C4 20 1.8 19 2 17 3 10 4 6 7 6Z"/><path d="M7 9v5m-2.5-2.5h5M16 10h.01M18 13h.01"/></svg></span><span>Game Controls</span>
+        </li>
+      </ul>
+      <div class="sidebar-runtime-card"><div class="sidebar-runtime-title"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="m12 2 9 5v10l-9 5-9-5V7zM3 7l9 5 9-5M12 12v10M7.5 4.5l9 5"/></svg><span>Runtime overview</span></div><p id="sidebar-runtime-status" role="status">Checking runtimes…</p><select id="sidebar-runtime-select" aria-label="Runtime for resource metrics"></select><div class="sidebar-runtime-metrics"><div class="sidebar-metric"><span title="CPU usage as a percentage of host logical CPU capacity">CPU</span><strong id="sidebar-cpu-value">—</strong><div class="sidebar-metric-track"><i id="sidebar-cpu-bar"></i></div></div><div class="sidebar-metric"><span>RAM</span><strong id="sidebar-ram-value">—</strong><div class="sidebar-metric-track"><i id="sidebar-ram-bar"></i></div></div><div class="sidebar-metric"><span title="Used space on the filesystem containing the selected runtime, not per-runtime disk usage">Disk</span><strong id="sidebar-storage-value">—</strong><div class="sidebar-metric-track"><i id="sidebar-storage-bar"></i></div></div></div><button id="btn-sidebar-runtimes" class="sidebar-runtime-link nav-item" data-page="runtime" type="button">Manage runtimes <span aria-hidden="true">→</span></button></div>
+      </div>
+      <div class="sidebar-footer">
+        <span id="app-version" class="version" aria-label="App version">AnvilDroid</span>
+      </div>
+    </nav>
+    <div class="main-panel">
+    <main class="content">
+      <!-- Apps page -->
+      <section id="page-apps" class="page active">
+        <div class="page-header apps-topbar">
+          <label class="global-search"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="10.5" cy="10.5" r="7"/><path d="m16 16 5 5"/></svg><input id="search-apps" type="search" placeholder="Search apps, packages, or activities…" aria-label="Search apps"><span class="search-shortcut" aria-hidden="true"><kbd>Ctrl</kbd><kbd>K</kbd></span></label>
+          <div class="page-actions">
+            <button id="btn-refresh-apps" class="btn" title="Refresh apps"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M20 7v5h-5M20 12a8 8 0 1 0-2 5M20 7l-3-2"/></svg><span>Refresh</span></button>
+            <button id="btn-manage-runtimes" class="btn"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="m12 2 9 5v10l-9 5-9-5V7zM3 7l9 5 9-5M12 12v10M7.5 4.5l9 5"/></svg>Manage runtimes</button>
+            <button id="btn-install-apk" class="btn btn-primary"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m-5-5 5 5 5-5M3 16v5h18v-5"/></svg>Install APK</button>
+          </div>
+        </div>
+        <div class="library-filters unified-filters">
+          <div class="runtime-filter-group"><select id="filter-runtime" class="select-control library-runtime-select" aria-label="Filter by runtime"><option value="all">All runtimes</option><option value="default">Existing runtime</option></select></div>
+          <select id="sort-apps" hidden><option value="name-asc">Name A–Z</option><option value="name-desc">Name Z–A</option><option value="package">Package</option><option value="recent">Recently opened</option><option value="favorites">Favorites first</option></select>
+          <div class="category-filters"><select id="filter-tag" class="select-control" aria-label="Filter apps by tag"><option value="all">All tags</option></select></div>
+          <button id="btn-manage-tags" class="btn btn-quiet" type="button" aria-label="Manage tags" title="Manage tags">+</button>
+          <div class="library-display-controls"><div class="library-view" role="group" aria-label="Library view"><button class="view-button active" type="button" data-view="grid" aria-label="Grid view"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg></button><button class="view-button" type="button" data-view="list" aria-label="List view"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5h12M9 12h12M9 19h12M3 5h.01M3 12h.01M3 19h.01"/></svg></button></div><label class="favorites-toggle"><input id="favorites-only" type="checkbox"><span class="toggle-track" aria-hidden="true"></span><span class="favorites-label">Favorites only</span></label></div>
+        </div>
+        <h1 class="app-list-caption">App Library</h1>
+        <div id="library-google-notices" aria-label="Google Play registration"></div>
+        <div id="library-runtime-status" class="hint" role="status"></div>
+        <div id="apps-status" class="status-banner" style="display:none"></div>
+        <button id="btn-stop-uninstall-wait" class="btn" style="display:none">Stop waiting</button>
+        <div id="apps-grid" class="apps-grid">
+          <div class="empty-state">
+            <p>No apps loaded yet.</p>
+            <p class="hint">Start the runtime to see installed apps.</p>
+          </div>
+        </div>
+      </section>
+
+      <dialog id="google-registration-dialog" aria-labelledby="google-registration-title">
+        <div class="section-heading"><h2 id="google-registration-title">Google Play device registration</h2><button id="google-registration-close" class="btn btn-quiet" type="button">Close</button></div>
+        <div id="google-registration-content"></div>
+      </dialog>
+
+      <!-- Runtime page -->
+      <section id="page-runtime" class="page">
+        <div class="page-header"><div><h1>Runtimes</h1><p class="hint">Manage all your Android runtimes in one place.</p></div><button id="btn-refresh-runtimes" class="btn">Refresh all</button></div>
+        <div class="controller-heading"><h2>Your runtimes</h2><span id="controller-connection" class="status-badge" role="status" title="Connection to the runtime management service. Each runtime has its own Running or Stopped status in the table.">Connecting to service…</span></div>
+        
+        <div id="controller-setup" role="status"></div>
+        <div id="waydroid-setup-actions" hidden>
+          <div class="runtime-actions">
+            <select id="waydroid-init-flavor" class="select-control" aria-label="Waydroid image flavor">
+              <option value="VANILLA" selected>VANILLA — without Google services</option>
+              <option value="GAPPS">GAPPS — includes Google Play</option>
+            </select>
+            <button id="btn-init-waydroid" class="btn btn-primary" type="button">Initialize Waydroid</button>
+          </div>
+          <p id="waydroid-init-status" class="hint" role="status"></p>
+        </div>
+        <details id="controller-setup-help"><summary>Waydroid installation help</summary><div class="runtime-setup-actions"><button id="btn-waydroid-guide" class="btn" type="button">Waydroid setup guide</button><span class="hint">If Waydroid is missing, AnvilDroid still opens and headless setup remains visible. Use the button above to install and initialize Waydroid automatically (you will be asked for your administrator password), or install it manually and refresh.</span></div></details>
+        <details id="runtime-create-panel" class="create-panel"><summary>New runtime</summary>
+        <form id="controller-create" class="runtime-actions">
+          <div class="form-field"><label for="controller-name">Runtime name</label>
+          <input id="controller-name" maxlength="128" required placeholder="My Android" /></div>
+          <div class="form-field"><label for="controller-image">Waydroid image source</label>
+          <select id="controller-image" aria-describedby="controller-image-hint"><optgroup label="Copy from this computer"><option value="installed">Existing Waydroid image — keep its Google setup</option><option value="CUSTOM">Custom images from this computer</option></optgroup><optgroup label="Use a verified download"><option value="VANILLA">Waydroid VANILLA — without Google services</option><option value="GAPPS">Waydroid GAPPS — includes Google Play</option></optgroup></select></div>
+          <button id="controller-create-button" class="btn btn-primary" type="submit" disabled>Create runtime</button>
+        </form>
+        <div id="custom-image-controls" hidden>
+          <div class="runtime-actions"><button id="btn-import-runtime-folder" type="button" class="btn btn-primary">Choose image folder…</button><button id="btn-import-runtime-image" type="button" class="btn">Choose custom image ZIP…</button><button id="btn-cancel-custom-image" type="button" class="btn" hidden>Cancel import</button></div>
+          <p class="hint">Choose a folder containing system.img and vendor.img directly, or a ZIP containing both files for Waydroid x86_64, Android SDK 33+ (ext4, EROFS or Android sparse). Sparse images are expanded automatically. Newer Android support is experimental: Prepare checks required Waydroid components; boot and desktop controls still depend on the build. Image import creates an independent runtime; it does not replace Existing runtime. Use images from a source you trust. Custom Android builds may not support AnvilDroid desktop controls or ARM translation.</p>
+          <p id="custom-image-status" role="status" aria-live="polite"></p>
+        </div>
+        <p id="controller-image-hint" class="hint">Copies the existing Waydroid image into a separate runtime. Google services are included only if that source image already contains them.</p></details>
+        <p id="controller-message" role="status" aria-live="polite"></p>
+        <div id="controller-start" style="display:none">
+          <button id="btn-start-controller" class="btn btn-primary" type="button">Start runtime controller</button>
+          <p id="controller-start-message" class="hint" role="status">Install and start the bundled runtime controller. You will be asked for your administrator password. No system service is installed; start it again after rebooting.</p>
+        </div>
+        <p class="table-caption">Select a runtime to manage its apps, Google Play and storage.</p>
+        <div class="runtime-table-scroll"><table id="runtime-table" class="runtime-table">
+          <thead><tr><th scope="col">Runtime</th><th scope="col">Status</th><th scope="col" class="runtime-actions-heading">Actions</th></tr></thead>
+          <tbody id="controller-runtimes"></tbody>
+          <tbody>
+            <tr id="legacy-runtime-row" class="runtime-summary" data-runtime-select="default"><td><button type="button" class="runtime-select" data-runtime-select="default" aria-expanded="false" aria-controls="legacy-runtime-detail"><span id="existing-runtime-label">Existing runtime</span> <span class="hint">Default</span></button></td><td><span id="runtime-state" class="status-value">—</span></td><td>          <div class="runtime-actions">
+            <button id="btn-start" class="btn btn-primary" style="display:none">Start</button>
+            <button id="btn-stop" class="btn btn-danger" style="display:none">Stop</button>
+            <button id="btn-recover" class="btn btn-warning" style="display:none">Recover</button>
+            <button id="btn-refresh" class="btn">Refresh</button>
+          </div>
+</td></tr>
+            <tr id="legacy-runtime-detail" class="runtime-detail-row" hidden><td colspan="3">
+              <h3 id="existing-runtime-name">Existing runtime · Default</h3><p class="hint">The original Waydroid session.</p>
+              <div id="existing-runtime-management" aria-live="polite"></div>
+        <div class="runtime-card">
+          <div class="status-row">
+            <span class="status-label">Session D-Bus:</span>
+            <span id="session-service" class="status-value">—</span>
+          </div>
+          <div class="status-row">
+            <span class="status-label">Container:</span>
+            <span id="container-state" class="status-value">—</span>
+          </div>
+          <div class="status-row">
+            <span class="status-label">GPU:</span>
+            <span id="gpu-mode" class="status-value">—</span>
+          </div>
+          <div class="status-row" id="health-message-row" style="display:none">
+            <span class="status-label">Info:</span>
+            <span id="health-message" class="status-value">—</span>
+          </div>
+        </div>
+            </td></tr>
+          </tbody>
+        </table></div>
+      </section>
+
+      <!-- Settings page -->
+      <section id="page-settings" class="page">
+        <div class="page-header"><div><h1>Settings</h1><p class="hint">Application settings and existing runtime configuration</p></div><button id="btn-refresh-settings" class="btn">Refresh</button></div>
+        <div class="settings-section settings-inline"><div><h2>Runtime management</h2><p class="hint">Create, start, stop and configure each Android runtime on the Runtimes page.</p></div><button id="btn-settings-runtimes" class="btn btn-primary">Manage runtimes</button></div>
+        <div class="settings-section settings-inline"><div><h2>GPU &amp; graphics</h2><p class="hint">Inspect host GPUs and the Android renderer in each runtime's GPU &amp; graphics panel.</p><p class="hint">Choose a GPU per runtime while it is stopped. NVIDIA: Experimental — not available yet.</p></div><button id="btn-gpu-runtimes" class="btn">View runtime GPUs</button></div>
+        <div class="settings-section settings-inline"><div><h2>RAM &amp; CPU limits</h2><p class="hint">Set limits for each managed runtime while stopped. View current memory usage and active CPU quota in runtime details.</p><p class="hint">Limits apply on next start. Resources are shared, not reserved.</p></div><button id="btn-resource-runtimes" class="btn">View runtime limits</button></div>
+        <div class="settings-section image-settings">
+          <div class="section-heading"><div><span class="eyebrow">ANDROID SETUP</span><h2>Images, Google Play &amp; ARM apps</h2></div>
+          <button id="btn-create-gapps" class="btn btn-primary" type="button">Create GAPPS runtime…</button></div>
+          <p class="hint">Waydroid is required for every runtime. Choose its Android image: VANILLA without Google services, or GAPPS with Google Play. Downloaded images are used for a new, separate runtime.</p>
+          <p class="hint">Image architecture and app compatibility are different. On an x86_64 computer, ARM32/ARM64 apps use an optional translation layer; this is not a separate VANILLA or GAPPS image.</p>
+          <button id="btn-check-images" class="btn">Check official images</button>
+          <div id="settings-images" role="status" aria-live="polite"><p class="hint">No online check performed. Existing runtimes use copies of the installed Waydroid images.</p></div>
+          <div id="settings-image-download" role="status" aria-live="polite"></div>
+          <button id="btn-cancel-image-download" class="btn" hidden>Cancel download</button>
+          <div class="settings-inline"><div><h3>ARM app support</h3><p class="hint">Choose ARM translation per runtime. Download a trusted archive over HTTPS or import an extracted payload folder; AnvilDroid verifies required native bridge libraries before making it selectable.</p></div><button id="btn-arm-runtimes" class="btn">Configure ARM support…</button></div>
+          <div id="arm-source-panel" class="arm-source-panel" role="region" aria-label="ARM translation sources"><p class="hint">Loading ARM translation sources…</p></div>
+          <p class="hint">Downloading GAPPS does not add Google services to existing runtimes. Create a separate GAPPS runtime, then Prepare and Start it.</p>
+        </div>
+        <details id="legacy-runtime-settings" class="settings-section">
+          <summary>Existing runtime · App library and desktop windows</summary>
+          <div id="settings-runtime" class="runtime-card">Open Settings to load the current configuration.</div>
+        </details>
+        <details class="settings-section roadmap-section">
+          <summary>Upcoming settings</summary>
+          <div class="settings-roadmap">
+            <div><strong>Disk capacity</strong><p class="hint">Per-runtime disk quota and resizing</p><span class="status-badge">Planned</span></div>
+          </div>
+        </details>
+      </section>
+
+      <!-- P6 geometry preview, deliberately not an active game mapper -->
+      <section id="page-controls" class="page">
+        <h1>Game Controls</h1>
+        <p class="hint">Open an app in a managed runtime, then right-click its library card → Edit keymap. Add points and press keys on the app overlay; Save or Escape to leave. Editing only — input injection is not active.</p>
+        <button id="keymap-list-refresh" class="btn" type="button">Refresh saved keymaps</button>
+        <div class="card">
+          <h2>Touch input diagnostics</h2>
+          <p class="hint">Touch Probe observes taps in its own window. It requests no permissions and does not enable gameplay mapping. Android may ask you to review installation.</p>
+          <label for="probe-runtime">Runtime</label><select id="probe-runtime"></select>
+          <button id="install-touch-probe" class="btn" type="button">Install Touch Probe…</button>
+          <button id="probe-open-waydroid" class="btn" type="button">Open Waydroid</button>
+          <p id="probe-status" role="status" aria-live="polite"></p>
+        </div>
+        <div id="keymap-saved-list" aria-live="polite"></div>
+      </section>
+    </main>
+    <footer class="app-footer"><span>AnvilDroid</span><span>Right-click an app for actions</span></footer>
+    </div>
+  </div>
+  <div id="app-toast" class="app-toast" hidden><p id="app-toast-message" role="status" aria-live="polite" aria-atomic="true"></p><button id="app-toast-close" type="button" aria-label="Dismiss notification">×</button></div>
+  <dialog id="runtime-storage-dialog">
+    <form id="runtime-storage-form">
+      <h2 id="runtime-storage-title">Change storage location</h2>
+      <p id="runtime-storage-description"></p>
+      <div id="runtime-storage-picker" class="runtime-actions">
+        <input id="runtime-storage-path" aria-label="Destination folder" readonly placeholder="Choose a folder on a permanent Linux disk" />
+        <button id="runtime-storage-browse" class="btn" type="button">Choose folder…</button>
+      </div>
+      <div id="runtime-storage-confirmation" style="display:none">
+        <label for="runtime-storage-confirm-name">Type the runtime name to confirm deletion of the previous copy</label>
+        <input id="runtime-storage-confirm-name" autocomplete="off" />
+      </div>
+      <p id="runtime-storage-error" role="alert"></p>
+      <div class="runtime-actions">
+        <button id="runtime-storage-cancel" class="btn" type="button">Cancel</button>
+        <button id="runtime-storage-save" class="btn btn-primary" type="submit">Move data</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="runtime-rename-dialog">
+    <form id="runtime-rename-form">
+      <h2>Rename runtime</h2>
+      <label for="runtime-rename-name">Runtime name</label>
+      <input id="runtime-rename-name" class="select-control" maxlength="128" required />
+      <p id="runtime-rename-error" role="alert"></p>
+      <div class="runtime-actions">
+        <button id="runtime-rename-cancel" class="btn" type="button">Cancel</button>
+        <button id="runtime-rename-save" class="btn btn-primary" type="submit">Save name</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="app-details">
+    <h2 id="detail-name">App details</h2>
+    <div id="detail-content"></div>
+    <div class="detail-actions">
+      <button id="detail-open" class="btn btn-primary">Open app</button>
+      <button id="detail-info" class="btn">Android App Info</button>
+      <button id="detail-favorite" class="btn">Favorite</button>
+      <button id="detail-tags" class="btn">Edit tags</button>
+      <button id="detail-force-stop" class="btn btn-danger">Force-stop…</button>
+      <button id="detail-close" class="btn">Close details</button>
+    </div>
+  </dialog>
+  <dialog id="tag-manager-dialog">
+    <form id="tag-manager-form" method="dialog">
+      <h2>Manage app tags</h2>
+      <p class="hint">Create tags such as Work, Games or Favorites, then assign them from an app's details.</p>
+      <div id="tag-list" class="tag-list"></div>
+      <div class="tag-create-row"><input id="new-tag-name" maxlength="24" placeholder="New tag name" aria-label="New tag name"><button id="tag-create" class="btn btn-primary" type="button">Create tag</button></div>
+      <div class="detail-actions"><button id="tag-manager-close" class="btn" type="submit">Close</button></div>
+    </form>
+  </dialog>
+  <script src="main.js"></script>
+  <script src="keymap-drafts.js"></script>
+  <script src="keymap-library.js"></script>
+</body>
+</html>

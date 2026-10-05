@@ -1,0 +1,5 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="org.anvildroid.caption">
+    <uses-sdk android:minSdkVersion="33" android:targetSdkVersion="33" />
+    <overlay android:targetPackage="android" android:isStatic="true" android:priority="999" />
+    <application android:hasCode="false" android:label="AnvilDroid desktop caption" />
+</manifest>

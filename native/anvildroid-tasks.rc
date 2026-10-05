@@ -1,0 +1,7 @@
+on post-fs-data
+    mkdir /data/waydroid_tmp/anvildroid 2770 shell system
+
+service anvildroid-task-bridge /system/bin/sh /vendor/bin/anvildroid-tasks.sh
+    class late_start
+    user shell
+    group shell system

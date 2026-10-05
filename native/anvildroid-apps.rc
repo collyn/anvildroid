@@ -1,0 +1,4 @@
+service anvildroid-app-manager /system/bin/sh /vendor/bin/anvildroid-apps.sh
+    class late_start
+    user shell
+    group shell system
