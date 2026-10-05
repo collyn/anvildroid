@@ -7,6 +7,7 @@ OUT="$ROOT/target/releases"
 STAGE="$ROOT/target/pkg/anvildroid-controller-${VERSION}-1-x86_64"
 rm -rf "$STAGE" "$OUT/anvildroid-controller-${VERSION}-1-x86_64.pkg.tar.zst"
 mkdir -p "$OUT" "$STAGE/var/lib/anvildroid-controller" "$STAGE/run/anvildroid"
+sh "$ROOT/scripts/build-runtime.sh"
 sh "$ROOT/scripts/stage-package.sh" "$STAGE"
 cat > "$STAGE/.PKGINFO" <<EOF
 pkgname = anvildroid-controller

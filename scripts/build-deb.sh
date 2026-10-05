@@ -50,25 +50,11 @@ mkdir -p target
 exec 9>target/build-deb.lock
 flock -n 9 || { echo "Another .deb build is running." >&2; exit 1; }
 
-stage='GUI (release)'
-echo "[1/5] Building $stage"
-# The packager reads target/release even if the caller sets CARGO_TARGET_DIR.
-unset CARGO_BUILD_TARGET
-cargo build --release --locked -p anvildroid-gui --target-dir target
-
-stage='native desktop bridge'
-echo "[2/5] Building $stage"
-sh scripts/build-runtime-desktop.sh
-
-stage='Android IME'
-echo "[3/5] Building $stage"
-sh scripts/build-ime.sh
-
-stage='Android shutdown helper'
-echo "[4/5] Building $stage"
-sh scripts/build-shutdown.sh
+stage='shared runtime payload'
+echo "[1/2] Building $stage"
+sh scripts/build-runtime.sh
 
 stage='Debian package'
-echo "[5/5] Packaging version $VERSION"
+echo "[2/2] Packaging version $VERSION"
 sh packaging/deb/build.sh "$VERSION"
 printf '\nBuild complete: %s/target/releases/anvildroid-controller_%s_amd64.deb\n' "$ROOT" "$VERSION"

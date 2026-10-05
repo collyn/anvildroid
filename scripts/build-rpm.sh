@@ -6,11 +6,12 @@ case "$VERSION" in ''|*[!0-9A-Za-z.+~_-]*) echo "Invalid version: $VERSION" >&2;
 command -v rpmbuild >/dev/null || { echo 'Missing build tool: rpmbuild' >&2; exit 1; }
 OUT="$ROOT/target/releases"
 TOP="$ROOT/target/rpm"
-BUILDROOT="$TOP/BUILDROOT/anvildroid-controller-${VERSION}-1.x86_64"
+STAGE="$TOP/stage"
 rm -rf "$TOP" "$OUT/anvildroid-controller-${VERSION}-1.x86_64.rpm"
 mkdir -p "$TOP" "$OUT"
-sh "$ROOT/scripts/stage-package.sh" "$BUILDROOT"
-mkdir -p "$BUILDROOT/var/lib/anvildroid-controller" "$BUILDROOT/run/anvildroid"
+sh "$ROOT/scripts/build-runtime.sh"
+sh "$ROOT/scripts/stage-package.sh" "$STAGE"
+mkdir -p "$STAGE/var/lib/anvildroid-controller" "$STAGE/run/anvildroid"
 cat > "$TOP/anvildroid-controller.spec" <<EOF
 Name: anvildroid-controller
 Version: $VERSION
@@ -28,7 +29,7 @@ GPU accelerated Waydroid runtime controller with BinderFS and Wayland support.
 
 %install
 mkdir -p %{buildroot}
-cp -a $BUILDROOT/. %{buildroot}/
+cp -a $STAGE/. %{buildroot}/
 
 %post
 systemctl daemon-reload >/dev/null 2>&1 || :

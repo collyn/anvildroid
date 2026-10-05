@@ -50,7 +50,9 @@ target/releases/anvildroid-controller-0.1.0-1-x86_64.pkg.tar.zst
 
 The version comes from `[workspace.package].version` in `Cargo.toml` and is
 shown in the GUI sidebar and CLI help. The `.pkg.tar.zst` file is an Arch Linux
-package. Builds do not install or restart anything.
+package. Each command builds only its selected package and required shared
+payload; no command installs or restarts anything. `scripts/build-runtime.sh`
+contains the shared GUI/native/Android build steps.
 
 ## Run
 
@@ -60,9 +62,9 @@ Apps page while the selected runtime is running.
 
 ## Automated releases
 
-Push a tag matching the workspace version. GitHub Actions builds `.deb`, `.rpm`
-and Arch `.pkg.tar.zst` packages, checks their checksums and creates a GitHub
-Release:
+Push a tag matching the workspace version. GitHub Actions runs separate Debian,
+RPM and Arch package jobs, then a separate release job checks their checksums
+and creates a GitHub Release:
 
 ```bash
 git tag -a v0.1.1 -m "Release 0.1.1"
