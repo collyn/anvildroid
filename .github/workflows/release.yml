@@ -67,6 +67,15 @@ jobs:
         with: {persist-credentials: false}
       - uses: actions/download-artifact@v4
         with: {name: shared-ci-inputs, path: .}
+      - name: Restore shared input paths
+        run: |
+          mkdir -p target/tools target/native
+          test -s tools/r8-8.3.37.jar
+          test -s native/init.waydroid.rc
+          test -s native/framework-res.apk
+          cp tools/r8-8.3.37.jar target/tools/r8-8.3.37.jar
+          cp native/init.waydroid.rc target/native/init.waydroid.rc
+          cp native/framework-res.apk target/native/framework-res.apk
       - name: Install build dependencies
         run: |
           sudo apt-get update
