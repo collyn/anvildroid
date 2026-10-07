@@ -83,10 +83,8 @@ def resolve(instance):
             raise RuntimeError('This image has no validated ANGLE/Pastel software rendering support. Prepare a compatible image first.')
         return None
     if selected['node'] == 'auto':
-        # Compatibility is an automatic default, never an override of an
-        # explicitly selected device.
-        if software_supported(instance):
-            return None
+        # Auto selects hardware. Software rendering is an explicit choice,
+        # even when the image includes ANGLE/Pastel.
         devices = [d for d in inventory() if d['available'] and d['driver'] in DRIVERS and d['vendor_id'] != '0x10de']
         if not devices:
             raise RuntimeError('No supported host GPU is available')
