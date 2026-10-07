@@ -40,7 +40,8 @@ def caption_compatibility(framework, layout):
             'caption_detail': ('Keeping the image\'s Android caption; framework lacks ' + ', '.join(missing))
                               if missing else 'Framework supports the AnvilDroid caption overlay'}
 
-def build_overlay(overlay, system_root, require_caption=True, vendor_root=None):
+def build_overlay(overlay, system_root, require_caption=True, vendor_root=None,
+                  safe_codec_fallback=False, flavor=None):
     """Populate support for a Waydroid image with the expected composer contract:
     the LD_PRELOAD bridge marker in init.waydroid.rc, the bridge itself, the task
     companion scripts and (when Android build tools exist) the zero-height caption.
@@ -58,10 +59,20 @@ def build_overlay(overlay, system_root, require_caption=True, vendor_root=None):
     if text.count(marker) != 1: raise RuntimeError('Unsupported composer service')
     overlay.parent.mkdir(parents=True, exist_ok=True)
     compatibility = {
+        'flavor': flavor,
         'sdk': sdk, 'status': 'experimental' if sdk > 33 else 'baseline',
         'detail': 'Newer Android: desktop bridge, app controls and boot need validation with this image.' if sdk > 33 else 'Android 13 compatibility baseline',
         'caption_mode': 'android', 'caption_detail': 'Keeping the image caption; overlay tools unavailable',
+        'desktop_bridge': 'anvildroid',
     }
+    surfaceflinger = system_root / 'system/bin/surfaceflinger'
+    native_metadata = (surfaceflinger.is_file() and
+                       b'vendor.waydroid.display@' in surfaceflinger.read_bytes())
+    compatibility['presentation_mode'] = 'app-windows' if native_metadata else 'android-display'
+    # WayDroidATV images use a newer HWC Wayland path which rejects the
+    # AnvilDroid decoration bridge's shared-memory format negotiation.
+    if 'WayDroidATV' in props or 'eng.minh' in props:
+        compatibility['desktop_bridge'] = 'native-wayland'
     if vendor_root is not None:
         initializer = vendor_root / 'bin/waydroid-init'
         if (initializer.is_file() and initializer.stat().st_size <= 32 * 1024**2
@@ -69,13 +80,32 @@ def build_overlay(overlay, system_root, require_caption=True, vendor_root=None):
                 and (system_root / 'system/lib64/libEGL_angle.so').is_file()
                 and (system_root / 'system/lib64/libGLESv2_angle.so').is_file()):
             binary = initializer.read_bytes()
-            if all(key in binary for key in (b'ro.waydroid.software_rendering', b'ro.waydroid.override_props')):
+            if (compatibility['desktop_bridge'] == 'native-wayland'
+                    or all(key in binary for key in (b'ro.waydroid.software_rendering', b'ro.waydroid.override_props'))):
                 compatibility['software_renderer'] = 'angle-pastel'
+    # Some Android 15 custom images ship a malformed C2 audio capability
+    # which aborts mediaserver while MediaCodecList is built. Keep the
+    # vendor codec entry point empty so Android can boot; codec support can
+    # be restored after the image is validated.
+    if safe_codec_fallback and sdk >= 35:
+        codec = overlay / 'vendor/etc/media_codecs.xml'
+        codec.parent.mkdir(parents=True, exist_ok=True)
+        codec.write_text('<?xml version="1.0" encoding="utf-8"?>\n<MediaCodecs/>\n')
+        compatibility['codec_mode'] = 'safe-empty-vendor-codecs'
     target = overlay / 'system/etc/init/init.waydroid.rc'; target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(text.replace(marker, marker + '    setenv LD_PRELOAD /vendor/lib64/libanvildroid-window.so\n'))
+    preload = ('/vendor/lib64/libanvildroid-hwc-shim.so'
+               if compatibility['desktop_bridge'] == 'native-wayland'
+               else '/vendor/lib64/libanvildroid-window.so')
+    target.write_text(text.replace(marker, marker + '    setenv LD_PRELOAD ' + preload + '\n'))
     bridge = overlay / 'vendor/lib64/libanvildroid-window.so'; bridge.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(ASSETS / 'libanvildroid-window.so', bridge)
     bridge.chmod(0o644)
+    # Keep the RPC-pool shim available for stock custom composers too. It
+    # does not interpose Wayland window calls; it only prevents Android 15
+    # HIDL from aborting when the composer configures Binder pools twice.
+    shim = overlay / 'vendor/lib64/libanvildroid-hwc-shim.so'
+    shutil.copyfile(ASSETS / 'libanvildroid-hwc-shim.so', shim)
+    shim.chmod(0o644)
     if require_caption or (shutil.which('aapt') and shutil.which('apksigner')):
         compatibility.update(caption_compatibility(framework, ASSETS / 'provision/overlay/res/layout/decor_caption.xml'))
     if compatibility['caption_mode'] == 'host':
@@ -134,7 +164,15 @@ def build(instance, flavor):
     if not manifest: raise RuntimeError('Verified images required')
     if (instance / 'support').exists():
         if json.loads((instance / 'support/images.json').read_text()) != manifest['images']: raise RuntimeError('Support/image mismatch')
-        return
+        # Rebuild support generated by older AnvilDroid versions so Android 15
+        # custom images receive the codec crash workaround.
+        compatibility_file = instance / 'support/compatibility.json'
+        compatibility = json.loads(compatibility_file.read_text()) if compatibility_file.exists() else {}
+        if not (flavor == 'CUSTOM' and compatibility.get('sdk', 0) >= 35
+                and (compatibility.get('codec_mode') != 'safe-empty-vendor-codecs'
+                     or 'desktop_bridge' not in compatibility)):
+            return
+        shutil.rmtree(instance / 'support')
     staging = Path(tempfile.mkdtemp(prefix='.support-build-', dir=instance))
     mounts = []
     try:
@@ -145,7 +183,8 @@ def build(instance, flavor):
             mounts.append(target)
         support = staging / 'support'; support.mkdir()
         overlay = support / 'overlay'
-        build_overlay(overlay, lower, vendor_root=vendor)
+        build_overlay(overlay, lower, vendor_root=vendor,
+                      safe_codec_fallback=(flavor == 'CUSTOM'), flavor=flavor)
         props = Path('/var/lib/waydroid/waydroid.prop').read_text().splitlines()
         # No ARM properties without the matching native translation libraries.
         drop = ('ro.product.cpu.', 'ro.dalvik.vm.', 'ro.enable.native.bridge.', 'ro.vendor.enable.native.bridge.', 'ro.ndk_translation.', 'waydroid.system_ota=')

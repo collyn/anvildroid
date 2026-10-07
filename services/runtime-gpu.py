@@ -83,6 +83,10 @@ def resolve(instance):
             raise RuntimeError('This image has no validated ANGLE/Pastel software rendering support. Prepare a compatible image first.')
         return None
     if selected['node'] == 'auto':
+        # Compatibility is an automatic default, never an override of an
+        # explicitly selected device.
+        if software_supported(instance):
+            return None
         devices = [d for d in inventory() if d['available'] and d['driver'] in DRIVERS and d['vendor_id'] != '0x10de']
         if not devices:
             raise RuntimeError('No supported host GPU is available')
@@ -112,17 +116,22 @@ def resolve(instance):
 
 
 def properties(props, node):
-    keys = ('gralloc.gbm.device=', 'ro.hardware.egl=', 'ro.hardware.gralloc=')
+    keys = ('gralloc.gbm.device=', 'ro.hardware.egl=', 'ro.hardware.gralloc=',
+            'ro.hardware.vulkan=', 'ro.waydroid.software_rendering=',
+            'ro.waydroid.override_props=', 'debug.hwui.renderer=')
     if node is None:
-        keys += ('ro.hardware.vulkan=', 'ro.waydroid.software_rendering=',
-                 'ro.waydroid.override_props=', 'debug.hwui.renderer=')
         return [p for p in props if not p.startswith(keys)] + [
             'ro.hardware.egl=angle', 'ro.hardware.gralloc=default',
             'ro.hardware.vulkan=pastel', 'ro.waydroid.software_rendering=1',
             'ro.waydroid.override_props=false', 'debug.hwui.renderer=skiagl']
+    driver = next((d['driver'] for d in inventory() if d['node'] == node), None)
+    vulkan = {'i915': 'intel', 'xe': 'intel', 'amdgpu': 'radeon',
+              'radeon': 'radeon', 'msm': 'freedreno', 'vc4': 'broadcom'}.get(driver)
     return [p for p in props if not p.startswith(keys)] + [
         'gralloc.gbm.device=' + node, 'ro.hardware.egl=mesa',
-        'ro.hardware.gralloc=minigbm_gbm_mesa']
+        'ro.hardware.gralloc=minigbm_gbm_mesa',
+        'ro.waydroid.software_rendering=0', 'ro.waydroid.override_props=false',
+        'debug.hwui.renderer=skiagl'] + (['ro.hardware.vulkan=' + vulkan] if vulkan else [])
 
 
 # One bounded attach: inspect only SurfaceFlinger, never arbitrary app processes.

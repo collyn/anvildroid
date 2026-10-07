@@ -100,8 +100,30 @@ pub fn android_ready(timeout: Duration) -> Result<bool, AnvilError> {
 pub fn ensure_ready(timeout: Duration) -> Result<(), AnvilError> {
     let deadline = Instant::now() + timeout;
     let mut session = None;
+    let mut session_exited_at = None;
+    let mut session_exit_error = None;
+    let mut status = check_output(waydroid(&["status"], PROBE_TIMEOUT)?)?;
+    let stale_session = |value: &str| {
+        value.lines().any(|line| line.split_once(':').is_some_and(|(k, v)| k.trim() == "Session" && v.trim() == "RUNNING"))
+            && value.lines().any(|line| line.split_once(':').is_some_and(|(k, v)| k.trim() == "Container" && v.trim() == "STOPPED"))
+    };
+    if stale_session(&status) {
+        // A crashed container can leave the per-user Waydroid session alive.
+        // Clear it before starting a new session instead of requiring manual recovery.
+        let _ = waydroid(&["session", "stop"], PROBE_TIMEOUT);
+        let stale_deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < stale_deadline {
+            thread::sleep(Duration::from_millis(250));
+            status = check_output(waydroid(&["status"], PROBE_TIMEOUT)?)?;
+            if !stale_session(&status) { break; }
+        }
+        if stale_session(&status) {
+            return Err(AnvilError::BackendFailed(
+                "Stale Waydroid session could not be stopped; retry after checking waydroid.log".into(),
+            ));
+        }
+    }
     if !runtime::session_owner()? {
-        let status = check_output(waydroid(&["status"], PROBE_TIMEOUT)?)?;
         if !status.lines().any(|line| {
             line.split_once(':')
                 .is_some_and(|(k, v)| k.trim() == "Session" && v.trim() == "STOPPED")
@@ -141,10 +163,13 @@ pub fn ensure_ready(timeout: Duration) -> Result<(), AnvilError> {
     while Instant::now() < deadline {
         if let Some(receiver) = &session {
             if let Ok(result) = receiver.try_recv() {
-                // A competing launcher can win the bus name. Use it if present.
-                if !runtime::session_owner()? {
-                    return Err(AnvilError::BackendFailed(format!("Waydroid session exited before Android was ready ({result:?}); see anvildroid/session.log in the state directory")));
-                }
+                // Waydroid can hand startup to its container service and exit
+                // cleanly before the session name appears on D-Bus. Allow a
+                // short handoff window, then report the captured log instead
+                // of hiding the real startup failure behind ExitStatus(0).
+                session_exited_at = Some(Instant::now());
+                session_exit_error = Some(result);
+                session = None;
             }
         }
         if runtime::session_owner()? {
@@ -155,6 +180,25 @@ pub fn ensure_ready(timeout: Duration) -> Result<(), AnvilError> {
                 Ok(false) => last_error = "Android has not completed boot".into(),
                 Err(AnvilError::BackendNotFound(e)) => return Err(AnvilError::BackendNotFound(e)),
                 Err(e) => last_error = e.to_string(),
+            }
+        } else if let Some(exited_at) = session_exited_at {
+            if exited_at.elapsed() >= Duration::from_secs(5) {
+                let detail = std::fs::read_to_string(
+                    dirs::state_dir()
+                        .map(|path| path.join("anvildroid/session.log"))
+                        .unwrap_or_else(|| std::path::PathBuf::from("anvildroid/session.log")),
+                )
+                .ok()
+                .map(|text| {
+                    let mut lines: Vec<&str> = text.lines().collect();
+                    if lines.len() > 12 { lines.drain(..lines.len() - 12); }
+                    lines.join("\n")
+                })
+                .filter(|text| !text.trim().is_empty())
+                .unwrap_or_else(|| format!("session process exited: {:?}", session_exit_error));
+                return Err(AnvilError::BackendFailed(format!(
+                    "Waydroid session exited before Android was ready. {detail}"
+                )));
             }
         }
         thread::sleep(

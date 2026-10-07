@@ -1,10 +1,25 @@
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use anvildroid_core::error::AnvilError;
 use anvildroid_core::models::{AppInfo, HealthReport, OperationResult};
 use anvildroid_core::{apps, backend, desktop, launch, library, runtime, scope};
 
 use tauri::State;
+
+#[derive(Clone)]
+struct CustomImageJob {
+    path: std::path::PathBuf,
+    total: u64,
+    status: String,
+    error: Option<String>,
+    result: Option<serde_json::Value>,
+}
+
+static CUSTOM_IMAGE_JOB: OnceLock<Arc<Mutex<Option<CustomImageJob>>>> = OnceLock::new();
+
+fn custom_image_job() -> &'static Arc<Mutex<Option<CustomImageJob>>> {
+    CUSTOM_IMAGE_JOB.get_or_init(|| Arc::new(Mutex::new(None)))
+}
 
 #[tauri::command]
 fn get_app_version() -> &'static str {
@@ -265,6 +280,22 @@ fn resolve_bundle_root(exe: &std::path::Path, appdir: Option<&str>) -> Option<st
     None
 }
 
+fn resolve_setup_root(exe: &std::path::Path, appdir: Option<&str>) -> Option<std::path::PathBuf> {
+    for ancestor in exe.ancestors() {
+        if ancestor.join(SETUP_HELPER).is_file() {
+            return Some(ancestor.to_path_buf());
+        }
+    }
+    if let Some(dir) = appdir {
+        let path = std::path::Path::new(dir);
+        if path.join(SETUP_HELPER).is_file() {
+            return Some(path.to_path_buf());
+        }
+    }
+    let installed = std::path::Path::new("/usr/local/lib/anvildroid-controller");
+    installed.join(SETUP_HELPER).is_file().then(|| installed.to_path_buf())
+}
+
 fn copy_stage_tree(bundle: &std::path::Path, stage: &std::path::Path, relative: &str) -> Result<(), String> {
     let source_dir = bundle.join(relative);
     for entry in std::fs::read_dir(&source_dir)
@@ -351,6 +382,26 @@ fn stage_controller_payload(bundle: &std::path::Path) -> Result<std::path::PathB
         return Err(error);
     }
     Ok(stage)
+}
+
+fn stage_setup_payload(bundle: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    use std::os::unix::fs::PermissionsExt;
+    let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or_default();
+    let stage = std::path::PathBuf::from(format!("/tmp/anvildroid-setup-stage-{}-{}", std::process::id(), nonce));
+    std::fs::create_dir(&stage).map_err(|e| format!("Cannot create setup stage: {e}"))?;
+    std::fs::set_permissions(&stage, std::fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;
+    let result = (|| -> Result<(), String> {
+        for relative in ["scripts/setup-waydroid.py", "services/runtime-host.py", "services/runtime-arm.py", "services/runtime-arm-source.py"] {
+            let source = bundle.join(relative);
+            if !source.is_file() { return Err(format!("Bundled setup payload is missing: {relative}")); }
+            let target = stage.join(relative);
+            if let Some(parent) = target.parent() { std::fs::create_dir_all(parent).map_err(|e| e.to_string())?; }
+            std::fs::copy(source, target).map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    })();
+    if result.is_err() { let _ = std::fs::remove_dir_all(&stage); }
+    result.map(|_| stage)
 }
 
 fn run_pkexec(
@@ -462,12 +513,12 @@ async fn setup_waydroid(flavor: String) -> Result<StartControllerResult, String>
         }
         let exe = std::env::current_exe().map_err(|e| e.to_string())?;
         let appdir = std::env::var("APPDIR").ok();
-        let bundle = resolve_bundle_root(&exe, appdir.as_deref()).ok_or_else(|| {
+        let bundle = resolve_setup_root(&exe, appdir.as_deref()).ok_or_else(|| {
             "Waydroid setup helper not found; this build does not bundle it. \
              Use a packaged AppImage or portable release."
                 .to_string()
         })?;
-        let stage = stage_controller_payload(&bundle)?;
+        let stage = stage_setup_payload(&bundle)?;
         let result = run_pkexec(
             &stage.join(SETUP_HELPER),
             &["--flavor", flavor.as_str()],
@@ -595,11 +646,14 @@ async fn recover_runtime(
         let Ok(_operation) = guard.try_lock() else {
             return busy_result();
         };
+        let status = runtime::runtime_status();
+        let stale_session = status.session_state.as_deref() == Some("RUNNING")
+            && status.container_state.as_deref() == Some("STOPPED");
         match runtime::session_owner() {
-            Ok(true) => {
+            Ok(true) if !stale_session => {
                 return op_result_ok("Session service is already present; no recovery needed.")
             }
-            Ok(false) => {}
+            Ok(_) => {}
             Err(e) => return op_result_err(e),
         }
         let stop = std::process::Command::new("waydroid")
@@ -735,13 +789,128 @@ async fn install_apk(
 }
 
 #[tauri::command]
-async fn import_runtime_image(path: String) -> Result<serde_json::Value, String> {
-    blocking(move || anvildroid_core::controller::import_image(std::path::Path::new(&path))).await
+async fn import_runtime_image(path: String, name: String) -> Result<serde_json::Value, String> {
+    blocking(move || anvildroid_core::controller::import_image(std::path::Path::new(&path), &name)).await
 }
 
 #[tauri::command]
-async fn import_runtime_image_folder(path: String) -> Result<serde_json::Value, String> {
-    blocking(move || anvildroid_core::controller::import_image_folder(std::path::Path::new(&path))).await
+async fn import_runtime_image_folder(path: String, name: String) -> Result<serde_json::Value, String> {
+    blocking(move || anvildroid_core::controller::import_image_folder(std::path::Path::new(&path), &name)).await
+}
+
+#[tauri::command]
+async fn import_runtime_image_url(url: String, name: String) -> Result<serde_json::Value, String> {
+    blocking(move || {
+        if !url.starts_with("https://") || url.len() > 2048 {
+            return Err("Custom image URL must be an HTTPS URL up to 2048 characters".into());
+        }
+        let jobs = custom_image_job().clone();
+        let mut guard = jobs.lock().map_err(|_| "Custom image job state is unavailable".to_string())?;
+        if guard.as_ref().is_some_and(|job| job.status == "Downloading") {
+            return Err("A custom image download is already running".into());
+        }
+        use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+        use std::hash::{Hash, Hasher};
+        let home = std::env::var_os("HOME").ok_or("Home directory is unavailable")?;
+        let cache = std::path::PathBuf::from(home).join(".anvildroid-image-downloads");
+        let owner = std::fs::metadata("/proc/self").map_err(|e| e.to_string())?.uid();
+        let secure_directory = |directory: &std::path::Path| -> Result<(), String> {
+            match std::fs::DirBuilder::new().mode(0o700).create(directory) {
+                Ok(()) => (),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => (),
+                Err(error) => return Err(error.to_string()),
+            }
+            let info = std::fs::symlink_metadata(directory).map_err(|e| e.to_string())?;
+            if !info.is_dir() || info.uid() != owner || info.mode() & 0o077 != 0 {
+                return Err("Unsafe custom image download directory".into());
+            }
+            Ok(())
+        };
+        secure_directory(&cache)?;
+        let mut hash = std::collections::hash_map::DefaultHasher::new();
+        url.hash(&mut hash);
+        let directory = cache.join(format!("{:016x}", hash.finish()));
+        secure_directory(&directory)?;
+        let source = directory.join("source-url");
+        if source.exists() {
+            if std::fs::read_to_string(&source).map_err(|e| e.to_string())? != url { return Err("Download cache URL mismatch".into()); }
+        } else { std::fs::write(&source, &url).map_err(|e| e.to_string())?; }
+        let path = directory.join("image.zip");
+        if let Ok(info) = std::fs::symlink_metadata(&path) {
+            if !info.is_file() || info.uid() != owner || info.nlink() != 1 { return Err("Unsafe partial image download".into()); }
+        }
+        let header_path = path.with_file_name("response-headers");
+        let total = std::process::Command::new("curl")
+            .args(["-fsSLI", "--proto", "=https", "--proto-redir", "=https", "--connect-timeout", "15", "--max-time", "30", "--dump-header"])
+            .arg(&header_path).arg("--").arg(&url).output()
+            .ok()
+            .and_then(|output| if output.status.success() { std::fs::read_to_string(&header_path).ok().and_then(|text| custom_download_total(&text)) } else { None })
+            .unwrap_or(0);
+        *guard = Some(CustomImageJob { path: path.clone(), total, status: "Downloading".into(), error: None, result: None });
+        drop(guard);
+        std::thread::spawn(move || {
+            let headers = path.with_file_name("response-headers");
+            let previous_headers = std::fs::read_to_string(&headers).unwrap_or_default();
+            let validator = previous_headers.lines().rev().find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                if name.eq_ignore_ascii_case("etag") && !value.trim().starts_with("W/") {
+                    Some(value.trim().to_owned())
+                } else { None }
+            });
+            let mut command = std::process::Command::new("curl");
+            if let Some(value) = validator { command.arg("--header").arg(format!("If-Range: {value}")); }
+            let outcome = command
+                .args(["-fsSL", "--retry", "5", "--retry-delay", "2", "--continue-at", "-",
+                    "--proto", "=https", "--proto-redir", "=https", "--connect-timeout", "15",
+                    "--max-time", "1800", "--max-filesize", "34359738368", "--dump-header"])
+                .arg(&headers).arg("-o").arg(&path).arg("--").arg(&url).output()
+                .map_err(|e| e.to_string())
+                .and_then(|output| if output.status.success() { Ok(()) } else {
+                    Err(String::from_utf8_lossy(&output.stderr).chars().take(1024).collect::<String>())
+                })
+                .and_then(|_| anvildroid_core::controller::import_image(&path, &name));
+            if outcome.is_ok() {
+                // The controller duplicates the descriptor before acknowledging import.
+                let _ = std::fs::remove_file(&path);
+            }
+            if let Ok(mut state) = jobs.lock() {
+                if let Some(job) = state.as_mut() { job.status = if outcome.is_ok() { "Ready".into() } else { "Failed".into() }; job.error = outcome.as_ref().err().map(|e| e.to_string()); job.result = outcome.ok(); }
+            }
+        });
+        Ok(serde_json::json!({"status":"Downloading","total_bytes":total,"received_bytes":0,"percent":0}))
+    }).await
+}
+
+fn custom_download_total(headers: &str) -> Option<u64> {
+    let mut length = None;
+    let mut range = None;
+    let mut success = false;
+    for line in headers.lines() {
+        if line.starts_with("HTTP/") {
+            success = matches!(line.split_whitespace().nth(1), Some("200" | "206"));
+            length = None;
+            range = None;
+        } else if let Some((name, value)) = line.split_once(':') {
+            if name.eq_ignore_ascii_case("content-length") { length = value.trim().parse().ok(); }
+            if name.eq_ignore_ascii_case("content-range") {
+                range = value.rsplit_once('/').and_then(|(_, total)| total.trim().parse().ok());
+            }
+        }
+    }
+    if success { range.or(length) } else { None }
+}
+
+#[tauri::command]
+async fn custom_image_url_status() -> Result<serde_json::Value, String> {
+    blocking(|| {
+        let guard = custom_image_job().lock().map_err(|_| "Custom image job state is unavailable".to_string())?;
+        let Some(job) = guard.as_ref() else { return Ok(serde_json::json!({"status":"Idle","percent":0})); };
+        let received = std::fs::metadata(&job.path).map(|m| m.len()).unwrap_or(0);
+        let headers = std::fs::read_to_string(job.path.with_file_name("response-headers")).unwrap_or_default();
+        let total = custom_download_total(&headers).unwrap_or(job.total);
+        let percent = if total > 0 { Some(((received.min(total) as f64 / total as f64) * 100.0).floor() as u64) } else { None };
+        Ok(serde_json::json!({"status":job.status,"total_bytes":total,"received_bytes":received,"percent":percent,"error":job.error,"result":job.result}))
+    }).await
 }
 
 #[tauri::command]
@@ -996,6 +1165,8 @@ fn main() {
             install_apk,
             import_runtime_image,
             import_runtime_image_folder,
+            import_runtime_image_url,
+            custom_image_url_status,
             import_arm_translation,
             install_touch_probe,
             open_waydroid,

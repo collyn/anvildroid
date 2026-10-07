@@ -77,17 +77,24 @@ class ExistingRuntime:
         self.metadata = store / 'existing-runtime.json'
 
     def read(self, path):
-        # All configuration paths are fixed descendants of the root-owned work dir.
+        # Official Waydroid installations may be owned by the desktop account
+        # (including rootless/container setups). Keep the path fixed and reject
+        # every other owner or writable ancestor.
+        try:
+            work_owner = self.work.lstat().st_uid
+        except FileNotFoundError:
+            work_owner = 0
+        trusted_owners = {0, work_owner}
         for parent in (path.parent, *path.parent.parents):
             info = parent.lstat()
-            if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+            if not stat.S_ISDIR(info.st_mode) or info.st_uid not in trusted_owners or info.st_mode & 0o022:
                 if parent == Path('/tmp') and info.st_uid == 0 and info.st_mode & stat.S_ISVTX:
                     continue
                 raise RuntimeError('Untrusted Waydroid configuration directory')
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         with os.fdopen(fd) as stream:
             info = os.fstat(stream.fileno())
-            if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022 or info.st_nlink != 1 or info.st_size > 1024**2:
+            if not stat.S_ISREG(info.st_mode) or info.st_uid not in trusted_owners or info.st_mode & 0o022 or info.st_nlink != 1 or info.st_size > 1024**2:
                 raise RuntimeError('Untrusted Waydroid configuration file')
             return stream.read()
 
@@ -316,6 +323,48 @@ class ExistingRuntime:
                 'experimental': True, 'inherited': False, 'abis': ['armeabi-v7a', 'arm64-v8a'],
                 'detail': 'Uses installed ARM libraries. AnvilDroid does not replace an unknown native bridge.'}
 
+    def reinstall(self, uid, flavor, image_directory=None):
+        """Replace system images and clear Android data after a stopped session."""
+        session, saved = self.authorize(uid)
+        if not saved:
+            raise RuntimeError('Enable management while Existing runtime is running once before reinstalling')
+        self.stopped()
+        data_path = Path(saved.get('data_path', ''))
+        if not data_path.is_absolute() or data_path == Path('/'):
+            raise RuntimeError('Existing Android data directory is unavailable')
+        fd = storage.open_directory(data_path)
+        try:
+            info = os.fstat(fd)
+            if saved.get('data_identity') != {'device': info.st_dev, 'inode': info.st_ino}:
+                raise RuntimeError('Android data directory changed since management was enabled')
+            storage.assert_no_child_mounts(data_path)
+            if image_directory is not None:
+                source_dir = Path(image_directory)
+                for name in ('system.img', 'vendor.img'):
+                    source = source_dir / name
+                    metadata = source.lstat()
+                    if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != 0 or metadata.st_mode & 0o077:
+                        raise RuntimeError('Replacement images must be private root-owned regular files')
+                target_dir = self.work / 'images'
+                target_dir.mkdir(mode=0o700, exist_ok=True)
+                for name in ('system.img', 'vendor.img'):
+                    source = source_dir / name
+                    temporary = target_dir / ('.anvildroid-reinstall-' + name)
+                    with source.open('rb') as src, temporary.open('wb') as dst:
+                        os.chmod(temporary, 0o600)
+                        shutil.copyfileobj(src, dst, 1024 * 1024)
+                        dst.flush(); os.fsync(dst.fileno())
+                    os.replace(temporary, target_dir / name)
+                storage.sync_directory(target_dir)
+            for name in os.listdir(fd):
+                metadata = os.stat(name, dir_fd=fd, follow_symlinks=False)
+                if stat.S_ISDIR(metadata.st_mode): shutil.rmtree(name, dir_fd=fd)
+                else: os.unlink(name, dir_fd=fd)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        return self.record({}, self.saved())
+
     def dispatch(self, request, uid):
         session, saved = self.authorize(uid)
         result = self._dispatch(request, uid, session, saved)
@@ -324,20 +373,38 @@ class ExistingRuntime:
             raise RuntimeError('Waydroid session changed during the operation; refresh before retrying')
         return result
 
+    def verify_live_data(self, info):
+        # Session ownership authorizes management; the live /data mount pins
+        # which root-owned directory that authorization actually covers.
+        pid = linux.run_bounded('lxc-info', '-P', self.work / 'lxc', '-n', 'waydroid', '-pH',
+                                timeout=2, full_output=True, output_limit=256, operation='Waydroid identity').strip()
+        if not re.fullmatch(r'[1-9][0-9]*', pid):
+            raise RuntimeError('Cannot verify the running Waydroid data mount')
+        mounted = os.stat(Path('/proc') / pid / 'root/data')
+        if (info.st_dev, info.st_ino) != (mounted.st_dev, mounted.st_ino):
+            raise RuntimeError('Session data directory does not match the running Waydroid data mount')
+
     def _dispatch(self, request, uid, session, saved):
         op = request['op']
         if op == 'existing_claim':
             if not session or session.get('user_id') != str(uid):
                 raise RuntimeError('Start Existing runtime under your desktop account before enabling management')
             source = session.get('waydroid_data')
-            fd = storage.open_directory(source, uid)
+            if not isinstance(source, str) or not source:
+                raise RuntimeError('Waydroid session did not report its Android data directory')
+            fd = storage.open_directory(source)
             try:
                 info = os.fstat(fd)
-                if info.st_uid != uid: raise RuntimeError('Android data directory must belong to the desktop user')
+                if info.st_uid not in (0, uid):
+                    raise RuntimeError('Android data directory belongs to another user')
+                self.verify_live_data(info)
                 identity = {'device': info.st_dev, 'inode': info.st_ino}
             finally: os.close(fd)
+            current = session_info()
+            if any(current.get(key) != session.get(key) for key in ('user_id', 'pid', 'waydroid_data')):
+                raise RuntimeError('Waydroid session changed; retry Enable management')
             storage.atomic(self.metadata, {**saved, 'owner_uid': uid, 'name': saved.get('name', 'Existing runtime'),
-                                           'data_path': source, 'data_identity': identity})
+                                           'data_path': source, 'data_identity': identity, 'data_owner_uid': info.st_uid})
             return self.record(session, self.saved())
         if op in ('refresh', 'inspect'):
             return self.record(session, saved)
@@ -466,10 +533,10 @@ class ExistingRuntime:
         self.stopped()
         if not saved.get('data_identity'):
             raise RuntimeError('Enable management while running once to verify the source data directory')
-        fd = storage.open_directory(saved['data_path'], uid)
+        fd = storage.open_directory(saved['data_path'])
         try:
             info = os.fstat(fd)
-            if info.st_uid != uid or saved['data_identity'] != {'device': info.st_dev, 'inode': info.st_ino}:
+            if info.st_uid != saved.get('data_owner_uid', uid) or saved['data_identity'] != {'device': info.st_dev, 'inode': info.st_ino}:
                 raise RuntimeError('Android data directory changed since management was enabled')
             storage.assert_no_child_mounts(saved['data_path'])
             return fd

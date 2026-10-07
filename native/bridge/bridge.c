@@ -35,6 +35,49 @@ extern char *strdup(const char *);
 extern char *getenv(const char *);
 extern int usleep(unsigned int);
 
+/* Waydroid's Android 15 composer configures the HIDL RPC pool twice. The
+ * second call can request fewer threads and libhidlbase aborts instead of
+ * ignoring the shrink. Keep the first pool size and ignore smaller requests.
+ */
+static unsigned long anvil_rpc_pool_size;
+static int anvil_native_passthrough;
+static void anvil_configure_rpc_pool_impl(unsigned long threads, int caller_joins,
+                                          const char *symbol) {
+  typedef void (*configure_fn)(unsigned long, int);
+  static configure_fn real_configure_rpc;
+  static configure_fn real_configure_binder;
+  configure_fn *slot = strstr(symbol, "configureBinder") != NULL
+      ? &real_configure_binder : &real_configure_rpc;
+  if (!*slot)
+    *slot = (configure_fn)dlsym((void *)-1L, symbol);
+  if (!*slot)
+    return;
+  unsigned long current = __atomic_load_n(&anvil_rpc_pool_size, __ATOMIC_ACQUIRE);
+  while (threads > current) {
+    if (__atomic_compare_exchange_n(&anvil_rpc_pool_size, &current, threads, 0,
+                                    __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+      (*slot)(threads, caller_joins);
+      return;
+    }
+  }
+  if (threads == current && current == 0)
+    (*slot)(threads, caller_joins);
+}
+
+void anvil_configure_rpc_pool(unsigned long threads, int caller_joins)
+    __asm__("_ZN7android8hardware22configureRpcThreadpoolEmb");
+void anvil_configure_rpc_pool(unsigned long threads, int caller_joins) {
+  anvil_configure_rpc_pool_impl(threads, caller_joins,
+                                "_ZN7android8hardware22configureRpcThreadpoolEmb");
+}
+
+void anvil_configure_binder_rpc_pool(unsigned long threads, int caller_joins)
+    __asm__("_ZN7android8hardware29configureBinderRpcThreadpoolEmb");
+void anvil_configure_binder_rpc_pool(unsigned long threads, int caller_joins) {
+  anvil_configure_rpc_pool_impl(threads, caller_joins,
+                                "_ZN7android8hardware29configureBinderRpcThreadpoolEmb");
+}
+
 struct message {
   const char *name, *signature;
   const void **types;
@@ -151,9 +194,18 @@ static void ime_protocol_init(void *library);
 static void init(void) {
   if (real_marshal)
     return;
-  void *h = dlopen("/vendor/lib64/hw/hwcomposer.waydroid.so", 2 | 4);
+  /* Custom images use more than one Wayland HWC soname. Prefer the known
+   * Waydroid module, then resolve the symbols from the already loaded HWC. */
+  void *h = 0;
+  const char *libraries[] = {
+      "/vendor/lib64/hw/hwcomposer.waydroid.so",
+      "/vendor/lib64/hw/hwcomposer.waydroid.so.1",
+      "/vendor/lib64/hw/android.hardware.graphics.composer@2.1-impl.waydroid.so",
+      0};
+  for (int i = 0; libraries[i] && !h; ++i)
+    h = dlopen(libraries[i], 2 | 4);
   if (!h)
-    abort();
+    h = (void *)-1L;
   real_marshal =
       (marshal_fn)dlsym(h, "wl_proxy_marshal_array_constructor_versioned");
   real_array_flags = (struct proxy *(*)(struct proxy *, uint32_t,
@@ -162,8 +214,16 @@ static void init(void) {
   real_listen = (listen_fn)dlsym(h, "wl_proxy_add_listener");
   real_destroy = (void (*)(struct proxy *))dlsym(h, "wl_proxy_destroy");
   get_version = (uint32_t (*)(struct proxy *))dlsym(h, "wl_proxy_get_version");
-  if (!real_marshal || !real_listen || !real_destroy || !get_version)
-    abort();
+  if (!real_marshal || !real_array_flags || !real_listen || !real_destroy ||
+      !get_version) {
+    /* An unknown custom HWC must remain usable even when desktop hooks are
+     * unavailable. The stock Wayland protocol is enough for boot. */
+    anvil_native_passthrough = 1;
+    __android_log_print(5, "AnvilDroid",
+                        "HWC bridge symbols unavailable; using native passthrough");
+    return;
+  }
+  anvil_native_passthrough = getenv("ANVILDROID_NATIVE_WAYLAND") != NULL;
   display_symbols(h);
   __android_log_print(4, "AnvilDroid",
                       "window bridge loaded (Wayland legacy ABI)");
@@ -455,6 +515,11 @@ int wl_proxy_add_listener(struct proxy *p, void (**listener)(void),
                           void *data) {
   pthread_mutex_lock(mutex);
   init();
+  if (anvil_native_passthrough) {
+    int result = real_listen(p, listener, data);
+    pthread_mutex_unlock(mutex);
+    return result;
+  }
   struct object *o = track(p);
   o->listener = listener;
   o->listener_data = data;
@@ -486,6 +551,13 @@ static struct proxy *bridge_marshal(
     int modern) {
   pthread_mutex_lock(mutex);
   init();
+  if (anvil_native_passthrough) {
+    struct proxy *result = modern
+        ? real_array_flags(p, op, interface, version, flags, a)
+        : real_marshal(p, op, a, interface, version);
+    pthread_mutex_unlock(mutex);
+    return result;
+  }
   const char *cls = p->interface->name;
   const char *method = p->interface->methods[op].name;
   struct object *o = find(p);
@@ -769,6 +841,11 @@ static void forget_proxy(struct proxy *p) {
 void wl_proxy_destroy(struct proxy *p) {
   pthread_mutex_lock(mutex);
   init();
+  if (anvil_native_passthrough) {
+    real_destroy(p);
+    pthread_mutex_unlock(mutex);
+    return;
+  }
   forget_proxy(p);
   real_destroy(p);
   pthread_mutex_unlock(mutex);

@@ -503,6 +503,10 @@ body {
 @keyframes runtime-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .runtime-spinner { animation: none; } }
 .runtime-progress { display: block; width: 100%; height: 8px; margin: 14px 0; accent-color: var(--accent); }
+.runtime-progress-indeterminate { position: relative; overflow: hidden; border-radius: 999px; background: rgba(137, 157, 184, .25); accent-color: initial; }
+.runtime-progress-indeterminate span { display: block; width: 28%; height: 100%; border-radius: inherit; background: var(--accent); animation: runtime-progress-sweep 1.35s ease-in-out infinite; will-change: transform; }
+@keyframes runtime-progress-sweep { 0% { transform: translateX(-115%); } 50% { transform: translateX(270%); } 100% { transform: translateX(370%); } }
+@media (prefers-reduced-motion: reduce) { .runtime-progress-indeterminate span { animation: none; transform: translateX(0); } }
 .runtime-blocked { margin-top: 12px; color: var(--warning); line-height: 1.5; }
 .runtime-details { margin-top: 18px; color: var(--text-secondary); font-size: 12px; }
 .runtime-details summary { cursor: pointer; }
@@ -623,7 +627,11 @@ select,input[type=search],input:not([type]) { font: inherit; color: var(--text-p
 .settings-inline .btn,.section-heading .btn { flex-shrink: 0; }
 .section-heading { margin-bottom: 12px; }
 .eyebrow { font-size: 10px; letter-spacing: 1px; font-weight: 700; color: var(--text-muted); }
-#settings-images { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 12px; margin-top: 14px; }
+#settings-images { display: block; margin-top: 14px; }
+#settings-images .image-catalog-table { width: 100%; min-width: 600px; table-layout: auto; }
+#settings-images .image-catalog-table th,
+#settings-images .image-catalog-table td { overflow-wrap: anywhere; }
+#custom-image-url { flex: 1 1 420px; min-width: 260px; padding: 9px 11px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-hover); color: var(--text-primary); }
 #settings-images > p { grid-column: 1 / -1; }
 #settings-images .runtime-card { padding: 16px; margin: 0; max-width: none; background: var(--bg-primary); }
 #settings-image-download:not(:empty) { margin-top: 16px; padding: 16px; background: var(--bg-primary); border-radius: 8px; overflow-wrap: anywhere; }

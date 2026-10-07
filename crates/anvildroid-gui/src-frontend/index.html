@@ -75,7 +75,7 @@
 
       <!-- Runtime page -->
       <section id="page-runtime" class="page">
-        <div class="page-header"><div><h1>Runtimes</h1><p class="hint">Manage all your Android runtimes in one place.</p></div><button id="btn-refresh-runtimes" class="btn">Refresh all</button></div>
+        <div class="page-header"><div><h1>Runtimes</h1><p class="hint">Manage all your Android runtimes in one place.</p></div><div class="runtime-actions"><button id="btn-reinstall-runtime" class="btn btn-warning" type="button" disabled>Reinstall selected</button><button id="btn-refresh-runtimes" class="btn">Refresh all</button></div></div>
         <div class="controller-heading"><h2>Your runtimes</h2><span id="controller-connection" class="status-badge" role="status" title="Connection to the runtime management service. Each runtime has its own Running or Stopped status in the table.">Connecting to service…</span></div>
         
         <div id="controller-setup" role="status"></div>
@@ -95,19 +95,15 @@
           <div class="form-field"><label for="controller-name">Runtime name</label>
           <input id="controller-name" maxlength="128" required placeholder="My Android" /></div>
           <div class="form-field"><label for="controller-image">Waydroid image source</label>
-          <select id="controller-image" aria-describedby="controller-image-hint"><optgroup label="Copy from this computer"><option value="installed">Existing Waydroid image — keep its Google setup</option><option value="CUSTOM">Custom images from this computer</option></optgroup><optgroup label="Use a verified download"><option value="VANILLA">Waydroid VANILLA — without Google services</option><option value="GAPPS">Waydroid GAPPS — includes Google Play</option></optgroup></select></div>
+          <select id="controller-image" class="select-control" aria-describedby="controller-image-hint"><option value="" disabled>No available images</option></select></div>
           <button id="controller-create-button" class="btn btn-primary" type="submit" disabled>Create runtime</button>
+          <button id="controller-reinstall-cancel" class="btn" type="button" hidden>Cancel reinstall</button>
         </form>
-        <div id="custom-image-controls" hidden>
-          <div class="runtime-actions"><button id="btn-import-runtime-folder" type="button" class="btn btn-primary">Choose image folder…</button><button id="btn-import-runtime-image" type="button" class="btn">Choose custom image ZIP…</button><button id="btn-cancel-custom-image" type="button" class="btn" hidden>Cancel import</button></div>
-          <p class="hint">Choose a folder containing system.img and vendor.img directly, or a ZIP containing both files for Waydroid x86_64, Android SDK 33+ (ext4, EROFS or Android sparse). Sparse images are expanded automatically. Newer Android support is experimental: Prepare checks required Waydroid components; boot and desktop controls still depend on the build. Image import creates an independent runtime; it does not replace Existing runtime. Use images from a source you trust. Custom Android builds may not support AnvilDroid desktop controls or ARM translation.</p>
-          <p id="custom-image-status" role="status" aria-live="polite"></p>
-        </div>
         <p id="controller-image-hint" class="hint">Copies the existing Waydroid image into a separate runtime. Google services are included only if that source image already contains them.</p></details>
         <p id="controller-message" role="status" aria-live="polite"></p>
         <div id="controller-start" style="display:none">
           <button id="btn-start-controller" class="btn btn-primary" type="button">Start runtime controller</button>
-          <p id="controller-start-message" class="hint" role="status">Install and start the bundled runtime controller. You will be asked for your administrator password. No system service is installed; start it again after rebooting.</p>
+          <p id="controller-start-message" class="hint" role="status">Start or restart the bundled runtime controller. You will be asked for your administrator password.</p>
         </div>
         <p class="table-caption">Select a runtime to manage its apps, Google Play and storage.</p>
         <div class="runtime-table-scroll"><table id="runtime-table" class="runtime-table">
@@ -145,6 +141,27 @@
             </td></tr>
           </tbody>
         </table></div>
+        <section class="settings-section image-settings runtime-images-section">
+          <div class="section-heading"><div><span class="eyebrow">ANDROID IMAGES</span><h2>Runtime images</h2></div><div class="runtime-actions"><button id="btn-import-images" class="btn" type="button" aria-controls="image-library-import" aria-expanded="false">Import custom image…</button><button id="btn-create-gapps" class="btn btn-primary" type="button">Create GAPPS runtime…</button></div></div>
+          <p class="hint">Keep downloaded and imported image pairs here. Use an image to create a runtime or reinstall the selected runtime.</p>
+          <p id="custom-image-status" role="status" aria-live="polite"></p>
+          <div id="settings-image-download" role="status" aria-live="polite"></div>
+          <button id="btn-cancel-image-download" class="btn" hidden>Cancel download</button>
+          <div id="image-library-import" class="image-library-import" hidden>
+        <div id="custom-image-controls">
+          <label class="custom-image-name">Image name<input id="custom-image-name" type="text" maxlength="128" placeholder="My custom Android" autocomplete="off"></label>
+          <div class="runtime-actions"><button id="btn-import-runtime-folder" type="button" class="btn btn-primary">Choose image folder…</button><button id="btn-import-runtime-image" type="button" class="btn">Choose custom image ZIP…</button><button id="btn-cancel-custom-image" type="button" class="btn" hidden>Cancel import</button></div>
+          <div class="runtime-actions custom-image-url-row"><input id="custom-image-url" type="url" placeholder="https://example.com/waydroid-images.zip" aria-label="Custom image ZIP URL" autocomplete="off"><button id="btn-import-runtime-url" type="button" class="btn btn-primary">Download custom image</button></div>
+          <p class="hint">Choose a folder containing system.img and vendor.img directly, or a ZIP containing both files for Waydroid x86_64, Android SDK 33+ (ext4, EROFS, SquashFS or Android sparse). Sparse images are expanded automatically. Newer Android support is experimental: Prepare checks required Waydroid components; boot and desktop controls still depend on the build. Image import creates an independent runtime; it does not replace Existing runtime. Use images from a source you trust. Custom Android builds may not support AnvilDroid desktop controls or ARM translation.</p>
+        </div>
+          </div>
+          <h3>Available images</h3>
+          <div id="available-runtime-images" aria-live="polite"><p class="hint">Loading image library...</p></div>
+          <div class="image-library-official">
+          <div class="runtime-actions"><button id="btn-check-images" class="btn">Check official images</button></div>
+          <div id="settings-images" role="status" aria-live="polite"><p class="hint">Check official images to see available downloads.</p></div>
+          </div>
+        </section>
       </section>
 
       <!-- Settings page -->
@@ -154,17 +171,9 @@
         <div class="settings-section settings-inline"><div><h2>GPU &amp; graphics</h2><p class="hint">Inspect host GPUs and the Android renderer in each runtime's GPU &amp; graphics panel.</p><p class="hint">Choose a GPU per runtime while it is stopped. NVIDIA: Experimental — not available yet.</p></div><button id="btn-gpu-runtimes" class="btn">View runtime GPUs</button></div>
         <div class="settings-section settings-inline"><div><h2>RAM &amp; CPU limits</h2><p class="hint">Set limits for each managed runtime while stopped. View current memory usage and active CPU quota in runtime details.</p><p class="hint">Limits apply on next start. Resources are shared, not reserved.</p></div><button id="btn-resource-runtimes" class="btn">View runtime limits</button></div>
         <div class="settings-section image-settings">
-          <div class="section-heading"><div><span class="eyebrow">ANDROID SETUP</span><h2>Images, Google Play &amp; ARM apps</h2></div>
-          <button id="btn-create-gapps" class="btn btn-primary" type="button">Create GAPPS runtime…</button></div>
-          <p class="hint">Waydroid is required for every runtime. Choose its Android image: VANILLA without Google services, or GAPPS with Google Play. Downloaded images are used for a new, separate runtime.</p>
-          <p class="hint">Image architecture and app compatibility are different. On an x86_64 computer, ARM32/ARM64 apps use an optional translation layer; this is not a separate VANILLA or GAPPS image.</p>
-          <button id="btn-check-images" class="btn">Check official images</button>
-          <div id="settings-images" role="status" aria-live="polite"><p class="hint">No online check performed. Existing runtimes use copies of the installed Waydroid images.</p></div>
-          <div id="settings-image-download" role="status" aria-live="polite"></div>
-          <button id="btn-cancel-image-download" class="btn" hidden>Cancel download</button>
-          <div class="settings-inline"><div><h3>ARM app support</h3><p class="hint">Choose ARM translation per runtime. Download a trusted archive over HTTPS or import an extracted payload folder; AnvilDroid verifies required native bridge libraries before making it selectable.</p></div><button id="btn-arm-runtimes" class="btn">Configure ARM support…</button></div>
+          <div class="section-heading"><div><span class="eyebrow">ANDROID SETUP</span><h2>ARM app support</h2></div><button id="btn-arm-runtimes" class="btn">Configure ARM support…</button></div>
+          <p class="hint">Choose ARM translation per runtime. Download a trusted archive over HTTPS or import an extracted payload folder; AnvilDroid verifies required native bridge libraries before making it selectable.</p>
           <div id="arm-source-panel" class="arm-source-panel" role="region" aria-label="ARM translation sources"><p class="hint">Loading ARM translation sources…</p></div>
-          <p class="hint">Downloading GAPPS does not add Google services to existing runtimes. Create a separate GAPPS runtime, then Prepare and Start it.</p>
         </div>
         <details id="legacy-runtime-settings" class="settings-section">
           <summary>Existing runtime · App library and desktop windows</summary>
@@ -250,6 +259,7 @@
       <div class="detail-actions"><button id="tag-manager-close" class="btn" type="submit">Close</button></div>
     </form>
   </dialog>
+  <script src="runtime-settings.js"></script>
   <script src="main.js"></script>
   <script src="keymap-drafts.js"></script>
   <script src="keymap-library.js"></script>

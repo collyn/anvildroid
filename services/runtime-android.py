@@ -296,14 +296,9 @@ class AndroidBackend:
             if json.loads((support / 'images.json').read_text()) != manifest['images']:
                 raise RuntimeError('Pinned Android support/image mismatch')
             return
-        # A host patch snapshot may be paired only with the exact installed images.
-        for name, expected in manifest['images'].items():
-            import hashlib
-            digest = hashlib.sha256()
-            with (Path('/var/lib/waydroid/images') / name).open('rb') as stream:
-                for block in iter(lambda: stream.read(1024 * 1024), b''): digest.update(block)
-            if digest.hexdigest() != expected:
-                raise RuntimeError('Images differ from the installed patch source; compatibility not verified')
+        # Fallback support is built from this runtime's prepared images. Do not
+        # compare them with /var/lib/waydroid/images: custom image runtimes are
+        # intentionally independent from the host Waydroid image pair.
         staging = Path(tempfile.mkdtemp(prefix='.support-', dir=instance))
         mounts = []
         try:
@@ -357,6 +352,10 @@ class AndroidBackend:
                 os.fsync(stream.fileno())
             os.replace(temporary, instance / 'desktop-bridge.so')
             shutil.copyfile(source.with_name('AnvilDroidIme.apk'), instance / 'desktop-ime.apk')
+            shim = source.with_name('libanvildroid-hwc-shim.so')
+            if shim.exists():
+                shutil.copyfile(shim, instance / 'desktop-hwc-shim.so')
+                os.chmod(instance / 'desktop-hwc-shim.so', 0o600)
             os.chmod(instance / 'desktop-ime.apk', 0o600)
             with (instance / 'desktop-ime.apk').open('rb') as ime: os.fsync(ime.fileno())
             tasks=source.parent/'provision/anvildroid-tasks.sh'

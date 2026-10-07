@@ -13,13 +13,18 @@ mkdir -p "$PKG/DEBIAN" "$PKG/usr/local/lib/anvildroid-controller/provision/vendo
   "$PKG/usr/local/lib/anvildroid-controller/provision/vendor/bin" "$PKG/usr/local/lib/anvildroid-controller/provision/system/etc/init" \
   "$PKG/usr/local/lib/anvildroid-controller/provision/system/etc" "$PKG/usr/local/lib/anvildroid-controller/provision"
 mkdir -p "$PKG/usr/bin" "$PKG/usr/share/applications"
+mkdir -p "$PKG/usr/local/lib/anvildroid-controller/scripts" "$PKG/usr/local/lib/anvildroid-controller/services"
 install -m 0755 "$ROOT/target/release/anvildroid-gui" "$PKG/usr/bin/anvildroid-gui"
 for size in 32 48 64 128 256; do mkdir -p "$PKG/usr/share/icons/hicolor/${size}x${size}/apps"; install -m 0644 "$ROOT/crates/anvildroid-gui/icons/icon-${size}.png" "$PKG/usr/share/icons/hicolor/${size}x${size}/apps/org.anvildroid.gui.png"; done
 install -m 0644 "$ROOT/packaging/appimage/org.anvildroid.gui.desktop" "$PKG/usr/share/applications/org.anvildroid.gui.desktop"
 for f in runtime-controller.py runtime-existing.py runtime-host.py runtime-images.py runtime-android.py runtime-worker.py runtime-linux.py runtime-image-format.py runtime-network.py runtime-storage.py runtime-labels.py runtime-transfer.py runtime-catalog.py runtime-download.py runtime-extract.py runtime-provision.py runtime-arm.py runtime-arm-source.py runtime-gpu.py runtime-resources.py runtime-desktop.py runtime-workarea.py; do
   install -m 0644 "$ROOT/services/$f" "$PKG/usr/local/lib/anvildroid-controller/$f"
 done
+install -m 0755 "$ROOT/scripts/setup-waydroid.py" "$PKG/usr/local/lib/anvildroid-controller/scripts/setup-waydroid.py"
+install -m 0755 "$ROOT/scripts/patch-waydroid.py" "$PKG/usr/local/lib/anvildroid-controller/scripts/patch-waydroid.py"
+for f in runtime-host.py runtime-arm.py runtime-arm-source.py; do install -m 0644 "$ROOT/services/$f" "$PKG/usr/local/lib/anvildroid-controller/services/$f"; done
 install -m 0755 "$ROOT/target/native/libanvildroid-runtime-window.so" "$PKG/usr/local/lib/anvildroid-controller/libanvildroid-window.so"
+install -m 0644 "$ROOT/target/native/libanvildroid-hwc-shim.so" "$PKG/usr/local/lib/anvildroid-controller/libanvildroid-hwc-shim.so"
 install -m 0644 "$ROOT/services/runtime-path-guard.py" "$PKG/usr/local/lib/anvildroid-controller/runtime-path-guard.py"
 install -m 0644 "$ROOT/target/native/libanvildroid-path-guard.so" "$PKG/usr/local/lib/anvildroid-controller/libanvildroid-path-guard.so"
 install -m 0644 "$ROOT/target/ime/AnvilDroidIme.apk" "$PKG/usr/local/lib/anvildroid-controller/AnvilDroidIme.apk"
@@ -46,6 +51,18 @@ cat > "$PKG/DEBIAN/postinst" <<'EOF'
 #!/bin/sh
 set -e
 install -d -m 0700 /var/lib/anvildroid-controller /run/anvildroid
+python3 /usr/local/lib/anvildroid-controller/scripts/patch-waydroid.py || true
+# Ubuntu kernels commonly provide nftables without the legacy iptables tables
+# expected by Waydroid's bundled network helper.
+net=/usr/lib/waydroid/data/scripts/waydroid-net.sh
+if [ -f "$net" ] && command -v iptables-nft >/dev/null 2>&1 \
+  && command -v iptables-legacy >/dev/null 2>&1 \
+  && ! iptables-legacy -t filter -L >/dev/null 2>&1 \
+  && grep -q 'command -v iptables-legacy' "$net"; then
+  backup="$net.anvildroid-legacy-backup"
+  [ -e "$backup" ] || cp -p "$net" "$backup"
+  sed -i 's/command -v iptables-legacy/command -v iptables-nft/g; s/command -v ip6tables-legacy/command -v ip6tables-nft/g' "$net"
+fi
 systemctl daemon-reload
 systemctl enable anvildroid-controller.service >/dev/null 2>&1 || true
 systemctl restart anvildroid-controller.service

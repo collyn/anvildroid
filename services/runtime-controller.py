@@ -193,7 +193,7 @@ class Store:
             if record['state'] == 'Provisioning':
                 try:
                     prepared = self.backend.inspect(record['id'])
-                    if self.imports.get(record['id']) == 'pending': prepared = None
+                    if self.imports.get(record['id']) == 'pending' or (self.backend.location(record['id']) / 'reinstall.json').exists(): prepared = None
                     if record['id'] in self.selections:
                         support_pin = self.backend.location(record['id']) / 'support/images.json'
                         if not prepared or not support_pin.exists() or json.loads(support_pin.read_text()) != prepared['images']: prepared = None
@@ -290,6 +290,29 @@ class Store:
 
     def prepare_job(self, identifier, job_id):
         try:
+            instance = self.backend.location(identifier)
+            reset = instance / 'reinstall.json'
+            if reset.exists():
+                self.storage.ensure(identifier)
+                require(self.android.quiescent(identifier), 'BUSY', 'Android worker is still active')
+                storage_module.assert_no_child_mounts(instance)
+                selection = json.loads(reset.read_text())['selection']
+                self.prepare_phases[identifier] = 'Removing previous Android images and data...'
+                # Preserve the mount anchor/inode used by relocated storage.
+                for child in instance.iterdir():
+                    if child.name in ('reinstall.json', 'worker.lock'): continue
+                    if child.is_dir() and not child.is_symlink(): shutil.rmtree(child)
+                    else: child.unlink()
+                with self.mutex:
+                    if selection is None: self.selections.pop(identifier, None)
+                    else: self.selections[identifier] = selection
+                    storage_module.atomic(self.selections_path, self.selections)
+                    self.imports.pop(identifier, None)
+                    storage_module.atomic(self.imports_path, self.imports)
+                    self.app_jobs.pop(identifier, None)
+                    storage_module.atomic(self.app_jobs_path, self.app_jobs)
+                reset.unlink()
+                storage_module.sync_directory(instance)
             selection = self.selections.get(identifier)
             if selection:
                 instance = self.backend.location(identifier)
@@ -367,6 +390,31 @@ class Store:
             storage_module.atomic(self.imports_path, self.imports)
         finally:
             os.close(source_fd)
+
+    def reinstall_existing(self, request, uid):
+        require(request.get('confirmed_name') == self.existing.saved().get('name', 'Existing runtime'),
+                'INVALID_REQUEST', 'Runtime name changed; review reinstall again')
+        flavor = request.get('flavor')
+        require(flavor in ('installed', 'VANILLA', 'GAPPS', 'CUSTOM'), 'INVALID_REQUEST', 'Invalid image flavor')
+        image_directory = None
+        staging = None
+        try:
+            if flavor != 'installed':
+                cached = self.downloads.status(uid)
+                require(cached.get('status') == 'Ready' and cached.get('flavor') == flavor,
+                        'IMAGE_NOT_READY', 'Download and verify the selected image pair first; refresh if the cache changed.')
+                require(self.downloads.state.get('owner_uid') == uid,
+                        'FORBIDDEN', 'Import or download the selected image as this user first')
+                for kind in ('system', 'vendor'):
+                    require(cached.get('images', {}).get(kind, {}).get('sha256') == request.get(kind + '_sha256'),
+                            'IMAGE_NOT_READY', 'The selected image cache changed; refresh and choose it again.')
+                staging = Path(tempfile.mkdtemp(prefix='.existing-reinstall-', dir=self.root))
+                extract_module.extract_pair(self.downloads.root, cached['images'], staging / 'images', 'r-' + '0' * 32)
+                image_directory = staging / 'images'
+            return self.existing.reinstall(uid, flavor, image_directory)
+        finally:
+            if staging is not None:
+                shutil.rmtree(staging, ignore_errors=True)
 
     def reconcile(self, record):
         if record['id'] in self.active_jobs: return dict(record)
@@ -486,6 +534,15 @@ class Store:
 
     def requirements(self, uid=None):
         images = self.backend.source_status()
+        # Managed runtimes selected from the image library do not depend on the
+        # host Waydroid image directory. Treat a ready custom/downloaded pair as
+        # an available preparation source for this user.
+        if uid is not None:
+            cached = self.downloads.status(uid).get('available_images', [])
+            if cached and not images['available']:
+                images = {'available': True,
+                          'bytes': sum(item.get('image_bytes', 0) for item in cached),
+                          'detail': 'Managed image library available'}
         waydroid = shutil.which('waydroid') is not None
         missing = host_module.missing_commands()
         support = all(Path(path).exists() for path in (
@@ -696,13 +753,20 @@ class Store:
             self.displays[identifier] = 'desktop'
             storage_module.atomic(self.display_path, self.displays)
             return self._dispatch({'op': 'prepare', 'id': identifier}, uid)
+        if operation == 'image_select':
+            require(set(request) == {'op', 'image_id'} and apk_fd is None, 'INVALID_REQUEST', 'Expected image ID')
+            return self.downloads.select(uid, request['image_id'])
+        if operation == 'image_rename':
+            require(set(request) == {'op', 'image_id', 'name'} and isinstance(request['name'], str) and apk_fd is None,
+                    'INVALID_REQUEST', 'Expected image ID and name')
+            return self.downloads.rename(uid, request['image_id'], request['name'])
         if operation == 'image_import':
-            require(set(request) == {'op'} and apk_fd is not None, 'INVALID_REQUEST', 'Custom import requires a ZIP file descriptor')
-            return self.downloads.import_custom(uid, apk_fd)
+            require(set(request) == {'op', 'name'} and apk_fd is not None and isinstance(request['name'], str), 'INVALID_REQUEST', 'Custom import requires a ZIP file descriptor and name')
+            return self.downloads.import_custom(uid, apk_fd, request['name'])
         if operation == 'image_import_folder':
-            require(set(request) == {'op'} and isinstance(apk_fd, tuple) and len(apk_fd) == 2,
+            require(set(request) == {'op', 'name'} and isinstance(request['name'], str) and isinstance(apk_fd, tuple) and len(apk_fd) == 2,
                     'INVALID_REQUEST', 'Folder import requires system and vendor file descriptors')
-            return self.downloads.import_custom(uid, apk_fd)
+            return self.downloads.import_custom(uid, apk_fd, request['name'])
         if operation == 'arm_import':
             require(set(request) == {'op'} and apk_fd is not None and not isinstance(apk_fd, tuple),
                     'INVALID_REQUEST', 'ARM translation import requires one archive descriptor')
@@ -736,14 +800,15 @@ class Store:
                     'INVALID_REQUEST', 'Expected only a boolean refresh field')
             return self.catalog.request(request['refresh'])
         fields = {'resources_info': {'op', 'id'}, 'resources_set': {'op', 'id', 'memory_mib', 'cpu_count'}, 'start_on_boot': {'op', 'id', 'enabled'}, 'gpu_info': {'op', 'id'}, 'gpu_set': {'op', 'id', 'node'}, 'arm_info': {'op', 'id'}, 'arm_set': {'op', 'id', 'enabled'}, 'google_services': {'op', 'id'}, 'delete': {'op', 'id', 'confirmed_name'}, 'install': {'op', 'id'}, 'display_info': {'op', 'id'}, 'display_set': {'op', 'id', 'mode'}, 'app_action': {'op', 'id', 'action', 'package'}, 'app_job': {'op', 'id'}, 'apps': {'op', 'id'}, 'health': {'op', 'id'}, 'storage_info': {'op', 'id'}, 'move': {'op', 'id', 'destination'}, 'discard_previous': {'op', 'id', 'confirmed_name'}, 'requirements': {'op'}, 'list': {'op'}, 'create': {'op', 'name'}, 'inspect': {'op', 'id'},
-                  'rename': {'op', 'id', 'name'}, 'prepare': {'op', 'id'}, 'start': {'op', 'id'}, 'stop': {'op', 'id'}, 'refresh': {'op', 'id'}}
+                  'rename': {'op', 'id', 'name'}, 'prepare': {'op', 'id'}, 'reinstall': {'op', 'id', 'flavor'}, 'start': {'op', 'id'}, 'stop': {'op', 'id'}, 'refresh': {'op', 'id'}}
         fields['keymaps']={'op','id'}
         fields['app_states']={'op','id'}
         fields['existing_claim'] = {'op', 'id'}
         require(isinstance(operation, str) and operation in fields, 'UNSUPPORTED', 'Operation is not available')
         arm_fields = ({'op', 'id', 'enabled'}, {'op', 'id', 'enabled', 'archive_sha256'})
-        require(set(request) in arm_fields if operation == 'arm_set' else
-                set(request) == fields[operation] or (operation == 'start' and set(request) == {'op', 'id', 'display'}),
+        reinstall_fields = ({'op', 'id', 'flavor', 'confirmed_name'}, {'op', 'id', 'flavor', 'confirmed_name', 'system_sha256', 'vendor_sha256'})
+        require(set(request) in reinstall_fields if operation == 'reinstall' else set(request) in arm_fields if operation == 'arm_set' else
+                (set(request) == fields[operation] or (operation == 'start' and set(request) == {'op', 'id', 'display'})),
                 'INVALID_REQUEST', 'Unexpected or missing fields')
         require(apk_fd is None or operation == 'install', 'INVALID_REQUEST', 'Unexpected file descriptor')
         if request.get('id') == 'default':
@@ -751,6 +816,8 @@ class Store:
             require(operation not in ('resources_set', 'gpu_set', 'arm_set', 'existing_claim') or
                     not any(self.imports.get(identifier) == 'pending' for identifier in self.active_jobs),
                     'BUSY', 'Wait for Existing runtime import to finish')
+            if operation == 'reinstall':
+                return self.reinstall_existing(request, uid)
             return self.existing.dispatch(request, uid)
         require(operation != 'existing_claim', 'INVALID_REQUEST', 'Only Existing runtime can be registered for system management')
         if operation == 'requirements':
@@ -774,6 +841,40 @@ class Store:
         record = next((r for r in self.data['runtimes'] if r['id'] == request['id'] and r['owner_uid'] == uid), None)
         require(record is not None, 'NOT_FOUND', 'Runtime not found for this user')
         require(record['id'] not in self.deletions or operation in ('delete', 'inspect', 'refresh', 'app_job', 'storage_info'), 'BUSY', 'Deletion is incomplete. Retry Delete to finish; other operations are blocked.')
+        if operation == 'reinstall':
+            require(request['confirmed_name'] == record['name'], 'INVALID_REQUEST', 'Runtime name changed; review reinstall again')
+            self.storage.ensure(record['id'])
+            require(len(self.active_jobs) < 4, 'BUSY', 'Controller operation capacity reached')
+            require(record['state'] in ('Allocated', 'Prepared', 'Stopped', 'Error'), 'INVALID_STATE', 'Stop Android before reinstalling its images')
+            require(record['id'] not in self.active_jobs and self.storage.busy is None, 'BUSY', 'Wait for the current runtime operation to finish')
+            instance = self.backend.location(record['id'])
+            if instance.exists():
+                require(self.android.quiescent(record['id']), 'BUSY', 'Android worker is still active')
+            flavor = request['flavor']
+            if flavor == 'installed':
+                require(self.backend.source_status()['available'], 'IMAGE_NOT_READY', 'Installed images are unavailable')
+                selection = None
+            else:
+                require(flavor in ('VANILLA', 'GAPPS', 'CUSTOM'), 'INVALID_REQUEST', 'Invalid image flavor')
+                cached = self.downloads.status(uid)
+                require(cached.get('status') == 'Ready' and cached.get('flavor') == flavor,
+                        'IMAGE_NOT_READY', 'Download and verify the selected image pair first; refresh if the cache changed.')
+                require(flavor != 'CUSTOM' or self.downloads.state.get('owner_uid') == uid,
+                        'FORBIDDEN', 'Import your own custom image before reinstalling this runtime')
+                require(all(cached.get('images', {}).get(kind, {}).get('sha256') == request.get(kind + '_sha256') for kind in ('system', 'vendor')),
+                        'IMAGE_NOT_READY', 'Selected image cache changed; refresh and retry.')
+                selection = {'flavor': cached['flavor'], 'images': cached['images'], 'image_bytes': cached['image_bytes'],
+                             'arm_default': platform.machine() == 'x86_64' and bool(re.fullmatch(r'lineage-20\.0-[0-9]{8}-(?:GAPPS|VANILLA)-waydroid_x86_64-system\.zip', cached['images']['system'].get('filename', '')))}
+            instance.mkdir(mode=0o700, exist_ok=True)
+            self.backend.check_directory(instance)
+            storage_module.assert_no_child_mounts(instance)
+            storage_module.atomic(instance / 'reinstall.json', {'selection': selection})
+            job = {'id': uuid.uuid4().hex, 'operation': 'prepare', 'status': 'Running', 'error': None}
+            updated = dict(record, state='Provisioning', job=job)
+            self.replace(updated)
+            self.active_jobs.add(record['id'])
+            self.pool.submit(self.prepare_job, record['id'], job['id'])
+            return updated
         if operation == 'delete':
             identifier = record['id']
             require(request['confirmed_name'] == record['name'], 'INVALID_REQUEST', 'Type the current runtime name to delete it')
@@ -872,7 +973,7 @@ class Store:
             return {'mode': self.displays.get(record['id'], 'headless'), 'effective_mode': effective}
         if operation == 'start_on_boot':
             require(type(request['enabled']) is bool, 'INVALID_REQUEST', 'Expected boolean start-on-boot setting')
-            require(record['state'] not in ('Provisioning', 'Starting', 'Stopping', 'Running'), 'BUSY', 'Stop Android before changing start-on-boot')
+            require(record['id'] not in self.active_jobs and record['state'] not in ('Provisioning', 'Starting', 'Stopping'), 'BUSY', 'Wait for the runtime operation before changing start-on-boot')
             updated = dict(record, start_on_boot=request['enabled'])
             self.replace(updated)
             return updated
@@ -973,6 +1074,8 @@ class Store:
         if operation in ('prepare', 'start', 'stop'):
             try: self.storage.ensure(record['id'])
             except (OSError, RuntimeError) as error: raise RequestError('STORAGE', str(error))
+        if operation == 'start':
+            require(not (self.backend.location(record['id']) / 'reinstall.json').exists(), 'INVALID_STATE', 'Reinstall interrupted; retry preparation first')
         if operation in ('start', 'stop'):
             require(operation != 'start' or self.imports.get(record['id']) != 'pending',
                     'INVALID_STATE', 'Finish importing Existing runtime before starting this copy')
@@ -1000,7 +1103,7 @@ class Store:
                     raise RequestError('DESKTOP_SESSION', str(error))
                 desktop = (display, uid)
             if operation == 'start':
-                readiness = self.requirements()
+                readiness = self.requirements(uid)
                 require(readiness['can_start'], 'SETUP_REQUIRED', '; '.join(c['detail'] for c in readiness['checks'] if c['id'] != 'images' and not c['available']))
             require(record['state'] not in ('Provisioning', 'Starting', 'Stopping'), 'BUSY', 'Runtime operation in progress')
             require(record['state'] in ('Prepared', 'Stopped', 'Running', 'Error'), 'INVALID_STATE', 'Prepare runtime images first')
@@ -1017,7 +1120,7 @@ class Store:
             return updated
         if operation == 'prepare':
             require(record['state'] != 'Provisioning', 'BUSY', 'Runtime already has an operation')
-            require(record['state'] in ('Allocated', 'Prepared', 'Error'), 'INVALID_STATE', 'Cannot replace images of a started runtime')
+            require(record['state'] in ('Allocated', 'Prepared', 'Error') or (record['state'] == 'Stopped' and (self.backend.location(record['id']) / 'reinstall.json').exists()), 'INVALID_STATE', 'Cannot replace images of a started runtime')
             if (self.backend.location(record['id']) / 'worker-identity.json').exists():
                 require(self.android.quiescent(record['id']), 'BUSY', 'Stop the Android worker before preparing images')
             require(sum(r['state'] in ('Provisioning', 'Starting', 'Stopping') for r in self.data['runtimes']) < 4,

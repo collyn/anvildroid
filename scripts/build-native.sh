@@ -22,6 +22,9 @@ fi
 clang --target=x86_64-linux-android33 -DANVIL_CSD_EXPERIMENT=1 -DANVIL_BOOT_CANVAS=1 -DANVIL_KEYMAP_EDITOR=1 -DANVIL_GAME_FIT=1 -ffreestanding -fPIC -fno-stack-protector -O2 -Wall -Wextra -Werror \
   -nostdlib -shared -fuse-ld=lld -Wl,-soname,libanvildroid-window.so \
   native/bridge/bridge.c native/ime/text-state.c -o "$out/libanvildroid-window.so"
+clang --target=x86_64-linux-android33 -ffreestanding -fPIC -fno-stack-protector -O2 -Wall -Wextra -Werror \
+  -nostdlib -shared -fuse-ld=lld -Wl,-soname,libanvildroid-hwc-shim.so \
+  native/bridge/rpc-shim.c native/bridge/metadata-shim.c native/bridge/android-window.c native/ime/text-state.c -o "$out/libanvildroid-hwc-shim.so"
 aapt package -f -M native/overlay/AndroidManifest.xml -S native/overlay/res \
   -I "$out/framework-res.apk" -F "$out/caption-unsigned.apk"
 if [ ! -f "$out/overlay-key.p12" ]; then

@@ -8,6 +8,8 @@ import os
 from pathlib import Path
 import shutil
 import stat
+import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -24,6 +26,54 @@ _format_spec.loader.exec_module(image_format)
 MARGIN = 256 * 1024**2
 MAX_IMAGE = 16 * 1024**3
 ACTIVE = ('Downloading', 'Verifying', 'Cancelling')
+CLI_IMPORT_MIN_BYTES = 64 * 1024**2
+
+
+def waydroid_cli_import(images):
+    """Let Waydroid initialize a private image tree without touching the host.
+
+    Waydroid's public CLI accepts an image directory, not a bundle.  The
+    caller has already validated and expanded the bundle; this step delegates
+    the platform-specific initialization/configuration to Waydroid itself.
+    """
+    if shutil.which('waydroid') is None or shutil.which('unshare') is None:
+        return
+    if sum(path.stat().st_size for path in images.values()) < CLI_IMPORT_MIN_BYTES:
+        # Tiny fixtures and development images are not meaningful Waydroid
+        # images; avoid invoking the system initializer for them.
+        return
+    private = Path(tempfile.mkdtemp(prefix='.waydroid-import-', dir=next(iter(images.values())).parent))
+    try:
+        image_dir = private / 'images'
+        image_dir.mkdir(mode=0o700)
+        etc = private / 'etc'
+        (etc / 'waydroid-extra' / 'images').mkdir(mode=0o755, parents=True)
+        for kind, source in images.items():
+            destination = image_dir / (kind + '.img')
+            shutil.copyfile(source, destination)
+            os.chmod(destination, 0o600)
+        script = (
+            'import os, pathlib, subprocess, sys\n'
+            'root = pathlib.Path(sys.argv[1])\n'
+            'images = pathlib.Path(sys.argv[2])\n'
+            'subprocess.run(["mount", "--bind", str(root / "etc"), "/etc"], check=True)\n'
+            'subprocess.run(["mount", "--bind", str(root), "/var/lib/waydroid"], check=True)\n'
+            'target = pathlib.Path("/etc/waydroid-extra/images")\n'
+            'subprocess.run(["mount", "--bind", str(images), str(target)], check=True)\n'
+            'env = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "PYTHONNOUSERSITE": "1"}\n'
+            'result = subprocess.run(["waydroid", "init", "-i", str(target), "-f"], env=env, text=True, capture_output=True)\n'
+            'if result.returncode:\n'
+            '    raise SystemExit((result.stderr or result.stdout)[-1600:])\n'
+        )
+        result = subprocess.run(
+            ['unshare', '--mount', '--propagation', 'private', '--fork', '--kill-child',
+             sys.executable, '-c', script, str(private), str(image_dir)],
+            capture_output=True, text=True, timeout=300)
+        if result.returncode:
+            detail = (result.stderr or result.stdout).strip()
+            raise RuntimeError('Waydroid image import failed' + (': ' + detail[-1200:] if detail else ''))
+    finally:
+        shutil.rmtree(private, ignore_errors=True)
 
 
 def trusted_url(url):
@@ -142,6 +192,13 @@ class Downloads:
             if self.state.get('status') in ACTIVE:
                 self.state.update(status='Failed', error='Controller restarted during download. Retry to verify completed archives and download missing files.')
                 atomic(self.state_path, self.state)
+        self.library_path = self.root / 'library.json'
+        self.library = {}
+        if self.library_path.exists():
+            self.check_file(self.library_path)
+            self.library = json.loads(self.library_path.read_text())
+            if not isinstance(self.library, dict): raise RuntimeError('Invalid image library')
+        self.remember()
         # Only unpublished files in this root-owned cache, never runtime data.
         for path in self.root.glob('.partial-*'):
             self.check_file(path)
@@ -160,7 +217,46 @@ class Downloads:
             value.pop('owner_uid', None)
             value['cache_path'] = str(self.root)
             value['free_bytes'] = shutil.disk_usage(self.root).free
+            value['available_images'] = [dict(copy.deepcopy(item), owner_uid=None) for item in self.library.values()
+                                         if item['owner_uid'] == uid and self.available(item)]
             return value
+
+    def available(self, item):
+        return all((self.root / (image['sha256'] + '.zip')).is_file() for image in item['images'].values())
+
+    def remember(self):
+        if (self.state.get('status') != 'Ready' or not isinstance(self.state.get('images'), dict)
+                or set(self.state['images']) != {'system', 'vendor'} or type(self.state.get('owner_uid')) is not int):
+            return
+        item = copy.deepcopy(self.state)
+        key = hashlib.sha256((str(item['owner_uid']) + ':' + item['images']['system']['sha256'] + ':' +
+                              item['images']['vendor']['sha256']).encode()).hexdigest()
+        item['library_id'] = key
+        self.library[key] = item
+        atomic(self.library_path, self.library)
+
+    def select(self, uid, identifier):
+        with self.lock:
+            if self.state['status'] in ACTIVE: raise RuntimeError('Wait for the current image operation to finish')
+            item = self.library.get(identifier) if isinstance(identifier, str) else None
+            if not item or item['owner_uid'] != uid: raise RuntimeError('Image not found for this user')
+            if not self.available(item): raise RuntimeError('Cached image files are missing; import or download again')
+            self.state = copy.deepcopy(item)
+            atomic(self.state_path, self.state)
+            return self.status(uid)
+
+    def rename(self, uid, identifier, name):
+        with self.lock:
+            item = self.library.get(identifier)
+            if not item or item.get('owner_uid') != uid: raise RuntimeError('Image not found for this user')
+            clean = str(name or '').strip()
+            if not clean or len(clean) > 128: raise RuntimeError('Image name must be between 1 and 128 characters')
+            item['custom_name'] = clean
+            self.library[identifier] = item
+            if self.state.get('library_id') == identifier: self.state['custom_name'] = clean
+            atomic(self.library_path, self.library)
+            atomic(self.state_path, self.state)
+            return self.status(uid)
 
     def start(self, uid, variant):
         with self.lock:
@@ -179,7 +275,7 @@ class Downloads:
             self.thread.start()
             return self.status(uid)
 
-    def import_custom(self, uid, fd):
+    def import_custom(self, uid, fd, name=''):
         if fd is None: raise RuntimeError('Select a local ZIP containing system.img and vendor.img')
         descriptors = fd if isinstance(fd, tuple) else (fd,)
         sizes = []
@@ -195,9 +291,11 @@ class Downloads:
             if shutil.disk_usage(self.root).free < size + MARGIN:
                 raise RuntimeError('Insufficient image cache space')
             self.cancelled.clear()
+            clean_name = str(name or '').strip()[:128]
             self.state = {'id':uuid.uuid4().hex, 'owner_uid':uid, 'status':'Verifying',
                           'flavor':'CUSTOM', 'download_bytes':size, 'received_bytes':0,
-                          'phase':'Inspecting custom images', 'error':None, 'images':{}}
+                          'phase':'Inspecting custom images', 'error':None, 'images':{},
+                          'custom_name': clean_name or 'Custom image'}
             atomic(self.state_path, self.state)
             owned_files = []
             try:
@@ -217,6 +315,7 @@ class Downloads:
 
     def run_import(self, fd):
         temporary = None
+        published = []
         try:
             with ExitStack() as stack:
                 if isinstance(fd, tuple):
@@ -232,14 +331,19 @@ class Downloads:
                     sources = [source]
                     snapshots = [os.fstat(source.fileno())]
                     entries = {}
+                    allowed_checksum_files = {'sha256sum', 'sha256sum.txt', 'sha256sums', 'sha256sums.txt', 'SHA256SUMS'}
                     for entry in archive.infolist():
                         parts = entry.filename.split('/')
                         if entry.filename.startswith('/') or '\\' in entry.filename or '..' in parts:
                             raise RuntimeError('Unsafe ZIP entry path')
                         if entry.is_dir(): continue
                         name = parts[-1]
+                        if name in allowed_checksum_files:
+                            # Some Waydroid releases bundle a checksum manifest beside images.
+                            # It is metadata only; image bytes still receive independent hashing.
+                            continue
                         if name not in ('system.img', 'vendor.img') or name in entries:
-                            raise RuntimeError('Select a ZIP containing only system.img and vendor.img (folders are allowed)')
+                            raise RuntimeError('Select a ZIP containing system.img and vendor.img (folders and checksum manifests are allowed)')
                         if (entry.flag_bits & 1 or stat.S_IFMT(entry.external_attr >> 16) not in (0, stat.S_IFREG)
                                 or entry.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED)
                                 or not 0 < entry.file_size <= MAX_IMAGE):
@@ -283,12 +387,34 @@ class Downloads:
                     images[kind] = archive_info(temporary, expected, kind, self.cancelled)
                     destination = self.root / (checksum + '.zip')
                     if destination.exists(): self.check_file(destination)
-                    os.replace(temporary, destination)
+                    else:
+                        os.replace(temporary, destination)
+                        published.append(destination)
                     temporary = None
                     completed += written
+                # Ask Waydroid to initialize the validated pair in an isolated
+                # namespace. This keeps image parsing and platform setup in the
+                # Waydroid CLI instead of duplicating its behavior here.
+                cli_directory = Path(tempfile.mkdtemp(prefix='.waydroid-images-', dir=self.root))
+                try:
+                    cli_images = {}
+                    for kind, entry in images.items():
+                        path = cli_directory / (kind + '.img')
+                        with zipfile.ZipFile(self.root / (entry['sha256'] + '.zip')) as archive, \
+                                archive.open(kind + '.img') as source, path.open('wb') as target:
+                            shutil.copyfileobj(source, target, 1024 * 1024)
+                        cli_images[kind] = path
+                    self.update(phase='Initializing custom images with Waydroid CLI')
+                    waydroid_cli_import(cli_images)
+                finally:
+                    shutil.rmtree(cli_directory, ignore_errors=True)
                 for source, before in zip(sources, snapshots):
                     after = os.fstat(source.fileno())
-                    if (before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+                    # URL imports use a resumable cache file. Its filesystem
+                    # timestamps may change without changing bytes; size is
+                    # the relevant mutation check because the importer hashes
+                    # every extracted image before publishing it.
+                    if before.st_size != after.st_size:
                         raise RuntimeError('Source images changed during import; select them again')
             with self.lock:
                 check_cancel(self.cancelled)
@@ -296,7 +422,10 @@ class Downloads:
                                   images=images, image_bytes=total)
                 sync(self.root)
                 atomic(self.state_path, self.state)
+                self.remember()
         except Exception as error:
+            for path in published:
+                path.unlink(missing_ok=True)
             with self.lock:
                 self.state.update(status='Cancelled' if isinstance(error, Cancelled) else 'Failed', error=str(error)[-1024:])
                 atomic(self.state_path, self.state)
@@ -359,6 +488,7 @@ class Downloads:
                 self.state.update(status='Ready', phase='Images downloaded and verified; not installed', images=images,
                                   image_bytes=sum(image['image_bytes'] for image in images.values()))
                 atomic(self.state_path, self.state)
+                self.remember()
         except Exception as error:
             with self.lock:
                 self.state.update(status='Cancelled' if isinstance(error, Cancelled) else 'Failed', error=str(error)[-1024:])

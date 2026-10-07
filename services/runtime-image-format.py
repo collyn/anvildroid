@@ -6,9 +6,15 @@ BLOCK = 1024 * 1024
 
 
 def filesystem(header):
-    if header[1024:1028] == b'\xe2\xe1\xf5\xe0': return 'erofs'
-    if header[1080:1082] == b'\x53\xef': return 'ext4'
-    raise RuntimeError('Unknown image filesystem. Select system.img/vendor.img, not super.img or a compressed archive.')
+    # Android images normally place filesystem metadata at these offsets. Scan
+    # the bounded prefix too because vendor builders may add a small header.
+    if header[1024:1028] == b'\xe2\xe1\xf5\xe0' or header.find(b'\xe2\xe1\xf5\xe0', 0, 4096) >= 0:
+        return 'erofs'
+    if header[:4] in (b'hsqs', b'sqsh'):
+        return 'squashfs'
+    if header[1080:1082] == b'\x53\xef' or header.find(b'\x53\xef', 0, 4096) >= 0:
+        return 'ext4'
+    raise RuntimeError('Unknown image filesystem. Expected raw/sparse ext4, EROFS or SquashFS system.img/vendor.img; compressed archives and super.img are unsupported.')
 
 
 def mount_options(path):

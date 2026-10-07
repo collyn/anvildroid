@@ -201,7 +201,10 @@ def app_execution_states(instance, identifier):
         return None  # Unknown is not stopped, and must not hide the inventory.
 
 
-def list_apps(instance, identifier):
+def list_apps(instance, identifier, single_display=False):
+    if single_display:
+        return [dict(package='org.anvildroid.desktop', label='Android',
+                     launchable=True, desktop_entry=True)]
     # Fixed argv inside this worker's private namespaces; no shell or caller command.
     output = run('lxc-attach', '-P', instance / 'android', '-n', identifier,
                  '--', '/system/bin/cmd', 'package', 'query-activities', '--components',
@@ -402,18 +405,38 @@ def check_app_startup(instance, identifier, package, before):
                                'check runtime diagnostics. Repeated launches will not repair it.')
 
 
-def app_action(instance, identifier, action, package, desktop=False, generation=None):
+def app_action(instance, identifier, action, package, desktop=False, generation=None, single_display=False):
     require(action in ('launch', 'force_stop', 'uninstall', 'keymap_edit', 'full_ui'), 'Unsupported app action')
     require(isinstance(package, str) and len(package) <= 255 and
             re.fullmatch(r'[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)+', package), 'Invalid package')
+    require(not (desktop and single_display) or action == 'full_ui',
+            'This image uses one Android window. Open Android to manage and launch its apps.')
     def android(*args):
         return run('lxc-attach', '-P', instance / 'android', '-n', identifier, '--',
                    '/system/bin/' + args[0], *args[1:], timeout=8, umask=0o022, include_stderr=True)
+    def refresh_single_display():
+        if single_display:
+            # Match Waydroid CLI showFullUI: changing active_apps alone does
+            # not invalidate HWC after its host window has been closed.
+            try:
+                android('cmd', 'statusbar', 'expand-notifications')
+                time.sleep(0.5)
+            finally:
+                android('cmd', 'statusbar', 'collapse')
     if action == 'full_ui':
         require(desktop, 'Waydroid window requires Desktop mode')
         require(package == 'org.anvildroid.desktop', 'Invalid desktop target')
         android('setprop', 'waydroid.active_apps', 'Waydroid')
-        return {'action': action, 'package': package, 'message': 'Full Android window requested for this runtime. Opening an individual app returns to app-window mode.'}
+        # Match Waydroid's app-manager path: a background session can keep
+        # SurfaceFlinger layers alive without publishing a desktop window.
+        android('setprop', 'waydroid.background_start', 'false')
+        android('settings', 'put', 'secure', 'policy_control', 'null*')
+        # `active_apps` alone is only a mode hint. Launching HOME creates the
+        # actual Android task that Waydroid HWC publishes as its full window.
+        android('am', 'start', '--user', '0', '-a',
+                'android.intent.action.MAIN', '-c', 'android.intent.category.HOME')
+        refresh_single_display()
+        return {'action': action, 'package': package, 'message': ('Full Android window requested for this runtime.' if single_display else 'Full Android window requested for this runtime. Opening an individual app returns to app-window mode.')}
     # Only launcher apps are actionable here; framework/service packages are excluded.
     resolved = android('cmd', 'package', 'resolve-activity', '--brief', '--user', '0',
                        '-a', 'android.intent.action.MAIN', '-c', 'android.intent.category.LAUNCHER', '-p', package)
@@ -436,17 +459,26 @@ def app_action(instance, identifier, action, package, desktop=False, generation=
         _catalog_cache.pop(str(instance), None)
         return {'action': action, 'package': package, 'message': 'App uninstalled from this runtime. Android confirmed removal.'}
     if action == 'launch':
-        android('setprop', 'waydroid.active_apps', package)
+        # This compatibility path has no usable task/layer metadata. Its HWC
+        # can present the complete framebuffer, but app-window mode hides it.
+        android('setprop', 'waydroid.active_apps', 'Waydroid' if single_display else package)
+        android('setprop', 'waydroid.background_start', 'false')
     if action == 'launch':
         exits_before = app_exit_snapshot(instance, identifier, package)
         window_args = []
-        if desktop:
+        if desktop and not single_display:
             sdk = android('getprop', 'ro.build.version.sdk').strip()
             if sdk.isdecimal() and int(sdk) >= 36:
                 # Android 16 otherwise launches fullscreen tasks, whose bounds
                 # cannot be changed by the host-window resize bridge.
                 window_args = ['--windowingMode', '5']
         output = android('am', 'start', '--user', '0', *window_args, '-n', components[0])
+        # Waydroid's launcher applies immersive policy after starting the
+        # activity. Without this, newer custom images keep the task in the
+        # Android display stack while HWC reports no published app window.
+        policy = 'immersive.full=*' if android('getprop', 'persist.waydroid.multi_windows').strip() == 'true' else 'immersive.status=*'
+        android('settings', 'put', 'secure', 'policy_control', policy)
+        refresh_single_display()
     else:
         output = android('am', 'force-stop', '--user', '0', package)
     # Preserve the beginning of ActivityManager's diagnostic; it contains the
@@ -719,6 +751,46 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
         run('mount', *args)
         mounts.append(Path(args[-1]))
     def shell(*args): return lxc('lxc-attach', identifier, '--', '/system/bin/' + args[0], *args[1:])
+    def provision_android_user():
+        """Finish Android's first-run gate so desktop activities stay open.
+
+        Custom images often ship without Setup Wizard state. ActivityManager
+        accepts the launch but immediately finishes every activity while these
+        flags remain unset, which looks like an app crash to the desktop user.
+        Only write the flags when needed; existing runtimes with completed
+        setup keep their original state.
+        """
+        user_ready = shell('settings', '--user', '0', 'get', 'secure', 'user_setup_complete').strip()
+        if user_ready != '1':
+            shell('settings', '--user', '0', 'put', 'secure', 'user_setup_complete', '1')
+        device_ready = shell('settings', 'get', 'global', 'device_provisioned').strip()
+        if device_ready != '1':
+            shell('settings', 'put', 'global', 'device_provisioned', '1')
+        # Desktop runtimes have no physical lock screen. Fresh custom images
+        # can leave Keyguard showing forever, keeping every Android window
+        # behind NotificationShade even though ActivityManager reports a
+        # successful launch.
+        shell('settings', '--user', '0', 'put', 'secure', 'lockscreen.disabled', '1')
+        try:
+            shell('locksettings', 'clear', '--user', '0')
+            shell('wm', 'dismiss-keyguard')
+        except (RuntimeError, subprocess.TimeoutExpired):
+            pass
+        # Some GApps images keep Setup Wizard alive after boot and write the
+        # secure flag back to 0 while desktop apps are launching. Once the
+        # runtime is provisioned, stop and disable those optional receivers.
+        for package in ('com.google.android.setupwizard', 'com.android.provision'):
+            try:
+                if shell('pm', 'path', package).strip():
+                    shell('am', 'force-stop', package)
+                    shell('pm', 'disable-user', '--user', '0', package)
+            except (RuntimeError, subprocess.TimeoutExpired):
+                # Setup Wizard is optional across Waydroid images.
+                pass
+        require(shell('settings', '--user', '0', 'get', 'secure', 'user_setup_complete').strip() == '1',
+                'Android user setup could not be completed')
+        require(shell('settings', 'get', 'global', 'device_provisioned').strip() == '1',
+                'Android device provisioning could not be completed')
     try:
         state['resource_limits'] = resources.verify(identifier, generation, resources.load(instance))
         gpu_node = gpu.resolve(instance)
@@ -778,6 +850,39 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
         for relative in ('class/net', 'devices/virtual/net'):
             mount('--bind', sysview / relative, '/sys/' + relative)
         patches = instance / 'support/overlay'
+        compatibility = {}
+        try:
+            compatibility = json.loads((instance / 'support/compatibility.json').read_text())
+        except (OSError, ValueError):
+            pass
+        native_wayland = compatibility.get('desktop_bridge') == 'native-wayland'
+        software_compatibility = compatibility.get('software_renderer') == 'angle-pastel'
+        # Custom images frequently ship a vendor composer with a different
+        # ABI. Keep the untouched stock path only when the image does not
+        # advertise the native Wayland contract; native-wayland images need
+        # the bridge preload even when they also use ANGLE/Pastel.
+        custom_stock_hwc = (compatibility.get('flavor') == 'CUSTOM'
+                            and software_compatibility
+                            and not native_wayland)
+        if not custom_stock_hwc and not native_wayland:
+            try:
+                custom_stock_hwc = not any(line.startswith('waydroid.system_ota=')
+                                           for line in (instance / 'support/waydroid.prop').read_text().splitlines())
+            except OSError:
+                pass
+        if custom_stock_hwc:
+            native_wayland = False
+            # A custom image may ship a stock Waydroid composer together with
+            # ANGLE/Pastel. Keep that software path enabled: forcing the
+            # vendor GBM/DRM allocator here makes composer abort when the
+            # desktop window is created on unsupported host graphics stacks.
+        single_display = compatibility.get('presentation_mode',
+            'android-display' if native_wayland or custom_stock_hwc else 'app-windows') == 'android-display'
+        state['presentation_mode'] = 'android-display' if single_display else 'app-windows'
+        if single_display:
+            state['capabilities'] = [c for c in state['capabilities'] if c not in ('keymap_editor', 'uninstall_app')]
+        software_rendering = gpu_node is None
+        state['gpu_node'] = 'software' if software_rendering else gpu_node
         arm_layer = arm.active_layer(instance)
         arm_props = arm.runtime_properties(instance)
         system_patches = f'{arm_layer}:{patches}' if arm_layer else str(patches)
@@ -788,11 +893,30 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
                 (work / sub).mkdir(parents=True, exist_ok=True)
             for sub in ('system-upper', 'vendor-upper'):
                 prepare_overlay_upper(work / sub)
+            if software_compatibility:
+                # WayDroidATV vendor init reads this file after boot and can
+                # override waydroid.prop. Keep both sources in sync when
+                # switching between hardware and software rendering.
+                settings = work / 'data/misc/waydroid_settings'
+                settings.parent.mkdir(parents=True, exist_ok=True)
+                existing = settings.read_text(errors='replace').splitlines() if settings.exists() else []
+                settings.write_text('\n'.join(gpu.properties(existing, gpu_node)) + '\n')
             fs = work / 'rootfs'
             mount(*image_format.mount_options(instance / 'prepared/system.img'), instance / 'prepared/system.img', work / 'system-lower')
             mount(*image_format.mount_options(instance / 'prepared/vendor.img'), instance / 'prepared/vendor.img', work / 'vendor-lower')
             mount('-t', 'overlay', 'overlay', '-o', android_overlay_options(f'{system_patches}:{work}/system-lower', work / 'system-upper', work / 'system-work'), fs)
             mount('-t', 'overlay', 'overlay', '-o', android_overlay_options(f'{patches}/vendor:{work}/vendor-lower', work / 'vendor-upper', work / 'vendor-work'), fs / 'vendor')
+            if 'presentation_mode' not in compatibility:
+                single_display = b'vendor.waydroid.display@' not in (fs / 'system/bin/surfaceflinger').read_bytes()
+                state['presentation_mode'] = 'android-display' if single_display else 'app-windows'
+                if single_display:
+                    state['capabilities'] = [c for c in state['capabilities'] if c not in ('keymap_editor', 'uninstall_app')]
+            allocator_rc = Path('etc/init/android.hardware.graphics.allocator@2.0-service.rc')
+            allocator_init = fs / 'vendor' / allocator_rc
+            if allocator_init.exists() and 'ANVILDROID_GRALLOC_METADATA' in allocator_init.read_text():
+                # Undo the previous boot's optional adapter before selecting
+                # compatibility for this boot (including headless mode).
+                allocator_init.write_text((work / 'vendor-lower' / allocator_rc).read_text())
             guard = path_guard.prepare(instance, fs, Path(__file__).parent) if arm_props is None or arm_props.get('ro.dalvik.vm.native.bridge') == 'libndk_translation.so' else None
             if guard:
                 bridge, helper = guard
@@ -803,28 +927,93 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
                 mount('--bind', bridge, fs / 'system/lib64/libndk_translation.so')
                 state['arm_path_guard'] = 'axion-android16'
             props = gpu.properties((instance / 'support/waydroid.prop').read_text().splitlines(), gpu_node)
+            # Android 15/LineageOS 22 custom images can abort SurfaceFlinger
+            # while priming the desktop hole-punch shader on GBM buffers:
+            # "output buffer not gpu writeable". The cache is optional; skip
+            # this shader so framework boot can complete and desktop windows
+            # still render normally after startup.
+            shader_cache_keys = (
+                'solid_layers', 'clipped_layers', 'image_dimmed_layers',
+                'shadow_layers', 'hole_punch', 'transparent_image_dimmed_layers',
+                'image_layers', 'clipped_dimmed_image_layers', 'pip_image_layers',
+                'solid_dimmed_layers', 'edge_extension_shader')
+            props = [p for p in props
+                     if not any(p.startswith('debug.sf.prime_shader_cache.' + key + '=')
+                                for key in shader_cache_keys)
+                     and not p.startswith('ro.surface_flinger.prime_shader_cache.ultrahdr=')]
+            props += ['debug.sf.prime_shader_cache.' + key + '=false' for key in shader_cache_keys]
+            props.append('ro.surface_flinger.prime_shader_cache.ultrahdr=false')
+            props += ['service.sf.prime_shader_cache=0', 'debug.sf.prime_shader_cache=false']
             if arm_props is not None:
                 arm_keys = set(arm.PROPERTIES) | {'ro.enable.native.bridge.exec', 'ro.vendor.enable.native.bridge.exec', 'ro.vendor.enable.native.bridge.exec64'}
                 props = [p for p in props if p.split('=', 1)[0] not in arm_keys]
                 props += [key + '=' + value for key, value in arm_props.items()]
             props = [p for p in props if not p.startswith(('waydroid.host_data_path=', 'waydroid.wayland_display=', 'waydroid.pulse_runtime_path='))]
-            props += [f'waydroid.host_data_path={work}/data', 'waydroid.wayland_display=wayland-probe', 'waydroid.pulse_runtime_path=/run/xdg/pulse']
+            props += ['waydroid.host_data_path=/anvil-data', 'waydroid.wayland_display=wayland-probe', 'waydroid.pulse_runtime_path=/run/xdg/pulse']
             init = fs / 'system/etc/init/init.waydroid.rc'
-            config_text = re.sub(r'(?m)^    setenv ANVILDROID_RUNTIME_(?:ID|GENERATION) .*\n?', '', init.read_text())
+            # Regenerate from prepared support, not the previous boot's upper
+            # overlay, where a stock launch may have removed LD_PRELOAD.
+            config_text = re.sub(r'(?m)^    setenv ANVILDROID_RUNTIME_(?:ID|GENERATION) .*\n?', '', (patches / 'system/etc/init/init.waydroid.rc').read_text())
             if desktop:
-                mount('--bind', instance / 'desktop-bridge.so', fs / 'vendor/lib64/libanvildroid-window.so')
+                # The bridge also carries the Android 15 HIDL RPC-pool shim.
+                # Native Wayland images need it even when their window
+                # protocol is kept unchanged; without LD_PRELOAD their HWC
+                # aborts with "Binder threadpool cannot be shrunk".
+                if custom_stock_hwc:
+                    # Some custom composers reject any preload at startup.
+                    # Keep their stock process untouched; the shim is only
+                    # mounted for images explicitly classified native-wayland.
+                    config_text = re.sub(r'(?m)^    setenv LD_PRELOAD .*\n?', '', config_text)
+                    state['desktop_bridge'] = 'stock'
+                elif native_wayland:
+                    # Keep native Wayland buffer handling. The metadata
+                    # adapter is restricted to the exact software HAL pair
+                    # whose private HWC entry ABI has been verified.
+                    mount('--bind', Path(__file__).parent / 'libanvildroid-hwc-shim.so',
+                          fs / 'vendor/lib64/libanvildroid-hwc-shim.so')
+                    window_env = ('\n    setenv ANVILDROID_ANDROID_WINDOW 1'
+                                  if single_display else '')
+                    config_text = re.sub(
+                        r'(?m)^    setenv LD_PRELOAD .*\n?',
+                        '    setenv LD_PRELOAD /vendor/lib64/libanvildroid-hwc-shim.so'
+                        + window_env + '\n', config_text)
+                    state['desktop_bridge'] = 'stock-rpc-shim'
+                    metadata_pair = {
+                        'hwcomposer.waydroid.so': '4109935a746069db0eee6268ec9ed2e87688a29647b4a9bc4f4a582102c3dc64',
+                        'gralloc.default.so': 'c8cc2f7f514c7a0f1c49b7dc6ce4b070bae0f8d8ff64b51d5213fa144a2975d3',
+                    }
+                    if software_rendering and all(
+                        hashlib.sha256((fs / 'vendor/lib64/hw' / name).read_bytes()).hexdigest() == digest
+                        for name, digest in metadata_pair.items()
+                    ):
+                        preload = '    setenv LD_PRELOAD /vendor/lib64/libanvildroid-hwc-shim.so\n'
+                        config_text = config_text.replace(preload, preload + '    setenv ANVILDROID_GRALLOC_METADATA 1\n')
+                        allocator_text = (work / 'vendor-lower' / allocator_rc).read_text()
+                        service = 'service vendor.gralloc-2-0 /vendor/bin/hw/android.hardware.graphics.allocator@2.0-service\n'
+                        require(allocator_text.count(service) == 1, 'Unsupported software allocator service')
+                        (fs / 'vendor' / allocator_rc).write_text(allocator_text.replace(
+                            service, service + preload + '    setenv ANVILDROID_GRALLOC_METADATA 1\n'))
+                        state['desktop_bridge'] = 'stock-rpc-metadata-shim'
+                else:
+                    mount('--bind', instance / 'desktop-bridge.so', fs / 'vendor/lib64/libanvildroid-window.so')
                 companion=instance/'desktop-tasks.sh'
                 if companion.exists():
                     info=companion.lstat()
                     require(stat.S_ISREG(info.st_mode) and info.st_uid==0 and not info.st_mode&0o022,'Unsafe pinned task companion')
                     mount('--bind',companion,fs/'vendor/bin/anvildroid-tasks.sh')
                 props = [p for p in props if not p.startswith(('persist.waydroid.multi_windows=', 'waydroid.host.uid='))]
-                props += ['persist.waydroid.multi_windows=true', f'waydroid.host.uid={desktop[1]}']
+                # Stock custom composers commonly implement only Waydroid's
+                # single-display path. Enabling multi-window makes them
+                # recreate the HWC layer and abort when the first app opens.
+                props += [('persist.waydroid.multi_windows=false' if (single_display or software_compatibility)
+                           else 'persist.waydroid.multi_windows=true'),
+                          f'waydroid.host.uid={desktop[1]}']
                 props += workarea_props
                 state['workarea'] = workarea_info
                 marker = '    setenv LD_PRELOAD /vendor/lib64/libanvildroid-window.so'
-                require(config_text.count(marker) == 1, 'Desktop preview requires the AnvilDroid native bridge')
-                config_text = config_text.replace(marker, marker + '\n    setenv ANVILDROID_RUNTIME_ID ' + identifier + '\n    setenv ANVILDROID_RUNTIME_GENERATION ' + generation)
+                if not custom_stock_hwc and not native_wayland:
+                    require(config_text.count(marker) == 1, 'Desktop preview requires the AnvilDroid native bridge')
+                    config_text = config_text.replace(marker, marker + '\n    setenv ANVILDROID_RUNTIME_ID ' + identifier + '\n    setenv ANVILDROID_RUNTIME_GENERATION ' + generation)
             init.write_text(config_text)
             (fs / 'vendor/waydroid.prop').write_text('\n'.join(props) + '\n')
             ensure_binder_filesystem()
@@ -938,7 +1127,8 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
             for directory in ('mnt_extra', 'tmp', 'var', 'run'):
                 config.append(f'lxc.mount.entry = tmpfs {directory} tmpfs nodev,create=dir 0 0')
             config += [f'lxc.mount.entry = {xdg} run/xdg none bind,create=dir 0 0',
-                       f'lxc.mount.entry = {work}/data data none bind,create=dir 0 0']
+                       f'lxc.mount.entry = {work}/data data none bind,create=dir 0 0',
+                       f'lxc.mount.entry = {work}/data anvil-data none bind,create=dir 0 0']
             if desktop and not x11['display']:
                 config.append(f'lxc.mount.entry = {desktop_pin} run/xdg/wayland-probe none bind,create=file 0 0')
             if audio_available:
@@ -957,7 +1147,9 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
                     # optional 32-bit translation processes; it must not make
                     # the whole 64-bit runtime impossible to start.
                     print('Android private PID limit unavailable:', error, flush=True)
-        deadline = time.monotonic() + 180
+        # Newer custom Android builds can spend several minutes compiling
+        # framework/apex data on first boot.
+        deadline = time.monotonic() + 300
         boot_wait = 'Waiting for sys.boot_completed=1'
         while not stopping.is_set():
             try:
@@ -968,12 +1160,14 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
                 if lxc('lxc-info', identifier, '-sH', timeout=2, bounded_output=True) != 'RUNNING':
                     raise RuntimeError('Android container exited before sys.boot_completed')
                 boot_property = shell('getprop', 'sys.boot_completed')
-                if boot_property == '1':
+                dev_boot_property = shell('getprop', 'dev.bootcomplete')
+                if boot_property == '1' or dev_boot_property == '1':
                     require('waydroidplatform' in shell('service', 'list'), 'Platform service missing')
+                    provision_android_user()
                     android_id = shell('settings', 'get', 'secure', 'android_id')
                     require(android_id not in ('', 'null'), 'Android identity unavailable')
                     break
-                boot_wait = 'sys.boot_completed=' + repr(boot_property[:128])
+                boot_wait = 'sys.boot_completed=' + repr(boot_property[:128]) + ', dev.bootcomplete=' + repr(dev_boot_property[:128])
             except RuntimeError as error:
                 boot_wait = str(error)[-512:]
                 status = lxc('lxc-info', identifier, '-sH')
@@ -986,7 +1180,7 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
                         pass
                     require(False, 'Android container exited' + (': ' + detail if detail else ''))
             state['boot_wait'] = boot_wait
-            require(time.monotonic() < deadline, 'Android boot timed out: ' + boot_wait)
+            require(time.monotonic() < deadline, 'Android boot timed out after 300s: ' + boot_wait)
             stopping.wait(1)
         if not stopping.is_set():
             helper = instance / 'shutdown.jar'
@@ -1112,7 +1306,8 @@ def main(instance, identifier, generation, original_mnt, original_net, desktop=N
                         response = dict(state)
                         try:
                             require(state['state'] == 'Running' and not stopping.is_set(), 'Start Android before listing packages')
-                            response['apps'] = list_apps(instance, identifier)
+                            response['apps'] = list_apps(instance, identifier,
+                                                         single_display=state.get('presentation_mode') == 'android-display')
                         except (RuntimeError, OSError, subprocess.TimeoutExpired) as error:
                             response['app_error'] = str(error)[-1024:]
                         connection.sendall(json.dumps(response).encode() + b'\n')
@@ -1143,7 +1338,8 @@ def main(instance, identifier, generation, original_mnt, original_net, desktop=N
                             require(set(request) == {'op', 'generation', 'action', 'package'}, 'Invalid app action request')
                             require(request['generation'] == generation, 'Worker generation changed; action refused')
                             require(state['state'] == 'Running' and not stopping.is_set(), 'Android is not running')
-                            response['app_result'] = app_action(instance, identifier, request['action'], request['package'], desktop=bool(desktop), generation=generation)
+                            response['app_result'] = app_action(instance, identifier, request['action'], request['package'], desktop=bool(desktop), generation=generation,
+                                                               single_display=state.get('presentation_mode') == 'android-display')
                         except (RuntimeError, OSError, subprocess.TimeoutExpired) as error:
                             response['app_error'] = str(error)[-1024:]
                         connection.sendall(json.dumps(response).encode() + b'\n')

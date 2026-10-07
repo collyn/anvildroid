@@ -85,6 +85,15 @@ pub enum Request {
     },
     #[serde(rename = "image_download_status")]
     ImageDownloadStatus {},
+    #[serde(rename = "image_select")]
+    ImageSelect {
+        image_id: String,
+    },
+    #[serde(rename = "image_rename")]
+    ImageRename {
+        image_id: String,
+        name: String,
+    },
     #[serde(rename = "image_download_cancel")]
     ImageDownloadCancel {
         job_id: String,
@@ -140,9 +149,9 @@ pub enum Request {
         vendor_sha256: String,
     },
     #[serde(rename = "image_import")]
-    ImageImport {},
+    ImageImport { name: String },
     #[serde(rename = "image_import_folder")]
-    ImageImportFolder {},
+    ImageImportFolder { name: String },
     #[serde(rename = "arm_import")]
     ArmImport {},
     Rename {
@@ -151,6 +160,15 @@ pub enum Request {
     },
     Prepare {
         id: String,
+    },
+    Reinstall {
+        id: String,
+        confirmed_name: String,
+        flavor: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        system_sha256: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        vendor_sha256: Option<String>,
     },
     Start {
         id: String,
@@ -272,7 +290,7 @@ pub fn install(id: &str, path: &std::path::Path) -> Result<Value, String> {
     exchange_file(socket, Request::Install { id: id.into() }, Some(&file))
 }
 
-pub fn import_image(path: &std::path::Path) -> Result<Value, String> {
+pub fn import_image(path: &std::path::Path, name: &str) -> Result<Value, String> {
     use std::os::unix::fs::OpenOptionsExt;
     let file = std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NONBLOCK)
         .open(path).map_err(|e| format!("Cannot read custom image ZIP: {e}"))?;
@@ -282,10 +300,10 @@ pub fn import_image(path: &std::path::Path) -> Result<Value, String> {
     }
     let socket = UnixStream::connect("/run/anvildroid/control.sock")
         .map_err(|e| format!("Runtime controller unavailable: {e}"))?;
-    exchange_file(socket, Request::ImageImport {}, Some(&file))
+    exchange_file(socket, Request::ImageImport { name: name.to_owned() }, Some(&file))
 }
 
-pub fn import_image_folder(path: &std::path::Path) -> Result<Value, String> {
+pub fn import_image_folder(path: &std::path::Path, name: &str) -> Result<Value, String> {
     use std::os::unix::fs::OpenOptionsExt;
     let mut files = Vec::new();
     for name in ["system.img", "vendor.img"] {
@@ -300,7 +318,7 @@ pub fn import_image_folder(path: &std::path::Path) -> Result<Value, String> {
     }
     let socket = UnixStream::connect("/run/anvildroid/control.sock")
         .map_err(|e| format!("Runtime controller unavailable: {e}"))?;
-    exchange_files(socket, Request::ImageImportFolder {}, &[&files[0], &files[1]])
+    exchange_files(socket, Request::ImageImportFolder { name: name.to_owned() }, &[&files[0], &files[1]])
 }
 
 pub fn import_arm_source(kind: &str, source: &str, expected_sha256: &str) -> Result<Value, String> {
@@ -447,9 +465,9 @@ mod tests {
     use super::*;
     #[test]
     fn custom_import_uses_descriptor_not_privileged_path() {
-        assert!(serde_json::from_str::<Request>(r#"{"op":"image_import"}"#).is_ok());
+        assert!(serde_json::from_str::<Request>(r#"{"op":"image_import","name":"Custom"}"#).is_ok());
         assert!(serde_json::from_str::<Request>(r#"{"op":"image_import","path":"/etc/shadow"}"#).is_err());
-        assert_eq!(serde_json::to_value(Request::ImageImport {}).unwrap(), serde_json::json!({"op":"image_import"}));
+        assert_eq!(serde_json::to_value(Request::ImageImport { name: "Custom".into() }).unwrap(), serde_json::json!({"op":"image_import","name":"Custom"}));
         assert_eq!(serde_json::to_value(Request::ArmImport {}).unwrap(), serde_json::json!({"op":"arm_import"}));
     }
     #[test]

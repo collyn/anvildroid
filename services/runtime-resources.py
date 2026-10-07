@@ -54,7 +54,9 @@ def prefix(identifier, generation, limits):
     limits = validate(limits)
     args = ['systemd-run', '--scope', '--quiet', '--collect', '--slice=anvildroid-runtimes.slice',
             '--unit=' + unit(identifier, generation), '-p', 'MemoryAccounting=yes', '-p', 'CPUAccounting=yes',
-            '-p', 'Delegate=yes',
+            # LXC must not delegate the host unified hierarchy. The worker
+            # hides cgroup mounts from Android; systemd scope still enforces
+            # the runtime RAM/CPU limits without nested controller delegation.
             '-p', 'OOMPolicy=kill', '-p', 'MemoryMax=' + (str(limits['memory_mib'] * 1024**2) if limits['memory_mib'] else 'infinity'),
             '-p', 'MemorySwapMax=' + ('0' if limits['memory_mib'] else 'infinity')]
     if limits['cpu_count']: args += ['-p', f"CPUQuota={limits['cpu_count'] * 100}%", '-p', 'CPUQuotaPeriodSec=100ms']
