@@ -692,3 +692,31 @@ details[open] > summary::after { content: 'Hide'; }
 .apps-grid.list-view .app-name { max-height: none; }
 .apps-grid.list-view .app-status-dot { top: 18px; right: 18px; }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; } }
+
+/* Prevent duplicate Waydroid launches while the backend action is pending. */
+.app-card.processing {
+  cursor: wait;
+  opacity: .72;
+  pointer-events: none;
+}
+.app-card.processing .app-icon {
+  display: grid;
+  place-items: center;
+  background: rgba(61, 157, 243, .16);
+}
+.app-processing {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  padding: 8px;
+  color: var(--text-primary, #fff);
+  font-size: 11px;
+  line-height: 1.15;
+  text-align: center;
+  animation: anvildroid-processing-pulse 1.2s ease-in-out infinite;
+}
+@keyframes anvildroid-processing-pulse {
+  50% { opacity: .45; }
+}

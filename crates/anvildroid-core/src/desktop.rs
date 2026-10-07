@@ -10,6 +10,24 @@ use std::{
 const OWNER: &str = "X-AnvilDroid-Managed=true";
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
+fn installed_launcher(path: &Path) -> std::io::Result<PathBuf> {
+    match path.canonicalize() {
+        Ok(path) => Ok(path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            // Linux appends this suffix to /proc/self/exe when a package
+            // upgrade replaces the executable while the GUI is still open.
+            if let Some(replacement) = path.to_str().and_then(|p| p.strip_suffix(" (deleted)")) {
+                let replacement = Path::new(replacement);
+                if replacement.is_absolute() && replacement.is_file() {
+                    return replacement.canonicalize();
+                }
+            }
+            Err(error)
+        }
+        Err(error) => Err(error),
+    }
+}
+
 fn entry_path(data_dir: &Path, package: &str) -> Result<PathBuf, AnvilError> {
     if !backend::valid_package(package) {
         return Err(AnvilError::InvalidArgument(
@@ -144,7 +162,7 @@ pub fn create_shortcut(package: &str, launcher: &Path) -> Result<PathBuf, AnvilE
             "Invalid Android package name".into(),
         ));
     }
-    let launcher = launcher.canonicalize()?;
+    let launcher = installed_launcher(launcher)?;
     launch::ensure_ready(launch::BOOT_TIMEOUT)?;
     let app = backend::list_apps()?
         .into_iter()
@@ -226,7 +244,7 @@ fn write_managed_registration(id: &str, package: &str, launcher: &Path, hidden: 
         app["label"].as_str().unwrap_or(package),
         record["name"].as_str().unwrap_or(id),
         &icon,
-        &launcher.canonicalize()?,
+        &installed_launcher(launcher)?,
     )?;
     if hidden { content.push_str("NoDisplay=true\n"); }
     let filename = if hidden {
@@ -317,6 +335,14 @@ mod tests {
             Path::new("/tmp/gui")
         )
         .is_err());
+    }
+    #[test]
+    fn resolves_replaced_executable_after_package_upgrade() {
+        let exe = std::env::current_exe().unwrap();
+        let deleted = PathBuf::from(format!("{} (deleted)", exe.display()));
+        assert_eq!(installed_launcher(&deleted).unwrap(), exe.canonicalize().unwrap());
+        let missing = exe.with_file_name("missing-anvildroid-launcher (deleted)");
+        assert!(installed_launcher(&missing).is_err());
     }
     #[test]
     fn escapes_labels_and_exec_without_a_shell() {

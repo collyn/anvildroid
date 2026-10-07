@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install/reload just the Plasma 6 Waydroid placement script; no runtime restart."""
+"""Install/reload Plasma 6 Waydroid position restore; no runtime restart."""
 import importlib.util
 import json
 import os
@@ -16,7 +16,7 @@ INITIAL_RULE = 'anvildroid-initial-placement'
 # KWin 6.6 RuleSettings defaults placement to PlacementCentered. Apply (3)
 # only initial maximize state, so later user maximize/restore remains available.
 INITIAL_RULE_BODY = """Description=AnvilDroid initial app placement
-wmclass=^waydroid[.](anvildroid[.]r-[a-f0-9]{32}[.])?[a-z0-9_]+([.][A-Za-z0-9_]+)+$
+wmclass=^(waydroid|Waydroid)([.](anvildroid[.]r-[a-f0-9]{32}[.])?[a-z0-9_]+([.][A-Za-z0-9_]+)+)?$
 wmclassmatch=3
 wmclasscomplete=false
 placementrule=2
@@ -32,6 +32,8 @@ def run(*args):
 
 
 def main():
+    # D-Bus activation uses the system Python, not the caller's virtualenv.
+    run('/usr/bin/python3', '-c', 'import dbus.service; from gi.repository import GLib')
     source = Path(__file__).resolve().parent / 'kwin-center'
     data = Path(os.environ.get('XDG_DATA_HOME', Path.home() / '.local/share'))
     state = Path(os.environ.get('XDG_STATE_HOME', Path.home() / '.local/state'))
@@ -47,6 +49,20 @@ def main():
     if target.exists():
         shutil.copytree(target, backup / 'script.before')
     (backup / 'record.json').write_text(json.dumps({'target': str(target), 'enabled_before': enabled}, indent=2))
+    helper = data / 'anvildroid/window-position-store.py'
+    service = data / 'dbus-1/services/org.anvildroid.WindowPositions.service'
+    for path in (helper, service):
+        if path.exists():
+            shutil.copy2(path, backup / (path.name + '.before'))
+    desktop.atomic(helper, (source.parent / 'window-position-store.py').read_bytes())
+    # D-Bus Exec is parsed as an argv string, without a shell.
+    quoted_helper = '"' + str(helper).replace('\\', '\\\\').replace('"', '\\"') + '"'
+    desktop.atomic(service, ('[D-BUS Service]\nName=org.anvildroid.WindowPositions\n'
+                            'Exec=/usr/bin/python3 ' + quoted_helper + '\n').encode())
+    run('qdbus6', 'org.freedesktop.DBus', '/org/freedesktop/DBus',
+        'org.freedesktop.DBus.ReloadConfig')
+    run('qdbus6', 'org.anvildroid.WindowPositions', '/Positions',
+        'org.anvildroid.WindowPositions.Load', 'waydroid.org.anvildroid.install_probe')
     for relative in ['metadata.json', 'contents/code/main.js']:
         dest = target / relative
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -61,7 +77,7 @@ def main():
     loaded = run('qdbus6', 'org.kde.KWin', '/Scripting', 'org.kde.kwin.Scripting.isScriptLoaded', 'anvildroid-center')
     if loaded != 'true':
         raise SystemExit(f'KWin did not load the script; backup: {backup}')
-    print(f'Window centering enabled. Backup: {backup}')
+    print(f'Window position restore enabled. Backup: {backup}')
 
 
 if __name__ == '__main__':

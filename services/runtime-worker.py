@@ -421,11 +421,23 @@ def app_action(instance, identifier, action, package, desktop=False, generation=
             try:
                 android('cmd', 'statusbar', 'expand-notifications')
                 time.sleep(0.5)
+            except RuntimeError as error:
+                # Some custom images omit StatusBarManagerService entirely.
+                # Refreshing it is only a compositor nudge, never a boot
+                # requirement; do not turn a usable Android window into a
+                # launch loop just because this optional service is absent.
+                if "Can't find service: statusbar" not in str(error):
+                    raise
             finally:
-                android('cmd', 'statusbar', 'collapse')
+                try:
+                    android('cmd', 'statusbar', 'collapse')
+                except RuntimeError as error:
+                    if "Can't find service: statusbar" not in str(error):
+                        raise
     if action == 'full_ui':
         require(desktop, 'Waydroid window requires Desktop mode')
         require(package == 'org.anvildroid.desktop', 'Invalid desktop target')
+        android('input', 'keyevent', '224')  # KEYCODE_WAKEUP, never toggle power.
         android('setprop', 'waydroid.active_apps', 'Waydroid')
         # Match Waydroid's app-manager path: a background session can keep
         # SurfaceFlinger layers alive without publishing a desktop window.
@@ -459,6 +471,8 @@ def app_action(instance, identifier, action, package, desktop=False, generation=
         _catalog_cache.pop(str(instance), None)
         return {'action': action, 'package': package, 'message': 'App uninstalled from this runtime. Android confirmed removal.'}
     if action == 'launch':
+        if desktop:
+            android('input', 'keyevent', '224')
         # This compatibility path has no usable task/layer metadata. Its HWC
         # can present the complete framebuffer, but app-window mode hides it.
         android('setprop', 'waydroid.active_apps', 'Waydroid' if single_display else package)
@@ -628,15 +642,28 @@ def configure_desktop_ime(instance, work, shell, desktop):
         apk = instance / 'desktop-ime.apk'
         digest = hashlib.sha256(apk.read_bytes()).hexdigest()
         version = instance / 'desktop-ime.sha256'
-        if not version.exists() or version.read_text() != digest or not shell('pm', 'path', 'org.anvildroid.ime').startswith('package:'):
+        installed = shell('pm', 'path', 'org.anvildroid.ime').startswith('package:')
+        # A previous PackageInstaller call can finish after lxc-attach has
+        # timed out. If Android already exposes the package, trust that
+        # completed install and record the marker instead of reinstalling on
+        # every boot.
+        if installed and (not version.exists() or version.read_text() != digest):
+            version.write_text(digest)
+        if not installed:
             target = work / 'data/local/tmp/anvildroid-desktop-ime.apk'
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(apk, target)
             target.chmod(0o644)
             try:
-                result = shell('pm', 'install', '-r', '/data/local/tmp/anvildroid-desktop-ime.apk')
+                result = shell('pm', 'install', '-r', '/data/local/tmp/anvildroid-desktop-ime.apk', timeout=30)
                 require('Success' in result, 'Could not install desktop IME: ' + result)
-            finally: target.unlink(missing_ok=True)
+            except subprocess.TimeoutExpired as error:
+                # PackageInstaller may still be reading the APK after the
+                # shell client exits. Continue boot; the keyboard remains
+                # available and the next boot will reuse a completed install.
+                raise RuntimeError('Desktop IME installation did not finish within 30 seconds; Android keyboard remains available.') from error
+            else:
+                target.unlink(missing_ok=True)
             version.write_text(digest)
         current = shell('settings', 'get', 'secure', 'default_input_method')
         if current != component:
@@ -750,7 +777,7 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
     def mount(*args):
         run('mount', *args)
         mounts.append(Path(args[-1]))
-    def shell(*args): return lxc('lxc-attach', identifier, '--', '/system/bin/' + args[0], *args[1:])
+    def shell(*args, timeout=20): return lxc('lxc-attach', identifier, '--', '/system/bin/' + args[0], *args[1:], timeout=timeout)
     def provision_android_user():
         """Finish Android's first-run gate so desktop activities stay open.
 
@@ -878,6 +905,9 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
             # desktop window is created on unsupported host graphics stacks.
         single_display = compatibility.get('presentation_mode',
             'android-display' if native_wayland or custom_stock_hwc else 'app-windows') == 'android-display'
+        # The stock fallback disables multi-window and removes our bridge.
+        # SurfaceFlinger metadata alone must not advertise app windows on it.
+        single_display = single_display or custom_stock_hwc
         state['presentation_mode'] = 'android-display' if single_display else 'app-windows'
         if single_display:
             state['capabilities'] = [c for c in state['capabilities'] if c not in ('keymap_editor', 'uninstall_app')]
@@ -906,7 +936,7 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
             mount(*image_format.mount_options(instance / 'prepared/vendor.img'), instance / 'prepared/vendor.img', work / 'vendor-lower')
             mount('-t', 'overlay', 'overlay', '-o', android_overlay_options(f'{system_patches}:{work}/system-lower', work / 'system-upper', work / 'system-work'), fs)
             mount('-t', 'overlay', 'overlay', '-o', android_overlay_options(f'{patches}/vendor:{work}/vendor-lower', work / 'vendor-upper', work / 'vendor-work'), fs / 'vendor')
-            if 'presentation_mode' not in compatibility:
+            if 'presentation_mode' not in compatibility and not custom_stock_hwc:
                 single_display = b'vendor.waydroid.display@' not in (fs / 'system/bin/surfaceflinger').read_bytes()
                 state['presentation_mode'] = 'android-display' if single_display else 'app-windows'
                 if single_display:
@@ -960,11 +990,21 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
                 # protocol is kept unchanged; without LD_PRELOAD their HWC
                 # aborts with "Binder threadpool cannot be shrunk".
                 if custom_stock_hwc:
-                    # Some custom composers reject any preload at startup.
-                    # Keep their stock process untouched; the shim is only
-                    # mounted for images explicitly classified native-wayland.
+                    # Keep the stock HWC/RPC path untouched, but still add
+                    # the small Wayland-only adapter. It requests server-side
+                    # decorations and provides the fixed Android canvas/F11
+                    # behavior without the full HWC metadata interposer.
+                    window_library = fs / 'vendor/lib64/libanvildroid-android-window.so'
+                    require(not window_library.is_symlink(), 'Invalid window adapter mount target')
+                    window_library.touch(mode=0o644, exist_ok=True)
+                    mount('--bind', Path(__file__).parent / 'libanvildroid-android-window.so', window_library)
                     config_text = re.sub(r'(?m)^    setenv LD_PRELOAD .*\n?', '', config_text)
-                    state['desktop_bridge'] = 'stock'
+                    composer_service = re.compile(r'(?m)^(service vendor\.hwcomposer-2-1 .*\n)')
+                    require(len(composer_service.findall(config_text)) == 1, 'Missing stock composer service')
+                    config_text = composer_service.sub(
+                        r'\1    setenv LD_PRELOAD /vendor/lib64/libanvildroid-android-window.so\n'
+                        '    setenv ANVILDROID_ANDROID_WINDOW 1\n', config_text)
+                    state['desktop_bridge'] = 'stock-android-window'
                 elif native_wayland:
                     # Keep native Wayland buffer handling. The metadata
                     # adapter is restricted to the exact software HAL pair
@@ -1091,6 +1131,19 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
             # loop-control + loop nodes let apexd mount APEX payloads; without
             # them /system/bin/linker64's /apex target never appears and every
             # /system/bin exec fails with EACCES.
+            # Android's ueventd discovers every DRM node exposed by sysfs and
+            # recreates them even when LXC only bind-mounts one render node.
+            # That lets SurfaceFlinger silently pick another GPU. Build a
+            # read-only private /dev/dri directory so only the selected node
+            # is visible inside this container.
+            gpu_dri = work / 'gpu-dri'
+            if gpu_node:
+                gpu_dri.mkdir(mode=0o755, exist_ok=True)
+                # mkdir obeys the controller's 0077 umask. Android graphics
+                # services need directory traversal as well as node access.
+                gpu_dri.chmod(0o755)
+                for stale in gpu_dri.iterdir():
+                    stale.unlink()
             for device in ('null', 'zero', 'full', 'fuse', 'tty', 'loop-control',
                            'loop0', 'loop1', 'loop2', 'loop3', 'loop4', 'loop5', 'loop6', 'loop7',
                            *((gpu_node.removeprefix('/dev/'),) if gpu_node else ())):
@@ -1116,14 +1169,52 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
                         # permissions explicitly.
                         private.chmod(0o666)
                         source = private
+                        private_dri = gpu_dri / Path(device).name
+                        try:
+                            private_dri.unlink()
+                        except FileNotFoundError:
+                            pass
+                        os.link(source, private_dri)
+                        continue
                     options = 'bind,create=file'
-                    if Path(device).name.startswith('renderD'):
-                        # Runtime storage may be mounted nodev. Override it
-                        # only on this private render-node bind mount.
-                        options += ',dev'
                     config.append(f'lxc.mount.entry = {source} dev/{device} none {options} 0 0')
+            if gpu_node:
+                # The runtime storage is commonly mounted nodev. Explicitly
+                # re-enable device interpretation for this private directory
+                # or Mesa falls back to llvmpipe even though the node exists.
+                config.append(f'lxc.mount.entry = {gpu_dri} dev/dri none bind,ro,dev,create=dir 0 0')
             for device in ('binder', 'vndbinder', 'hwbinder'):
                 config.append(f'lxc.mount.entry = {work}/binder/{device} dev/{device} none bind,create=file 0 0')
+            # WayDroid-ATV and newer gralloc implementations allocate video
+            # buffers through DMA-BUF heaps rather than ION. The host kernel
+            # may expose the heap nodes as root-only (for example 0600), so
+            # mirror the character devices into the private container with
+            # Android-readable permissions instead of changing host /dev.
+            host_heap = Path('/dev/dma_heap')
+            heap_source = work / 'dma-heap'
+            heaps = []
+            if host_heap.is_dir():
+                heap_source.mkdir(mode=0o755, exist_ok=True)
+                heap_source.chmod(0o755)
+                for source in sorted(host_heap.iterdir()):
+                    try:
+                        info = source.stat()
+                    except OSError:
+                        continue
+                    if not stat.S_ISCHR(info.st_mode) or not re.fullmatch(r'[A-Za-z0-9_.-]{1,64}', source.name):
+                        continue
+                    private = heap_source / source.name
+                    try:
+                        private.unlink()
+                    except FileNotFoundError:
+                        pass
+                    os.mknod(private, stat.S_IFCHR | 0o666,
+                             os.makedev(os.major(info.st_rdev), os.minor(info.st_rdev)))
+                    private.chmod(0o666)
+                    heaps.append(source.name)
+                if heaps:
+                    config.append(f'lxc.mount.entry = {heap_source} dev/dma_heap none bind,dev,create=dir 0 0')
+            state['dma_buf_heaps'] = heaps
             for directory in ('mnt_extra', 'tmp', 'var', 'run'):
                 config.append(f'lxc.mount.entry = tmpfs {directory} tmpfs nodev,create=dir 0 0')
             config += [f'lxc.mount.entry = {xdg} run/xdg none bind,create=dir 0 0',
@@ -1190,7 +1281,15 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
                 shutil.copyfile(helper, target)
                 target.chmod(0o644)
             configure_host_desktop(instance, shell, bool(desktop))
-            configure_desktop_ime(instance, loc(identifier), shell, bool(desktop))
+            state['boot_wait'] = 'Configuring desktop keyboard'
+            try:
+                configure_desktop_ime(instance, loc(identifier), shell, bool(desktop))
+                state['desktop_ime'] = 'Ready' if desktop else 'Disabled'
+                state.pop('desktop_ime_warning', None)
+            except (RuntimeError, OSError, subprocess.TimeoutExpired) as error:
+                state['desktop_ime'] = 'Unavailable'
+                state['desktop_ime_warning'] = str(error)[-1024:]
+                print('Desktop IME setup warning: ' + state['desktop_ime_warning'], flush=True)
             state.update(state='Running', error=None, android_id=android_id)
             state.pop('boot_wait', None)
             state['network'] = 'private_uplink' if uplink else 'isolated'
@@ -1226,8 +1325,16 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
         if host_net_fd is not None: os.close(host_net_fd)
         for log in logfiles: log.close()
         for path in reversed(mounts):
-            try: run('umount', path)
-            except Exception as error: errors.append(str(error))
+            try:
+                run('umount', path)
+            except Exception as error:
+                # A stopped LXC monitor can briefly retain a rootfs mount
+                # while its last Android child exits. Detach it lazily so a
+                # normal stop/restart is not reported as a permanent error.
+                try:
+                    run('umount', '-l', path)
+                except Exception:
+                    errors.append(str(error))
         if errors: state.update(state='Error', error='; '.join(errors)[-1024:])
         elif state['state'] != 'Error': state.update(state='Stopped', error=None)
         state['cleanup_complete'] = not errors

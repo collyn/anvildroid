@@ -783,7 +783,8 @@ class Store:
                     and all(cached.get('images', {}).get(kind, {}).get('sha256') == request[kind + '_sha256'] for kind in ('system', 'vendor')),
                     'IMAGE_NOT_READY', 'Download and verify the selected image pair first; refresh if the cache changed.')
             require(not any(shutil.which(tool) is None for tool in ('aapt', 'apksigner', 'unshare')), 'SETUP_REQUIRED', 'Image preparation needs aapt, apksigner and unshare installed.')
-            selection = {'flavor': cached['flavor'], 'images': cached['images'], 'image_bytes': cached['image_bytes'],
+            selection = {'flavor': cached['flavor'], 'custom_name': cached.get('custom_name'),
+                         'library_id': cached.get('library_id'), 'images': cached['images'], 'image_bytes': cached['image_bytes'],
                          'arm_default': platform.machine() == 'x86_64' and bool(re.fullmatch(r'lineage-20\.0-[0-9]{8}-(?:GAPPS|VANILLA)-waydroid_x86_64-system\.zip', cached['images']['system'].get('filename', '')))}
             operation = 'create'
             request = {'op': 'create', 'name': request['name']}
@@ -863,7 +864,8 @@ class Store:
                         'FORBIDDEN', 'Import your own custom image before reinstalling this runtime')
                 require(all(cached.get('images', {}).get(kind, {}).get('sha256') == request.get(kind + '_sha256') for kind in ('system', 'vendor')),
                         'IMAGE_NOT_READY', 'Selected image cache changed; refresh and retry.')
-                selection = {'flavor': cached['flavor'], 'images': cached['images'], 'image_bytes': cached['image_bytes'],
+                selection = {'flavor': cached['flavor'], 'custom_name': cached.get('custom_name'),
+                             'library_id': cached.get('library_id'), 'images': cached['images'], 'image_bytes': cached['image_bytes'],
                              'arm_default': platform.machine() == 'x86_64' and bool(re.fullmatch(r'lineage-20\.0-[0-9]{8}-(?:GAPPS|VANILLA)-waydroid_x86_64-system\.zip', cached['images']['system'].get('filename', '')))}
             instance.mkdir(mode=0o700, exist_ok=True)
             self.backend.check_directory(instance)

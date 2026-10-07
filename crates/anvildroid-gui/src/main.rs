@@ -11,6 +11,7 @@ struct CustomImageJob {
     path: std::path::PathBuf,
     total: u64,
     status: String,
+    phase: String,
     error: Option<String>,
     result: Option<serde_json::Value>,
 }
@@ -846,7 +847,7 @@ async fn import_runtime_image_url(url: String, name: String) -> Result<serde_jso
             .ok()
             .and_then(|output| if output.status.success() { std::fs::read_to_string(&header_path).ok().and_then(|text| custom_download_total(&text)) } else { None })
             .unwrap_or(0);
-        *guard = Some(CustomImageJob { path: path.clone(), total, status: "Downloading".into(), error: None, result: None });
+        *guard = Some(CustomImageJob { path: path.clone(), total, status: "Downloading".into(), phase: "Downloading ZIP".into(), error: None, result: None });
         drop(guard);
         std::thread::spawn(move || {
             let headers = path.with_file_name("response-headers");
@@ -868,13 +869,18 @@ async fn import_runtime_image_url(url: String, name: String) -> Result<serde_jso
                 .and_then(|output| if output.status.success() { Ok(()) } else {
                     Err(String::from_utf8_lossy(&output.stderr).chars().take(1024).collect::<String>())
                 })
-                .and_then(|_| anvildroid_core::controller::import_image(&path, &name));
+                .and_then(|_| {
+                    if let Ok(mut state) = jobs.lock() {
+                        if let Some(job) = state.as_mut() { job.phase = "Validating and importing with Waydroid CLI".into(); }
+                    }
+                    anvildroid_core::controller::import_image(&path, &name)
+                });
             if outcome.is_ok() {
                 // The controller duplicates the descriptor before acknowledging import.
                 let _ = std::fs::remove_file(&path);
             }
             if let Ok(mut state) = jobs.lock() {
-                if let Some(job) = state.as_mut() { job.status = if outcome.is_ok() { "Ready".into() } else { "Failed".into() }; job.error = outcome.as_ref().err().map(|e| e.to_string()); job.result = outcome.ok(); }
+                if let Some(job) = state.as_mut() { job.status = if outcome.is_ok() { "Ready".into() } else { "Failed".into() }; job.phase = if outcome.is_ok() { "Custom image imported".into() } else { "Import failed".into() }; job.error = outcome.as_ref().err().map(|e| e.to_string()); job.result = outcome.ok(); }
             }
         });
         Ok(serde_json::json!({"status":"Downloading","total_bytes":total,"received_bytes":0,"percent":0}))
@@ -909,7 +915,7 @@ async fn custom_image_url_status() -> Result<serde_json::Value, String> {
         let headers = std::fs::read_to_string(job.path.with_file_name("response-headers")).unwrap_or_default();
         let total = custom_download_total(&headers).unwrap_or(job.total);
         let percent = if total > 0 { Some(((received.min(total) as f64 / total as f64) * 100.0).floor() as u64) } else { None };
-        Ok(serde_json::json!({"status":job.status,"total_bytes":total,"received_bytes":received,"percent":percent,"error":job.error,"result":job.result}))
+        Ok(serde_json::json!({"status":job.status,"phase":job.phase,"total_bytes":total,"received_bytes":received,"percent":percent,"error":job.error,"result":job.result}))
     }).await
 }
 

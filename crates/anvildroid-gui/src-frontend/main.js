@@ -324,6 +324,7 @@ let detailPackage = null;
 let detailGeneration = 0;
 let pendingLaunch = null;
 let pendingAppAction = false;
+let pendingWaydroidRuntime = null;
 let runtimeTransition = null;
 
 function trackRuntimeTransition(work) {
@@ -337,19 +338,47 @@ function trackRuntimeTransition(work) {
 var probeInstallBusy = false;
 async function openWaydroid(runtimeId) {
   if(probeInstallBusy){showBanner('Installation is pending. Review the Android verification window; Waydroid can be opened when this operation finishes.','info');return;}
-  if(pendingLaunch||pendingAppAction)return;
-  pendingAppAction=true;
+  if (pendingWaydroidRuntime !== null) {
+    showBanner('Waydroid is already opening. Please wait for the current request to finish.', 'info');
+    return;
+  }
+  pendingWaydroidRuntime = runtimeId;
+  renderApps(allApps);
+  let ownsAppAction = false;
   try {
+    showBanner('Opening Waydroid… Waiting for any current Android action to finish.', 'info');
+    // Keep this click while the preceding launch completes its startup check.
+    for (let attempt = 0; pendingLaunch || pendingAppAction; attempt++) {
+      if (attempt >= 180) throw new Error('The previous Android action is still pending. Check its result before retrying.');
+      await new Promise(resolve => setTimeout(resolve, 250));
+    }
+    pendingAppAction = true;
+    ownsAppAction = true;
     if(runtimeId==='default') {
-      const result=await tauriInvoke('open_waydroid');
+      let result;
+      for (let attempt = 0; attempt < 15; attempt++) {
+        result = await tauriInvoke('open_waydroid');
+        if (result?.success || result?.error_code !== 'BUSY') break;
+        await new Promise(resolve => setTimeout(resolve, 350));
+      }
       showBanner(result.message,result.success?'success':'error');return;
     }
     const record=managedLibrary.find(r=>r.id===runtimeId);
     if(!record||record.state!=='Running')throw new Error('Start the selected runtime first.');
     showBanner(`Opening Waydroid · ${record.name}… Switching Android display mode.`, 'info');
-    let job=await controllerRequest({op:'app_action',id:runtimeId,action:'full_ui',package:'org.anvildroid.desktop'});
+    let job;
+    for (let attempt = 0; attempt < 20; attempt++) {
+      try {
+        job = await controllerRequest({op:'app_action',id:runtimeId,action:'full_ui',package:'org.anvildroid.desktop'});
+        break;
+      } catch (error) {
+        if (!controllerBusy(error) || attempt === 19) throw error;
+        await new Promise(resolve => setTimeout(resolve, 350));
+      }
+    }
+    if (!job?.id || job.runtime_id !== runtimeId || job.action !== 'full_ui' || job.package !== 'org.anvildroid.desktop') throw new Error('Invalid Waydroid launch job');
     const token=job.id;
-    for(let i=0;job.status==='Running'&&i<30;i++) {
+    for(let i=0;job.status==='Running'&&i<150;i++) {
       await new Promise(resolve=>setTimeout(resolve,300));
       job=await controllerRequest({op:'app_job',id:runtimeId});
       if(job.id!==token||job.runtime_id!==runtimeId||job.action!=='full_ui')throw new Error('Operation changed; refresh runtime status.');
@@ -357,7 +386,7 @@ async function openWaydroid(runtimeId) {
     if(job.status!=='Succeeded')throw new Error(job.error||'Waydroid window is still pending.');
     showBanner(`${record.name}: ${job.result?.message||'Waydroid opened'}`,'success');
   }catch(e){showBanner(`Cannot open Waydroid: ${e.message||e}`,'error');}
-  finally{pendingAppAction=false;}
+  finally{if(ownsAppAction)pendingAppAction=false;pendingWaydroidRuntime=null;renderApps(allApps);}
 }
 document.getElementById('probe-open-waydroid').addEventListener('click',()=>openWaydroid(document.getElementById('probe-runtime').value));
 document.getElementById('install-touch-probe').addEventListener('click',async()=>{
@@ -556,11 +585,15 @@ async function refreshAppStates() {
   try {
     await Promise.all([refreshLibraryDefaultState(), refreshManagedLibrary()]);
     await Promise.all(managedLibrary.filter(r=>r.state==='Running').map(async record => {
+      if (pendingAppAction || pendingLaunch) return;
       let report;
       try {
         report = await controllerRequest({op:'app_states',id:record.id});
         if (report?.runtime_id !== record.id) throw new Error('Wrong runtime');
-      } catch (_) { report = null; record.error = 'Cannot verify runtime status. Refresh to retry.'; }
+      } catch (error) {
+        if (controllerBusy(error)) return;
+        report = null; record.error = 'Cannot verify runtime status. Refresh to retry.';
+      }
       const states = report?.state === 'Running' && report.states && typeof report.states === 'object' ? report.states : null;
       if (report?.state && report.state !== 'Running') record.state = report.state;
       managedSnapshots.set(record.id, (managedSnapshots.get(record.id)||[]).map(app=>({...app,
@@ -623,14 +656,16 @@ function renderApps(apps) {
 
   const sorted = sortApps(apps, currentSort);
   const markup = sorted.map(app => `
-    <div class="app-card" tabindex="0" role="button" data-package="${escapeHtml(app.package)}" data-runtime-id="${escapeHtml(app.runtime_id || 'default')}" data-app-status="${escapeHtml(appExecutionLabel(app))}" aria-label="${escapeHtml(appAccessibleLabel(app))}" title="${escapeHtml(`${app.package} · ${app.runtime_name || (app.runtime_id === 'default' ? 'Existing runtime' : 'Runtime')}`)}">
+    <div class="app-card${pendingWaydroidRuntime === (app.runtime_id || 'default') && app.desktop_entry ? ' processing' : ''}" tabindex="${pendingWaydroidRuntime === (app.runtime_id || 'default') && app.desktop_entry ? '-1' : '0'}" role="button" aria-disabled="${pendingWaydroidRuntime === (app.runtime_id || 'default') && app.desktop_entry ? 'true' : 'false'}" data-package="${escapeHtml(app.package)}" data-runtime-id="${escapeHtml(app.runtime_id || 'default')}" data-app-status="${escapeHtml(appExecutionLabel(app))}" aria-label="${escapeHtml(appAccessibleLabel(app))}" title="${escapeHtml(`${app.package} · ${app.runtime_name || (app.runtime_id === 'default' ? 'Existing runtime' : 'Runtime')}`)}">
       <button type="button" class="app-favorite-button favorite-mark${isFavorite(app) ? ' active' : ''}" aria-label="${isFavorite(app) ? 'Remove favorite' : 'Add favorite'}">♡</button>
       <div class="app-icon">
-        ${libraryIconUrl(app)
-          ? `<img src="${libraryIconUrl(app)}" alt="" onerror="this.parentElement.innerHTML='App'">`
-          : 'App'}
+        ${pendingWaydroidRuntime === (app.runtime_id || 'default') && app.desktop_entry
+          ? '<span class="app-processing" role="status" aria-label="Processing">Processing…</span>'
+          : libraryIconUrl(app)
+            ? `<img src="${libraryIconUrl(app)}" alt="" onerror="this.parentElement.innerHTML='App'">`
+            : 'App'}
       </div>
-      <div class="app-name">${escapeHtml(app.label || app.package.split('.').pop())}</div>
+      <div class="app-name">${pendingWaydroidRuntime === (app.runtime_id || 'default') && app.desktop_entry ? 'Processing…' : escapeHtml(app.label || app.package.split('.').pop())}</div>
       <span class="app-status-dot ${appExecutionLabel(app) === 'Foreground' || appExecutionLabel(app) === 'Background process' ? 'running' : ''}" aria-label="${escapeHtml(appExecutionLabel(app))}"></span>
     </div>
   `).join('');
@@ -643,6 +678,7 @@ function renderApps(apps) {
 
   appsGrid.querySelectorAll('.app-card').forEach(card => {
     card.addEventListener('click', () => {
+      if (card.getAttribute('aria-disabled') === 'true') return;
       launchApp(card.dataset.package, card.dataset.runtimeId);
     });
     card.addEventListener('keydown', e => {
@@ -1318,6 +1354,11 @@ document.getElementById('google-registration-close').addEventListener('click', (
 });
 document.getElementById('google-registration-dialog').addEventListener('close', () => { googleRegistrationTarget = null; });
 const runtimePackages = new Map();
+function controllerBusy(error) {
+  // The current Rust transport serializes controller errors as message strings.
+  const message = String(error?.message || error);
+  return error?.code === 'BUSY' || /(?:Runtime already has an operation|Wait for the runtime operation to finish|Runtime operation is completing|Controller operation capacity reached)/.test(message);
+}
 const controllerRequest = async request => {
   if (request.id === 'default' && request.op === 'app_action') {
     const command = {launch:'launch_app', force_stop:'force_stop_app'}[request.action];
@@ -1550,8 +1591,15 @@ document.getElementById('available-runtime-images').addEventListener('click', as
     const state = await controllerRequest({op:'image_select', image_id:button.dataset.imageUse || button.dataset.imageReinstall});
     if (button.dataset.imageReinstall) beginReinstall(targetId);
     else cancelReinstall();
-    document.getElementById('controller-image').value = state.flavor;
+    // Custom images use their library id as the select value; `CUSTOM` is
+    // only the backend flavor and is not an actual option in this select.
+    const selectedValue = state.flavor === 'CUSTOM'
+      ? `custom:${button.dataset.imageUse || button.dataset.imageReinstall}`
+      : state.flavor;
     renderImageDownload(state);
+    document.getElementById('controller-image').value = selectedValue;
+    selectedImageLibraryId = selectedValue.startsWith('custom:') ? selectedValue.slice(7) : '';
+    renderCreateImageHint();
     const panel = document.getElementById('runtime-create-panel');
     panel.open = true;
     panel.scrollIntoView({block:'center', behavior:'smooth'});
@@ -1642,7 +1690,7 @@ function renderCreateImageHint() {
     return;
   }
   if (flavor === 'installed') { panel.textContent = 'Copies the existing Waydroid image into a separate runtime. Google services are included only if that source image already contains them.'; return; }
-  const state = imageDownloadState;
+  const state = selectedImage || imageDownloadState;
   if (state?.status !== 'Ready' || state.flavor !== flavor) {
     panel.textContent = `Waydroid ${flavor}: ${IMAGE_FLAVOR_NOTE(flavor)} Download & verify this image in Runtime images below first. It will be used for a new runtime; existing runtimes are kept.`;
     return;
@@ -1684,12 +1732,13 @@ function renderCustomUrlProgress() {
   const status = document.getElementById('custom-image-status');
   const busy = ['Downloading', 'Connecting'].includes(state.status);
   const failed = state.status === 'Failed';
+  const importing = state.phase && state.phase !== 'Downloading ZIP' && state.status === 'Downloading';
   status.className = failed ? 'custom-import-feedback error' : 'custom-import-feedback';
   status.setAttribute('role', failed ? 'alert' : 'status');
   if (busy) {
     const known = state.total_bytes > 0;
     const percent = known ? `${state.percent}%` : 'Waiting for total size';
-    status.innerHTML = `<strong>${state.status === 'Connecting' ? 'Connecting...' : 'Downloading custom ZIP...'} ${percent}</strong><progress class="runtime-progress" aria-label="Custom ZIP download" ${known ? `max="100" value="${Number(state.percent) || 0}"` : ''}></progress><span>${((state.received_bytes || 0) / 1024 ** 2).toFixed(1)}${known ? ' / ' + (state.total_bytes / 1024 ** 2).toFixed(1) : ''} MiB received</span>`;
+    status.innerHTML = `<strong>${state.status === 'Connecting' ? 'Connecting...' : importing ? escapeHtml(state.phase) : 'Downloading custom ZIP...'} ${importing ? '' : percent}</strong>${importing ? '<progress class="runtime-progress" aria-label="Importing custom image"></progress><span>The ZIP is complete; validating images and running Waydroid CLI import. This step may take several minutes.</span>' : `<progress class="runtime-progress" aria-label="Custom ZIP download" ${known ? `max="100" value="${Number(state.percent) || 0}"` : ''}></progress><span>${((state.received_bytes || 0) / 1024 ** 2).toFixed(1)}${known ? ' / ' + (state.total_bytes / 1024 ** 2).toFixed(1) : ''} MiB received</span>`}`;
   } else if (failed) {
     status.textContent = `Download failed: ${state.error || 'Unknown error'}. Partial download kept. Retry the same URL to resume if the server supports it.`;
   }
@@ -2009,7 +2058,17 @@ function renderController() {
       <div class="managed-runtime-heading"><h3>${escapeHtml(record.name)}</h3></div>
       <div class="runtime-feedback ${kind}" role="status">${pending || active ? '<span class="runtime-spinner" aria-hidden="true"></span>' : ''}<strong>${escapeHtml(title)}</strong><p>${escapeHtml(appWorking ? (record.appJob.action === 'delete' ? 'Removing runtime data. This may take a few minutes.' : record.appJob.action === 'install' ? 'Waiting for Android to finish verification and app optimization. A confirmation dialog is not always required.' : record.appJob.package) : storageMoving ? (record.storage?.job?.phase === 'cleanup' ? 'Removing only the retained copy. The active runtime data is kept.' : 'Keep both disks connected. The original data remains available until the copy is verified.') : descriptions[record.state] || '')}</p></div>
       ${pending || active ? '<div class="runtime-progress runtime-progress-indeterminate" role="progressbar" aria-label="Runtime operation in progress"><span></span></div>' : ''}
-      ${record.image_selection ? `<p class="hint"><strong>Image: ${escapeHtml(record.image_selection.flavor)}</strong> · ${(record.image_selection.image_bytes / 1024**3).toFixed(2)} GiB unpacked<br>${escapeHtml(record.image_selection.images.system.filename)}<br>${escapeHtml(record.image_selection.images.vendor.filename)}<br>Independent data. ARM translation is configured below; Google sign-in needs device verification.</p>` : ''}
+      ${record.image_selection ? (() => {
+        const image = record.image_selection;
+        const systemSha = image.images?.system?.sha256 || '';
+        const vendorSha = image.images?.vendor?.sha256 || '';
+        const cachedImage = (imageDownloadState?.available_images || []).find(item =>
+          item.images?.system?.sha256 === systemSha && item.images?.vendor?.sha256 === vendorSha);
+        const label = image.flavor === 'CUSTOM'
+          ? (image.custom_name || cachedImage?.custom_name || `Custom image · ${systemSha.slice(0, 8)}`)
+          : `Waydroid ${image.flavor}`;
+        return `<p class="hint"><strong>Image: ${escapeHtml(label)}</strong> · ${escapeHtml(image.flavor)} · ${(image.image_bytes / 1024**3).toFixed(2)} GiB unpacked<br>${escapeHtml(image.images.system.filename)}<br>${escapeHtml(image.images.vendor.filename)}<br>System SHA-256: <code>${escapeHtml(systemSha.slice(0, 16))}…</code><br>Vendor SHA-256: <code>${escapeHtml(vendorSha.slice(0, 16))}…</code><br>Independent data. ARM translation is configured below; Google sign-in needs device verification.</p>`;
+      })() : ''}
       ${record.job?.error ? `<div class="runtime-feedback error" role="alert"><strong>Could not ${escapeHtml(record.job.operation)}</strong><p>${escapeHtml(record.job.error)}</p></div>` : ''}
       ${blocked ? `<p class="runtime-blocked">Prepare / Start is unavailable — ${escapeHtml(blockedReasons.join(' · '))}</p>` : ''}
       <div class="runtime-config-grid"><div class="runtime-packages-panel"><strong>Apps</strong><div class="runtime-actions">${button('apps', runtimePackages.get(record.id)?.loading ? 'Loading apps…' : 'List apps', record.state === 'Running' && !runtimePackages.get(record.id)?.loading, 'btn-quiet')}</div>${renderRuntimePackages(record.id)}${record.appJob && !(record.appJob.action === 'launch' && record.appJob.status === 'Succeeded') ? `<div class="runtime-feedback ${record.appJob.status === 'Failed' ? 'error' : 'info'}" role="status"><strong>${escapeHtml(record.appJob.action)} · ${escapeHtml(record.appJob.status)}</strong><p>${escapeHtml(record.appJob.package || (record.appJob.action === 'delete' ? 'Runtime deletion' : record.appJob.action === 'install' ? 'APK installation' : ''))}</p><p>${escapeHtml(record.appJob.error || record.appJob.result?.message || 'Waiting for the Android result…')}</p></div>` : ''}</div>
@@ -2158,6 +2217,21 @@ async function refreshController() {
     }, 2000);
   }
 }
+function imageForRequest(request) {
+  return (imageDownloadState?.available_images || []).find(item =>
+    item.flavor === request.flavor && ['system', 'vendor'].every(kind =>
+      item.images?.[kind]?.sha256 === request[kind + '_sha256']));
+}
+async function activateRequestImage(request) {
+  if (!['create_image', 'reinstall'].includes(request.op) || request.flavor === 'installed') return;
+  const item = imageForRequest(request);
+  if (!item) throw new Error('Selected image is unavailable. Refresh the image library and choose it again.');
+  const state = await controllerRequest({op:'image_select', image_id:item.library_id});
+  if (state.status !== 'Ready' || state.flavor !== request.flavor ||
+      !['system', 'vendor'].every(kind => state.images?.[kind]?.sha256 === request[kind + '_sha256'])) {
+    throw new Error('Image selection changed. Refresh the image library and choose it again.');
+  }
+}
 async function mutateController(request) {
   if (controllerMutation || (request.id === 'default' && (runtimeTransition || pendingLaunch || pendingAppAction))) return;
   controllerMutation = true;
@@ -2187,7 +2261,7 @@ async function mutateController(request) {
       'Copy Existing runtime images, apps and Android data into a new managed runtime? This requires extra disk space. Keep Existing runtime stopped until copying and verification finish. The original is retained. App logins and device-bound credentials may require signing in again.',
       {title:'Import Existing runtime',kind:'info'})) return;
     if (request.op === 'reinstall' && !await window.__TAURI__.dialog.confirm(
-      'Reinstall this runtime with the selected Android image? Existing Android data, apps and settings will be removed. This cannot be undone.',
+      `Reinstall this runtime with ${imageForRequest(request)?.custom_name || (request.flavor === 'installed' ? 'Existing Waydroid image' : 'Waydroid ' + request.flavor)}?\nSystem SHA-256: ${request.system_sha256 || 'installed source'}\n\nExisting Android data, apps and settings will be removed. This cannot be undone.`,
       {title:'Reinstall runtime',kind:'warning'})) return;
     if (request.op === 'app_action') {
       controllerPending.phase = 'confirm'; renderController();
@@ -2200,6 +2274,7 @@ async function mutateController(request) {
     }
     controllerPending.phase = 'send';
     renderController();
+    await activateRequestImage(request);
     const {result, restarted} = request.id && request.id !== 'default'
       ? await RuntimeSettings.apply(request, {
         send: controllerRequest,
@@ -2788,8 +2863,9 @@ async function refreshManagedLibrary() {
     const records = await controllerRequest({op:'list'});
     if (!Array.isArray(records)) throw new Error('Invalid runtime list');
     const results = await Promise.all(records.map(async record => {
+      let current = record;
       try {
-        const current = await controllerRequest({op:'refresh', id:record.id});
+        current = await controllerRequest({op:'refresh', id:record.id});
         if (current?.id !== record.id) throw new Error('Invalid runtime state');
         if (!preferenceBusy && !pendingAppAction) {
           const version = managedPreferenceVersions.get(record.id) || 0;
@@ -2806,7 +2882,7 @@ async function refreshManagedLibrary() {
             if (Array.isArray(saved) && saved.every(app => typeof app.package === 'string' && app.launchable === true)) managedSnapshots.set(record.id, saved);
           } catch (_) { /* A corrupt cache is not an app inventory. */ }
         }
-        if (current.state === 'Running') {
+        if (current.state === 'Running' && !pendingAppAction && !pendingLaunch) {
           const report = await controllerRequest({op:'apps', id:record.id});
           if (report?.runtime_id !== record.id || !Array.isArray(report.apps)) throw new Error('Invalid app inventory');
           if (!report.apps.every(app => typeof app.package === 'string' && app.launchable === true)) throw new Error('Stop and start on the Runtime page to update launcher filtering.');
@@ -2814,7 +2890,11 @@ async function refreshManagedLibrary() {
           try { localStorage.setItem(`anvildroid_managed_apps:${record.id}`, JSON.stringify(report.apps)); } catch (_) {}
         }
         return current;
-      } catch (error) { return {...record, error:String(error)}; }
+      } catch (error) {
+        // A launch owns the worker for its startup check after the window maps.
+        // BUSY says nothing about runtime health or the cached app inventory.
+        return controllerBusy(error) ? current : {...record, error:String(error)};
+      }
     }));
     managedLibrary = results;
     managedLibraryError = '';
@@ -2833,7 +2913,23 @@ async function refreshManagedLibrary() {
     if(libraryPage&&!document.hidden&&!appStatesLoading) appStatesTimer=setTimeout(refreshAppStates,0);
   }
 }
+let managedLaunchTail = null;
+const queuedManagedLaunches = new Map();
 async function managedAppAction(action, pkg, runtimeId) {
+  if (action !== 'launch') return runManagedAppAction(action, pkg, runtimeId);
+  const key = `${runtimeId}\u0000${pkg}`;
+  if (queuedManagedLaunches.has(key)) return queuedManagedLaunches.get(key);
+  const previous = managedLaunchTail;
+  const task = previous ? previous.then(() => {
+    queuedManagedLaunches.delete(key);
+    return runManagedAppAction(action, pkg, runtimeId);
+  }) : runManagedAppAction(action, pkg, runtimeId);
+  if (previous) queuedManagedLaunches.set(key, task);
+  managedLaunchTail = task;
+  try { return await task; }
+  finally { if (managedLaunchTail === task) managedLaunchTail = null; }
+}
+async function runManagedAppAction(action, pkg, runtimeId) {
   if(probeInstallBusy)return;
   if (pendingLaunch || pendingAppAction) return;
   pendingAppAction = true;

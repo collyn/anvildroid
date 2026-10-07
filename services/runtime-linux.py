@@ -72,10 +72,34 @@ def android_pid_limit_is_private():
 
 def run(*args, timeout=20, umask=-1, include_stderr=False):
     args = android_command(args)
-    result = subprocess.run(list(map(str, args)), capture_output=True, text=True, timeout=timeout, umask=umask)
-    if result.returncode:
-        raise RuntimeError(f'{args[0]} failed: {result.stderr} {result.stdout}')
-    return (result.stdout + ('\n' + result.stderr if include_stderr else '')).strip()
+    process = subprocess.Popen(list(map(str, args)), stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, text=True,
+                               start_new_session=True, umask=umask)
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        # lxc-attach can leave a shell/package-manager child behind. Kill the
+        # whole session so a timed-out Android command cannot hold mounts or
+        # keep the runtime worker stuck in Starting forever.
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        # Do not call communicate() again here: a descendant can retain the
+        # stdout/stderr pipe after the leader is dead, which would deadlock
+        # the worker exactly when the timeout is meant to recover it.
+        for stream in (process.stdout, process.stderr):
+            if stream is not None:
+                stream.close()
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            pass
+        stdout = stderr = ''
+        raise subprocess.TimeoutExpired(args, timeout, output=stdout, stderr=stderr)
+    if process.returncode:
+        raise RuntimeError(f'{args[0]} failed: {stderr} {stdout}')
+    return (stdout + ('\n' + stderr if include_stderr else '')).strip()
 
 
 def require(value, message):

@@ -214,8 +214,20 @@ static void init(void) {
   real_listen = (listen_fn)dlsym(h, "wl_proxy_add_listener");
   real_destroy = (void (*)(struct proxy *))dlsym(h, "wl_proxy_destroy");
   get_version = (uint32_t (*)(struct proxy *))dlsym(h, "wl_proxy_get_version");
-  if (!real_marshal || !real_array_flags || !real_listen || !real_destroy ||
-      !get_version) {
+  /* Official images may keep libwayland symbols in the already loaded HWC
+   * namespace without exposing them from the vendor HAL soname. */
+  if (!real_marshal || !real_listen || !real_destroy || !get_version) {
+    void *global = (void *)-1L;
+    if (!real_marshal) real_marshal = (marshal_fn)dlsym(global, "wl_proxy_marshal_array_constructor_versioned");
+    if (!real_listen) real_listen = (listen_fn)dlsym(global, "wl_proxy_add_listener");
+    if (!real_destroy) real_destroy = (void (*)(struct proxy *))dlsym(global, "wl_proxy_destroy");
+    if (!get_version) get_version = (uint32_t (*)(struct proxy *))dlsym(global, "wl_proxy_get_version");
+    if (!real_array_flags) real_array_flags = (struct proxy *(*)(struct proxy *, uint32_t, const struct interface *, uint32_t, uint32_t, union argument *))dlsym(global, "wl_proxy_marshal_array_flags");
+  }
+  /* Legacy Waydroid has no marshal_array_flags. Its constructor API is
+   * sufficient; do not disable the bridge or skip display connection hooks. */
+  display_symbols(h);
+  if (!real_marshal || !real_listen || !real_destroy || !get_version) {
     /* An unknown custom HWC must remain usable even when desktop hooks are
      * unavailable. The stock Wayland protocol is enough for boot. */
     anvil_native_passthrough = 1;
@@ -224,7 +236,6 @@ static void init(void) {
     return;
   }
   anvil_native_passthrough = getenv("ANVILDROID_NATIVE_WAYLAND") != NULL;
-  display_symbols(h);
   __android_log_print(4, "AnvilDroid",
                       "window bridge loaded (Wayland legacy ABI)");
   unsigned long thread;

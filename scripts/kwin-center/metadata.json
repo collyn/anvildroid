@@ -1,9 +1,9 @@
 {
   "KPlugin": {
     "Id": "anvildroid-center",
-    "Name": "AnvilDroid Center Windows",
-    "Description": "Center new Waydroid app windows and dialogs on the current display",
-    "Version": "1.2",
+    "Name": "AnvilDroid Window Placement",
+    "Description": "Restore each Waydroid app position; center when its saved position is unavailable",
+    "Version": "1.3",
     "License": "MIT"
   },
   "KPackageStructure": "KWin/Script",

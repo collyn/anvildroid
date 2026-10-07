@@ -28,6 +28,7 @@ for f in runtime-controller.py runtime-existing.py runtime-host.py runtime-image
 done
 install -m 0755 "$ROOT/target/native/libanvildroid-runtime-window.so" "$DEST/usr/local/lib/anvildroid-controller/libanvildroid-window.so"
 install -m 0644 "$ROOT/target/native/libanvildroid-hwc-shim.so" "$DEST/usr/local/lib/anvildroid-controller/libanvildroid-hwc-shim.so"
+install -m 0644 "$ROOT/target/native/libanvildroid-android-window.so" "$DEST/usr/local/lib/anvildroid-controller/libanvildroid-android-window.so"
 install -m 0644 "$ROOT/services/runtime-path-guard.py" "$DEST/usr/local/lib/anvildroid-controller/runtime-path-guard.py"
 install -m 0644 "$ROOT/target/native/libanvildroid-path-guard.so" "$DEST/usr/local/lib/anvildroid-controller/libanvildroid-path-guard.so"
 install -m 0644 "$ROOT/target/ime/AnvilDroidIme.apk" "$DEST/usr/local/lib/anvildroid-controller/AnvilDroidIme.apk"

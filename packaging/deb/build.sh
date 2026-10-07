@@ -25,6 +25,7 @@ install -m 0755 "$ROOT/scripts/patch-waydroid.py" "$PKG/usr/local/lib/anvildroid
 for f in runtime-host.py runtime-arm.py runtime-arm-source.py; do install -m 0644 "$ROOT/services/$f" "$PKG/usr/local/lib/anvildroid-controller/services/$f"; done
 install -m 0755 "$ROOT/target/native/libanvildroid-runtime-window.so" "$PKG/usr/local/lib/anvildroid-controller/libanvildroid-window.so"
 install -m 0644 "$ROOT/target/native/libanvildroid-hwc-shim.so" "$PKG/usr/local/lib/anvildroid-controller/libanvildroid-hwc-shim.so"
+install -m 0644 "$ROOT/target/native/libanvildroid-android-window.so" "$PKG/usr/local/lib/anvildroid-controller/libanvildroid-android-window.so"
 install -m 0644 "$ROOT/services/runtime-path-guard.py" "$PKG/usr/local/lib/anvildroid-controller/runtime-path-guard.py"
 install -m 0644 "$ROOT/target/native/libanvildroid-path-guard.so" "$PKG/usr/local/lib/anvildroid-controller/libanvildroid-path-guard.so"
 install -m 0644 "$ROOT/target/ime/AnvilDroidIme.apk" "$PKG/usr/local/lib/anvildroid-controller/AnvilDroidIme.apk"

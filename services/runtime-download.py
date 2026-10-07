@@ -48,6 +48,13 @@ def waydroid_cli_import(images):
         image_dir.mkdir(mode=0o700)
         etc = private / 'etc'
         (etc / 'waydroid-extra' / 'images').mkdir(mode=0o755, parents=True)
+        # The isolated namespace bind-mounts this directory over /etc. Keep
+        # the NSS databases Waydroid's Python CLI needs for pwd.getpwuid().
+        # Without passwd, running the importer as root fails with uid-not-found.
+        for name in ('passwd', 'group', 'nsswitch.conf'):
+            source = Path('/etc') / name
+            if source.is_file():
+                shutil.copyfile(source, etc / name)
         for kind, source in images.items():
             destination = image_dir / (kind + '.img')
             shutil.copyfile(source, destination)
