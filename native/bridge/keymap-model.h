@@ -69,7 +69,8 @@ static int keymap_add(struct keymap_model *m, int x, int y, int w, int h) {
   return 1;
 }
 static int keymap_assign(struct keymap_model *m, int key) {
-  if (m->selected < 0 || m->selected >= m->count || key < 2 || key > 767)
+  if (m->selected < 0 || m->selected >= m->count || key < 2 || key > 767 ||
+      (key >= 60 && key <= 62))
     return 0;
   for (int i = 0; i < m->count; ++i)
     if (i != m->selected && m->points[i].key == key) {

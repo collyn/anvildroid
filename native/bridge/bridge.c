@@ -139,6 +139,7 @@ struct object {
   struct keymap_overlay *hints;
   unsigned long hints_probe;
   int hints_task;
+  int keymap_disabled, keymap_hidden;
   struct object *overlay_focus;
   int overlay_dismissed, overlay_pressed;
   struct object *keyboard_focus;

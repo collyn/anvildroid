@@ -3,11 +3,12 @@
 static void keymap_hints_paint(uint32_t *p,int w,int h,
                                 const struct keymap_overlay *f) {
   for(size_t i=0;i<(size_t)w*h;++i)p[i]=0;
+  if(f->hints_hidden)return;
   for(int i=0;i<f->model.count;++i) {
     const struct keymap_point *q=&f->model.points[i];
     int cx=(int)(((int64_t)q->nx*(w-1)+32767)/65535);
     int cy=(int)(((int64_t)q->ny*(h-1)+32767)/65535);
-    int active=q->key>0&&q->key<768&&
+    int active=!f->disabled&&q->key>0&&q->key<768&&
       ((f->active_keys[q->key/32]&(1u<<(q->key%32)))||f->flash_ticks[q->key]);
     for(int y=-28;y<=28;++y)for(int x=-28;x<=28;++x) {
       int px=cx+x,py=cy+y,d=x*x+y*y;
@@ -27,6 +28,7 @@ struct keymap_rect {
 struct keymap_layout {
   int compact;
   struct keymap_rect panel, add, save, remove, tap, hold, cancel, toggle;
+  struct keymap_rect playback, visibility;
 };
 static int keymap_contains(struct keymap_rect r, int x, int y) {
   return r.w > 0 && r.h > 0 && x >= r.x && y >= r.y && x < r.x + r.w &&
@@ -39,6 +41,9 @@ static struct keymap_layout keymap_layout(int w, int h, int hidden) {
     l.toggle = (struct keymap_rect){w - 64, 12, 52, 32};
     return l;
   }
+  l.playback=(struct keymap_rect){12,68,132,28};
+  l.visibility=(struct keymap_rect){152,68,132,28};
+  if(h<160)l.playback.h=l.visibility.h=0;
   if (l.compact) {
     l.panel = (struct keymap_rect){8, h - 52, w - 16, 44};
     int unit = (w - 28) / 5, x = 14, y = h - 46;
@@ -62,6 +67,8 @@ static struct keymap_layout keymap_layout(int w, int h, int hidden) {
   return l;
 }
 static int keymap_ui_hit(struct keymap_layout l, int x, int y) {
+  if (keymap_contains(l.playback,x,y))return 9;
+  if (keymap_contains(l.visibility,x,y))return 10;
   if (keymap_contains(l.toggle, x, y))
     return 6;
   if (keymap_contains(l.cancel, x, y))
@@ -100,7 +107,7 @@ static void keymap_ui_button(uint32_t *p, int w, int h, struct keymap_rect r,
   if (r.w <= 0)
     return;
   keymap_box(p, w, h, r, 6, active ? 0xff167cbb : 0xff293748);
-  int scale = r.w >= 100 ? 2 : 1;
+  int scale = r.w >= 100 && (int)strlen(label)*12+12<=r.w ? 2 : 1;
   keymap_text_scaled(p, w, h, r.x + (r.w - (int)strlen(label) * 6 * scale) / 2,
                      r.y + (r.h - 7 * scale) / 2, label,
                      enabled ? 0xffedf6ff : 0xff8191a4, scale);
@@ -172,6 +179,8 @@ static void keymap_editor_paint(uint32_t *p, int w, int h,
                        m->error ? 0xffffad99 : 0xff89d5ff, 1);
   }
   if (!f->panel_hidden) {
+    keymap_ui_button(p,w,h,l.playback,f->disabled?"F3: KEYMAP OFF":"F3: KEYMAP ON",!f->disabled,1);
+    keymap_ui_button(p,w,h,l.visibility,f->hints_hidden?"F4: HINTS HIDDEN":"F4: HINTS SHOWN",!f->hints_hidden,1);
     keymap_box(p, w, h, l.panel, 10, 0xfa19232f);
     if (!l.compact) {
       int x = l.panel.x;
@@ -189,14 +198,14 @@ static void keymap_editor_paint(uint32_t *p, int w, int h,
       if (h >= 470) {
         keymap_text_scaled(p, w, h, x + 16, 322, "DRAG TO REPOSITION",
                            0xff9cadc0, 1);
-        keymap_text_scaled(p, w, h, x + 16, 339, "ESC CANCELS CHANGES",
+        keymap_text_scaled(p, w, h, x + 16, 339, "F2 / ESC CANCELS CHANGES",
                            0xff9cadc0, 1);
       }
       if (h >= 490) {
-        keymap_text_scaled(p, w, h, x + 16, h - 124, "EDITOR ONLY", 0xff8194aa,
+        keymap_text_scaled(p, w, h, x + 16, h - 124, "F3 / F4 APPLY NOW", 0xff8194aa,
                            1);
         keymap_text_scaled(p, w, h, x + 16, h - 108,
-                           "TOUCH PLAYBACK NOT ENABLED", 0xff8194aa, 1);
+                           "FOR THIS APP WINDOW", 0xff8194aa, 1);
       }
       char count[28];
       snprintf(count, sizeof(count), "%d OF 64 CONTROLS", m->count);

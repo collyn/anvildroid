@@ -36,9 +36,9 @@ cp -a $STAGE/. %{buildroot}/
 python3 /usr/local/lib/anvildroid-controller/scripts/patch-waydroid.py >/dev/null 2>&1 || :
 # Prefer nftables when this kernel has no legacy iptables tables.
 net=/usr/lib/waydroid/data/scripts/waydroid-net.sh
-if [ -f "$net" ] && command -v iptables-nft >/dev/null 2>&1 && command -v iptables-legacy >/dev/null 2>&1 && ! iptables-legacy -t filter -L >/dev/null 2>&1 && grep -q 'command -v iptables-legacy' "$net"; then
-  [ -e "$net.anvildroid-legacy-backup" ] || cp -p "$net" "$net.anvildroid-legacy-backup"
-  sed -i 's/command -v iptables-legacy/command -v iptables-nft/g; s/command -v ip6tables-legacy/command -v ip6tables-nft/g' "$net"
+if [ -f "\$net" ] && command -v iptables-nft >/dev/null 2>&1 && command -v iptables-legacy >/dev/null 2>&1 && ! iptables-legacy -t filter -L >/dev/null 2>&1 && grep -q 'command -v iptables-legacy' "\$net"; then
+  [ -e "\$net.anvildroid-legacy-backup" ] || cp -p "\$net" "\$net.anvildroid-legacy-backup"
+  sed -i 's/command -v iptables-legacy/command -v iptables-nft/g; s/command -v ip6tables-legacy/command -v ip6tables-nft/g' "\$net"
 fi
 systemctl daemon-reload >/dev/null 2>&1 || :
 systemctl enable anvildroid-controller.service >/dev/null 2>&1 || :

@@ -37,7 +37,7 @@
         }catch(error){failures.push(String(error));}
       }
       if(request!==epoch)return;
-      if(!profiles.length)line(panel,'No saved keymaps found. Open an app, then right-click its card → Edit keymap. Stopped runtimes are not read.');
+      if(!profiles.length)line(panel,'No saved keymaps found. Focus an open app and press F2, or right-click its card → Edit keymap. Stopped runtimes are not read.');
       for(const p of profiles){
         const row=document.createElement('article');row.className='settings-section';
         line(row,p.package,'h3');

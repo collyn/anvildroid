@@ -1021,7 +1021,7 @@ function showContextMenu(e, pkg, label, runtimeId = 'default') {
   menu.setAttribute('role', 'menu');
   const options = pkg === 'org.anvildroid.desktop' ? [['launch', 'Open Waydroid'], ['details', 'Runtime details'], ['favorite', library.favorites.includes(pkg) ? 'Remove favorite' : 'Add favorite']] : [
     ['launch', 'Open app'],
-    ['keymap', 'Edit keymap (managed runtime required)'],
+    ['keymap', 'Edit keymap (F2 in app window)'],
     ['details', 'App details'],
     ['favorite', library.favorites.includes(pkg) ? 'Remove favorite' : 'Add favorite'],
     ['info', 'Android App Info'],

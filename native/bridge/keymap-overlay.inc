@@ -21,6 +21,7 @@ struct keymap_overlay {
       task;
   int panel_hidden, placement_hold;
   int passive;
+  int disabled, hints_hidden;
   int sync_valid, sync_x, sync_y;
   struct proxy *sync_above;
   uint32_t active_keys[24];
@@ -30,6 +31,8 @@ static unsigned long keymap_token;
 static struct keymap_overlay *keymap_paint_context;
 static char keymap_closed_nonce[33];
 static int keymap_closed_result;
+static char keymap_shortcut_package[241];
+static int keymap_shortcut_task;
 static void keymap_wake(void);
 static int keymap_number(const char *value, int limit) {
   if (!*value)
@@ -267,6 +270,28 @@ static void keymap_hints_clear(struct object *s) {
   s->hints->dirty=1;
   keymap_wake();
 }
+/* Window controls apply immediately; they do not modify the saved bindings. */
+static void keymap_toggle(struct object *s, int visibility) {
+  if (!s) return;
+  if (visibility) s->keymap_hidden = !s->keymap_hidden;
+  else {
+    s->keymap_disabled = !s->keymap_disabled;
+    if (s->hints) {
+      /* A key-down consumed by the mapper must not leak its key-up to Android. */
+      for (struct object *o=objects;o;o=o->next)
+        if (o->keyboard_focus==s)
+          for(int i=0;i<24;++i)o->keymap_blocked_keys[i]|=s->hints->active_keys[i];
+      keymap_hints_clear(s);
+    }
+  }
+  struct keymap_overlay *layers[]={s->hints,s->overlay};
+  for(int i=0;i<2;++i)if(layers[i]) {
+    layers[i]->disabled=s->keymap_disabled;
+    layers[i]->hints_hidden=s->keymap_hidden;
+    layers[i]->dirty=1;
+  }
+  keymap_wake();
+}
 static void keymap_connection_lost(void) {
   for (struct object *s = objects; s; s = s->next)
   {
@@ -462,6 +487,7 @@ static void keymap_overlay_button(struct object *pointer, uint32_t button,
         if(selected) {m->points[m->selected].hold=f->placement_hold;m->dirty=1;}
       }
       if(hit==6)f->panel_hidden=!f->panel_hidden;
+      if(hit==9||hit==10)keymap_toggle(s,hit==10);
       if (hit == 5) {
         f->ack_pending = 3;
         f->close_pending = 1;
@@ -555,6 +581,7 @@ static void keymap_kleave(void *data, struct proxy *p, uint32_t serial,
                           struct proxy *surface) {
   struct object *o = data;
   pthread_mutex_lock(mutex);
+  keymap_shortcut_task = 0;
   keymap_hints_clear(o->keyboard_focus);
   o->keyboard_focus = 0;
   for (int i = 0; i < 24; ++i)
@@ -576,6 +603,38 @@ static void keymap_key(void *data, struct proxy *p, uint32_t serial,
   }
   if (!state && key < 768)
     o->keymap_blocked_keys[key / 32] &= ~(1u << (key % 32));
+  if (ANVIL_KEYMAP_EDITOR && (key == 61 || key == 62) &&
+      o->keyboard_focus && keymap_task_owner(o->keyboard_focus)) {
+    if (state && !blocked) {
+      o->keymap_blocked_keys[key / 32] |= 1u << (key % 32);
+      keymap_toggle(o->keyboard_focus, key == 62);
+    }
+    pthread_mutex_unlock(mutex);
+    return;
+  }
+  /* Queue disk IO through the same validated path as the library editor. */
+  if (ANVIL_KEYMAP_EDITOR && key == 60 && o->keyboard_focus) {
+    struct object *s = o->keyboard_focus;
+    if (state && !blocked) {
+      o->keymap_blocked_keys[key / 32] |= 1u << (key % 32);
+      if (f) {
+        if (!f->save_pending) {
+          f->close_pending = 1;
+          f->ack_pending = 3;
+          keymap_wake();
+        }
+      } else if (keymap_shortcut_task) {
+        keymap_shortcut_task = 0;
+      } else if (keymap_connection_ready() && keymap_task_owner(s)) {
+        keymap_shortcut_task = keymap_task_owner(s);
+        snprintf(keymap_shortcut_package, sizeof(keymap_shortcut_package),
+                 "%s", s->app_id);
+        keymap_hints_clear(s);
+      }
+    }
+    pthread_mutex_unlock(mutex);
+    return;
+  }
   if (f && state && !f->save_pending) {
     if (key == 1) {
       f->close_pending = 1;
@@ -608,7 +667,7 @@ static void keymap_key(void *data, struct proxy *p, uint32_t serial,
     }
   }
   struct keymap_overlay *hints=o->keyboard_focus?o->keyboard_focus->hints:0;
-  if(!suppress&&hints&&key<768) {
+  if(!suppress&&hints&&!o->keyboard_focus->keymap_disabled&&key<768) {
     if (scrcpy_mapping_key(o->keyboard_focus, hints, (int)key, state))
       suppress = 1;
     for(int i=0;i<hints->model.count;++i)if(hints->model.points[i].key==(int)key) {
@@ -743,6 +802,7 @@ static void keymap_hints_set(struct object *s,const struct keymap_model *model,i
   if(!s->hints)return;
   struct keymap_overlay *f=s->hints;
   f->passive=1;f->model=*model;f->model.selected=-1;
+  f->disabled=s->keymap_disabled;f->hints_hidden=s->keymap_hidden;
   f->task=task;f->dirty=1;f->close_pending=!model->count;
   snprintf(f->package,sizeof(f->package),"%s",s->app_id);
   for(int i=0;i<24;++i)f->active_keys[i]=0;
@@ -833,7 +893,16 @@ static void keymap_io_poll(void) {
     }
   }
   close(base);
-  if (*nonce) {
+  int shortcut = 0;
+  pthread_mutex_lock(mutex);
+  if (!*nonce && keymap_shortcut_task) {
+    shortcut = 1;
+    task = keymap_shortcut_task;
+    snprintf(pkg, sizeof(pkg), "%s", keymap_shortcut_package);
+  }
+  keymap_shortcut_task = 0;
+  pthread_mutex_unlock(mutex);
+  if (*nonce || shortcut) {
     struct keymap_model model = {.selected = -1};
     mkdir(KEYMAP_BASE "/keymaps", 0700);
     int dir = open(KEYMAP_BASE "/keymaps",
@@ -870,12 +939,20 @@ static void keymap_io_poll(void) {
     int accepted = keymap_connection_ready() && valid >= 0 && !busy &&
                    matches == 1 && tasks_match == 1 && target->bw >= 300 &&
                    target->bh >= 120 && !target->resize.dragging;
+    if (accepted && shortcut) {
+      int focused = 0;
+      for (struct object *o = objects; o; o = o->next)
+        if (o->keyboard_focus == target) focused = 1;
+      accepted = focused;
+    }
     if (accepted) {
       target->overlay = calloc(1, sizeof(*target->overlay));
       accepted = target->overlay != 0;
       if (accepted) {
         struct keymap_overlay *f = target->overlay;
         f->model = model;
+        f->disabled=target->keymap_disabled;
+        f->hints_hidden=target->keymap_hidden;
         f->model.selected = -1;
         f->task = task;
         snprintf(f->package, sizeof(f->package), "%s", pkg);
