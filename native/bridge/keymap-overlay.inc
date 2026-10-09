@@ -24,6 +24,7 @@ struct keymap_overlay {
   int sync_valid, sync_x, sync_y;
   struct proxy *sync_above;
   uint32_t active_keys[24];
+  unsigned char flash_ticks[768];
 };
 static unsigned long keymap_token;
 static struct keymap_overlay *keymap_paint_context;
@@ -242,6 +243,7 @@ static void keymap_hints_destroy(struct object *s) {
   if(!s)return;
   s->hints_probe=0;s->hints_task=0;
   if(!s->hints)return;
+  scrcpy_mapping_cancel();
   struct csd_piece *p=&s->hints->piece;
   if(p->subsurface){wayland_send(p->subsurface,0,0);real_destroy(p->subsurface);}
   if(p->surface){wayland_send(p->surface,0,0);real_destroy(p->surface);}
@@ -259,7 +261,9 @@ static int keymap_task_owner(struct object *s) {
 }
 static void keymap_hints_clear(struct object *s) {
   if(!s||!s->hints)return;
+  scrcpy_mapping_cancel();
   for(int i=0;i<24;++i)s->hints->active_keys[i]=0;
+  memset(s->hints->flash_ticks,0,sizeof(s->hints->flash_ticks));
   s->hints->dirty=1;
   keymap_wake();
 }
@@ -486,6 +490,11 @@ static void keymap_done(void *unused, struct proxy *callback, uint32_t serial) {
       wayland_send(s->p, 6, 0);
     }
   ime_sync();
+  /* A static Android app may not submit another frame to flush this repaint. */
+  if (real_display_flush(keymap_display) < 0 && PROFILE_ERRNO != 11) {
+    keymap_display_blocked = 1;
+    keymap_connection_lost();
+  }
   pthread_mutex_unlock(mutex);
 }
 static void (*keymap_done_listener[])(void) = {(void (*)(void))keymap_done};
@@ -600,9 +609,15 @@ static void keymap_key(void *data, struct proxy *p, uint32_t serial,
   }
   struct keymap_overlay *hints=o->keyboard_focus?o->keyboard_focus->hints:0;
   if(!suppress&&hints&&key<768) {
+    if (scrcpy_mapping_key(o->keyboard_focus, hints, (int)key, state))
+      suppress = 1;
     for(int i=0;i<hints->model.count;++i)if(hints->model.points[i].key==(int)key) {
       uint32_t bit=1u<<(key%32);
-      if(state)hints->active_keys[key/32]|=bit;
+      if(state) {
+        hints->active_keys[key/32]|=bit;
+        /* Four 50ms poll ticks keep a quick tap visible for 150-200ms. */
+        hints->flash_ticks[key]=4;
+      }
       else hints->active_keys[key/32]&=~bit;
       hints->dirty=1;keymap_wake();break;
     }
@@ -731,6 +746,7 @@ static void keymap_hints_set(struct object *s,const struct keymap_model *model,i
   f->task=task;f->dirty=1;f->close_pending=!model->count;
   snprintf(f->package,sizeof(f->package),"%s",s->app_id);
   for(int i=0;i<24;++i)f->active_keys[i]=0;
+  memset(f->flash_ticks,0,sizeof(f->flash_ticks));
   keymap_wake();
 }
 /* One profile read per poll, outside the event-thread lock. Bind completion
@@ -738,6 +754,16 @@ static void keymap_hints_set(struct object *s,const struct keymap_model *model,i
 static void keymap_hints_poll(const char *runtime) {
   char pkg[241]="";unsigned long token=0;int task=0;
   pthread_mutex_lock(mutex);
+  for(struct object *s=objects;s;s=s->next)if(s->hints) {
+    struct keymap_overlay *f=s->hints;
+    for(int i=0;i<f->model.count;++i) {
+      int key=f->model.points[i].key;
+      if(key>0&&key<768&&f->flash_ticks[key]&&!--f->flash_ticks[key]&&
+         !(f->active_keys[key/32]&(1u<<(key%32)))) {
+        f->dirty=1;keymap_wake();
+      }
+    }
+  }
   if(keymap_connection_ready())for(struct object *s=objects;s;s=s->next) {
     int owner=keymap_task_owner(s);
     if(s->hints&&owner!=s->hints->task) {

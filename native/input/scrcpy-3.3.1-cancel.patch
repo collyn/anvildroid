@@ -1,0 +1,88 @@
+--- a/server/src/main/java/com/genymobile/scrcpy/control/PointersState.java
++++ b/server/src/main/java/com/genymobile/scrcpy/control/PointersState.java
+@@ -12,6 +12,14 @@
+     public static final int MAX_POINTERS = 10;
+ 
+     private final List<Pointer> pointers = new ArrayList<>();
++
++    public int size() {
++        return pointers.size();
++    }
++
++    public void clear() {
++        pointers.clear();
++    }
+ 
+     private int indexOf(long id) {
+         for (int i = 0; i < pointers.size(); ++i) {
+--- a/server/src/main/java/com/genymobile/scrcpy/control/Controller.java
++++ b/server/src/main/java/com/genymobile/scrcpy/control/Controller.java
+@@ -91,6 +91,9 @@
+     private final Object displayDataAvailable = new Object(); // condition variable
+ 
+     private long lastTouchDown;
++    private int lastTouchDisplayId;
++    private int lastTouchSource = InputDevice.SOURCE_TOUCHSCREEN;
++    private boolean touchResetFailed;
+     private final PointersState pointersState = new PointersState();
+     private final MotionEvent.PointerProperties[] pointerProperties = new MotionEvent.PointerProperties[PointersState.MAX_POINTERS];
+     private final MotionEvent.PointerCoords[] pointerCoords = new MotionEvent.PointerCoords[PointersState.MAX_POINTERS];
+@@ -228,6 +231,11 @@
+             } catch (IOException e) {
+                 Ln.e("Controller error", e);
+             } finally {
++                try {
++                    cancelTouches();
++                } catch (RuntimeException e) {
++                    Ln.e("Touch cancellation on disconnect failed", e);
++                }
+                 Ln.d("Controller stopped");
+                 if (uhidManager != null) {
+                     uhidManager.closeAll();
+@@ -405,7 +413,37 @@
+         return Pair.create(point, targetDisplayId);
+     }
+ 
++    // AnvilDroid diagnostic: cancel Android AND local state before reusing IDs.
++    // Called only on the control thread, including its disconnect/finally path.
++    private boolean cancelTouches() {
++        if (pointersState.size() == 0) {
++            return !touchResetFailed;
++        }
++        int count = pointersState.update(pointerProperties, pointerCoords);
++        MotionEvent cancel = MotionEvent.obtain(lastTouchDown, SystemClock.uptimeMillis(), MotionEvent.ACTION_CANCEL,
++                count, pointerProperties, pointerCoords, 0, 0, 1f, 1f, DEFAULT_DEVICE_ID, 0, lastTouchSource, 0);
++        boolean applied;
++        try {
++            applied = Device.injectEvent(cancel, lastTouchDisplayId, InputManager.INJECT_INPUT_EVENT_MODE_WAIT_FOR_RESULT);
++        } finally {
++            cancel.recycle();
++        }
++        touchResetFailed = !applied;
++        if (applied) {
++            pointersState.clear();
++            lastTouchDown = 0;
++        }
++        Ln.i("AnvilDroid touch reset applied=" + applied + " pointers=" + count);
++        return applied;
++    }
++
+     private boolean injectTouch(int action, long pointerId, Position position, float pressure, int actionButton, int buttons) {
++        if (action == MotionEvent.ACTION_CANCEL) {
++            return cancelTouches();
++        }
++        if (touchResetFailed) {
++            return false;
++        }
+         long now = SystemClock.uptimeMillis();
+ 
+         Pair<Point, Integer> pair = getEventPointAndDisplayId(position);
+@@ -441,6 +479,8 @@
+             pointer.setUp(action == MotionEvent.ACTION_UP);
+         }
+ 
++        lastTouchDisplayId = targetDisplayId;
++        lastTouchSource = source;
+         int pointerCount = pointersState.update(pointerProperties, pointerCoords);
+         if (pointerCount == 1) {
+             if (action == MotionEvent.ACTION_DOWN) {

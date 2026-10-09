@@ -4,7 +4,10 @@
 #define MAPPING_BINDINGS 64
 #define MAPPING_KEYS 768
 #define MAPPING_TAP_NS UINT64_C(35000000)
+#ifndef ANVIL_MAPPING_BINDING_DEFINED
+#define ANVIL_MAPPING_BINDING_DEFINED
 struct mapping_binding { uint16_t key, nx, ny; int hold; };
+#endif
 struct mapping_player {
   struct touch_session session;
   struct mapping_binding bindings[MAPPING_BINDINGS];

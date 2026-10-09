@@ -154,8 +154,12 @@ def limit_android_pids(pid):
                 'assert os.readlink("/proc/self/ns/pid") == sys.argv[1]; '
                 'p=Path("/proc/sys/kernel/pid_max"); p.write_text("65535\\n"); '
                 'assert int(p.read_text()) == 65535')
+        # A procfs mounted for the parent PID namespace still exposes that
+        # namespace's sysctls after setns. Mount proc privately *after* entering
+        # the child; never remount Android's procfs or write the host sysctl.
         result = subprocess.run(['nsenter', '--pid=/proc/self/fd/' + str(fd), '--',
-                                 sys.executable, '-c', code, expected],
+                                 'unshare', '--mount', '--propagation', 'private',
+                                 '--mount-proc', '--', sys.executable, '-c', code, expected],
                                 pass_fds=(fd,), capture_output=True, text=True, timeout=10)
         require(result.returncode == 0, 'Cannot set private Android PID limit: ' + result.stderr[-512:])
     finally:

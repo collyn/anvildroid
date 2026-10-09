@@ -43,7 +43,7 @@ dependencies = [
 
 [[package]]
 name = "anvildroid-cli"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anvildroid-core",
  "serde_json",
@@ -51,7 +51,7 @@ dependencies = [
 
 [[package]]
 name = "anvildroid-core"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "base64 0.22.1",
  "dirs",
@@ -62,7 +62,7 @@ dependencies = [
 
 [[package]]
 name = "anvildroid-gui"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anvildroid-core",
  "serde",

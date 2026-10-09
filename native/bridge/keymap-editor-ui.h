@@ -8,7 +8,7 @@ static void keymap_hints_paint(uint32_t *p,int w,int h,
     int cx=(int)(((int64_t)q->nx*(w-1)+32767)/65535);
     int cy=(int)(((int64_t)q->ny*(h-1)+32767)/65535);
     int active=q->key>0&&q->key<768&&
-      (f->active_keys[q->key/32]&(1u<<(q->key%32)));
+      ((f->active_keys[q->key/32]&(1u<<(q->key%32)))||f->flash_ticks[q->key]);
     for(int y=-28;y<=28;++y)for(int x=-28;x<=28;++x) {
       int px=cx+x,py=cy+y,d=x*x+y*y;
       if(px<0||px>=w||py<0||py>=h||d>28*28)continue;

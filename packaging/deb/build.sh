@@ -30,6 +30,9 @@ install -m 0644 "$ROOT/services/runtime-path-guard.py" "$PKG/usr/local/lib/anvil
 install -m 0644 "$ROOT/target/native/libanvildroid-path-guard.so" "$PKG/usr/local/lib/anvildroid-controller/libanvildroid-path-guard.so"
 install -m 0644 "$ROOT/target/ime/AnvilDroidIme.apk" "$PKG/usr/local/lib/anvildroid-controller/AnvilDroidIme.apk"
 install -m 0644 "$ROOT/target/shutdown/anvildroid-shutdown.jar" "$PKG/usr/local/lib/anvildroid-controller/anvildroid-shutdown.jar"
+if [ -r "$ROOT/target/input-diagnostic/scrcpy-server-cancel.jar" ]; then
+  install -m 0644 "$ROOT/target/input-diagnostic/scrcpy-server-cancel.jar" "$PKG/usr/local/lib/anvildroid-controller/scrcpy-server-cancel.jar"
+fi
 cp -a "$ROOT/native/overlay/." "$PKG/usr/local/lib/anvildroid-controller/provision/"
 for f in anvildroid-apps.rc anvildroid-tasks.rc anvildroid-apps.sh anvildroid-tasks.sh; do install -m 0755 "$ROOT/native/$f" "$PKG/usr/local/lib/anvildroid-controller/provision/$f"; done
 install -m 0644 "$ROOT/target/native/overlay-key.p12" "$PKG/usr/local/lib/anvildroid-controller/provision/overlay-key.p12"

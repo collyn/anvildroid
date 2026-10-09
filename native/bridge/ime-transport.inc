@@ -1,4 +1,7 @@
 /* Authenticated Android IME socket transport shared by desktop adapters. */
+#ifndef ANVIL_IME_QUEUE_CAP
+#define ANVIL_IME_QUEUE_CAP 64
+#endif
 static int ime_transfer(int fd, void *buffer, size_t size, int writing) {
   unsigned char *p = buffer;
   while (size) {
@@ -58,7 +61,7 @@ static void *ime_worker(void *unused) {
       int broken = ime_broken, queued = ime_head != ime_tail;
       if (queued) {
         memcpy(value, ime_queue[ime_head], sizeof(value));
-        ime_head = (ime_head + 1) % 16;
+        ime_head = (ime_head + 1) % ANVIL_IME_QUEUE_CAP;
       }
       pthread_mutex_unlock(mutex);
       if (broken) break;
@@ -96,10 +99,12 @@ static void *ime_worker(void *unused) {
         ime_active = strstr(value, "\"active\":true") != 0;
         memcpy(ime_package, p, length); ime_package[length] = 0;
         pthread_mutex_unlock(mutex);
-      } else if (strstr(value, "\"op\":\"result\"") &&
-                 !strstr(value, "\"status\":\"ok\"")) {
-        /* Fail closed until a fresh authenticated connection resynchronizes. */
-        break;
+      } else if (strstr(value, "\"op\":\"result\"")) {
+        /* Focus can change between a Wayland batch and Android's reply. Do not
+         * tear down a healthy IME channel for an expected stale/unsupported
+         * acknowledgement; the next state query will resynchronize it. */
+        if (!strstr(value, "\"status\":\"ok\""))
+          __android_log_print(5, "AnvilDroidIme", "Android batch acknowledgement was not applied");
       }
     }
     close(fd);

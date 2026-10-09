@@ -144,7 +144,7 @@ public final class BridgeIme extends InputMethodService {
     }
     private final class Peer {
         final LocalSocket socket;
-        final ArrayBlockingQueue<JSONObject> output = new ArrayBlockingQueue<>(16);
+        final ArrayBlockingQueue<JSONObject> output = new ArrayBlockingQueue<>(64);
         volatile boolean closed;
         Peer(LocalSocket socket) { this.socket = socket; }
         void send(JSONObject msg) { if (!closed && !output.offer(msg)) close(); }

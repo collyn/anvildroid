@@ -134,7 +134,7 @@ struct object {
   void *listener_data;
   struct proxy *decoration;
   uint32_t decoration_pending, decoration_mode;
-  struct csd_frame *csd, *csd_focus;
+  struct csd_frame *csd, *csd_focus, *csd_resize;
   struct keymap_overlay *overlay;
   struct keymap_overlay *hints;
   unsigned long hints_probe;
@@ -185,6 +185,9 @@ struct task {
   int id, x, y, width, height;
   char package[256];
 };
+struct keymap_overlay;
+static int scrcpy_mapping_key(struct object *, struct keymap_overlay *, int, int);
+static void scrcpy_mapping_cancel(void);
 static struct task tasks[128];
 static int task_count;
 #include "media-layer.inc"
@@ -307,6 +310,7 @@ static void decoration_destroy(struct object *top) {
 #include "window-profile.inc"
 #include "close-adapter.inc"
 #include "keymap-overlay.inc"
+#include "scrcpy-mapping.inc"
 #include "display-probe.inc"
 #include "full-ui.inc"
 #include "game-fit.inc"

@@ -33,7 +33,11 @@ static struct wl_proxy *ime_manager,*ime_seat,*ime_text,*ime_surface;
 static uint32_t ime_serial,ime_first_serial,ime_manager_name;
 static uint64_t ime_generation,ime_enabled_generation;
 static int ime_connected,ime_active,ime_type,ime_enabled,ime_broken,ime_started;
-static char ime_package[256],ime_queue[16][32769];
+/* Keep the producer and transport ring dimensions identical.  This adapter
+ * used to retain the old 16-entry declaration while the consumer advanced a
+ * 64-entry ring, which could index past the allocation under IME bursts. */
+#define ANVIL_IME_QUEUE_CAP 64
+static char ime_package[256],ime_queue[ANVIL_IME_QUEUE_CAP][32769];
 static unsigned ime_head,ime_tail;
 static struct anvil_ime_state ime_state;
 static const struct wl_interface ime_text_interface;
@@ -87,7 +91,7 @@ static void ime_done(void *d,struct wl_proxy *p,uint32_t serial){
  if(anvil_ime_done(&ime_state,serial,ime_serial,&b)&&ime_enabled&&owned(ime_surface)&&ime_generation==ime_enabled_generation&&(int32_t)(serial-ime_first_serial)>=0){
   char json[50000];int n=snprintf(json,sizeof(json),"{\"v\":1,\"op\":\"batch\",\"generation\":%llu,\"deleteBefore\":%u,\"deleteAfter\":%u,\"cursorBegin\":%d,\"cursorEnd\":%d,\"commit\":",(unsigned long long)ime_enabled_generation,b.delete_before_bytes,b.delete_after_bytes,b.cursor_begin,b.cursor_end);
   char *end=ime_quote(json+n,b.commit);memcpy(end,",\"preedit\":",11);end=ime_quote(end+11,b.preedit);*end++='}';*end=0;
-  unsigned next=(ime_tail+1)%16;
+  unsigned next=(ime_tail+1)%ANVIL_IME_QUEUE_CAP;
   size_t len=(size_t)(end-json);
   if(len>=sizeof(ime_queue[0])||next==ime_head)ime_broken=1;
   else if(ime_connected&&!ime_broken){memcpy(ime_queue[ime_tail],json,len+1);ime_tail=next;}

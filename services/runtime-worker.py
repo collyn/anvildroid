@@ -82,6 +82,21 @@ def prepare_overlay_upper(path):
     path.chmod(0o755)
 
 
+def private_device_node(source, directory):
+    # Bind-mounting host device inodes lets Android chmod/chown the host.
+    # Keep the major/minor while giving each container its own inode.
+    info = source.stat()
+    require(stat.S_ISCHR(info.st_mode) or stat.S_ISBLK(info.st_mode),
+            f'Not a device node: {source}')
+    directory.mkdir(mode=0o755, exist_ok=True)
+    directory.chmod(0o755)
+    private = directory / source.name
+    private.unlink(missing_ok=True)
+    os.mknod(private, stat.S_IFMT(info.st_mode) | 0o600, info.st_rdev)
+    private.chmod(0o666)
+    return private
+
+
 def ensure_binder_filesystem():
     """Load Binder and mount BinderFS when the controller came from systemd."""
     if shutil.which('modprobe'):
@@ -642,7 +657,10 @@ def configure_desktop_ime(instance, work, shell, desktop):
         apk = instance / 'desktop-ime.apk'
         digest = hashlib.sha256(apk.read_bytes()).hexdigest()
         version = instance / 'desktop-ime.sha256'
-        installed = shell('pm', 'path', 'org.anvildroid.ime').startswith('package:')
+        # pm path exits nonzero for an absent package on official images,
+        # aborting setup before we can install the keyboard on a fresh image.
+        installed = 'package:org.anvildroid.ime' in shell(
+            'pm', 'list', 'packages', '--user', '0', 'org.anvildroid.ime').splitlines()
         # A previous PackageInstaller call can finish after lxc-attach has
         # timed out. If Android already exposes the package, trust that
         # completed install and record the marker instead of reinstalling on
@@ -765,6 +783,7 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
     root = instance / 'android'
     root.mkdir(mode=0o700, exist_ok=True)
     mounts, names, compositors, logfiles = [], [], [], []
+    scrcpy_process = None
     boot_completed = False
     uplink = network.Uplink() if host_net_fd is not None else None
     def loc(name): return root / name
@@ -1106,11 +1125,13 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
             config = [line for line in original
                       if line.startswith(keep) and not line.startswith('lxc.mount.auto')]
             config.append('lxc.mount.auto = sys:ro proc')
-            # Do not make startup depend on writing kernel.pid_max inside the
-            # container. Several hosts expose a private PID namespace but
-            # keep that sysctl read-only; the attempt then only produces a
-            # misleading start failure.  32-bit translation remains optional.
-            private_pid_limit = False
+            # Cap Android LP32 thread IDs on kernels with namespaced pid_max.
+            # The helper uses private procfs; Android keeps its read-only mount.
+            try:
+                private_pid_limit = linux.android_pid_limit_is_private()
+            except RuntimeError as error:
+                private_pid_limit = False
+                print('Android private PID limit unavailable:', error, flush=True)
             config += [f'lxc.rootfs.path = dir:{fs}', f'lxc.uts.name = anvil-{name}',
                        'lxc.autodev = 0', 'lxc.console.path = none',
                        # Allow Android's uid-mapped processes to open the
@@ -1176,7 +1197,10 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
                             pass
                         os.link(source, private_dri)
                         continue
-                    options = 'bind,create=file'
+                    source = private_device_node(source, work / 'devices')
+                    # Runtime storage may be nodev; this mount must allow
+                    # opening the private device inode inside Android.
+                    options = 'bind,dev,create=file'
                     config.append(f'lxc.mount.entry = {source} dev/{device} none {options} 0 0')
             if gpu_node:
                 # The runtime storage is commonly mounted nodev. Explicitly
@@ -1294,6 +1318,27 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
             state.pop('boot_wait', None)
             state['network'] = 'private_uplink' if uplink else 'isolated'
             boot_completed = True
+            # Start the per-runtime control-only receiver when the packaged
+            # diagnostic server is present. It shares the Android namespace;
+            # the native bridge connects to the same fixed abstract socket.
+            server_jar = Path('/usr/local/lib/anvildroid-controller/scrcpy-server-cancel.jar')
+            if desktop and server_jar.is_file():
+                guest_jar = loc(identifier) / 'data/local/tmp/anvildroid-scrcpy-server.jar'
+                shutil.copyfile(server_jar, guest_jar)
+                guest_jar.chmod(0o644)
+                environment = shutdown_environment(lxc, identifier)
+                scrcpy_process = subprocess.Popen(
+                    list(linux.android_command(['lxc-attach', '-P', root, '-n', identifier])) +
+                    environment + ['-u', '2000', '-g', '2000', '--set-var',
+                    'CLASSPATH=/data/local/tmp/anvildroid-scrcpy-server.jar', '--',
+                    '/system/bin/timeout', '-s', 'KILL', '86400',
+                    '/system/bin/app_process', '/system/bin',
+                    'com.genymobile.scrcpy.Server', '3.3.1', 'scid=0',
+                    'tunnel_forward=true', 'video=false', 'audio=false',
+                    'control=true', 'clipboard_autosync=false', 'power_on=false',
+                    'cleanup=false', 'send_device_meta=false', 'send_dummy_byte=true'],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                state['keymap_backend'] = 'scrcpy-control'
         while not stopping.wait(1):
             if uplink: uplink.check()
             if desktop:
@@ -1307,6 +1352,11 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
     except Exception as error:
         state.update(state='Error', error=str(error)[-1024:])
     finally:
+        if scrcpy_process is not None:
+            scrcpy_process.terminate()
+            try: scrcpy_process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                scrcpy_process.kill(); scrcpy_process.wait(timeout=3)
         errors = []
         for name in names:
             try:

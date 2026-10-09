@@ -64,6 +64,9 @@ static struct wl_proxy *root_surface, *xdg;
 static int host_w=1280, host_h=720, fit_w=1280, fit_h=720, pad_x, pad_y;
 static const int canvas_w=1280, canvas_h=720;
 static int fullscreen, focused, configured;
+static int root_has_buffer;
+static int fullscreen_requested=-1;
+static int restore_w=1280, restore_h=720;
 static void (*top_events[4])(void), (*top_original[4])(void);
 static void (*xdg_events[1])(void), (*xdg_original[1])(void);
 static void (*key_events[6])(void), (*key_original[6])(void);
@@ -84,6 +87,7 @@ static int owned(struct wl_proxy *p) {
   return 0;
 }
 #include "android-ime.inc"
+#include "android-csd.inc"
 
 static void remember(struct wl_proxy *p,int kind,struct wl_proxy *s,struct wl_proxy *parent) {
   struct tracked *o=calloc(1,sizeof(*o));
@@ -111,7 +115,7 @@ static void destination(struct tracked *o, union wl_argument *a) {
   if(a[1].i<1)a[1].i=1;
 }
 static void apply_size(void) {
-  if(!root_surface || !configured)return;
+  if(!root_surface || !configured || !root_has_buffer)return;
   for(struct tracked *o=objects;o;o=o->next) {
     if(o->kind==VIEWPORT && owned(o->surface) && o->width>0 && o->height>0) {
       union wl_argument a[2];destination(o,a);
@@ -122,14 +126,30 @@ static void apply_size(void) {
       marshal(o->proxy,1,NULL,1,0,a);
     }
   }
-  union wl_argument g[4]={{.i=0},{.i=0},{.i=host_w},{.i=host_h}};
+  csd_sync();
+  union wl_argument g[4];csd_geometry(g);
   if(xdg)marshal(xdg,3,NULL,get_version(xdg),0,g);
   marshal(root_surface,6,NULL,get_version(root_surface),0,NULL);
 }
 static void top_configure(void *data,struct wl_proxy *p,int32_t w,int32_t h,struct wl_array *states) {
-  fullscreen=0;
+  decoration_mode=decoration_pending;
+  fullscreen_requested=-1;
+  int was_maximized=maximized;
+  int was_fullscreen=fullscreen;
+  if(!was_maximized && !was_fullscreen){restore_w=host_w;restore_h=host_h;}
+  fullscreen=0;maximized=0;
   if(states)for(size_t i=0;i<states->size/sizeof(uint32_t);i++)
-    if(((uint32_t*)states->data)[i]==2)fullscreen=1;
+    { if(((uint32_t*)states->data)[i]==2)fullscreen=1;
+      if(((uint32_t*)states->data)[i]==1)maximized=1; }
+  if(was_maximized!=maximized)csd_pieces[0].width=0;
+  if(csd_visible()) {
+    if(w>0)w=w>2*CSD_BORDER?w-2*CSD_BORDER:1;
+    if(h>0)h=h>CSD_HEADER+CSD_BORDER?h-CSD_HEADER-CSD_BORDER:1;
+  }
+  if(!maximized && !fullscreen && (was_maximized || was_fullscreen)) {
+    if(!w)w=restore_w;
+    if(!h)h=restore_h;
+  }
   fit(w,h);
   ((void(*)(void*,struct wl_proxy*,int32_t,int32_t,struct wl_array*))top_original[0])(data,p,canvas_w,canvas_h,states);
 }
@@ -149,9 +169,9 @@ static void keyboard_leave(void *d,struct wl_proxy *p,uint32_t serial,struct wl_
 static void keyboard_key(void *d,struct wl_proxy *p,uint32_t serial,uint32_t time,uint32_t key,uint32_t state) {
   if(focused && top && key==87) { /* Linux KEY_F11, not an XKB keycode. */
     if(state==1) {
-      fullscreen=!fullscreen;
+      fullscreen_requested=!(fullscreen_requested<0?fullscreen:fullscreen_requested);
       union wl_argument output={.o=NULL};
-      marshal(top,fullscreen?11:12,NULL,get_version(top),0,fullscreen?&output:NULL);
+      marshal(top,fullscreen_requested?11:12,NULL,get_version(top),0,fullscreen_requested?&output:NULL);
     }
     return;
   }
@@ -170,19 +190,51 @@ static int inside(struct wl_proxy *s,int32_t x,int32_t y) {
   return s!=root_surface || (x>=pad_x*256 && y>=pad_y*256 && x<(pad_x+fit_w)*256 && y<(pad_y+fit_h)*256);
 }
 static void pointer_enter(void *d,struct wl_proxy *p,uint32_t serial,struct wl_proxy *s,int32_t x,int32_t y) {
+  csd_part=csd_surface_part(s);csd_suppress=csd_part>=0;csd_pressed=0;
+  csd_x=x/256;csd_y=y/256;
   pointer_surface=s;pointer_inside=inside(s,x,y);
+  if(csd_suppress)return;
   ((void(*)(void*,struct wl_proxy*,uint32_t,struct wl_proxy*,int32_t,int32_t))pointer_original[0])(d,p,serial,s,input(s,x,0),input(s,y,1));
 }
 static void pointer_motion(void *d,struct wl_proxy *p,uint32_t time,int32_t x,int32_t y) {
+  csd_x=x/256;csd_y=y/256;
+  if(csd_suppress)return;
   pointer_inside=inside(pointer_surface,x,y);
   if(!pointer_inside)return;
   ((void(*)(void*,struct wl_proxy*,uint32_t,int32_t,int32_t))pointer_original[2])(d,p,time,input(pointer_surface,x,0),input(pointer_surface,y,1));
 }
 static void pointer_button(void *d,struct wl_proxy *p,uint32_t serial,uint32_t time,uint32_t button,uint32_t state) {
+  if(csd_suppress){csd_button(serial,button,state);return;}
   if(!pointer_inside && state)return;
   ((void(*)(void*,struct wl_proxy*,uint32_t,uint32_t,uint32_t,uint32_t))pointer_original[3])(d,p,serial,time,button,state);
 }
+static void pointer_leave(void *d,struct wl_proxy *p,uint32_t serial,struct wl_proxy *s) {
+  pointer_surface=NULL;csd_part=-1;csd_pressed=0;
+  if(!csd_suppress)((void(*)(void*,struct wl_proxy*,uint32_t,struct wl_proxy*))pointer_original[1])(d,p,serial,s);
+}
+static void pointer_axis(void *d,struct wl_proxy *p,uint32_t time,uint32_t axis,int32_t value) {
+  if(!csd_suppress)((void(*)(void*,struct wl_proxy*,uint32_t,uint32_t,int32_t))pointer_original[4])(d,p,time,axis,value);
+}
+static void pointer_frame(void *d,struct wl_proxy *p) {
+  if(!csd_suppress && pointer_original[5])((void(*)(void*,struct wl_proxy*))pointer_original[5])(d,p);
+}
+static void pointer_source(void *d,struct wl_proxy *p,uint32_t source) {
+  if(!csd_suppress && pointer_original[6])((void(*)(void*,struct wl_proxy*,uint32_t))pointer_original[6])(d,p,source);
+}
+static void pointer_stop(void *d,struct wl_proxy *p,uint32_t time,uint32_t axis) {
+  if(!csd_suppress && pointer_original[7])((void(*)(void*,struct wl_proxy*,uint32_t,uint32_t))pointer_original[7])(d,p,time,axis);
+}
+static void pointer_discrete(void *d,struct wl_proxy *p,uint32_t axis,int32_t value) {
+  if(!csd_suppress && pointer_original[8])((void(*)(void*,struct wl_proxy*,uint32_t,int32_t))pointer_original[8])(d,p,axis,value);
+}
+static void pointer_value120(void *d,struct wl_proxy *p,uint32_t axis,int32_t value) {
+  if(!csd_suppress && pointer_original[9])((void(*)(void*,struct wl_proxy*,uint32_t,int32_t))pointer_original[9])(d,p,axis,value);
+}
+static void pointer_direction(void *d,struct wl_proxy *p,uint32_t axis,uint32_t direction) {
+  if(!csd_suppress && pointer_original[10])((void(*)(void*,struct wl_proxy*,uint32_t,uint32_t))pointer_original[10])(d,p,axis,direction);
+}
 static void touch_down(void *d,struct wl_proxy *p,uint32_t serial,uint32_t time,struct wl_proxy *s,int32_t id,int32_t x,int32_t y) {
+  if(csd_surface_part(s)>=0)return;
   if(!inside(s,x,y))return;
   for(int i=0;i<32;i++)if(!touches[i].used){touches[i].used=1;touches[i].id=id;touches[i].surface=s;break;}
   ((void(*)(void*,struct wl_proxy*,uint32_t,uint32_t,struct wl_proxy*,int32_t,int32_t,int32_t))touch_original[0])(d,p,serial,time,s,id,input(s,x,0),input(s,y,1));
@@ -208,6 +260,7 @@ static void copy_events(void (**to)(void),void (**original)(void),void (**from)(
 }
 static void decoration_configure(void *data, struct wl_proxy *proxy, uint32_t mode) {
   (void)data; (void)proxy;
+  if(mode==1 || mode==2)decoration_pending=mode;
   __android_log_print(4, "AnvilWindow", "Android decoration mode=%u", mode);
 }
 static void (*decoration_listener[])(void) = {(void (*)(void))decoration_configure};
@@ -253,6 +306,7 @@ int wl_proxy_add_listener(struct wl_proxy *proxy, void (**implementation)(void),
   if(enabled() && get_class) {
     const char *cls=get_class(proxy);
     if(proxy==top) {
+      top_data=data;
       uint32_t v=get_version(proxy);
       copy_events(top_events,top_original,implementation,v>=5?4:v>=4?3:2);
       top_events[0]=(void(*)(void))top_configure;
@@ -272,6 +326,10 @@ int wl_proxy_add_listener(struct wl_proxy *proxy, void (**implementation)(void),
       uint32_t v=get_version(proxy);
       copy_events(pointer_events,pointer_original,implementation,v>=9?11:v>=8?10:v>=5?9:5);
       pointer_events[0]=(void(*)(void))pointer_enter;pointer_events[2]=(void(*)(void))pointer_motion;pointer_events[3]=(void(*)(void))pointer_button;
+      pointer_events[1]=(void(*)(void))pointer_leave;pointer_events[4]=(void(*)(void))pointer_axis;
+      if(v>=5){pointer_events[5]=(void(*)(void))pointer_frame;pointer_events[6]=(void(*)(void))pointer_source;pointer_events[7]=(void(*)(void))pointer_stop;pointer_events[8]=(void(*)(void))pointer_discrete;}
+      if(v>=8)pointer_events[9]=(void(*)(void))pointer_value120;
+      if(v>=9)pointer_events[10]=(void(*)(void))pointer_direction;
       return listen(proxy,pointer_events,data);
     }
     if(!strcmp(cls,"wl_touch")) {
@@ -292,27 +350,36 @@ struct wl_proxy *wl_proxy_marshal_array_flags(struct wl_proxy *proxy, uint32_t o
   struct tracked *o=find(proxy);
   union wl_argument adjusted[4];
   if (proxy==top && opcode==0) {
+    csd_destroy();
     if(decoration)marshal(decoration,0,NULL,1,1,NULL);
     pthread_mutex_lock(mutex);ime_surface=NULL;ime_sync();pthread_mutex_unlock(mutex);
     decoration=NULL;top=NULL;root_surface=NULL;xdg=NULL;configured=0;focused=0;fullscreen=0;
-    fit(1280,720);
+    root_has_buffer=0;
+    fullscreen_requested=-1;
+    restore_w=1280;restore_h=720;fit(1280,720);
   }
   if(o && args) {
+    if(o->kind==SURFACE && proxy==root_surface && opcode==1)root_has_buffer=args[0].o!=NULL;
     if(o->kind==VIEWPORT && opcode==2 && owned(o->surface) && args[0].i>0 && args[1].i>0) {
       o->width=args[0].i;o->height=args[1].i;destination(o,adjusted);args=adjusted;
     } else if(o->kind==SUBSURFACE && opcode==1 && o->parent==root_surface) {
       o->x=args[0].i;o->y=args[1].i;
       adjusted[0].i=pad_x+scaled(o->x,0);adjusted[1].i=pad_y+scaled(o->y,1);args=adjusted;
     } else if(o->kind==XDG && opcode==3 && proxy==xdg) {
-      adjusted[0].i=0;adjusted[1].i=0;adjusted[2].i=host_w;adjusted[3].i=host_h;args=adjusted;
+      csd_geometry(adjusted);args=adjusted;
     } else if(o->kind==SURFACE && (opcode==4 || opcode==5) && owned(proxy)) {
       /* Full opaque/input region must cover the host viewport, not the
        * unscaled Android rectangle; the child surfaces receive app input. */
       adjusted[0].o=NULL;args=adjusted;
     }
   }
+  if(proxy==root_surface && opcode==6 && configured && root_has_buffer) {
+    apply_size();
+    return NULL;
+  }
   struct wl_proxy *result = marshal(proxy, opcode, interface, version, flags, args);
   if(result && interface) {
+    csd_track(result,interface);
     if(!strcmp(interface->name,"wl_seat")&&!ime_seat){ime_seat=result;ime_create();}
     if(!strcmp(interface->name,"wl_surface"))remember(result,SURFACE,NULL,NULL);
     else if(!strcmp(interface->name,"xdg_surface")) {

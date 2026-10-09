@@ -21,7 +21,9 @@ static uint64_t ime_generation, ime_enabled_generation;
 static int ime_connected, ime_active, ime_type, ime_enabled, ime_broken;
 static char ime_package[256];
 static struct anvil_ime_state ime_state;
-static char ime_queue[16][32769];
+/* Android may acknowledge a batch after the editor has already changed its
+ * composing state. Keep the authenticated channel alive and absorb bursts. */
+static char ime_queue[64][32769];
 static unsigned ime_head, ime_tail;
 
 static const struct interface ime_text_interface;
@@ -45,8 +47,12 @@ static const struct interface ime_text_interface = {
 
 static void ime_enqueue(const char *value) {
   if (!ime_connected || ime_broken) return;
-  unsigned next = (ime_tail + 1) % 16;
-  if (next == ime_head) { ime_broken = 1; return; }
+  unsigned next = (ime_tail + 1) % 64;
+  if (next == ime_head) {
+    __android_log_print(5, "AnvilDroidIme", "text batch queue full; reconnecting");
+    ime_broken = 1;
+    return;
+  }
   snprintf(ime_queue[ime_tail], sizeof(ime_queue[0]), "%s", value);
   ime_tail = next;
 }

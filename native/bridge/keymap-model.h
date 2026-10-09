@@ -1,5 +1,6 @@
 #ifndef ANVIL_KEYMAP_MODEL_H
 #define ANVIL_KEYMAP_MODEL_H
+#include <stdint.h>
 #define KEYMAP_POINTS 64
 struct keymap_point {
   int key, nx, ny, hold;
@@ -8,6 +9,7 @@ struct keymap_model {
   struct keymap_point points[KEYMAP_POINTS];
   int count, selected, placing, dirty, error;
 };
+
 static int keymap_valid(const struct keymap_model *m, int assigned) {
   if (m->count < 0 || m->count > KEYMAP_POINTS)
     return 0;
@@ -22,6 +24,23 @@ static int keymap_valid(const struct keymap_model *m, int assigned) {
         return 0;
   }
   return 1;
+}
+/* Convert the persisted editor model to the bounded runtime representation. */
+#ifndef ANVIL_MAPPING_BINDING_DEFINED
+#define ANVIL_MAPPING_BINDING_DEFINED
+struct mapping_binding { uint16_t key, nx, ny; int hold; };
+#endif
+static int __attribute__((unused))
+keymap_bindings(const struct keymap_model *m, struct mapping_binding *out,
+                int capacity) {
+  if (!m || !out || capacity < m->count || !keymap_valid(m, 1)) return 0;
+  for (int i = 0; i < m->count; ++i) {
+    out[i].key = (uint16_t)m->points[i].key;
+    out[i].nx = (uint16_t)m->points[i].nx;
+    out[i].ny = (uint16_t)m->points[i].ny;
+    out[i].hold = m->points[i].hold;
+  }
+  return m->count;
 }
 static int keymap_normalize(int p, int size) {
   if (p < 0)

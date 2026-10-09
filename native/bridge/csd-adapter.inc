@@ -221,6 +221,7 @@ static void csd_destroy(struct object *o) {
   struct csd_frame *f = o->csd;
   for (struct object *at=objects; at; at=at->next) {
     if (at->csd == f) at->csd = 0;
+    if (at->csd_resize == f) at->csd_resize = 0;
     if (at->csd_focus == f) { at->csd_focus = 0; at->csd_suppress = 1; }
   }
   for (int i=0; i<4; i++) {
@@ -232,10 +233,23 @@ static void csd_destroy(struct object *o) {
   }
   free(f);
 }
+static void csd_resize_finished(struct object *pointer) {
+  struct csd_frame *frame=pointer->csd_resize;
+  pointer->csd_resize=0;
+  if (!frame || !frame->top || !frame->top->surface) return;
+  struct object *surface=frame->top->surface;
+  resize_release(&surface->resize);
+  __android_log_print(4,"AnvilDroidCsd","resize grab ended %dx%d",
+                      surface->resize.width,surface->resize.height);
+}
 static void csd_pointer_enter(void *data, struct proxy *p, uint32_t serial,
                                struct proxy *surface, int32_t x, int32_t y) {
   struct object *o = data;
   pthread_mutex_lock(mutex);
+  /* A compositor-owned resize consumes the release. Its subsequent enter
+   * ends that grab, even when the pointer returns to Android content or a
+   * different window. The transient header focus is already gone. */
+  csd_resize_finished(o);
   o->csd_focus = 0; o->csd_suppress = 0; o->csd_pressed = 0;
   o->overlay_focus=0;o->overlay_pressed=0;
   o->pointer_surface=surface;
@@ -286,6 +300,7 @@ static void csd_pointer_button(void *data, struct proxy *p, uint32_t serial, uin
   pthread_mutex_lock(mutex);
   int suppress=o->csd_suppress;
   struct csd_frame *f=o->csd_focus;
+  if (button==0x110 && state==0) csd_resize_finished(o);
   if(o->overlay_focus)keymap_overlay_button(o,button,state);
   if (f && button==0x110) {
     struct csd_piece *piece=&f->pieces[o->csd_part];
@@ -293,6 +308,7 @@ static void csd_pointer_button(void *data, struct proxy *p, uint32_t serial, uin
     if (state==1) {
       o->csd_pressed=action;
       if (o->parent && (action==CSD_MOVE || (action>0 && action<16 && !f->maximized))) {
+        if (action!=CSD_MOVE) o->csd_resize=f;
         union argument a[3]={{.o=o->parent->p},{.u=serial},{.u=(uint32_t)action}};
         wayland_send(f->top->p, action==CSD_MOVE ? 5 : 6, a);
         __android_log_print(4,"AnvilDroidCsd","host %s serial=%u",action==CSD_MOVE?"move":"resize",serial);
