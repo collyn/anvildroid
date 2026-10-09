@@ -106,9 +106,29 @@ def abandoned_namespace_gone(instance, identifier, generation):
         for process in Path('/proc').iterdir():
             if not process.name.isdecimal(): continue
             try:
+                # A dead worker may leave an unshare child as a zombie until
+                # its parent reaps it. Zombies have no namespaces or mounts;
+                # /proc/<pid>/mountinfo can also return EINVAL for them.
+                state = next((line[6:].strip() for line in
+                              (process / 'status').read_text().splitlines()
+                              if line.startswith('State:')), '')
+                if state.startswith(('Z', 'X')):
+                    continue
                 if mount_prefix in (process / 'mountinfo').read_text(): return False
                 if resources.unit(identifier, generation) in (process / 'cgroup').read_text(): return False
             except (FileNotFoundError, ProcessLookupError): continue
+            except OSError:
+                # Keep the proof fail-closed for live processes. Only ignore
+                # an error if the process became a zombie during the read.
+                try:
+                    state = next((line[6:].strip() for line in
+                                  (process / 'status').read_text().splitlines()
+                                  if line.startswith('State:')), '')
+                except (FileNotFoundError, ProcessLookupError):
+                    continue
+                if state.startswith(('Z', 'X')):
+                    continue
+                return False
         return True
     except (OSError, RuntimeError, ValueError, TypeError):
         return False

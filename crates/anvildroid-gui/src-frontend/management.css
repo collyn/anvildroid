@@ -10,6 +10,40 @@
   --mg-green: #35d07f;
 }
 
+/* Keep native form controls on the same navy palette as management panels. */
+#page-runtime select,
+#page-runtime input,
+#page-runtime textarea,
+#page-settings select,
+#page-settings input,
+#page-settings textarea,
+#page-controls select,
+#page-controls input,
+#page-controls textarea {
+  color: #edf5ff;
+  background: var(--mg-panel-raised);
+  border-color: var(--mg-border-strong);
+  color-scheme: dark;
+}
+#page-runtime select option,
+#page-runtime select optgroup,
+#page-settings select option,
+#page-settings select optgroup,
+#page-controls select option,
+#page-controls select optgroup {
+  color: #edf5ff;
+  background: var(--mg-panel-raised);
+}
+#page-runtime select:disabled,
+#page-runtime input:disabled,
+#page-settings select:disabled,
+#page-settings input:disabled,
+#page-controls select:disabled,
+#page-controls input:disabled {
+  color: #91a2b8;
+  background: #142131;
+}
+
 #page-runtime .page-header,
 #page-settings .page-header {
   padding: 18px 20px;

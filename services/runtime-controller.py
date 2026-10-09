@@ -935,8 +935,6 @@ class Store:
                     and record['state'] in ('Prepared', 'Stopped', 'Error'), 'BUSY', 'Prepare images and stop Android before changing GPU')
             require(instance.is_dir() and self.android.quiescent(record['id']), 'BUSY', 'Android worker is still active or images are not prepared')
             selected = worker_module.gpu.choose(request['node'])
-            require(selected['node'] != 'software' or worker_module.gpu.software_supported(instance),
-                    'UNSUPPORTED', 'This image does not advertise ANGLE/Pastel software rendering. Prepare a compatible image first.')
             storage_module.atomic(instance / 'gpu.json', selected)
             return worker_module.gpu.info(instance)
         if operation in ('arm_info', 'arm_set'):

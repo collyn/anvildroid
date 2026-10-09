@@ -17,11 +17,14 @@ mkdir -p "$PKG/usr/local/lib/anvildroid-controller/scripts" "$PKG/usr/local/lib/
 install -m 0755 "$ROOT/target/release/anvildroid-gui" "$PKG/usr/bin/anvildroid-gui"
 for size in 32 48 64 128 256; do mkdir -p "$PKG/usr/share/icons/hicolor/${size}x${size}/apps"; install -m 0644 "$ROOT/crates/anvildroid-gui/icons/icon-${size}.png" "$PKG/usr/share/icons/hicolor/${size}x${size}/apps/org.anvildroid.gui.png"; done
 install -m 0644 "$ROOT/packaging/appimage/org.anvildroid.gui.desktop" "$PKG/usr/share/applications/org.anvildroid.gui.desktop"
-for f in runtime-controller.py runtime-existing.py runtime-host.py runtime-images.py runtime-android.py runtime-worker.py runtime-linux.py runtime-image-format.py runtime-network.py runtime-storage.py runtime-labels.py runtime-transfer.py runtime-catalog.py runtime-download.py runtime-extract.py runtime-provision.py runtime-arm.py runtime-arm-source.py runtime-gpu.py runtime-resources.py runtime-desktop.py runtime-workarea.py; do
+for f in runtime-controller.py runtime-existing.py runtime-host.py runtime-images.py runtime-android.py runtime-worker.py runtime-linux.py runtime-image-format.py runtime-network.py runtime-storage.py runtime-labels.py runtime-transfer.py runtime-catalog.py runtime-download.py runtime-extract.py runtime-provision.py runtime-arm.py runtime-arm-source.py runtime-gpu.py runtime-nvidia.py runtime-resources.py runtime-desktop.py runtime-workarea.py; do
   install -m 0644 "$ROOT/services/$f" "$PKG/usr/local/lib/anvildroid-controller/$f"
 done
 install -m 0755 "$ROOT/scripts/setup-waydroid.py" "$PKG/usr/local/lib/anvildroid-controller/scripts/setup-waydroid.py"
 install -m 0755 "$ROOT/scripts/patch-waydroid.py" "$PKG/usr/local/lib/anvildroid-controller/scripts/patch-waydroid.py"
+install -m 0755 "$ROOT/scripts/install-nvidia-payload.py" "$PKG/usr/local/lib/anvildroid-controller/scripts/install-nvidia-payload.py"
+python3 "$ROOT/scripts/build-nvidia-payload.py"
+cp -a "$ROOT/target/nvidia-v0.1.2" "$PKG/usr/local/lib/anvildroid-controller/"
 for f in runtime-host.py runtime-arm.py runtime-arm-source.py; do install -m 0644 "$ROOT/services/$f" "$PKG/usr/local/lib/anvildroid-controller/services/$f"; done
 install -m 0755 "$ROOT/target/native/libanvildroid-runtime-window.so" "$PKG/usr/local/lib/anvildroid-controller/libanvildroid-window.so"
 install -m 0644 "$ROOT/target/native/libanvildroid-hwc-shim.so" "$PKG/usr/local/lib/anvildroid-controller/libanvildroid-hwc-shim.so"
@@ -49,7 +52,7 @@ Architecture: amd64
 Maintainer: AnvilDroid
 Description: AnvilDroid Android runtime controller
  GPU accelerated Waydroid runtime controller with BinderFS and Wayland support.
-Depends: python3, systemd, patchelf (>= 0.18), libwebkit2gtk-4.1-0, libgtk-3-0, libglib2.0-0, libjavascriptcoregtk-4.1-0, libsoup-3.0-0, libpango-1.0-0, libcairo2, libgdk-pixbuf-2.0-0
+Depends: libc6 (>= 2.39), libepoxy0, libdrm2, libgbm1, libx11-6, libexpat1, libvulkan1, util-linux, python3, systemd, patchelf (>= 0.18), libwebkit2gtk-4.1-0, libgtk-3-0, libglib2.0-0, libjavascriptcoregtk-4.1-0, libsoup-3.0-0, libpango-1.0-0, libcairo2, libgdk-pixbuf-2.0-0
 EOF
 cat > "$PKG/DEBIAN/postinst" <<'EOF'
 #!/bin/sh

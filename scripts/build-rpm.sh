@@ -13,14 +13,20 @@ sh "$ROOT/scripts/build-runtime.sh"
 sh "$ROOT/scripts/stage-package.sh" "$STAGE"
 mkdir -p "$STAGE/var/lib/anvildroid-controller" "$STAGE/run/anvildroid"
 cat > "$TOP/anvildroid-controller.spec" <<EOF
+# Preserve hash-pinned foreign Android ELF payloads and private host libraries.
+%global debug_package %{nil}
+%global __strip /bin/true
+%global __requires_exclude_from ^/usr/local/lib/anvildroid-controller/nvidia-v0[.]1[.]2/.*$
+%global __provides_exclude_from ^/usr/local/lib/anvildroid-controller/nvidia-v0[.]1[.]2/.*$
 Name: anvildroid-controller
 Version: $VERSION
 Release: 1
 Summary: AnvilDroid Android runtime controller
-License: MIT
+License: MIT AND BSD-3-Clause AND Apache-2.0
 URL: https://github.com/collyn/anvildroid
 BuildArch: x86_64
 Requires: python3, systemd, patchelf >= 0.18
+Requires: glibc >= 2.39, libepoxy, libdrm, mesa-libgbm, libX11, expat, vulkan-loader, util-linux
 Requires: webkit2gtk4.1, gtk3, glib2, javascriptcoregtk4.1, libsoup3, pango, cairo, gdk-pixbuf2
 Requires(post): systemd
 Requires(preun): systemd

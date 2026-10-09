@@ -4,6 +4,11 @@ import re
 import json
 import os
 import stat
+import importlib.util
+
+_nv_spec = importlib.util.spec_from_file_location('runtime_nvidia', Path(__file__).with_name('runtime-nvidia.py'))
+nvidia = importlib.util.module_from_spec(_nv_spec)
+_nv_spec.loader.exec_module(nvidia)
 
 
 def inventory(sysfs=Path('/sys/class/drm'), devices=Path('/dev/dri')):
@@ -20,6 +25,31 @@ def inventory(sysfs=Path('/sys/class/drm'), devices=Path('/dev/dri')):
                        'vendor_id': value('vendor'), 'device_id': value('device'),
                        'identity': str((node / 'device').resolve()),
                        'available': (devices / node.name).exists()})
+    # Proprietary NVIDIA exposes /dev/nvidia0 rather than a DRM render node
+    # unless nvidia-drm.modeset is enabled. Keep it visible so the UI can show
+    # the exact prerequisite failure instead of hiding the GPU entirely.
+    nvidia_root = Path('/proc/driver/nvidia/gpus') if sysfs == Path('/sys/class/drm') else sysfs / 'nvidia-gpus'
+    for information in sorted(nvidia_root.glob('*/information')):
+        values = {}
+        try:
+            for line in information.read_text().splitlines():
+                key, _, value = line.partition(':')
+                values[key.strip()] = value.strip()
+        except OSError:
+            continue
+        bus = values.get('Bus Location')
+        if not bus or not re.fullmatch(r'[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-7]', bus): continue
+        identity = (Path('/sys/bus/pci/devices') / bus).resolve()
+        device_id = None
+        try: device_id = identity.joinpath('device').read_text().strip()
+        except OSError: pass
+        minor = values.get('Device Minor', '')
+        if not minor.isdecimal(): continue
+        node = Path('/dev/nvidia' + minor)
+        if not any(d['identity'] == str(identity) for d in result):
+            result.append({'node': str(node), 'driver': 'nvidia', 'vendor_id': '0x10de',
+                           'device_id': device_id, 'identity': str(identity),
+                           'available': node.exists()})
     return result
 
 
@@ -40,25 +70,75 @@ def renderer(surfaceflinger):
 DRIVERS = {'amdgpu', 'radeon', 'i915', 'xe', 'panfrost', 'msm', 'vc4'}
 
 
+def is_nvidia(node):
+    return any(d['node'] == node and d['driver'] == 'nvidia' for d in inventory())
+
+
+def nvidia_ready(report):
+    required = {'kernel_module', 'driver', 'modeset', 'udmabuf', 'payload'}
+    return bool(report and all(next((c['status'] for c in report['checks'] if c['id'] == key), None) == 'ok'
+                               for key in required))
+
+
 def software_supported(instance):
+    # Stock Waydroid uses SwiftShader; custom ATV images may use ANGLE/Pastel.
+    # Availability of the selected libraries is checked on the mounted image.
+    return True
+
+
+def software_backend(instance):
     try:
         report = json.loads((instance / 'support/compatibility.json').read_text())
-        return report.get('software_renderer') == 'angle-pastel'
+        if report.get('software_renderer') in ('angle-pastel', 'swiftshader'):
+            return report['software_renderer']
     except (OSError, ValueError):
-        return False
+        pass
+    # Official GAPPS images commonly ship ANGLE/Pastel without the optional
+    # compatibility metadata. SwiftShader is only selected explicitly.
+    return 'angle-pastel'
+
+
+def validate_software(root, backend):
+    libraries = (('libEGL_angle.so', 'libGLESv2_angle.so', 'vulkan.pastel.so')
+                 if backend == 'angle-pastel' else
+                 ('libEGL_swiftshader.so', 'libGLESv2_swiftshader.so'))
+    paths = [root / partition / 'lib64' / sub
+             for partition in ('system', 'vendor', 'system_ext', 'product')
+             for sub in ('', 'egl', 'hw')]
+    missing = [name for name in libraries if not any((p / name).is_file() for p in paths)]
+    if missing:
+        raise RuntimeError('CPU rendering requires ' + backend + ' libraries missing from this image: '
+                           + ', '.join(missing) + '. Use an image with software rendering support.')
+
+
+def detect_software(root, preferred):
+    errors = []
+    for backend in dict.fromkeys((preferred, 'angle-pastel', 'swiftshader')):
+        try:
+            validate_software(root, backend)
+            return backend
+        except RuntimeError as error:
+            errors.append(str(error))
+    raise RuntimeError('No complete CPU renderer found in the mounted image. ' + ' '.join(errors))
 
 
 def info(instance):
     path = instance / 'gpu.json'
     selected = json.loads(path.read_text()) if path.exists() else {'node': 'auto'}
     devices = inventory()
+    nvidia_status = nvidia.preflight() if any(d['vendor_id'] == '0x10de' for d in devices) else None
     for device in devices:
         experimental = device['vendor_id'] == '0x10de' or device['driver'] in ('nvidia', 'nouveau')
         device['experimental'] = experimental
-        device['reason'] = 'NVIDIA · Experimental — not available yet' if experimental else None
-        device['selectable'] = not experimental and device['available'] and device['driver'] in DRIVERS
+        device['reason'] = ('NVIDIA · Experimental — ' + nvidia_status['detail']
+                            if experimental and nvidia_status else
+                            'NVIDIA · Experimental — backend not enabled' if experimental else None)
+        device['selectable'] = device['available'] and ((not experimental and device['driver'] in DRIVERS)
+                                  or (device['driver'] == 'nvidia' and device['node'].startswith('/dev/dri/') and nvidia_ready(nvidia_status)))
+        if device['driver'] == 'nvidia' and device['node'].startswith('/dev/nvidia'):
+            device['reason'] = 'NVIDIA detected, but no DRM render node. Enable nvidia-drm.modeset=1 on the host.'
     return {'selection': selected['node'], 'devices': devices,
-            'software_supported': software_supported(instance)}
+            'software_supported': software_supported(instance), 'nvidia': nvidia_status}
 
 
 def choose(node):
@@ -67,11 +147,17 @@ def choose(node):
     if node in ('auto', 'software'):
         return {'node': node}
     device = next((d for d in inventory() if d['node'] == node), None)
-    if not device or device['vendor_id'] == '0x10de' or not device['available'] or device['driver'] not in DRIVERS:
+    venus = bool(device and device['driver'] == 'nvidia')
+    if venus:
+        if not node.startswith('/dev/dri/'):
+            raise RuntimeError('NVIDIA DRM render node missing; enable nvidia-drm.modeset=1 on the host')
+        if not nvidia_ready(nvidia.preflight()):
+            raise RuntimeError('NVIDIA Venus prerequisites are not ready; inspect Graphics compatibility checks')
+    if not device or not device['available'] or (not venus and (device['vendor_id'] == '0x10de' or device['driver'] not in DRIVERS)):
         raise RuntimeError('GPU is unavailable or its driver is unsupported')
     metadata = Path(node).lstat()
     if not stat.S_ISCHR(metadata.st_mode) or os.major(metadata.st_rdev) != 226:
-        raise RuntimeError('GPU must be a DRM character device')
+        raise RuntimeError('GPU must be a supported graphics character device')
     return {key: device[key] for key in ('node', 'identity', 'vendor_id', 'device_id', 'driver')}
 
 
@@ -79,45 +165,53 @@ def resolve(instance):
     path = instance / 'gpu.json'
     selected = json.loads(path.read_text()) if path.exists() else {'node': 'auto'}
     if selected['node'] == 'software':
-        if not software_supported(instance):
-            raise RuntimeError('This image has no validated ANGLE/Pastel software rendering support. Prepare a compatible image first.')
         return None
     if selected['node'] == 'auto':
-        # Auto selects hardware. Software rendering is an explicit choice,
-        # even when the image includes ANGLE/Pastel.
+        # Prefer supported hardware; NVIDIA-only/no-DRM hosts use CPU rendering.
         devices = [d for d in inventory() if d['available'] and d['driver'] in DRIVERS and d['vendor_id'] != '0x10de']
         if not devices:
-            raise RuntimeError('No supported host GPU is available')
+            return None
         device = choose(devices[0]['node'])
         # Navi 33 (0x73ff) is currently unsafe with the Waydroid minigbm
         # composer on the affected Mesa/kernel combination: starting the
-        # allocator can wedge gfx_0.0.0 and reset the host GPU.  Refuse to
-        # start rather than taking down the host display.  An explicit opt-in
+        # allocator can wedge gfx_0.0.0 and reset the host GPU. Use CPU when
+        # this safety guard is enabled. An explicit opt-in
         # is available for testing newer drivers.
         if (device.get('driver') == 'amdgpu' and device.get('device_id') == '0x73ff'
                 and os.environ.get('ANVIL_GPU_SAFETY_GUARD') == '1'
                 and os.environ.get('ANVIL_ALLOW_UNSTABLE_AMDGPU') != '1'):
-            raise RuntimeError(
-                'AMDGPU device 0x73ff is blocked: Waydroid minigbm triggered a host GPU reset. '
-                'Update Mesa/kernel or set ANVIL_ALLOW_UNSTABLE_AMDGPU=1 to test at your own risk.')
+            return None
         return device['node']
-    current = choose(selected['node'])
+    try:
+        current = choose(selected['node'])
+    except RuntimeError:
+        if selected.get('driver') == 'nvidia' or selected['node'].startswith('/dev/nvidia'):
+            raise
+        # A saved render node may disappear when moving a runtime to another host.
+        return None
     if (current.get('driver') == 'amdgpu' and current.get('device_id') == '0x73ff'
             and os.environ.get('ANVIL_GPU_SAFETY_GUARD') == '1'
             and os.environ.get('ANVIL_ALLOW_UNSTABLE_AMDGPU') != '1'):
-        raise RuntimeError(
-            'AMDGPU device 0x73ff is blocked: Waydroid minigbm triggered a host GPU reset. '
-            'Update Mesa/kernel or set ANVIL_ALLOW_UNSTABLE_AMDGPU=1 to test at your own risk.')
+        return None
     if current != selected:
         raise RuntimeError('Selected GPU identity changed. Select the GPU again before starting.')
     return current['node']
 
 
-def properties(props, node):
-    keys = ('gralloc.gbm.device=', 'ro.hardware.egl=', 'ro.hardware.gralloc=',
+def properties(props, node, software='angle-pastel'):
+    if node and is_nvidia(node):
+        return nvidia.properties(props)
+    keys = ('mesa.vn.debug=', 'mesa.vtest.socket.name=', 'debug.renderengine.backend=',
+            'debug.angle.feature_overrides_disabled=',
+            'gralloc.gbm.device=', 'ro.hardware.egl=', 'ro.hardware.gralloc=',
             'ro.hardware.vulkan=', 'ro.waydroid.software_rendering=',
             'ro.waydroid.override_props=', 'debug.hwui.renderer=')
     if node is None:
+        if software == 'swiftshader':
+            return [p for p in props if not p.startswith(keys)] + [
+                'ro.hardware.egl=swiftshader', 'ro.hardware.gralloc=default',
+                'ro.waydroid.software_rendering=1', 'ro.waydroid.override_props=false',
+                'debug.hwui.renderer=skiagl']
         return [p for p in props if not p.startswith(keys)] + [
             'ro.hardware.egl=angle', 'ro.hardware.gralloc=default',
             'ro.hardware.vulkan=pastel', 'ro.waydroid.software_rendering=1',
@@ -163,6 +257,8 @@ def verification(selected, active_node, graphics):
         return {'status': 'unknown', 'detail': 'Renderer not measured. Run Check GPU while Android is running.'}
     if graphics.get('renderer_kind') == 'software':
         return {'status': 'software', 'detail': 'Android compositor reports a CPU software renderer.'}
+    if 'venus' in (graphics.get('gles') or '').lower() and 'nvidia' in (graphics.get('gles') or '').lower():
+        return {'status': 'unknown', 'detail': 'Android reports NVIDIA via Venus. The host physical GPU and buffer import path still require independent verification.'}
     if not active_node or graphics.get('android_node') is None or not graphics.get('compositor_nodes'):
         return {'status': 'unknown', 'detail': 'Device usage has not been verified. Stop/start an older worker, then check again.'}
     if ((selected != 'auto' and selected != active_node)

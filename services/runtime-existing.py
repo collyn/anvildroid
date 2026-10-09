@@ -310,6 +310,7 @@ class ExistingRuntime:
 
     def gpu_info(self):
         result = gpu.info(self.store)
+        result['software_supported'] = False  # Imported host setup is not managed here.
         result['selection'] = self.config().get('waydroid', 'drm_device', fallback='auto') or 'auto'
         return result
 

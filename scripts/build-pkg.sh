@@ -19,6 +19,16 @@ packager = AnvilDroid contributors
 size = 0
 arch = x86_64
 license = MIT
+license = BSD-3-Clause
+license = Apache-2.0
+depend = glibc>=2.39
+depend = libepoxy
+depend = libdrm
+depend = mesa
+depend = libx11
+depend = expat
+depend = vulkan-icd-loader
+depend = util-linux
 depend = python3
 depend = systemd
 depend = patchelf>=0.18

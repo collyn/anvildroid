@@ -613,6 +613,21 @@ def start_weston(args, env, log, xdg, compositors, *, nested=False):
     raise RuntimeError('Nested Weston socket missing' if nested else 'Headless Weston socket missing')
 
 
+def managed_session_properties(props):
+    # Imported host props can come from `waydroid show-full-ui`. Starting a
+    # managed container must not inherit that session's visible Android UI.
+    values = {
+        'waydroid.background_start': 'true',
+        'waydroid.active_apps': 'none',
+        'waydroid.host_data_path': '/anvil-data',
+        'waydroid.xdg_runtime_dir': '/run/xdg',
+        'waydroid.wayland_display': 'wayland-probe',
+        'waydroid.pulse_runtime_path': '/run/xdg/pulse',
+    }
+    return [p for p in props if p.split('=', 1)[0].strip() not in values] + [
+        key + '=' + value for key, value in values.items()]
+
+
 def configure_host_desktop(instance, shell, desktop):
     """Keep Android 16's desktop organizer from competing with Waydroid HWC."""
     sdk = shell('getprop', 'ro.build.version.sdk').strip()
@@ -784,6 +799,7 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
     root.mkdir(mode=0o700, exist_ok=True)
     mounts, names, compositors, logfiles = [], [], [], []
     scrcpy_process = None
+    venus = None
     boot_completed = False
     uplink = network.Uplink() if host_net_fd is not None else None
     def loc(name): return root / name
@@ -840,6 +856,11 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
     try:
         state['resource_limits'] = resources.verify(identifier, generation, resources.load(instance))
         gpu_node = gpu.resolve(instance)
+        nvidia_rendering = gpu.is_nvidia(gpu_node)
+        if nvidia_rendering:
+            require(desktop and not desktop[0].startswith(desktop_module.X11_TOKEN_PREFIX),
+                    'NVIDIA Venus experimental requires a native Wayland desktop')
+            gpu.nvidia.trusted_payload()
         state['gpu_node'] = gpu_node
         run('mount', '--make-rprivate', '/')
         run('ip', 'link', 'add', 'anvilandroid', 'type', 'bridge')
@@ -928,10 +949,16 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
         # SurfaceFlinger metadata alone must not advertise app windows on it.
         single_display = single_display or custom_stock_hwc
         state['presentation_mode'] = 'android-display' if single_display else 'app-windows'
+        state['presentation_detail'] = (
+            'This image exposes one Android display; individual app windows are unavailable.'
+            if single_display else
+            'This image exposes the native Waydroid display ABI; apps can use individual desktop windows.')
         if single_display:
             state['capabilities'] = [c for c in state['capabilities'] if c not in ('keymap_editor', 'uninstall_app')]
         software_rendering = gpu_node is None
         state['gpu_node'] = 'software' if software_rendering else gpu_node
+        software_backend = gpu.software_backend(instance)
+        state['software_renderer'] = software_backend if software_rendering else None
         arm_layer = arm.active_layer(instance)
         arm_props = arm.runtime_properties(instance)
         system_patches = f'{arm_layer}:{patches}' if arm_layer else str(patches)
@@ -942,14 +969,6 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
                 (work / sub).mkdir(parents=True, exist_ok=True)
             for sub in ('system-upper', 'vendor-upper'):
                 prepare_overlay_upper(work / sub)
-            if software_compatibility:
-                # WayDroidATV vendor init reads this file after boot and can
-                # override waydroid.prop. Keep both sources in sync when
-                # switching between hardware and software rendering.
-                settings = work / 'data/misc/waydroid_settings'
-                settings.parent.mkdir(parents=True, exist_ok=True)
-                existing = settings.read_text(errors='replace').splitlines() if settings.exists() else []
-                settings.write_text('\n'.join(gpu.properties(existing, gpu_node)) + '\n')
             fs = work / 'rootfs'
             mount(*image_format.mount_options(instance / 'prepared/system.img'), instance / 'prepared/system.img', work / 'system-lower')
             mount(*image_format.mount_options(instance / 'prepared/vendor.img'), instance / 'prepared/vendor.img', work / 'vendor-lower')
@@ -958,6 +977,10 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
             if 'presentation_mode' not in compatibility and not custom_stock_hwc:
                 single_display = b'vendor.waydroid.display@' not in (fs / 'system/bin/surfaceflinger').read_bytes()
                 state['presentation_mode'] = 'android-display' if single_display else 'app-windows'
+                state['presentation_detail'] = (
+                    'SurfaceFlinger does not expose vendor.waydroid.display; using one Android display.'
+                    if single_display else
+                    'SurfaceFlinger exposes vendor.waydroid.display; app windows are enabled.')
                 if single_display:
                     state['capabilities'] = [c for c in state['capabilities'] if c not in ('keymap_editor', 'uninstall_app')]
             allocator_rc = Path('etc/init/android.hardware.graphics.allocator@2.0-service.rc')
@@ -975,7 +998,28 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
                 mount('--bind', helper, target)
                 mount('--bind', bridge, fs / 'system/lib64/libndk_translation.so')
                 state['arm_path_guard'] = 'axion-android16'
-            props = gpu.properties((instance / 'support/waydroid.prop').read_text().splitlines(), gpu_node)
+            if software_rendering:
+                software_backend = gpu.detect_software(fs, software_backend)
+                state['software_renderer'] = software_backend
+            if nvidia_rendering:
+                for source, target in gpu.nvidia.image_mounts(fs):
+                    mount('--bind', source, target)
+                    run('mount', '-o', 'remount,bind,ro', target)
+                venus = gpu.nvidia.Renderer()
+                renderer_log = (instance / 'nvidia-renderer.log').open('ab')
+                logfiles.append(renderer_log)
+                venus.start(desktop[1], renderer_log)
+                state['graphics_backend'] = 'nvidia-venus'
+                state['nvidia_renderer'] = {'pid': venus.process.pid, 'version': gpu.nvidia.UPSTREAM_VERSION}
+            if software_compatibility:
+                # WayDroidATV vendor init reads this file after boot and can
+                # override waydroid.prop. Keep both sources in sync when
+                # switching between hardware and software rendering.
+                settings = work / 'data/misc/waydroid_settings'
+                settings.parent.mkdir(parents=True, exist_ok=True)
+                existing = settings.read_text(errors='replace').splitlines() if settings.exists() else []
+                settings.write_text('\n'.join(gpu.properties(existing, gpu_node, software_backend)) + '\n')
+            props = gpu.properties((instance / 'support/waydroid.prop').read_text().splitlines(), gpu_node, software_backend)
             # Android 15/LineageOS 22 custom images can abort SurfaceFlinger
             # while priming the desktop hole-punch shader on GBM buffers:
             # "output buffer not gpu writeable". The cache is optional; skip
@@ -997,8 +1041,7 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
                 arm_keys = set(arm.PROPERTIES) | {'ro.enable.native.bridge.exec', 'ro.vendor.enable.native.bridge.exec', 'ro.vendor.enable.native.bridge.exec64'}
                 props = [p for p in props if p.split('=', 1)[0] not in arm_keys]
                 props += [key + '=' + value for key, value in arm_props.items()]
-            props = [p for p in props if not p.startswith(('waydroid.host_data_path=', 'waydroid.wayland_display=', 'waydroid.pulse_runtime_path='))]
-            props += ['waydroid.host_data_path=/anvil-data', 'waydroid.wayland_display=wayland-probe', 'waydroid.pulse_runtime_path=/run/xdg/pulse']
+            props = managed_session_properties(props)
             init = fs / 'system/etc/init/init.waydroid.rc'
             # Regenerate from prepared support, not the previous boot's upper
             # overlay, where a stock launch may have removed LD_PRELOAD.
@@ -1055,6 +1098,7 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
                         state['desktop_bridge'] = 'stock-rpc-metadata-shim'
                 else:
                     mount('--bind', instance / 'desktop-bridge.so', fs / 'vendor/lib64/libanvildroid-window.so')
+                    state['desktop_bridge'] = 'anvildroid'
                 companion=instance/'desktop-tasks.sh'
                 if companion.exists():
                     info=companion.lstat()
@@ -1148,6 +1192,8 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
                        'lxc.net.0.flags = up', 'lxc.net.0.name = eth0',
                        'lxc.mount.entry = tmpfs dev tmpfs nosuid 0 0',
                        'lxc.mount.entry = none dev/pts devpts defaults,mode=644,ptmxmode=666,create=dir 0 0']
+            if venus:
+                config.append(f'lxc.mount.entry = {venus.directory} dev/venus none bind,ro,create=dir 0 0')
             if not uplink: config.append(f'lxc.net.0.ipv4.address = 192.0.2.{index}/24')
             # loop-control + loop nodes let apexd mount APEX payloads; without
             # them /system/bin/linker64's /apex target never appears and every
@@ -1267,6 +1313,7 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
         deadline = time.monotonic() + 300
         boot_wait = 'Waiting for sys.boot_completed=1'
         while not stopping.is_set():
+            if venus: venus.check()
             try:
                 # lxc-attach can return success with empty output after the
                 # init process has already exited. Check the container state
@@ -1340,6 +1387,7 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 state['keymap_backend'] = 'scrcpy-control'
         while not stopping.wait(1):
+            if venus: venus.check()
             if uplink: uplink.check()
             if desktop:
                 watchdog_target = desktop_pin if not x11['display'] else Path('/run/anvil-xdg') / 'wayland-probe'
@@ -1350,7 +1398,10 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
             require(lxc('lxc-info', identifier, '-sH') == 'RUNNING', 'Android container exited')
             if compositors: require(compositors[0].poll() is None, 'Desktop compositor exited' if desktop else 'Headless compositor exited')
     except Exception as error:
-        state.update(state='Error', error=str(error)[-1024:])
+        detail = str(error)
+        if isinstance(error, gpu.nvidia.RendererFailure):
+            state['nvidia_renderer'] = dict(state.get('nvidia_renderer') or {}, status='failed', error=detail)
+        state.update(state='Error', error=detail[-1024:])
     finally:
         if scrcpy_process is not None:
             scrcpy_process.terminate()
@@ -1369,6 +1420,9 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait(timeout=5)
+        if venus:
+            try: venus.close()
+            except Exception as error: errors.append(str(error))
         if uplink:
             try: uplink.close()
             except Exception as error: errors.append(str(error))

@@ -1,0 +1,14 @@
+NVIDIA Venus payload: quinovax/waydroid-nvidia v0.1.2
+Release: https://github.com/quinovax/waydroid-nvidia/releases/tag/v0.1.2
+Source and component build pins:
+https://github.com/quinovax/waydroid-nvidia/tree/v0.1.2
+
+This is an experimental third-party renderer, not an NVIDIA driver package.
+No proprietary NVIDIA host driver is included. Host libraries are supplied by
+the distribution; the NVIDIA driver remains installed and maintained by users.
+
+Components retain their upstream licenses: original integration and Mesa/
+virglrenderer (MIT), minigbm and ANGLE (BSD-style), Android HWC and the unused
+SurfaceFlinger payload (Apache-2.0). See LICENSE.upstream and the corresponding
+source trees and release notices. AnvilDroid preserves the release binaries
+byte-for-byte; it does not install the upstream patched Waydroid Python tools.
