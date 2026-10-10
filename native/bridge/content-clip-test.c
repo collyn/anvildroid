@@ -98,5 +98,24 @@ int main(void) {
   assert(px==879&&py==631&&dw==1&&dh==1);
   assert(source[2]==1&&source[3]==1);
   while(objects)forget_proxy(objects->p);
+
+  /* CSD style: button cell probes. */
+  {
+    int w = 200, h = 38;
+    int st = csd_style_state(0, 0, 0);
+    int cxm = csd_button_center(CSD_MINIMIZE, w), cxc = csd_button_center(CSD_CLOSE, w);
+    uint32_t base = csd_header_pixel(30, 19, w, h, st);
+    uint32_t hover = csd_style_state(0, CSD_MINIMIZE, 0);
+    /* Pill fill inside the minimize button, clear of the glyph line. */
+    uint32_t pill = csd_header_pixel(cxm, 10, w, h, hover);
+    assert(pill != base);
+    /* Minimize dash ink sits at the bottom of the glyph envelope (y ~24). */
+    uint32_t ink = csd_header_pixel(cxm, 24, w, h, hover);
+    assert(((ink >> 16) & 255) > 200 && ((ink >> 8) & 255) > 200);
+    /* Close button hover turns red, away from the X strokes. */
+    uint32_t red = csd_header_pixel(cxc, 10, w, h,
+                                    csd_style_state(0, CSD_CLOSE, 0));
+    assert(((red >> 16) & 255) > 150 && ((red >> 8) & 255) < 120);
+  }
   return 0;
 }

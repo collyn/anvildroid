@@ -357,8 +357,15 @@ static void ime_protocol_init(void *library) {
   ime_surface_types[0] = dlsym(library, "wl_surface_interface");
 }
 static void geometry(struct object *s) {
-  if (!s || !s->xdg || !s->app)
+  if (!s || !s->xdg || (!s->app && !s->full_ui))
     return;
+  if (s->full_ui) {
+    /* The canvas presentation owns its geometry, viewport and input; the
+     * CSD frame merely overlays the fitted extents inside the surface. */
+    csd_sync(s, 0, 0, s->full_w > 0 ? s->full_w : 1,
+             s->full_h > 0 ? s->full_h : 1);
+    return;
+  }
   struct object cached = {.x=s->region_x,.y=s->region_y,.width=s->region_width,
                           .height=s->region_height,.valid=s->region_valid};
   struct object exact = {0};
@@ -380,9 +387,9 @@ static void geometry(struct object *s) {
   struct object *r = s->region ? s->region : &cached;
   if (!r->valid) {
     /* The NVIDIA Venus HWC never sets a surface input region, so the
-     * region-derived frame is unavailable. Derive it from the tracked
-     * Android task bounds instead; never guess between two tasks of one
-     * package. */
+     * region-derived frame is unavailable. Task positions are canvas
+     * coordinates, not surface-local: derive the content rect from the
+     * app's own subsurfaces instead. */
     if (task_matches != 1) {
       __android_log_print(4, "AnvilDroid",
                           "geom: region invalid app_id=%s tasks=%d bounds=%d attached=%d",
@@ -390,9 +397,44 @@ static void geometry(struct object *s) {
                           s->has_bounds, s->attached);
       return;
     }
+    int found = 0;
+    for (struct object *sub = objects; sub; sub = sub->next) {
+      if (sub->parent != s || !sub->surface ||
+          strcmp(sub->p->interface->name, "wl_subsurface")) continue;
+      int sw = sub->surface->width, sh = sub->surface->height;
+      if (sw < 1 || sh < 1) continue;
+      int sx = sub->x, sy = sub->y;
+      __android_log_print(4, "AnvilDroid", "csd layer %d,%d %dx%d",
+                          sx, sy, sw, sh);
+      if (!found) {
+        exact.x = sx; exact.y = sy;
+        exact.width = sx + sw; exact.height = sy + sh;
+        found = 1;
+      } else {
+        if (sx < exact.x) exact.x = sx;
+        if (sy < exact.y) exact.y = sy;
+        if (sx + sw > exact.width) exact.width = sx + sw;
+        if (sy + sh > exact.height) exact.height = sy + sh;
+      }
+    }
+    if (found) {
+      exact.width -= exact.x;
+      exact.height -= exact.y;
+      /* Anchor the frame to the surface origin: the transparent caption
+       * strip above the first layer must not leave a gap below the CSD
+       * header; the clip repositions the layers flush underneath it. */
+      exact.x = exact.y = 0;
+    } else {
+      /* No layers yet: fall back to the task size at the surface origin;
+       * the header still lands on the window. */
+      exact.x = exact.y = 0;
+    }
     r = &exact;
   } else if (task_matches == 1) {
-    /* Prefer the exact Android task bounds when the region is present. */
+    /* Task width/height track resizes faster than the input region, but
+     * its x/y are canvas coordinates; keep the region's surface origin. */
+    exact.x = r->x;
+    exact.y = r->y;
     r = &exact;
   }
   if (r->width <= 0 || r->height <= 0)
@@ -463,7 +505,24 @@ static void configure(void *data, struct proxy *p, int32_t w, int32_t h,
   struct object *o = data;
   if(o->surface&&o->surface->full_ui) {
     pthread_mutex_lock(mutex);
-    full_ui_fit(o->surface,w,h);
+    struct array { size_t size, alloc; uint32_t *data; } *a = states;
+    int maximized = 0, fullscreen = 0;
+    for (size_t i = 0; a && i < a->size / sizeof(uint32_t); ++i) {
+      if (a->data[i] == 1 || a->data[i] == 2) maximized = 1;
+      if (a->data[i] == 2) fullscreen = 1;
+    }
+    struct csd_frame *f = o->surface->csd;
+    if (f && a && a->size >= sizeof(uint32_t)) {
+      int changed = f->maximized != maximized || f->fullscreen != fullscreen;
+      f->maximized = maximized;
+      f->fullscreen = fullscreen;
+      /* The canvas HWC commits sparsely; repaint the button glyph (restore
+       * vs maximize) immediately instead of waiting for pointer motion. */
+      if (changed) csd_repaint_header(f);
+    }
+    __android_log_print(4, "AnvilDroidCsd", "fullui configure %dx%d max=%d full=%d",
+                        w, h, maximized, fullscreen);
+    full_ui_fit(o->surface, w, h, maximized);
     pthread_mutex_unlock(mutex);
     return; /* Never hotplug Android's display for a host-window resize. */
   }
@@ -679,10 +738,13 @@ static struct proxy *bridge_marshal(
         keymap_overlay_destroy(o->surface);keymap_hints_destroy(o->surface);
       }
       /* Waydroid prefixes host app_ids. Exclude the calibration/full UI
-       * surface. */
+       * surface and the IME, but the Waydroid drawer app keeps its CSD. */
       o->surface->app =
           id && strcmp(id, "Waydroid") && strcmp(id, "waydroid") &&
-          strcmp(id, "waydroid.Waydroid") && strcmp(id, "waydroid.InputMethod");
+          strcmp(id, "waydroid.InputMethod");
+      if (!o->surface->app)
+        __android_log_print(4, "AnvilDroid", "csd excluded app_id=%s",
+                            id ? id : "?");
       free(o->surface->app_id);
       const char *package = id;
       if (id && strstr(id, "waydroid.") == id)
@@ -693,7 +755,7 @@ static struct proxy *bridge_marshal(
       if(!o->surface->app&&package&&!strcmp(package,"Waydroid")&&boot_decided&&boot_width>0&&boot_height>0&&scale_has_viewporter) {
         struct object *s=o->surface;s->full_ui=1;
         s->full_canvas_w=boot_width;s->full_canvas_h=boot_height;
-        full_ui_fit(s,1000,700);
+        full_ui_fit(s,1000,700,0);
         wayland_send(o->p,10,0); /* Initial full UI must not auto-maximize. */
       }
 #endif

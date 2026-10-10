@@ -20,6 +20,7 @@ static void keymap_overlay_motion(struct object *);
 static void keymap_overlay_pointer_cancel(struct object *);
 static void keymap_overlay_paint(uint32_t *,int,int);
 static int close_request_app(struct object *);
+static void full_ui_box(struct object *,int *,int *,int *,int *);
 #include "keymap-font.h"
 
 struct csd_piece {
@@ -29,6 +30,7 @@ struct csd_piece {
 struct csd_frame {
   struct object *top;
   struct csd_piece pieces[4]; /* Client frame only; no side toolbar. */
+  struct csd_piece bars[4];   /* Full-UI letterbox covers: opaque black. */
   int fullscreen, maximized;
   int restore_width, restore_height;
   int hover, pressed;
@@ -110,7 +112,8 @@ static struct proxy *csd_paint(int part, int w, int h, int state) {
 }
 static void csd_create(struct object *top) {
   if (!ANVIL_CSD_EXPERIMENT || !top || top->csd ||
-      !top->surface || !top->surface->app || !csd_compositor || !csd_subcompositor || !csd_shm)
+      !top->surface || (!top->surface->app && !top->surface->full_ui) ||
+      !csd_compositor || !csd_subcompositor || !csd_shm)
     return;
   struct csd_frame *f = calloc(1, sizeof(*f));
   if (!f) abort();
@@ -122,6 +125,17 @@ static void csd_create(struct object *top) {
     f->pieces[i].subsurface = real_marshal(csd_subcompositor, 1, sub, csd_subsurface_i, 1);
     if (!f->pieces[i].surface || !f->pieces[i].subsurface) abort();
     /* Default synchronized mode: frame and Android geometry latch together. */
+  }
+  if (top->surface->full_ui) {
+    /* The canvas surface background is transparent: letterbox bars must be
+     * opaque black pieces of their own. */
+    for (int i = 0; i < 4; i++) {
+      union argument a = {.o=0};
+      f->bars[i].surface = real_marshal(csd_compositor, 0, &a, csd_surface_i, 1);
+      union argument sub[3] = {{.o=0},{.o=f->bars[i].surface},{.o=top->surface->p}};
+      f->bars[i].subsurface = real_marshal(csd_subcompositor, 1, sub, csd_subsurface_i, 1);
+      if (!f->bars[i].surface || !f->bars[i].subsurface) abort();
+    }
   }
   top->csd = f;
   top->surface->csd = f;
@@ -164,21 +178,36 @@ static int csd_input(struct proxy *surface, int x, int y, int w, int h) {
 static void csd_sync(struct object *s, int x, int y, int w, int h) {
   struct csd_frame *f = s->csd;
   if (!f) return;
+  __android_log_print(4, "AnvilDroidCsd", "sync %s content=%d,%d %dx%d",
+                      s->app_id ? s->app_id : "?", x, y, w, h);
   int widths[4] = {w+2*CSD_BORDER,CSD_BORDER,CSD_BORDER,w};
   int heights[4] = {CSD_HEADER,h+CSD_BORDER,h+CSD_BORDER,CSD_BORDER};
-  /* HWC content positions are canvas-relative, not normalized to (0,0). */
+  /* HWC content positions are canvas-relative, not normalized to (0,0).
+   * A small top offset is the transparent Android caption strip: cover it
+   * with the header so no see-through gap opens below the titlebar. */
   int xs[4] = {x-CSD_BORDER,x-CSD_BORDER,x+w,x};
-  int ys[4] = {y-CSD_HEADER,y,y,y+h};
-  csd_input(s->p,x,y,w,h);
+  int ys[4] = {y<CSD_HEADER ? 0 : y-CSD_HEADER, y,y,y+h};
+  /* The maximized window can be taller than the canvas surface: extend the
+   * bottom piece over the uncovered strip so it reads black, not see-through. */
+  int overflow = 0;
+  if (s->full_ui && s->full_canvas_h > 0 && h > s->full_canvas_h)
+    overflow = h - s->full_canvas_h;
+  if (overflow) {
+    heights[3] = CSD_BORDER + overflow;
+    ys[3] = y + h - overflow;
+  }
+  if (!s->full_ui) csd_input(s->p,x,y,w,h);
   struct proxy *above = 0;
   for (struct object *sub=objects; sub; sub=sub->next) {
     if (sub->parent != s || !sub->surface || strcmp(sub->p->interface->name,"wl_subsurface")) continue;
     /* HWC appends new layers above old siblings. objects is newest-first. */
     if (!above) above=sub->surface->p;
-    if(!game_fit_enabled(s))csd_input(sub->surface->p,
+    /* The full-UI canvas scales its own children and rewrites their input
+     * regions; never override them here. */
+    if(!game_fit_enabled(s) && !s->full_ui)csd_input(sub->surface->p,
       x-sub->x-sub->surface->clip_x,y-sub->y-sub->surface->clip_y,
       sub->surface->clip_hidden?0:w,sub->surface->clip_hidden?0:h);
-    if (!game_fit_enabled(s) && csd_compositor && csd_region_i)
+    if (!game_fit_enabled(s) && !s->full_ui && csd_compositor && csd_region_i)
       wayland_send(sub->surface->p,6,0); /* Fit already committed its transformed child. */
   }
   for (int i=0; i<4; i++) {
@@ -195,7 +224,9 @@ static void csd_sync(struct object *s, int x, int y, int w, int h) {
       wayland_send(p->surface, 1, empty);
       p->width = p->height = 0;
     } else if (p->width != widths[i] || p->height != heights[i]) {
-      struct proxy *buffer = csd_paint(i, widths[i], heights[i],
+      /* The overflow strip uses the letterbox black, not the frame color. */
+      struct proxy *buffer = csd_paint(i == 3 && overflow ? 5 : i,
+        widths[i], heights[i],
         csd_style_state(f->maximized,f->hover,f->pressed));
       if (!buffer) continue;
       union argument attach[3] = {{.o=buffer},{.i=0},{.i=0}};
@@ -206,14 +237,57 @@ static void csd_sync(struct object *s, int x, int y, int w, int h) {
     }
     wayland_send(p->surface, 6, 0);
   }
+  if (s->full_ui && f->bars[0].surface) {
+    /* Opaque black letterbox bars around the aspect-fitted canvas box. */
+    int fw, fh, ox, oy;
+    full_ui_box(s, &fw, &fh, &ox, &oy);
+    struct csd_bar { int x, y, w, h; } rects[4] = {
+      {0, 0, ox, h},                    /* left */
+      {ox + fw, 0, w - ox - fw, h},     /* right */
+      {ox, 0, fw, oy},                  /* top */
+      {ox, oy + fh, fw, h - oy - fh}};  /* bottom */
+    for (int i = 0; i < 4; i++) {
+      struct csd_piece *b = &f->bars[i];
+      int bw = rects[i].w > 0 ? rects[i].w : 0;
+      int bh = rects[i].h > 0 ? rects[i].h : 0;
+      union argument pos[2] = {{.i=rects[i].x},{.i=rects[i].y}};
+      wayland_send(b->subsurface, 1, pos);
+      if (above) {
+        union argument sibling = {.o=above};
+        wayland_send(b->subsurface, 2, &sibling);
+      }
+      if (bw > 0 && bh > 0) {
+        if (b->width != bw || b->height != bh) {
+          struct proxy *buffer = csd_paint(5, bw, bh, 0);
+          if (buffer) {
+            union argument attach[3] = {{.o=buffer},{.i=0},{.i=0}};
+            wayland_send(b->surface, 1, attach);
+            union argument damage[4] = {{.i=0},{.i=0},{.i=bw},{.i=bh}};
+            wayland_send(b->surface, 2, damage);
+            b->width = bw; b->height = bh;
+          }
+        }
+        wayland_send(b->surface, 6, 0);
+      } else {
+        union argument empty[3] = {{.o=0},{.i=0},{.i=0}};
+        wayland_send(b->surface, 1, empty);
+        b->width = b->height = 0;
+        wayland_send(b->surface, 6, 0); /* The detach needs its own commit. */
+      }
+    }
+  }
+  /* Present the pieces without waiting for the next HWC frame: the canvas
+   * (and idle apps) commit sparsely, and synchronized subsurfaces only
+   * surface their new buffers on a parent commit. */
+  wayland_send(s->p, 6, 0);
 }
-static void csd_feedback(struct csd_frame *f, int hover, int pressed) {
-  if (!f || (f->hover == hover && f->pressed == pressed)) return;
-  f->hover=hover; f->pressed=pressed;
+static void csd_repaint_header(struct csd_frame *f) {
   struct csd_piece *p=&f->pieces[0];
+  __android_log_print(4, "AnvilDroidCsd", "repaint header max=%d hover=%d pressed=%d",
+                      f->maximized, f->hover, f->pressed);
   if (f->fullscreen || !p->surface || p->width<1 || !csd_shm) return;
   struct proxy *buffer=csd_paint(0,p->width,p->height,
-    csd_style_state(f->maximized,hover,pressed));
+    csd_style_state(f->maximized,f->hover,f->pressed));
   if (!buffer) return;
   union argument attach[3]={{.o=buffer},{.i=0},{.i=0}};
   union argument damage[4]={{.i=0},{.i=0},{.i=p->width},{.i=p->height}};
@@ -223,6 +297,11 @@ static void csd_feedback(struct csd_frame *f, int hover, int pressed) {
   /* The header is synchronized with its parent; idle Android apps may not
    * submit another frame to make hover feedback visible. */
   if (f->top && f->top->surface) wayland_send(f->top->surface->p,6,0);
+}
+static void csd_feedback(struct csd_frame *f, int hover, int pressed) {
+  if (!f || (f->hover == hover && f->pressed == pressed)) return;
+  f->hover=hover; f->pressed=pressed;
+  csd_repaint_header(f);
 }
 static void csd_pointer_feedback(struct object *o) {
   struct csd_frame *f=o->csd_focus;
@@ -246,6 +325,13 @@ static void csd_destroy(struct object *o) {
     real_destroy(f->pieces[i].subsurface);
     wayland_send(f->pieces[i].surface, 0, 0);
     real_destroy(f->pieces[i].surface);
+  }
+  for (int i=0; i<4; i++) {
+    if (!f->bars[i].surface) continue;
+    wayland_send(f->bars[i].subsurface, 0, 0);
+    real_destroy(f->bars[i].subsurface);
+    wayland_send(f->bars[i].surface, 0, 0);
+    real_destroy(f->bars[i].surface);
   }
   free(f);
 }
@@ -338,7 +424,13 @@ static void csd_pointer_button(void *data, struct proxy *p, uint32_t serial, uin
     } else {
       if (action && action==o->csd_pressed) {
         if (action==CSD_MINIMIZE) wayland_send(f->top->p,13,0);
-        if (action==CSD_MAXIMIZE) wayland_send(f->top->p,f->maximized?10:9,0);
+        if (action==CSD_MAXIMIZE) {
+          wayland_send(f->top->p,f->maximized?10:9,0);
+          /* Optimistic flip: the restore glyph appears on the click even
+           * if the compositor's configure state arrives late or empty. */
+          f->maximized = !f->maximized;
+          csd_repaint_header(f);
+        }
         if (action==CSD_CLOSE && f->top->listener && !close_request_app(f->top->surface)) {
           closed=(void (*)(void *,struct proxy *))f->top->listener[1];
           closed_data=f->top->listener_data; closed_proxy=f->top->p;
