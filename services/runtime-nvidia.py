@@ -34,12 +34,20 @@ PAYLOAD_FILES = {
 }
 
 UPSTREAM_REPO = 'quinovax/waydroid-nvidia'
-UPSTREAM_VERSION = 'v0.1.2'
-PAYLOAD_ROOT = Path('/usr/local/lib/anvildroid-controller/nvidia-v0.1.2')
+# Local build of the quinovax dev host renderer (dev @ a2fb681b0e6c,
+# virglrenderer base dc35e4d) with one extra patch: vkr_dispatch_vkCreateBuffer
+# chains VkExternalMemoryBufferCreateInfo on every buffer, making the
+# vkr-forced DMA_BUF/OPAQUE_FD memory export spec-conformant
+# (VUID-VkBindBufferMemoryInfo-memory-02726). NVIDIA faults the GPU on draws
+# touching buffers bound in violation (Xid 69 DRAW_VERTEX_ARRAY 0x274,
+# upstream #10/#11), which blocks the skiagl app path on hybrid hosts.
+# Guest files are unchanged from the dev-20261005-a2fb681b pin.
+UPSTREAM_VERSION = 'devfix-20261010-vkr02726'
+PAYLOAD_ROOT = Path('/usr/local/lib/anvildroid-controller/nvidia-devfix-20261010-vkr02726')
 ARCHIVES = {
-    'host-x86_64': '15eb7656e0e111c3412c09c7bbbbc9e74dcc1446f7a8cf835aa754c52740b8bd',
-    'guest-android-x86_64': '313e6d583f4d8a067757ccee49c7d7eeada4e3d656950b19d1a524c1a3943ec6',
-    'guest-prebuilts': '4881536d77079208d061f43ca204b95d574018346e956ff3c960e1e29e8a6066',
+    'host-x86_64': '785a3a8b7f6ace07e497ef5e8975259828fddebca7174b70f9f33d9538c128b5',
+    'guest-android-x86_64': 'f9f8e2f55478704a8c8c4ca920b33ccdf05cd8a6d07bba8098fca591cdf25166',
+    'guest-prebuilts': 'ad557bde6a98a6d322c7e7a246b03a88d48d1d3d31bacb05480dff9332ae7a0f',
 }
 
 
@@ -164,10 +172,21 @@ def properties(props):
         'ro.hardware.gralloc': 'minigbm_gbm_mesa',
         'mesa.vn.debug': 'vtest', 'mesa.vtest.socket.name': '/dev/venus/venus.sock',
         'ro.waydroid.software_rendering': '0', 'ro.waydroid.override_props': 'false',
+        # skiavk is the fault-free app render path (skiagl draws fault the
+        # GPU on hybrid hosts, upstream #10/#11). Its WSI swapchain images
+        # are remapped to sysmem by the local vkr device-memory patch.
+        # Task snapshots are disabled in the guest (worker boot): their
+        # buffers are non-importable on hybrid and kill the display on app
+        # reopen.
         'debug.hwui.renderer': 'skiavk', 'debug.renderengine.backend': 'skiaglthreaded',
+        # NVIDIA LINEAR DMA-BUF images reject INPUT_ATTACHMENT usage. Disable
+        # the ANGLE features that request it for native window buffers. ANGLE
+        # uses ':' separators; the wildcard keeps this below PROP_VALUE_MAX.
+        'debug.angle.feature_overrides_disabled':
+            'supportsShaderFramebuffer*:emulateAdvancedBlendEquations:supportsImagelessFramebuffer',
     }
     return [p for p in props if p.split('=', 1)[0] not in overrides
-            and not p.startswith(('gralloc.', 'debug.angle.feature_overrides_disabled='))] + [k + '=' + v for k, v in overrides.items()]
+            and not p.startswith('gralloc.')] + [k + '=' + v for k, v in overrides.items()]
 
 
 def image_mounts(root):
@@ -203,6 +222,7 @@ class Renderer:
         self.endpoint = self.directory / 'venus.sock'
         self.log_path = None
         self.log_start = 0
+        self.log_scan = 0
 
     def start(self, uid, log):
         if uid <= 0: raise RuntimeError('NVIDIA renderer requires a desktop user')
@@ -231,10 +251,17 @@ class Renderer:
         os.chown(self.directory, uid, account.pw_gid)
         self.log_path = getattr(log, 'name', None)
         self.log_start = os.fstat(log.fileno()).st_size
+        self.log_scan = self.log_start
         env = {'PATH': '/usr/bin:/bin', 'HOME': account.pw_dir,
                'LD_LIBRARY_PATH': str(PAYLOAD_ROOT),
                'RENDER_SERVER_EXEC_PATH': str(PAYLOAD_ROOT / 'virgl_render_server'),
-               'VK_DRIVER_FILES': str(icds[0]), 'VK_ICD_FILENAMES': str(icds[0])}
+               'VK_DRIVER_FILES': str(icds[0]), 'VK_ICD_FILENAMES': str(icds[0]),
+               'VK_INSTANCE_LAYERS': 'VK_LAYER_KHRONOS_validation',
+               # Activity-switch task snapshots and screencap render into
+               # CPU-readable NVIDIA-LINEAR buffers, which faults this driver
+               # (Xid-69 CLEAR_SURFACE 0x19D0, upstream quinovax #16). Force
+               # the udmabuf fallback for those captures instead.
+               'WAYDROID_NVIDIA_CPU_LINEAR': '0'}
         self.process = subprocess.Popen(
             ['/usr/bin/prlimit', '--nofile=65536:65536', '--',
              str(PAYLOAD_ROOT / 'virgl_test_server'), '--no-virgl', '--venus',
@@ -260,6 +287,30 @@ class Renderer:
     def check(self):
         if self.process is None or self.process.poll() is not None:
             raise RendererFailure(self.failure_detail('NVIDIA renderer exited; restart the entire runtime. Inspect nvidia-renderer.log'))
+        self._watch_device_loss()
+
+    def _watch_device_loss(self):
+        """Stop the runtime at the first GPU device loss.
+
+        After VK_ERROR_DEVICE_LOST the quinovax render server restarts and the
+        guest re-imports with stale object ids, so every subsequent submit
+        faults the host GPU again (observed: Xid-69 every ~20s for minutes).
+        The guest cannot recover from a device loss, so fail the runtime at
+        the first one instead of waiting for the renderer process to exit.
+        """
+        if not self.log_path:
+            return
+        try:
+            with open(self.log_path, 'rb') as stream:
+                stream.seek(self.log_scan)
+                text = stream.read().decode(errors='replace')
+                self.log_scan = stream.tell()
+        except OSError:
+            return
+        if 'vk_error_device_lost' not in text.lower():
+            return
+        raise RendererFailure(self.failure_detail(
+            'NVIDIA renderer lost the GPU device; restart the entire runtime. See nvidia-renderer.log.'))
 
     def failure_detail(self, fallback=None):
         """Turn a Venus/device-loss crash into an actionable runtime error."""

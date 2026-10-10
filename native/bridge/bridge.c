@@ -123,6 +123,7 @@ struct object {
   int region_x, region_y, region_width, region_height, region_valid;
   int x, y, width, height, valid, app;
   int bx, by, bw, bh, has_bounds, attached;
+  uint32_t buffer_stride;
   int content_width, content_height, preview_width, preview_height;
   struct resize_policy resize;
   unsigned long profile_token;
@@ -325,11 +326,9 @@ static void geometry(struct object *s) {
     return;
   struct object cached = {.x=s->region_x,.y=s->region_y,.width=s->region_width,
                           .height=s->region_height,.valid=s->region_valid};
-  struct object *r = s->region ? s->region : &cached;
-  if (!r->valid) return;
-  struct object exact = *r;
+  struct object exact = {0};
+  int task_matches = 0;
   if (s->app_id) {
-    int matches = 0;
     for (int i = 0; i < task_count; i++) {
       if (!strcmp(s->app_id, tasks[i].package)) {
         /* Task bounds are Android coordinates, not Wayland logical units.
@@ -339,15 +338,43 @@ static void geometry(struct object *s) {
         exact.y = task_to_logical(tasks[i].y, 0);
         exact.width = task_to_logical(tasks[i].width, 1);
         exact.height = task_to_logical(tasks[i].height, 1);
-        matches++;
+        task_matches++;
       }
     }
-    /* Never guess between two independently opened tasks of one package. */
-    if (matches == 1)
-      r = &exact;
+  }
+  struct object *r = s->region ? s->region : &cached;
+  if (!r->valid) {
+    /* The NVIDIA Venus HWC never sets a surface input region, so the
+     * region-derived frame is unavailable. Derive it from the tracked
+     * Android task bounds instead; never guess between two tasks of one
+     * package. */
+    if (task_matches != 1) {
+      __android_log_print(4, "AnvilDroid",
+                          "geom: region invalid app_id=%s tasks=%d bounds=%d attached=%d",
+                          s->app_id ? s->app_id : "?", task_matches,
+                          s->has_bounds, s->attached);
+      return;
+    }
+    r = &exact;
+  } else if (task_matches == 1) {
+    /* Prefer the exact Android task bounds when the region is present. */
+    r = &exact;
   }
   if (r->width <= 0 || r->height <= 0)
     return;
+  /* Snap the window width to a 64-pixel multiple so the app surface buffer
+   * pitch is 256-byte-aligned: radeonsi (the AMD compositor) rejects LINEAR
+   * dmabuf imports with a non-aligned pitch (EGL_BAD_PARAMETER), and the
+   * NVIDIA layout pitch is only 64-byte-aligned. The snapped window size
+   * propagates to Android via the xdg configure, so the app renders into
+   * the snapped surface and its buffer pitch lands on the 256 boundary. */
+  struct object snapped = *r;
+  if ((snapped.width & 63) != 0) {
+    snapped.width = (snapped.width + 63) & ~63u;
+    __android_log_print(4, "AnvilDroid", "snap width %d -> %d (pitch alignment)",
+                        r->width, snapped.width);
+    r = &snapped;
+  }
   s->content_width = r->width;
   s->content_height = r->height;
   if(game_fit_geometry(s,r->x,r->y,r->width,r->height))return;
@@ -698,12 +725,18 @@ static struct proxy *bridge_marshal(
       o->attached = a[0].o != 0;
       struct object *buffer=find(a[0].o);
       o->buffer_transport=buffer?buffer->buffer_transport:0;
+      o->buffer_stride=buffer?buffer->buffer_stride:0;
     }
     if (!strcmp(method, "set_input_region")) {
       o->region = find(a[0].o);
       /* wl_surface copies the region at this request. Modern HWC destroys
        * its temporary wl_region before commit; geometry must retain bounds. */
       o->region_valid=o->region && o->region->valid;
+      if (o->app)
+        __android_log_print(4, "AnvilDroid",
+                            "input_region app_id=%s region=%p valid=%d",
+                            o->app_id ? o->app_id : "?", (void *)o->region,
+                            o->region_valid);
       if (o->region_valid) {
         o->region_x=o->region->x;o->region_y=o->region->y;
         o->region_width=o->region->width;o->region_height=o->region->height;
@@ -715,8 +748,24 @@ static struct proxy *bridge_marshal(
       geometry(o);
       /* Do not map the temporary display-sized transparent background.
        * The empty initial commit still negotiates xdg configure normally. */
-      if (o->app && o->xdg && o->attached && !o->has_bounds)
+      if (o->app && o->xdg && o->attached && !o->has_bounds) {
+        __android_log_print(4, "AnvilDroid",
+                            "commit SKIP app_id=%s bounds=%d region_valid=%d",
+                            o->app_id ? o->app_id : "?", o->has_bounds,
+                            o->region_valid);
         skip = 1;
+      }
+      /* Hybrid NVIDIA: never forward a buffer whose pitch is not
+       * 256-byte-aligned — radeonsi rejects the import and kills the whole
+       * Wayland display on the first failure. Drop the frame; the next
+       * (snap-resized) buffer passes. */
+      if (o->app && o->xdg && o->attached && o->buffer_stride &&
+          (o->buffer_stride & 255) != 0) {
+        __android_log_print(4, "AnvilDroid",
+                            "commit DROP unaligned stride=%u app_id=%s",
+                            o->buffer_stride, o->app_id ? o->app_id : "?");
+        skip = 1;
+      }
     }
   }
   if (!strcmp(cls, "xdg_surface") && !strcmp(method, "set_window_geometry") &&
@@ -727,6 +776,40 @@ static struct proxy *bridge_marshal(
       o && o->surface && o->surface == display_probe_surface)
     skip = 1;
 #endif
+  if (!strcmp(cls, "zwp_linux_buffer_params_v1")) {
+    if (!strcmp(method, "create") || !strcmp(method, "create_immed")) {
+      if (o) o->height = a[2].i; /* remember h for the stride rewrite */
+      __android_log_print(4, "AnvilDroid", "dmabuf %s: %dx%d fmt=0x%x",
+                          method, a[1].i, a[2].i, a[3].u);
+    } else if (!strcmp(method, "add")) {
+      /* The guest computes the dmabuf stride from its own view of the
+       * image; the host renderer pads the width to a 256-byte pitch
+       * multiple. Rewrite the stride from the fd's real size so the
+       * compositor import uses the actual row pitch. */
+      uint32_t real_stride = 0;
+      if (o && o->height > 0 && a[1].u == 0 && a[2].u == 0) {
+        /* freestanding: raw lseek(fd, 0, SEEK_END/SEEK_SET) on the dmabuf */
+        long size;
+        long back;
+        __asm__ volatile("syscall" : "=a"(size) : "a"(8), "D"((long)a[0].i),
+                         "S"(0), "d"(2) : "rcx", "r11", "memory");
+        if (size > 0) {
+          __asm__ volatile("syscall" : "=a"(back) : "a"(8), "D"((long)a[0].i),
+                           "S"(0), "d"(0) : "rcx", "r11", "memory");
+          if (back >= 0 && (uint64_t)size / (uint32_t)o->height <= UINT32_MAX)
+            real_stride = (uint32_t)((uint64_t)size / (uint32_t)o->height);
+        }
+      }
+      if (real_stride && real_stride != a[3].u) {
+        __android_log_print(4, "AnvilDroid",
+                            "dmabuf add: fd=%d stride %u -> %u (real)",
+                            a[0].i, a[3].u, real_stride);
+        a[3].u = real_stride;
+      }
+      if (o && a[1].u == 0 && a[2].u == 0)
+        o->buffer_stride = a[3].u;
+    }
+  }
   struct proxy *temporary_region=0;
   full_ui_request(o,cls,method,a,&temporary_region);
   game_fit_request(o,cls,method,a,&temporary_region);
@@ -753,6 +836,7 @@ static struct proxy *bridge_marshal(
       if(!strcmp(cls,"wl_shm_pool"))n->buffer_transport=1;
       else if(!strcmp(cls,"zwp_linux_buffer_params_v1"))n->buffer_transport=2;
       else if(!strcmp(cls,"wl_drm")||!strcmp(cls,"android_wlegl"))n->buffer_transport=3;
+      if (o) n->buffer_stride = o->buffer_stride;
     }
     csd_track_global(result, interface);
     if (!strcmp(interface->name,"wl_subsurface")) {
@@ -959,6 +1043,34 @@ static void *task_worker(void *unused) {
     task_count = count;
     logged_scale = hwc_scale_120;
     pthread_mutex_unlock(mutex);
+    /* Hybrid NVIDIA: snap app window widths to 64-pixel multiples so the
+     * surface pitch is 256-byte-aligned (radeonsi's LINEAR dmabuf import
+     * requirement). The companion applies the resize; the next task
+     * snapshot then reports the snapped width and the xdg window follows. */
+    static int last_snap_task = -1, last_snap_width = 0;
+    for (int i = 0; i < count; i++) {
+      if (tasks[i].width < 64 || (tasks[i].width & 63) == 0)
+        continue;
+      if (tasks[i].id == last_snap_task && tasks[i].width == last_snap_width)
+        continue;
+      int snapped = (tasks[i].width + 63) & ~63;
+      void *request = fopen("/data/waydroid_tmp/anvildroid/resize.tmp", "w");
+      if (request) {
+        char line[64];
+        format_resize_request(line, sizeof(line), tasks[i].id, snapped,
+                              tasks[i].height);
+        fprintf(request, "%s", line);
+        fclose(request);
+        rename("/data/waydroid_tmp/anvildroid/resize.tmp",
+               "/data/waydroid_tmp/anvildroid/resize");
+        __android_log_print(4, "AnvilDroid",
+                            "snap resize task %d %dx%d -> %dx%d (pitch)",
+                            tasks[i].id, tasks[i].width, tasks[i].height,
+                            snapped, tasks[i].height);
+        last_snap_task = tasks[i].id;
+        last_snap_width = tasks[i].width;
+      }
+    }
     profile_poll();
     close_poll();
     keymap_io_poll();

@@ -931,7 +931,12 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
         custom_stock_hwc = (compatibility.get('flavor') == 'CUSTOM'
                             and software_compatibility
                             and not native_wayland)
-        if not custom_stock_hwc and not native_wayland:
+        # Explicit image compatibility metadata is authoritative. Some
+        # official images omit waydroid.system_ota even though they ship the
+        # native app-window composer; the old heuristic misclassified those
+        # images as stock HWC and forced every app into the full UI window.
+        if ('presentation_mode' not in compatibility and
+                not custom_stock_hwc and not native_wayland):
             try:
                 custom_stock_hwc = not any(line.startswith('waydroid.system_ota=')
                                            for line in (instance / 'support/waydroid.prop').read_text().splitlines())
@@ -1326,6 +1331,12 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
                 if boot_property == '1' or dev_boot_property == '1':
                     require('waydroidplatform' in shell('service', 'list'), 'Platform service missing')
                     provision_android_user()
+                    if nvidia_rendering:
+                        # Hybrid NVIDIA hosts cannot import the task-snapshot
+                        # buffers (vkr-exported images outside the sysmem
+                        # remap). Their attach as the window's first buffer
+                        # kills the Wayland display on app reopen.
+                        shell('settings', 'put', 'global', 'enable_task_snapshots', '0')
                     android_id = shell('settings', 'get', 'secure', 'android_id')
                     require(android_id not in ('', 'null'), 'Android identity unavailable')
                     break
