@@ -3,6 +3,11 @@
 #include <stddef.h>
 extern int snprintf(char *, size_t, const char *, ...);
 
+/* RGBA task buffers need a 256-byte pitch for the hybrid GPU import path. */
+static inline int resize_task_width(int width) {
+  return width >= 64 && width <= 8192 ? (width + 63) & ~63 : width;
+}
+
 /* A real newline is required by the companion's read -r and numeric checks. */
 static int format_resize_request(char *buffer, size_t size, int task, int width,
                                  int height) {

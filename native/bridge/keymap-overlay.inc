@@ -740,6 +740,7 @@ static void keymap_tdown(void *data, struct proxy *p, uint32_t serial,
     else
       o->keymap_touch_blocked &= ~(1u << slot);
   }
+  x=content_clip_input(surface,x,0);y=content_clip_input(surface,y,1);
   x=full_ui_input(surface,x,0);y=full_ui_input(surface,y,1);
   x=game_fit_input(surface,x,0);y=game_fit_input(surface,y,1);
   pthread_mutex_unlock(mutex);
@@ -770,6 +771,7 @@ static void keymap_tmotion(void *data, struct proxy *p, uint32_t time,
   pthread_mutex_lock(mutex);
   int slot = keymap_touch_slot(o, id),
       blocked = slot < 0 || (o->keymap_touch_blocked & (1u << slot));
+  if(slot>=0){x=content_clip_input(o->touch_surfaces[slot],x,0);y=content_clip_input(o->touch_surfaces[slot],y,1);}
   if(slot>=0){x=full_ui_input(o->touch_surfaces[slot],x,0);y=full_ui_input(o->touch_surfaces[slot],y,1);}
   if(slot>=0){x=game_fit_input(o->touch_surfaces[slot],x,0);y=game_fit_input(o->touch_surfaces[slot],y,1);}
   pthread_mutex_unlock(mutex);

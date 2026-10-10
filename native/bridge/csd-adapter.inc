@@ -3,6 +3,7 @@
  * second host window. No glibc/libdecor is loaded into Android's bionic HWC.
  * All functions execute under bridge mutex except original listener calls. */
 #include "csd-layout.h"
+#include "csd-style.h"
 #ifndef ANVIL_CSD_EXPERIMENT
 #define ANVIL_CSD_EXPERIMENT 0
 #endif
@@ -30,6 +31,7 @@ struct csd_frame {
   struct csd_piece pieces[4]; /* Client frame only; no side toolbar. */
   int fullscreen, maximized;
   int restore_width, restore_height;
+  int hover, pressed;
 };
 struct csd_buffer { struct proxy *proxy; struct csd_buffer *next; };
 static struct csd_buffer *csd_buffers;
@@ -67,7 +69,7 @@ static void csd_release(void *data, struct proxy *p) {
   pthread_mutex_unlock(mutex);
 }
 static void (*csd_buffer_listener[])(void) = {(void (*)(void))csd_release};
-static struct proxy *csd_paint(int part, int w, int h, int maximized) {
+static struct proxy *csd_paint(int part, int w, int h, int state) {
   if (w < 1 || h < 1 || w > 8204 || h > 8204) return 0;
   if (part==4 && (int64_t)w*h>16777216) return 0;
   /* memfd_create on the bridge's supported x86_64 Android ABI. */
@@ -83,18 +85,7 @@ static struct proxy *csd_paint(int part, int w, int h, int maximized) {
       color=0x24050910; /* Subtle premultiplied scrim; app stays legible. */
     }
     if(part==5)color=0xff000000; /* Letterbox, not a toolbar. */
-    if (part == 0 && y >= CSD_BORDER) {
-      int action = csd_hit(part, x, y, w, h);
-      int cx = w - CSD_BORDER - CSD_BUTTON / 2;
-      if (action == CSD_MAXIMIZE) cx -= CSD_BUTTON;
-      if (action == CSD_MINIMIZE) cx -= 2 * CSD_BUTTON;
-      int dx = x - cx, dy = y - (CSD_BORDER + (CSD_HEADER-CSD_BORDER)/2);
-      int ink = (action == CSD_CLOSE && dx >= -5 && dx <= 5 && (dy == dx || dy == -dx)) ||
-        (action == CSD_MINIMIZE && dx >= -5 && dx <= 5 && dy == 3) ||
-        (action == CSD_MAXIMIZE && dx >= -5 && dx <= 5 && dy >= -5 && dy <= 5 &&
-          (dx == -5 || dx == 5 || dy == -5 || dy == 5 || (maximized && dy == -2)));
-      if (ink) color = 0xfff2f2f2;
-    }
+    if (part == 0) color = csd_header_pixel(x,y,w,h,state);
     pixels[(size_t)y*w+x] = color;
   }
   if(part==4)keymap_overlay_paint(pixels,w,h);
@@ -125,7 +116,6 @@ static void csd_create(struct object *top) {
   if (!f) abort();
   f->top = top;
   for (int i = 0; i < 4; i++) {
-    if (i < 4 && decoration_available) continue; /* SSD: no client frame chrome */
     union argument a = {.o=0};
     f->pieces[i].surface = real_marshal(csd_compositor, 0, &a, csd_surface_i, 1);
     union argument sub[3] = {{.o=0},{.o=f->pieces[i].surface},{.o=top->surface->p}};
@@ -135,7 +125,7 @@ static void csd_create(struct object *top) {
   }
   top->csd = f;
   top->surface->csd = f;
-  if (!decoration_available) {
+  {
     /* The window frame follows the drag through configure acks; Android only
      * receives the final size on release. Live task resizes during a drag
      * hammer fragile apps (Cocos/ARM games) with repeated relayouts and kill
@@ -148,8 +138,6 @@ static void csd_create(struct object *top) {
     union argument minimum[2] = {{.i=160+2*CSD_BORDER},{.i=64+CSD_HEADER+CSD_BORDER}};
     wayland_send(top->p, 8, minimum);
     __android_log_print(4, "AnvilDroidCsd", "real CSD attached to %s", top->surface->app_id);
-  } else {
-    __android_log_print(4, "AnvilDroidCsd", "server frame retained for %s (SSD)", top->surface->app_id);
   }
 }
 /* Find the xdg_toplevel proxy owning this surface (F11 fullscreen target). */
@@ -187,7 +175,9 @@ static void csd_sync(struct object *s, int x, int y, int w, int h) {
     if (sub->parent != s || !sub->surface || strcmp(sub->p->interface->name,"wl_subsurface")) continue;
     /* HWC appends new layers above old siblings. objects is newest-first. */
     if (!above) above=sub->surface->p;
-    if(!game_fit_enabled(s))csd_input(sub->surface->p,x-sub->x,y-sub->y,w,h);
+    if(!game_fit_enabled(s))csd_input(sub->surface->p,
+      x-sub->x-sub->surface->clip_x,y-sub->y-sub->surface->clip_y,
+      sub->surface->clip_hidden?0:w,sub->surface->clip_hidden?0:h);
     if (!game_fit_enabled(s) && csd_compositor && csd_region_i)
       wayland_send(sub->surface->p,6,0); /* Fit already committed its transformed child. */
   }
@@ -205,7 +195,8 @@ static void csd_sync(struct object *s, int x, int y, int w, int h) {
       wayland_send(p->surface, 1, empty);
       p->width = p->height = 0;
     } else if (p->width != widths[i] || p->height != heights[i]) {
-      struct proxy *buffer = csd_paint(i, widths[i], heights[i], f->maximized);
+      struct proxy *buffer = csd_paint(i, widths[i], heights[i],
+        csd_style_state(f->maximized,f->hover,f->pressed));
       if (!buffer) continue;
       union argument attach[3] = {{.o=buffer},{.i=0},{.i=0}};
       wayland_send(p->surface, 1, attach);
@@ -215,6 +206,31 @@ static void csd_sync(struct object *s, int x, int y, int w, int h) {
     }
     wayland_send(p->surface, 6, 0);
   }
+}
+static void csd_feedback(struct csd_frame *f, int hover, int pressed) {
+  if (!f || (f->hover == hover && f->pressed == pressed)) return;
+  f->hover=hover; f->pressed=pressed;
+  struct csd_piece *p=&f->pieces[0];
+  if (f->fullscreen || !p->surface || p->width<1 || !csd_shm) return;
+  struct proxy *buffer=csd_paint(0,p->width,p->height,
+    csd_style_state(f->maximized,hover,pressed));
+  if (!buffer) return;
+  union argument attach[3]={{.o=buffer},{.i=0},{.i=0}};
+  union argument damage[4]={{.i=0},{.i=0},{.i=p->width},{.i=p->height}};
+  wayland_send(p->surface,1,attach);
+  wayland_send(p->surface,2,damage);
+  wayland_send(p->surface,6,0);
+  /* The header is synchronized with its parent; idle Android apps may not
+   * submit another frame to make hover feedback visible. */
+  if (f->top && f->top->surface) wayland_send(f->top->surface->p,6,0);
+}
+static void csd_pointer_feedback(struct object *o) {
+  struct csd_frame *f=o->csd_focus;
+  if (!f) return;
+  struct csd_piece *p=&f->pieces[o->csd_part];
+  int action=csd_hit(o->csd_part,o->csd_x,o->csd_y,p->width,p->height);
+  csd_feedback(f,action>=CSD_MINIMIZE?action:0,
+    o->csd_pressed>=CSD_MINIMIZE?o->csd_pressed:0);
 }
 static void csd_destroy(struct object *o) {
   if (!o || !o->csd) return;
@@ -250,6 +266,7 @@ static void csd_pointer_enter(void *data, struct proxy *p, uint32_t serial,
    * ends that grab, even when the pointer returns to Android content or a
    * different window. The transient header focus is already gone. */
   csd_resize_finished(o);
+  csd_feedback(o->csd_focus,0,0);
   o->csd_focus = 0; o->csd_suppress = 0; o->csd_pressed = 0;
   o->overlay_focus=0;o->overlay_pressed=0;
   o->pointer_surface=surface;
@@ -261,7 +278,9 @@ static void csd_pointer_enter(void *data, struct proxy *p, uint32_t serial,
     }
   }
   o->csd_x=x/256; o->csd_y=y/256;
+  csd_pointer_feedback(o);
   if(keymap_overlay_enter(o,surface))o->csd_suppress=1;
+  x=content_clip_input(surface,x,0);y=content_clip_input(surface,y,1);
   x=game_fit_input(surface,x,0);y=game_fit_input(surface,y,1);
   pthread_mutex_unlock(mutex);
   /* Upstream enter only updates focus/cursor, never injects Android input. */
@@ -273,6 +292,7 @@ static void csd_pointer_leave(void *data, struct proxy *p, uint32_t serial, stru
   pthread_mutex_lock(mutex);
   int was_bar=o->fit_bar_focus;o->fit_bar_focus=0;
   keymap_overlay_pointer_cancel(o);
+  csd_feedback(o->csd_focus,0,0);
   o->pointer_surface=0;
   o->csd_focus=0; o->csd_pressed=0;
   o->overlay_focus=0;o->overlay_pressed=0;
@@ -285,8 +305,10 @@ static void csd_pointer_motion(void *data, struct proxy *p, uint32_t time, int32
   struct object *o=data;
   pthread_mutex_lock(mutex);
   o->csd_x=x/256; o->csd_y=y/256;
+  csd_pointer_feedback(o);
   if(o->overlay_focus)keymap_overlay_motion(o);
   int suppress=o->csd_suppress;
+  x=content_clip_input(o->pointer_surface,x,0);y=content_clip_input(o->pointer_surface,y,1);
   x=full_ui_input(o->pointer_surface,x,0);y=full_ui_input(o->pointer_surface,y,1);
   x=game_fit_input(o->pointer_surface,x,0);y=game_fit_input(o->pointer_surface,y,1);
   pthread_mutex_unlock(mutex);
@@ -331,6 +353,7 @@ static void csd_pointer_button(void *data, struct proxy *p, uint32_t serial, uin
       }
       o->csd_pressed=0;
     }
+    csd_pointer_feedback(o);
   }
   pthread_mutex_unlock(mutex);
   if (closed) closed(closed_data,closed_proxy);

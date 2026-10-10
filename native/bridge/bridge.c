@@ -151,6 +151,9 @@ struct object {
   struct object *next, *parent, *surface, *xdg, *viewport, *region;
   int region_x, region_y, region_width, region_height, region_valid;
   int x, y, width, height, valid, app;
+  int source_x, source_y, source_width, source_height;
+  struct proxy *attached_buffer;
+  int attach_x, attach_y, clip_hidden, clip_x, clip_y;
   int bx, by, bw, bh, has_bounds, attached;
   uint32_t buffer_stride;
   int content_width, content_height, preview_width, preview_height;
@@ -181,6 +184,8 @@ struct object {
 };
 static struct object *objects;
 static int32_t full_ui_input(struct proxy *,int32_t,int);
+static int32_t content_clip_input(struct proxy *,int32_t,int);
+static int content_clip_layer(struct object *,int,int,int,int);
 static int game_fit_enabled(struct object *);
 static int game_fit_bar(struct proxy *);
 static int32_t game_fit_input(struct proxy *,int32_t,int);
@@ -345,6 +350,7 @@ static void decoration_destroy(struct object *top) {
 #include "display-probe.inc"
 #include "full-ui.inc"
 #include "game-fit.inc"
+#include "content-clip.inc"
 static void ime_protocol_init(void *library) {
   ime_object_types[0] = &ime_text_interface;
   ime_object_types[1] = dlsym(library, "wl_seat_interface");
@@ -391,19 +397,6 @@ static void geometry(struct object *s) {
   }
   if (r->width <= 0 || r->height <= 0)
     return;
-  /* Snap the window width to a 64-pixel multiple so the app surface buffer
-   * pitch is 256-byte-aligned: radeonsi (the AMD compositor) rejects LINEAR
-   * dmabuf imports with a non-aligned pitch (EGL_BAD_PARAMETER), and the
-   * NVIDIA layout pitch is only 64-byte-aligned. The snapped window size
-   * propagates to Android via the xdg configure, so the app renders into
-   * the snapped surface and its buffer pitch lands on the 256 boundary. */
-  struct object snapped = *r;
-  if ((snapped.width & 63) != 0) {
-    snapped.width = (snapped.width + 63) & ~63u;
-    __android_log_print(4, "AnvilDroid", "snap width %d -> %d (pitch alignment)",
-                        r->width, snapped.width);
-    r = &snapped;
-  }
   s->content_width = r->width;
   s->content_height = r->height;
   if(game_fit_geometry(s,r->x,r->y,r->width,r->height))return;
@@ -411,8 +404,15 @@ static void geometry(struct object *s) {
    * only the old geometry and sends that old size again on button release. */
   struct object preview = *r;
   if (s->preview_width) {
-    if (!s->resize.dragging && r->width == s->preview_width &&
-        r->height == s->preview_height) {
+    /* The worker aligns Android's width, and fractional scaling may round
+     * either extent up. Retire the preview when that actual task arrives;
+     * keeping the unsnapped frame would leave content outside the CSD. */
+    int settled = r->width == s->preview_width && r->height == s->preview_height;
+    if (task_matches == 1 &&
+        r->width == task_to_logical(resize_task_width(logical_to_task(s->preview_width)), 1) &&
+        r->height == task_to_logical(logical_to_task(s->preview_height), 1))
+      settled = 1;
+    if (!s->resize.dragging && settled) {
       s->preview_width = s->preview_height = 0;
     } else {
       preview.width = s->preview_width;
@@ -429,6 +429,7 @@ static void geometry(struct object *s) {
     union argument a[2] = {{.i = w}, {.i = h}};
     wayland_send(s->viewport->p, 2, a);
   }
+  content_clip_sync(s, r->x, r->y, r->width, r->height);
   csd_sync(s, r->x, r->y, r->width, r->height);
   keymap_overlay_sync(s,r->x,r->y,r->width,r->height);
   if (!s->has_bounds || s->bx != r->x || s->by != r->y || s->bw != r->width ||
@@ -440,7 +441,7 @@ static void geometry(struct object *s) {
     s->has_bounds = 1;
     union argument a[4] = {
         {.i = r->x}, {.i = r->y}, {.i = r->width}, {.i = r->height}};
-    if (s->csd && !decoration_available && !s->csd->fullscreen) {
+    if (s->csd && s->csd->pieces[0].surface && !s->csd->fullscreen) {
       /* HWC positions content children at displayFrame x/y within this
        * parent. CSD and xdg geometry must use that same canvas origin. */
       a[0].i -= CSD_BORDER; a[1].i -= CSD_HEADER;
@@ -520,7 +521,7 @@ static void configure(void *data, struct proxy *p, int32_t w, int32_t h,
       if (s->csd->maximized != maximized) s->csd->pieces[0].width = 0;
       s->csd->fullscreen = fullscreen;
       s->csd->maximized = maximized;
-      if (!fullscreen && !decoration_available) {
+      if (!fullscreen && s->csd->pieces[0].surface) {
         /* Only the client-drawn frame eats into the configured size; with
          * server-side decorations KWin already configures the content area. */
         if (w > 0) w -= 2 * CSD_BORDER;
@@ -662,6 +663,10 @@ static struct proxy *bridge_marshal(
     o->width = a[0].i;
     o->height = a[1].i;
   }
+  if (!strcmp(cls, "wp_viewport") && !strcmp(method, "set_source") && o) {
+    o->source_x = a[0].i; o->source_y = a[1].i;
+    o->source_width = a[2].i; o->source_height = a[3].i;
+  }
   if (o && !strcmp(cls,"wl_subsurface") && !strcmp(method,"set_position")) {
     o->x = a[0].i; o->y = a[1].i;
   }
@@ -752,6 +757,9 @@ static struct proxy *bridge_marshal(
   if (!strcmp(cls, "wl_surface") && o) {
     if (!strcmp(method, "attach")) {
       o->attached = a[0].o != 0;
+      o->attached_buffer = a[0].o;
+      o->attach_x = a[1].i; o->attach_y = a[2].i;
+      o->clip_hidden = 0;
       struct object *buffer=find(a[0].o);
       o->buffer_transport=buffer?buffer->buffer_transport:0;
       o->buffer_stride=buffer?buffer->buffer_stride:0;
@@ -775,6 +783,7 @@ static struct proxy *bridge_marshal(
       game_fit_report_transport(o);
       ime_sync();
       geometry(o);
+      content_clip_commit(o);
       /* Do not map the temporary display-sized transparent background.
        * The empty initial commit still negotiates xdg configure normally. */
       if (o->app && o->xdg && o->attached && !o->has_bounds) {
@@ -949,6 +958,7 @@ static void forget_proxy(struct proxy *p) {
     }
     *at = old->next;
     for (struct object *o = objects; o; o = o->next) {
+      if(o->attached_buffer==old->p)o->attached_buffer=0;
       if(o->pointer_surface==old->p)o->pointer_surface=0;
       for(int i=0;i<32;++i)if(o->touch_surfaces[i]==old->p)o->touch_surfaces[i]=0;
       if (o->surface == old)
@@ -1082,7 +1092,7 @@ static void *task_worker(void *unused) {
         continue;
       if (tasks[i].id == last_snap_task && tasks[i].width == last_snap_width)
         continue;
-      int snapped = (tasks[i].width + 63) & ~63;
+      int snapped = resize_task_width(tasks[i].width);
       void *request = fopen("/data/waydroid_tmp/anvildroid/resize.tmp", "w");
       if (request) {
         char line[64];
@@ -1118,7 +1128,7 @@ static void *task_worker(void *unused) {
         }
       }
       if (matches == 1) {
-        width = logical_to_task(s->resize.width);
+        width = resize_task_width(logical_to_task(s->resize.width));
         height = logical_to_task(s->resize.height);
         profile_note_resize(s->app_id, id);
       } else {

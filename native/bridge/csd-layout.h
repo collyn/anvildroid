@@ -5,10 +5,15 @@
 #define CSD_HEADER 38
 #define CSD_BUTTON 36
 enum { CSD_MOVE = 100, CSD_MINIMIZE, CSD_MAXIMIZE, CSD_CLOSE };
+static inline int csd_button_center(int action, int width) {
+  return width - CSD_BORDER - CSD_BUTTON / 2 - (CSD_CLOSE - action) * CSD_BUTTON;
+}
 static int csd_hit(int piece, int x, int y, int width, int height) {
   if (x < 0 || y < 0 || x >= width || y >= height) return 0;
   if (piece == 0) {
     if (y < CSD_BORDER) return x < 16 ? 5 : x >= width - 16 ? 9 : 1;
+    if (x < CSD_BORDER) return 4;
+    if (x >= width-CSD_BORDER) return 8;
     if (x >= width - CSD_BORDER - CSD_BUTTON) return CSD_CLOSE;
     if (x >= width - CSD_BORDER - 2 * CSD_BUTTON) return CSD_MAXIMIZE;
     if (x >= width - CSD_BORDER - 3 * CSD_BUTTON) return CSD_MINIMIZE;
