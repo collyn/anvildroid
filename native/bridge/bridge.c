@@ -78,6 +78,35 @@ void anvil_configure_binder_rpc_pool(unsigned long threads, int caller_joins) {
                                 "_ZN7android8hardware29configureBinderRpcThreadpoolEmb");
 }
 
+/* libbinder's own shrink guard can fire without going through the libhidl
+ * wrappers above: the polling setup calls
+ * ProcessState::setThreadPoolConfiguration() directly and the guard
+ * (mThreadPoolStarted && maxThreads < mMaxThreads) aborts the HWC. Apply
+ * the same ignore-the-shrink policy to the direct call. */
+long anvil_process_state_set_thread_pool_configuration(void *self,
+                                                       unsigned long threads,
+                                                       int caller_joins)
+    __asm__("_ZN7android14ProcessState28setThreadPoolConfigurationEmb");
+long anvil_process_state_set_thread_pool_configuration(void *self,
+                                                       unsigned long threads,
+                                                       int caller_joins) {
+  typedef long (*configure_fn)(void *, unsigned long, int);
+  static configure_fn real;
+  if (!real)
+    real = (configure_fn)dlsym((void *)-1L,
+                               "_ZN7android14ProcessState28setThreadPoolConfigurationEmb");
+  if (!real)
+    return 0;
+  unsigned long current = __atomic_load_n(&anvil_rpc_pool_size, __ATOMIC_ACQUIRE);
+  while (threads > current) {
+    if (__atomic_compare_exchange_n(&anvil_rpc_pool_size, &current, threads, 0,
+                                    __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+      return real(self, threads, caller_joins);
+    }
+  }
+  return 0; /* ignore the shrink; the running pool stays as-is */
+}
+
 struct message {
   const char *name, *signature;
   const void **types;

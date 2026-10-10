@@ -46,7 +46,7 @@ UPSTREAM_VERSION = 'devfix-20261010-vkr02726'
 PAYLOAD_ROOT = Path('/usr/local/lib/anvildroid-controller/nvidia-devfix-20261010-vkr02726')
 ARCHIVES = {
     'host-x86_64': '785a3a8b7f6ace07e497ef5e8975259828fddebca7174b70f9f33d9538c128b5',
-    'guest-android-x86_64': 'f9f8e2f55478704a8c8c4ca920b33ccdf05cd8a6d07bba8098fca591cdf25166',
+    'guest-android-x86_64': '3e41c050e1c1fb0f319f870c80e196f33f4195914503ff0c6818c5e8078d26d5',
     'guest-prebuilts': 'ad557bde6a98a6d322c7e7a246b03a88d48d1d3d31bacb05480dff9332ae7a0f',
 }
 
