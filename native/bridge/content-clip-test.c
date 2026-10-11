@@ -97,6 +97,28 @@ int main(void) {
   send_request(&vp_p,1,crop);send_request(&sub_p,1,pos);send_request(&layer_p,6,0);
   assert(px==879&&py==631&&dw==1&&dh==1);
   assert(source[2]==1&&source[3]==1);
+  /* Music: the HWC region includes 12px shadow padding above the task.
+   * Cropping from y=20 with height=812 used to lose the bottom 12px of
+   * its mini-player. Use the task's y=32 and preserve all 812 content rows. */
+  root->app_id=strdup("org.lineageos.eleven");
+  task_count=1;
+  tasks[0]=(struct task){.id=87,.package="org.lineageos.eleven",
+                        .x=0,.y=32,.width=640,.height=812};
+  region=(struct object){.valid=1,.x=0,.y=20,.width=652,.height=836};
+  crop[0].i=12*256;crop[1].i=0;crop[2].i=652*256;crop[3].i=836*256;
+  dest[0].i=652;dest[1].i=836;pos[0].i=0;pos[1].i=20;
+  send_request(&vp_p,1,crop);send_request(&vp_p,2,dest);
+  send_request(&sub_p,1,pos);geometry(root);
+  assert(root->bx==0&&root->by==32&&root->bw==640&&root->bh==812);
+  assert(px==0&&py==32&&dw==640&&dh==812);
+  assert(source[0]==12*256&&source[1]==12*256);
+  assert(source[2]==640*256&&source[3]==812*256);
+  assert(content_clip_input(&layer_p,0,1)==12*256);
+  /* Updating the task moves the crop coherently; old padded regions cannot
+   * pull it upwards again, including on a fresh child commit. */
+  tasks[0].y=64;tasks[0].height=780;
+  geometry(root);send_request(&layer_p,6,0);
+  assert(py==64&&dh==780&&source[1]==44*256);
   while(objects)forget_proxy(objects->p);
 
   /* CSD style: button cell probes. */

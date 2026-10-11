@@ -439,10 +439,10 @@ static void geometry(struct object *s) {
     }
     r = &exact;
   } else if (task_matches == 1) {
-    /* Task width/height track resizes faster than the input region, but
-     * its x/y are canvas coordinates; keep the region's surface origin. */
-    exact.x = r->x;
-    exact.y = r->y;
+    /* A valid HWC region is in the same canvas coordinates as the task,
+     * but may begin in the surface's shadow padding (e.g. y=20 for a
+     * task starting at y=32). Use the complete task rectangle: combining
+     * the padded origin with the task height chops off the bottom inset. */
     r = &exact;
   }
   if (r->width <= 0 || r->height <= 0)
