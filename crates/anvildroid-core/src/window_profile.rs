@@ -24,6 +24,8 @@ pub struct WindowProfile {
     pub runtime: String,
     pub package: String,
     pub normal_content: ContentSize,
+    #[serde(default)]
+    pub maximized: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -95,11 +97,22 @@ impl WindowProfile {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn maximized_state_and_legacy_profile_are_readable() {
+        let mut p = profile();
+        p.maximized = true;
+        let json = serde_json::to_string(&p).unwrap();
+        assert!(serde_json::from_str::<WindowProfile>(&json).unwrap().maximized);
+        let mut legacy = serde_json::to_value(&p).unwrap();
+        legacy.as_object_mut().unwrap().remove("maximized");
+        assert!(!serde_json::from_value::<WindowProfile>(legacy).unwrap().maximized);
+    }
     fn profile() -> WindowProfile {
         WindowProfile {
             version: 1,
             runtime: "r-test".into(),
             package: "com.android.settings".into(),
+            maximized: false,
             normal_content: ContentSize {
                 width: 960,
                 height: 720,

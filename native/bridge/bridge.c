@@ -161,6 +161,7 @@ struct object {
   unsigned long profile_token;
   int profile_loaded, profile_dirty, profile_restoring, profile_ticks, profile_recreated;
   int profile_width, profile_height;
+  int profile_state_dirty;
   int host_fullscreen;
   char *app_id;
   void (**listener)(void);
@@ -418,12 +419,19 @@ static void geometry(struct object *s) {
       }
     }
     if (found) {
-      exact.width -= exact.x;
-      exact.height -= exact.y;
       /* Anchor the frame to the surface origin: the transparent caption
        * strip above the first layer must not leave a gap below the CSD
        * header; the clip repositions the layers flush underneath it. */
       exact.x = exact.y = 0;
+      /* The layers' extent is the app content (task minus its insets);
+       * resizing the task to that would shrink it in a loop. The task
+       * bounds stay the authoritative resize target. */
+      for (int i = 0; i < task_count; i++)
+        if (!strcmp(s->app_id, tasks[i].package)) {
+          exact.width = task_to_logical(tasks[i].width, 1);
+          exact.height = task_to_logical(tasks[i].height, 1);
+          break;
+        }
     } else {
       /* No layers yet: fall back to the task size at the surface origin;
        * the header still lands on the window. */
@@ -483,7 +491,13 @@ static void geometry(struct object *s) {
     s->has_bounds = 1;
     union argument a[4] = {
         {.i = r->x}, {.i = r->y}, {.i = r->width}, {.i = r->height}};
-    if (s->csd && s->csd->pieces[0].surface && !s->csd->fullscreen) {
+    if (s->csd && s->csd->maximized && s->csd->max_width > 0 &&
+        !s->csd->fullscreen) {
+      /* The maximized geometry is the workarea exactly; a pitch-snapped
+       * content must never push it past and break the maximized state. */
+      a[0].i = 0; a[1].i = 0;
+      a[2].i = s->csd->max_width; a[3].i = s->csd->max_height;
+    } else if (s->csd && s->csd->pieces[0].surface && !s->csd->fullscreen) {
       /* HWC positions content children at displayFrame x/y within this
        * parent. CSD and xdg geometry must use that same canvas origin. */
       a[0].i -= CSD_BORDER; a[1].i -= CSD_HEADER;
@@ -556,6 +570,17 @@ static void configure(void *data, struct proxy *p, int32_t w, int32_t h,
       if (a->data[i] == 2) fullscreen = 1;
     }
     if (s->csd) {
+      /* A new toplevel may already have a normal configure queued before
+       * the restored maximize request. Ack it, but do not overwrite the
+       * remembered state or enqueue a normal Android relayout. */
+      if (s->csd->maximize_pending && !maximized) {
+        s->csd->maximize_retry=1;
+        __android_log_print(4,"AnvilDroidCsd",
+                            "defer stale normal configure %s %dx%d while restoring maximize",
+                            s->app_id,w,h);
+        pthread_mutex_unlock(mutex);
+        return;
+      }
       /* Keep the last windowed geometry, not the asynchronously updated
        * Android task size after maximize. Preview is the latest accepted
        * host size when Android is still catching up with a drag. */
@@ -577,9 +602,19 @@ static void configure(void *data, struct proxy *p, int32_t w, int32_t h,
         fullscreen = 0;
       }
       if (s->csd->fullscreen != fullscreen) s->has_bounds = 0;
+      if (s->csd->maximized != maximized) s->profile_state_dirty = 1;
       if (s->csd->maximized != maximized) s->csd->pieces[0].width = 0;
       s->csd->fullscreen = fullscreen;
       s->csd->maximized = maximized;
+      if (maximized && w > 0 && h > 0) {
+        s->csd->max_width = w;
+        s->csd->max_height = h;
+        /* Publish the workarea geometry right away: an idle app may not
+         * commit for seconds, and KWin withdraws the maximize when the
+         * window geometry still reflects the pre-maximize size. */
+        union argument g[4] = {{.i=0},{.i=0},{.i=w},{.i=h}};
+        wayland_send(s->xdg->p, 3, g);
+      }
       if (!fullscreen && s->csd->pieces[0].surface) {
         /* Only the client-drawn frame eats into the configured size; with
          * server-side decorations KWin already configures the content area. */
@@ -611,22 +646,43 @@ static void configure(void *data, struct proxy *p, int32_t w, int32_t h,
         pthread_mutex_unlock(mutex);
         return; /* Host presentation only; never relayout the Android game. */
       }
-      resize_configure(&s->resize, w, h, s->content_width, s->content_height,
-                       resizing, maximized);
-      /* An explicit user drag wins over a delayed initial profile read. */
-      if (resizing) {
-        s->profile_loaded = 1;
-        s->profile_restoring = 0;
-        s->profile_recreated = 0;
+      /* The HWC maps the app window at the full display before the task
+       * bounds settle. Resizing the task to that transient configure blows
+       * the app up to near-fullscreen; ignore it. */
+      int display_sized = 0;
+      if (!resizing && !maximized) {
+        for (int i = 0; i < task_count; i++)
+          if (!strcmp(tasks[i].package, "com.android.launcher3")) {
+            if (w + 64 >= tasks[i].width && h + 64 >= tasks[i].height)
+              display_sized = 1;
+            break;
+          }
       }
-      if (s->profile_loaded && !s->profile_restoring && !s->profile_recreated &&
-          !maximized && s->resize.width && s->resize.ready) {
-        s->profile_dirty = 1;
-        s->profile_ticks = 0;
-      }
-      if (w >= 64 && h >= 64 && w <= 8192 && h <= 8192 && s->resize.ready) {
-        s->preview_width = w;
-        s->preview_height = h;
+      if (!display_sized) {
+        resize_configure(&s->resize, w, h, s->content_width, s->content_height,
+                         resizing, maximized);
+        /* An explicit user drag wins over a delayed initial profile read. */
+        if (resizing) {
+          s->profile_loaded = 1;
+          s->profile_restoring = 0;
+          s->profile_recreated = 0;
+        }
+        if (s->profile_loaded && !s->profile_restoring && !s->profile_recreated &&
+            !maximized && s->resize.width && s->resize.ready) {
+          s->profile_dirty = 1;
+          s->profile_ticks = 0;
+        }
+        if (w >= 64 && h >= 64 && w <= 8192 && h <= 8192 && s->resize.ready) {
+          /* A near-match configure (frame accounting delta) must not leave
+           * a stale preview that blocks the profile poll forever. */
+          int dw = w - s->content_width, dh = h - s->content_height;
+          if (dw < 0) dw = -dw;
+          if (dh < 0) dh = -dh;
+          if (dw > 48 || dh > 48) {
+            s->preview_width = w;
+            s->preview_height = h;
+          }
+        }
       }
     }
     pthread_mutex_unlock(mutex);
@@ -764,7 +820,8 @@ static struct proxy *bridge_marshal(
   }
   /* CSD buttons use real_marshal directly. Suppress HWC's automatic maximize
    * policy, which otherwise opens every Android app maximized on GNOME. */
-  if (o && o->csd && !strcmp(cls,"xdg_toplevel") && !strcmp(method,"set_maximized"))
+  if (o && o->csd && !strcmp(cls,"xdg_toplevel") &&
+      (!strcmp(method,"set_maximized") || !strcmp(method,"unset_maximized")))
     skip = 1;
   /* Android immersive activities must not turn the desktop window into a
    * borderless fullscreen surface. Keep the CSD frame authoritative. */
@@ -925,6 +982,11 @@ static struct proxy *bridge_marshal(
   if (!strcmp(cls, "xdg_surface") && !strcmp(method, "ack_configure") &&
       o && o->surface && o->surface->app &&
       (o->surface->has_bounds || (o->surface->csd && o->surface->content_width))) {
+    if (o->surface->csd && o->surface->csd->maximize_pending &&
+        o->surface->csd->maximize_retry) {
+      o->surface->csd->maximize_retry=0;
+      wayland_send(o->surface->csd->top->p, 9, 0);
+    }
     geometry(o->surface);
     wayland_send(o->surface->p, 6, 0);
   }
@@ -1144,6 +1206,56 @@ static void *task_worker(void *unused) {
     task_count = count;
     logged_scale = hwc_scale_120;
     pthread_mutex_unlock(mutex);
+    /* First sight of a task: shrink Android's default freeform (~512x824)
+     * to a desktop-friendly open size. One shot per task id; user resizes
+     * afterwards are never re-clamped. */
+    static int opened_ids[8], opened_count = 0;
+    for (int i = 0; i < count; i++) {
+      if (tasks[i].width <= 448 && tasks[i].height <= 704)
+        continue;
+      int seen = 0;
+      for (int j = 0; j < opened_count; j++)
+        if (opened_ids[j] == tasks[i].id) { seen = 1; break; }
+      if (seen) continue;
+      /* A surface recreated by a resize must not be re-clamped: fragile
+       * apps replace their task while relaying out, which would snap the
+       * window back to the default size in a loop. */
+      if (profile_recreated(tasks[i].package)) continue;
+      /* Only the first-ever launch of a package gets the default open size;
+       * afterwards the per-package profile (the user's last resized size)
+       * owns the restore. */
+      {
+        const char *rid = getenv("ANVILDROID_RUNTIME_ID");
+        if (!rid || !*rid) rid = "existing";
+        int dir = open(PROFILE_ROOT, PROFILE_DIRECTORY | PROFILE_NOFOLLOW | PROFILE_CLOEXEC);
+        if (dir >= 0) {
+          int saved_w = 0, saved_h = 0;
+          int found = profile_read(dir, tasks[i].package, rid, &saved_w, &saved_h);
+          close(dir);
+          if (found == 1) continue;
+        }
+      }
+      if (opened_count < 8) opened_ids[opened_count++] = tasks[i].id;
+      void *request = fopen("/data/waydroid_tmp/anvildroid/resize.tmp", "w");
+      if (request) {
+        char line[64];
+        format_resize_request(line, sizeof(line), tasks[i].id, 448, 704);
+        fprintf(request, "%s", line);
+        fclose(request);
+        rename("/data/waydroid_tmp/anvildroid/resize.tmp",
+               "/data/waydroid_tmp/anvildroid/resize");
+        __android_log_print(4, "AnvilDroid",
+                            "open-size task %d %dx%d -> 448x704",
+                            tasks[i].id, tasks[i].width, tasks[i].height);
+        /* Cancel any pending resize the initial canvas-sized configure
+         * queued; the open-size request owns the initial bounds. */
+        pthread_mutex_lock(mutex);
+        for (struct object *o = objects; o; o = o->next)
+          if (o->app && o->app_id && !strcmp(o->app_id, tasks[i].package))
+            o->resize.width = o->resize.height = 0;
+        pthread_mutex_unlock(mutex);
+      }
+    }
     /* Hybrid NVIDIA: snap app window widths to 64-pixel multiples so the
      * surface pitch is 256-byte-aligned (radeonsi's LINEAR dmabuf import
      * requirement). The companion applies the resize; the next task
@@ -1154,6 +1266,20 @@ static void *task_worker(void *unused) {
         continue;
       if (tasks[i].id == last_snap_task && tasks[i].width == last_snap_width)
         continue;
+      /* The open-size request already owns this task's initial bounds. */
+      int opened = 0;
+      for (int j = 0; j < opened_count; j++)
+        if (opened_ids[j] == tasks[i].id) { opened = 1; break; }
+      if (opened) continue;
+      /* A maximized window must keep its exact width: the snap would round
+       * it up past the workarea and break the maximized state. */
+      int maximized = 0;
+      pthread_mutex_lock(mutex);
+      for (struct object *o = objects; o; o = o->next)
+        if (o->app && o->app_id && !strcmp(o->app_id, tasks[i].package) &&
+            o->csd && o->csd->maximized) maximized = 1;
+      pthread_mutex_unlock(mutex);
+      if (maximized) continue;
       int snapped = resize_task_width(tasks[i].width);
       void *request = fopen("/data/waydroid_tmp/anvildroid/resize.tmp", "w");
       if (request) {
@@ -1173,13 +1299,20 @@ static void *task_worker(void *unused) {
       }
     }
     profile_poll();
+    profile_state_poll();
     close_poll();
     keymap_io_poll();
     int id = -1, width = 0, height = 0;
+    char persist_package[256] = "";
+    int persist_w = 0, persist_h = 0;
     pthread_mutex_lock(mutex);
     for (struct object *s = objects; s; s = s->next) {
+      /* Configures queued around a surface replacement may arrive even
+       * after the first maximized configure. Protect the recovery interval,
+       * then let ordinary compositor/user state changes through again. */
       if (!s->app || !s->app_id || game_fit_enabled(s))
         continue;
+      if (s->csd && s->csd->maximize_pending>0) --s->csd->maximize_pending;
       if (!resize_due(&s->resize) || id >= 0)
         continue;
       int matches = 0;
@@ -1190,9 +1323,19 @@ static void *task_worker(void *unused) {
         }
       }
       if (matches == 1) {
-        width = resize_task_width(logical_to_task(s->resize.width));
+        width = logical_to_task(s->resize.width);
+        /* A maximized window must land exactly on the workarea; the
+         * 64-pixel pitch snap would round the width up and overshoot the
+         * compositor's maximized size, breaking the state. */
+        if (!s->resize.maximized)
+          width = resize_task_width(width);
         height = logical_to_task(s->resize.height);
         profile_note_resize(s->app_id, id);
+        snprintf(persist_package, sizeof(persist_package), "%s", s->app_id);
+        if (!s->resize.maximized) {
+          persist_w = s->resize.width;
+          persist_h = s->resize.height;
+        }
       } else {
         id = -1;
       }
@@ -1213,6 +1356,19 @@ static void *task_worker(void *unused) {
         __android_log_print(4, "AnvilDroid",
                             "resize task %d physical=%dx%d scale=%d/120 after quiet interval",
                             id, width, height, hwc_scale_120);
+      }
+      /* Persist the size right away: the user may relaunch before the
+       * settle-based profile poll has confirmed the new content. */
+      if (persist_package[0] && persist_w >= 64 && persist_h >= 64) {
+        const char *rid = getenv("ANVILDROID_RUNTIME_ID");
+        if (!rid || !*rid) rid = "existing";
+        int dir = open(PROFILE_ROOT, PROFILE_DIRECTORY | PROFILE_NOFOLLOW | PROFILE_CLOEXEC);
+        if (dir >= 0) {
+          profile_write(dir, persist_package, rid, persist_w, persist_h);
+          close(dir);
+          __android_log_print(4, "AnvilDroid", "persist profile %s %dx%d",
+                              persist_package, persist_w, persist_h);
+        }
       }
     }
     usleep(RESIZE_POLL_US);

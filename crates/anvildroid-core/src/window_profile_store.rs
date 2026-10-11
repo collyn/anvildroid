@@ -39,6 +39,7 @@ impl WindowProfileStore {
             version: SCHEMA_VERSION,
             runtime: runtime.into(),
             package: package.into(),
+            maximized: false,
             normal_content: ContentSize {
                 width: 64,
                 height: 64,
@@ -168,6 +169,7 @@ mod tests {
             version: 1,
             runtime: "r-one".into(),
             package: "com.test".into(),
+            maximized: false,
             normal_content: ContentSize {
                 width: 960,
                 height: 720,

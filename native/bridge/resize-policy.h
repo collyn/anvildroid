@@ -27,6 +27,19 @@ static void resize_configure(struct resize_policy *p, int width, int height,
   p->maximized = maximized;
   if (width < 64 || height < 64 || width > 8192 || height > 8192)
     return;
+  /* The compositor and the HWC account the client frame differently; a
+   * configure within the frame delta of the delivered content is settled,
+   * not a request to relay a perpetual shrink loop. */
+  if (!resizing && !was_dragging && !state_changed) {
+    int dw = width - current_width, dh = height - current_height;
+    if (dw < 0) dw = -dw;
+    if (dh < 0) dh = -dh;
+    if (dw <= 48 && dh <= 48) {
+      p->ready = 1;
+      p->width = p->height = 0;
+      return;
+    }
+  }
   if (width == current_width && height == current_height && !state_changed) {
     p->ready = 1;
     p->width = p->height = 0; /* User dragged back to the original size. */

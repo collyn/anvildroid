@@ -21,6 +21,9 @@ static void keymap_overlay_pointer_cancel(struct object *);
 static void keymap_overlay_paint(uint32_t *,int,int);
 static int close_request_app(struct object *);
 static void full_ui_box(struct object *,int *,int *,int *,int *);
+static int profile_recreated(const char *);
+struct csd_frame;
+static int profile_restore_frame(const char *, struct csd_frame *);
 #include "keymap-font.h"
 
 struct csd_piece {
@@ -32,8 +35,13 @@ struct csd_frame {
   struct csd_piece pieces[4]; /* Client frame only; no side toolbar. */
   struct csd_piece bars[4];   /* Full-UI letterbox covers: opaque black. */
   int fullscreen, maximized;
+  int maximize_pending;
+  int maximize_retry;
   int restore_width, restore_height;
+  int max_width, max_height;  /* The compositor's maximized workarea. */
   int hover, pressed;
+  uint32_t header_click_time;
+  int header_click_valid, header_click_x, header_click_y;
 };
 struct csd_buffer { struct proxy *proxy; struct csd_buffer *next; };
 static struct csd_buffer *csd_buffers;
@@ -147,8 +155,19 @@ static void csd_create(struct object *top) {
     top->surface->resize.live_drag = 0;
     top->surface->resize.ready = 1;
     /* HWC requests maximize before publishing app_id. Undo that pending request
-     * before its initial commit; calibration surfaces are excluded above. */
-    wayland_send(top->p, 10, 0);
+     * before its initial commit; calibration surfaces are excluded above.
+     * A surface recreated by a resize must keep the user's maximize state,
+     * or fragile apps need two clicks to maximize. */
+    if (profile_restore_frame(top->surface->app_id, f)) {
+      top->surface->resize.maximized = f->maximized;
+      f->maximize_pending = f->maximized ? 40 : 0;
+      wayland_send(top->p, f->maximized ? 9 : 10, 0);
+      __android_log_print(4, "AnvilDroidCsd",
+                          "restore recreated frame %s maximized=%d normal=%dx%d",
+                          top->surface->app_id, f->maximized,
+                          f->restore_width, f->restore_height);
+    } else if (!profile_recreated(top->surface->app_id))
+      wayland_send(top->p, 10, 0);
     union argument minimum[2] = {{.i=160+2*CSD_BORDER},{.i=64+CSD_HEADER+CSD_BORDER}};
     wayland_send(top->p, 8, minimum);
     __android_log_print(4, "AnvilDroidCsd", "real CSD attached to %s", top->surface->app_id);
@@ -400,6 +419,28 @@ static void csd_pointer_motion(void *data, struct proxy *p, uint32_t time, int32
   pthread_mutex_unlock(mutex);
   if (!suppress) ((void (*)(void *,struct proxy *,uint32_t,int32_t,int32_t))o->listener[2])(o->listener_data,p,time,x,y);
 }
+static void csd_toggle_maximize(struct csd_frame *f) {
+  f->maximize_pending=0;
+  f->maximize_retry=0;
+  wayland_send(f->top->p,f->maximized?10:9,0);
+  if (!f->maximized && f->top->surface) {
+    struct object *s=f->top->surface;
+    f->restore_width=s->preview_width?s->preview_width:s->content_width;
+    f->restore_height=s->preview_height?s->preview_height:s->content_height;
+  }
+  f->maximized=!f->maximized;
+  if (f->top->surface) f->top->surface->profile_state_dirty=1;
+  csd_repaint_header(f);
+}
+static int csd_header_double_click(struct csd_frame *f,uint32_t time,int x,int y) {
+  int dx=x-f->header_click_x,dy=y-f->header_click_y;
+  if (dx<0) dx=-dx;
+  if (dy<0) dy=-dy;
+  int twice=f->header_click_valid && time-f->header_click_time<=400 && dx<=5 && dy<=5;
+  f->header_click_valid=!twice;
+  f->header_click_time=time;f->header_click_x=x;f->header_click_y=y;
+  return twice;
+}
 static void csd_pointer_button(void *data, struct proxy *p, uint32_t serial, uint32_t time,
                                uint32_t button, uint32_t state) {
   struct object *o=data;
@@ -415,7 +456,11 @@ static void csd_pointer_button(void *data, struct proxy *p, uint32_t serial, uin
     int action=csd_hit(o->csd_part,o->csd_x,o->csd_y,piece->width,piece->height);
     if (state==1) {
       o->csd_pressed=action;
-      if (o->parent && (action==CSD_MOVE || (action>0 && action<16 && !f->maximized))) {
+      if (action!=CSD_MOVE) f->header_click_valid=0;
+      if (action==CSD_MOVE && csd_header_double_click(f,time,o->csd_x,o->csd_y)) {
+        o->csd_pressed=0;
+        csd_toggle_maximize(f);
+      } else if (o->parent && (action==CSD_MOVE || (action>0 && action<16 && !f->maximized))) {
         if (action!=CSD_MOVE) o->csd_resize=f;
         union argument a[3]={{.o=o->parent->p},{.u=serial},{.u=(uint32_t)action}};
         wayland_send(f->top->p, action==CSD_MOVE ? 5 : 6, a);
@@ -425,11 +470,7 @@ static void csd_pointer_button(void *data, struct proxy *p, uint32_t serial, uin
       if (action && action==o->csd_pressed) {
         if (action==CSD_MINIMIZE) wayland_send(f->top->p,13,0);
         if (action==CSD_MAXIMIZE) {
-          wayland_send(f->top->p,f->maximized?10:9,0);
-          /* Optimistic flip: the restore glyph appears on the click even
-           * if the compositor's configure state arrives late or empty. */
-          f->maximized = !f->maximized;
-          csd_repaint_header(f);
+          csd_toggle_maximize(f);
         }
         if (action==CSD_CLOSE && f->top->listener && !close_request_app(f->top->surface)) {
           closed=(void (*)(void *,struct proxy *))f->top->listener[1];

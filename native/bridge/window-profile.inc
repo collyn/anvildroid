@@ -35,6 +35,8 @@ struct profile_task_seen {
   struct object *surface;
   int tick, present, gap_ticks;
   int resized_task, resize_tick;
+  int frame_valid, maximized, restore_width, restore_height;
+  int max_width, max_height;
   struct profile_task_seen *next;
 };
 static struct profile_task_seen *profile_seen;
@@ -42,8 +44,44 @@ static int profile_tick;
 static void profile_note_resize(const char *package, int task) {
   for (struct profile_task_seen *n=profile_seen;n;n=n->next)
     if (!strcmp(n->package,package)) {
-      n->resized_task=task; n->resize_tick=profile_tick; return;
+      n->resized_task=task; n->resize_tick=profile_tick;
+      n->frame_valid=0;
+      for (struct object *s=objects; s; s=s->next) {
+        if (!s->app || !s->app_id || strcmp(s->app_id,package) || !s->csd) continue;
+        n->frame_valid=1;
+        n->maximized=s->csd->maximized;
+        n->restore_width=s->csd->restore_width;
+        n->restore_height=s->csd->restore_height;
+        n->max_width=s->csd->max_width;
+        n->max_height=s->csd->max_height;
+        break;
+      }
+      return;
     }
+}
+/* A recreated xdg_toplevel has no inherited compositor state. Reapply the
+ * state captured before task relayout, scoped to the same Android task.
+ * Retain normal bounds too, so the next restore does not use the large task. */
+static int profile_restore_frame(const char *package, struct csd_frame *frame) {
+  if (!package) return 0;
+  for (struct profile_task_seen *n=profile_seen; n; n=n->next) {
+    if (strcmp(n->package,package) || !n->frame_valid ||
+        profile_tick-n->resize_tick >= 200) continue;
+    int matches=0, same_task=0;
+    for (int i=0; i<task_count; ++i)
+      if (!strcmp(tasks[i].package,package)) {
+        ++matches;
+        same_task=tasks[i].id==n->resized_task;
+      }
+    if (matches!=1 || !same_task) return 0;
+    frame->maximized=n->maximized;
+    frame->restore_width=n->restore_width;
+    frame->restore_height=n->restore_height;
+    frame->max_width=n->max_width;
+    frame->max_height=n->max_height;
+    return 1;
+  }
+  return 0;
 }
 static int profile_recreated(const char *package) {
   if (!package) return 0;
@@ -105,7 +143,7 @@ static int profile_name(const char *name, int package) {
 static int profile_size(int w, int h) { return w >= 64 && h >= 64 && w <= 8192 && h <= 8192; }
 /* 1=found, 0=missing, -1=invalid/error. O_NOFOLLOW prevents redirected files.
  * Files are small, canonical JSON written here; unknown formats fail closed. */
-static int profile_read(int dir, const char *package, const char *runtime, int *w, int *h) {
+static int profile_read_state(int dir, const char *package, const char *runtime, int *w, int *h, int *maximized) {
   extern int *__errno(void);
 #ifndef __ANDROID__
   extern int *__errno_location(void);
@@ -123,17 +161,29 @@ static int profile_read(int dir, const char *package, const char *runtime, int *
   if (count <= 0 || tail != 0) return -1;
   bytes[count] = 0;
   int version=0, used=0;
+  *maximized=0;
   if (sscanf(bytes, "{\"version\":%d,\"runtime\":\"%128[^\"]\",\"package\":\"%240[^\"]\",\"normal_content\":{\"width\":%d,\"height\":%d}}%n",
-      &version,r,p,w,h,&used) != 5 || !used || version != 1 || strcmp(r,runtime) || strcmp(p,package) || !profile_size(*w,*h)) return -1;
+      &version,r,p,w,h,&used) != 5 || !used) {
+    char state[6]={0}; used=0;
+    if (sscanf(bytes, "{\"version\":%d,\"runtime\":\"%128[^\"]\",\"package\":\"%240[^\"]\",\"normal_content\":{\"width\":%d,\"height\":%d},\"maximized\":%5[a-z]}%n",
+        &version,r,p,w,h,state,&used)!=6 || !used ||
+        (strcmp(state,"true") && strcmp(state,"false"))) return -1;
+    *maximized=!strcmp(state,"true");
+  }
+  if (version != 1 || strcmp(r,runtime) || strcmp(p,package) || !profile_size(*w,*h)) return -1;
   for (int i=used; i<count; ++i)
     if (bytes[i]!='\n' && bytes[i]!='\r' && bytes[i]!=' ' && bytes[i]!='\t') return -1;
   return 1;
 }
-static int profile_write(int dir, const char *package, const char *runtime, int w, int h) {
+static int profile_read(int dir, const char *package, const char *runtime, int *w, int *h) {
+  int maximized;
+  return profile_read_state(dir,package,runtime,w,h,&maximized);
+}
+static int profile_write_state(int dir, const char *package, const char *runtime, int w, int h, int maximized) {
   int old_w,old_h;
   if (profile_read(dir,package,runtime,&old_w,&old_h) < 0) return 0;
   char data[640], tmp[96];
-  int length=snprintf(data,sizeof(data),"{\"version\":1,\"runtime\":\"%s\",\"package\":\"%s\",\"normal_content\":{\"width\":%d,\"height\":%d}}\n",runtime,package,w,h);
+  int length=snprintf(data,sizeof(data),"{\"version\":1,\"runtime\":\"%s\",\"package\":\"%s\",\"normal_content\":{\"width\":%d,\"height\":%d},\"maximized\":%s}\n",runtime,package,w,h,maximized?"true":"false");
   static unsigned int serial;
   snprintf(tmp,sizeof(tmp),".pending-%d-%u",getpid(),++serial);
   int fd=openat(dir,tmp,1|PROFILE_CREAT|PROFILE_EXCL|PROFILE_NOFOLLOW|PROFILE_CLOEXEC,0600);
@@ -144,6 +194,9 @@ static int profile_write(int dir, const char *package, const char *runtime, int 
   if (ok) ok=!fsync(dir);
   if (!ok) unlinkat(dir,tmp,0);
   return ok;
+}
+static int profile_write(int dir, const char *package, const char *runtime, int w, int h) {
+  return profile_write_state(dir,package,runtime,w,h,0);
 }
 static int profile_unique(struct object *s) {
   int matches=0, surfaces=0;
@@ -167,6 +220,10 @@ static void profile_poll(void) {
     if (!s->app || !profile_name(s->app_id,1) || !s->has_bounds || !s->resize.ready) continue;
     if (!profile_unique(s) || s->resize.dragging || s->resize.maximized ||
         s->resize.width || s->preview_width || !profile_size(s->content_width,s->content_height)) {
+      __android_log_print(4,"AnvilDroid","profile skip %s unique=%d drag=%d max=%d pend=%dx%d prev=%dx%d size=%d",
+        s->app_id,profile_unique(s),s->resize.dragging,s->resize.maximized,
+        s->resize.width,s->resize.height,s->preview_width,s->preview_height,
+        profile_size(s->content_width,s->content_height));
       s->profile_ticks=0; continue;
     }
     if (s->profile_restoring) { s->profile_restoring=0; s->profile_dirty=0; }
@@ -196,9 +253,9 @@ static void profile_poll(void) {
   if (!token) return;
   mkdir(PROFILE_ROOT,0700);
   int dir=open(PROFILE_ROOT,PROFILE_DIRECTORY|PROFILE_NOFOLLOW|PROFILE_CLOEXEC);
-  int result=-1, saved_w=w, saved_h=h;
+  int result=-1, saved_w=w, saved_h=h, saved_maximized=0;
   if (dir>=0) {
-    result=loading ? profile_read(dir,package,runtime,&saved_w,&saved_h) :
+    result=loading ? profile_read_state(dir,package,runtime,&saved_w,&saved_h,&saved_maximized) :
                    (profile_write(dir,package,runtime,w,h) ? 1 : -1);
     close(dir);
   }
@@ -209,7 +266,13 @@ static void profile_poll(void) {
         s->preview_width || s->content_width!=w || s->content_height!=h) { s->profile_ticks=0; break; }
     s->profile_loaded=1;
     s->profile_dirty=0;
-    if (loading && result==1 && (saved_w!=w || saved_h!=h)) {
+    if (loading && result==1 && saved_maximized && s->csd) {
+      s->csd->restore_width=saved_w;s->csd->restore_height=saved_h;
+      s->csd->maximize_pending=40;
+      s->profile_restoring=1;
+      wayland_send(s->csd->top->p,9,0);
+      __android_log_print(4,"AnvilDroid","restore maximized profile %s normal=%dx%d",package,saved_w,saved_h);
+    } else if (loading && result==1 && (saved_w!=w || saved_h!=h)) {
       /* Bound by known HWC canvas; the compositor may further constrain the
        * window to its workarea. Never rewrite saved size merely due to clamp. */
       if (s->viewport) {
@@ -229,4 +292,35 @@ static void profile_poll(void) {
     break;
   }
   pthread_mutex_unlock(mutex);
+}
+/* State changes are saved independently of settled normal bounds. A maximized
+ * task must never replace the remembered normal size. IO stays on the worker. */
+static void profile_state_poll(void) {
+  char package[241];int w=0,h=0,maximized=0;unsigned long token=0;
+  const char *runtime=getenv("ANVILDROID_RUNTIME_ID");
+  if (!runtime || !*runtime) runtime="existing";
+  if (!profile_name(runtime,0)) return;
+  pthread_mutex_lock(mutex);
+  for (struct object *s=objects;s;s=s->next) {
+    if (!s->app || !s->csd || !s->profile_state_dirty || !profile_name(s->app_id,1) ||
+        !profile_unique(s)) continue;
+    w=s->csd->restore_width;h=s->csd->restore_height;
+    if (!profile_size(w,h)) continue;
+    maximized=s->csd->maximized;
+    snprintf(package,sizeof(package),"%s",s->app_id);
+    if (!s->profile_token) s->profile_token=++profile_next_token;
+    token=s->profile_token;s->profile_state_dirty=0;break;
+  }
+  pthread_mutex_unlock(mutex);
+  if (!token) return;
+  mkdir(PROFILE_ROOT,0700);
+  int dir=open(PROFILE_ROOT,PROFILE_DIRECTORY|PROFILE_NOFOLLOW|PROFILE_CLOEXEC);
+  int ok=dir>=0 && profile_write_state(dir,package,runtime,w,h,maximized);
+  if (dir>=0) close(dir);
+  if (!ok) {
+    pthread_mutex_lock(mutex);
+    for (struct object *s=objects;s;s=s->next)
+      if (s->profile_token==token) s->profile_state_dirty=1;
+    pthread_mutex_unlock(mutex);
+  }
 }
