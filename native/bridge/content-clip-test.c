@@ -26,6 +26,7 @@ static void frame_original(void *context,int x,int y,int w,int h,double scale) {
   frame_calls++;
 }
 static int px,py,dw,dh,source[4],commits,detaches,attaches;
+static int host_geometry[4];
 static struct proxy *record(struct proxy *p,uint32_t op,union argument *a,
                            const struct interface *i,uint32_t v) {
   (void)i;(void)v;
@@ -34,6 +35,7 @@ static struct proxy *record(struct proxy *p,uint32_t op,union argument *a,
   if(p==&vp_p&&op==2){dw=a[0].i;dh=a[1].i;}
   if(p==&layer_p&&op==6)commits++;
   if(p==&layer_p&&op==1){if(a[0].o)attaches++;else detaches++;}
+  if(p==&xdg_p&&op==3)for(int j=0;j<4;j++)host_geometry[j]=a[j].i;
   return 0;
 }
 static uint32_t version(struct proxy *p){(void)p;return 1;}
@@ -159,6 +161,23 @@ int main(void) {
   assert(root->by==12&&root->bw==512&&root->bh==650);
   assert(py==12&&dh==650&&source[1]==2*256);
   hwc_scale_120=120;
+  /* Repeated maximize configure after geometry has settled must not reset
+   * the CSD origin to zero: KWin would move the header above its workarea. */
+  struct csd_frame max_frame={.top=frame_top};
+  root->csd=&max_frame;max_frame.pieces[0].surface=&layer_p;
+  uint32_t maximized_state=1;
+  struct {size_t size,alloc;uint32_t *data;} max_states={4,4,&maximized_state};
+  for(int j=0;j<3;j++) {
+    configure(frame_top,&top_p,1920,1036,&max_states);
+    assert(host_geometry[0]==root->bx-CSD_BORDER);
+    assert(host_geometry[1]==root->by-CSD_HEADER);
+    assert(host_geometry[2]==1920&&host_geometry[3]==1036);
+  }
+  /* SSD configures retain the content origin without subtracting chrome. */
+  max_frame.pieces[0].surface=0;
+  configure(frame_top,&top_p,1920,1036,&max_states);
+  assert(host_geometry[0]==root->bx&&host_geometry[1]==root->by);
+  root->csd=0;
   root->full_ui=1;
   assert(!content_clip_enabled(root));
   while(objects)forget_proxy(objects->p);

@@ -578,7 +578,14 @@ static void configure(void *data, struct proxy *p, int32_t w, int32_t h,
         /* Publish the workarea geometry right away: an idle app may not
          * commit for seconds, and KWin withdraws the maximize when the
          * window geometry still reflects the pre-maximize size. */
-        union argument g[4] = {{.i=0},{.i=0},{.i=w},{.i=h}};
+        /* Repeated configures must preserve the same surface-local origin
+         * as geometry(). Resetting it to zero puts the negative-y CSD header
+         * above KWin's workarea and leaves an equal gap at the bottom. */
+        int gx=s->has_bounds?s->bx:0,gy=s->has_bounds?s->by:0;
+        if (!fullscreen && s->csd->pieces[0].surface) {
+          gx-=CSD_BORDER;gy-=CSD_HEADER;
+        }
+        union argument g[4] = {{.i=gx},{.i=gy},{.i=w},{.i=h}};
         wayland_send(s->xdg->p, 3, g);
       }
       if (!fullscreen && s->csd->pieces[0].surface) {
