@@ -37,7 +37,7 @@ static int window_activation_remove(struct object *registry,uint32_t name){
 }
 static int window_activate(const char *token){
  for(struct object *top=objects;top;top=top->next){
-  if(!top->p||strcmp(top->p->interface->name,"xdg_toplevel")||!top->surface||
+  if(!object_is(top,"xdg_toplevel")||!top->surface||
     !top->surface->window_configured||!top->surface->app_id||strcmp(top->surface->app_id,"Waydroid"))continue;
   for(struct window_activation_binding *b=window_activations;b;b=b->next)if(b->display==top->display){
    union argument a[2]={{.s=token},{.o=top->surface->p}};wayland_send(b->manager,2,a);

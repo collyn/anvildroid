@@ -1,5 +1,5 @@
 /* Management workspace skin: navy surfaces, cobalt focus and compact controls. */
-:is(#page-runtime, #page-images), #page-settings, #page-controls {
+:is(#page-runtime, #page-runtime-settings, #page-images), #page-settings, #page-controls {
   --mg-panel: #131f30;
   --mg-panel-raised: #182638;
   --mg-panel-soft: #1b2b40;
@@ -11,9 +11,9 @@
 }
 
 /* Keep native form controls on the same navy palette as management panels. */
-:is(#page-runtime, #page-images) select,
-:is(#page-runtime, #page-images) input,
-:is(#page-runtime, #page-images) textarea,
+:is(#page-runtime, #page-runtime-settings, #page-images) select,
+:is(#page-runtime, #page-runtime-settings, #page-images) input,
+:is(#page-runtime, #page-runtime-settings, #page-images) textarea,
 #page-settings select,
 #page-settings input,
 #page-settings textarea,
@@ -25,8 +25,8 @@
   border-color: var(--mg-border-strong);
   color-scheme: dark;
 }
-:is(#page-runtime, #page-images) select option,
-:is(#page-runtime, #page-images) select optgroup,
+:is(#page-runtime, #page-runtime-settings, #page-images) select option,
+:is(#page-runtime, #page-runtime-settings, #page-images) select optgroup,
 #page-settings select option,
 #page-settings select optgroup,
 #page-controls select option,
@@ -34,8 +34,8 @@
   color: #edf5ff;
   background: var(--mg-panel-raised);
 }
-:is(#page-runtime, #page-images) select:disabled,
-:is(#page-runtime, #page-images) input:disabled,
+:is(#page-runtime, #page-runtime-settings, #page-images) select:disabled,
+:is(#page-runtime, #page-runtime-settings, #page-images) input:disabled,
 #page-settings select:disabled,
 #page-settings input:disabled,
 #page-controls select:disabled,
@@ -44,7 +44,7 @@
   background: #142131;
 }
 
-:is(#page-runtime, #page-images) .page-header,
+:is(#page-runtime, #page-runtime-settings, #page-images) .page-header,
 #page-settings .page-header {
   padding: 18px 20px;
   margin: -4px 0 18px;
@@ -53,17 +53,17 @@
   background: linear-gradient(115deg, rgba(27, 48, 76, .8), rgba(18, 30, 47, .72));
   box-shadow: 0 12px 28px rgba(0, 0, 0, .16);
 }
-:is(#page-runtime, #page-images) .page-header h1,
+:is(#page-runtime, #page-runtime-settings, #page-images) .page-header h1,
 #page-settings .page-header h1,
 #page-controls > h1 { letter-spacing: -.4px; }
-:is(#page-runtime, #page-images) .page-header .hint,
+:is(#page-runtime, #page-runtime-settings, #page-images) .page-header .hint,
 #page-settings .page-header .hint { color: #9eb1ca; }
 
-:is(#page-runtime, #page-images) .controller-heading { margin: 20px 2px 12px; }
-:is(#page-runtime, #page-images) .controller-heading h2 { color: #e9f2ff; font-size: 17px; }
-:is(#page-runtime, #page-images) .status-badge { background: var(--mg-blue-soft); border-color: var(--mg-border-strong); color: #acd2ff; }
-:is(#page-runtime, #page-images) .status-badge.connected { color: #73e3a4; background: rgba(53, 208, 127, .12); border-color: rgba(53, 208, 127, .36); }
-:is(#page-runtime, #page-images) .status-badge.disconnected { color: #ff9db7; background: rgba(243, 139, 168, .1); }
+:is(#page-runtime, #page-runtime-settings, #page-images) .controller-heading { margin: 20px 2px 12px; }
+:is(#page-runtime, #page-runtime-settings, #page-images) .controller-heading h2 { color: #e9f2ff; font-size: 17px; }
+:is(#page-runtime, #page-runtime-settings, #page-images) .status-badge { background: var(--mg-blue-soft); border-color: var(--mg-border-strong); color: #acd2ff; }
+:is(#page-runtime, #page-runtime-settings, #page-images) .status-badge.connected { color: #73e3a4; background: rgba(53, 208, 127, .12); border-color: rgba(53, 208, 127, .36); }
+:is(#page-runtime, #page-runtime-settings, #page-images) .status-badge.disconnected { color: #ff9db7; background: rgba(243, 139, 168, .1); }
 
 #controller-setup-help,
 #runtime-create-panel {
@@ -96,45 +96,45 @@
 #available-runtime-images td details { margin-top: 8px; }
 #available-runtime-images .image-not-cached td:not(:last-child) { opacity: .68; }
 .image-library-import[hidden] { display: none; }
-:is(#page-runtime, #page-images) .image-catalog-table { min-width: 600px; table-layout: auto; }
-:is(#page-runtime, #page-images) .image-catalog-table th { width: auto; }
+:is(#page-runtime, #page-runtime-settings, #page-images) .image-catalog-table { min-width: 600px; table-layout: auto; }
+:is(#page-runtime, #page-runtime-settings, #page-images) .image-catalog-table th { width: auto; }
 @media (max-width: 560px) {
-  :is(#page-runtime, #page-images) .image-catalog-table th:nth-child(2),
-  :is(#page-runtime, #page-images) .image-catalog-table td:nth-child(2) { display: table-cell; }
+  :is(#page-runtime, #page-runtime-settings, #page-images) .image-catalog-table th:nth-child(2),
+  :is(#page-runtime, #page-runtime-settings, #page-images) .image-catalog-table td:nth-child(2) { display: table-cell; }
 }
 #controller-message:not(:empty) { border: 1px solid var(--mg-border-strong); background: rgba(45, 87, 136, .2); color: #c9e0ff; }
 
-:is(#page-runtime, #page-images) .runtime-table-scroll {
+:is(#page-runtime, #page-runtime-settings, #page-images) .runtime-table-scroll {
   border: 1px solid var(--mg-border-strong);
   border-radius: 14px;
   background: rgba(15, 26, 41, .7);
   box-shadow: 0 16px 36px rgba(0, 0, 0, .14);
 }
-:is(#page-runtime, #page-images) .runtime-table { border-collapse: separate; border-spacing: 0; }
-:is(#page-runtime, #page-images) .runtime-table th {
+:is(#page-runtime, #page-runtime-settings, #page-images) .runtime-table { border-collapse: separate; border-spacing: 0; }
+:is(#page-runtime, #page-runtime-settings, #page-images) .runtime-table th {
   padding: 13px 16px;
   background: #17283d;
   color: #a9c1de;
   border-bottom: 1px solid var(--mg-border-strong);
 }
-:is(#page-runtime, #page-images) .runtime-table td { padding: 14px 16px; border-top-color: var(--mg-border); }
-:is(#page-runtime, #page-images) .runtime-table tbody tr.runtime-summary { transition: background .15s, box-shadow .15s; }
-:is(#page-runtime, #page-images) .runtime-table tbody tr.runtime-summary:hover,
-:is(#page-runtime, #page-images) .runtime-table tbody tr.runtime-summary.selected { background: rgba(76, 167, 255, .1); box-shadow: inset 3px 0 var(--mg-blue); }
-:is(#page-runtime, #page-images) .runtime-select { color: #edf5ff; }
-:is(#page-runtime, #page-images) .runtime-select .hint { color: #879db8; }
-:is(#page-runtime, #page-images) .runtime-status { border: 1px solid var(--mg-border); background: #1b2b40; }
-:is(#page-runtime, #page-images) .runtime-status.success { color: #6ee5a0; background: rgba(53, 208, 127, .12); border-color: rgba(53, 208, 127, .28); }
-:is(#page-runtime, #page-images) .runtime-status.error { color: #ff9db7; background: rgba(243, 139, 168, .12); }
-:is(#page-runtime, #page-images) .runtime-detail-row > td { background: #112033; }
-:is(#page-runtime, #page-images) .runtime-config-grid > div,
-:is(#page-runtime, #page-images) .runtime-card { background: #14253a; border-color: var(--mg-border); }
-:is(#page-runtime, #page-images) .managed-runtime { border-color: var(--mg-border-strong); background: linear-gradient(140deg, rgba(24, 42, 64, .78), rgba(16, 29, 46, .86)); }
-:is(#page-runtime, #page-images) .runtime-feedback { background: rgba(53, 103, 158, .19); border-color: var(--mg-blue); }
-:is(#page-runtime, #page-images) .runtime-feedback.success { background: rgba(53, 208, 127, .1); border-color: var(--mg-green); }
-:is(#page-runtime, #page-images) .runtime-feedback.error { background: rgba(243, 139, 168, .1); border-color: #f38ba8; }
-:is(#page-runtime, #page-images) .runtime-blocked { color: #ffc78f; }
-:is(#page-runtime, #page-images) .runtime-details { border-top-color: var(--mg-border); }
+:is(#page-runtime, #page-runtime-settings, #page-images) .runtime-table td { padding: 14px 16px; border-top-color: var(--mg-border); }
+:is(#page-runtime, #page-runtime-settings, #page-images) .runtime-table tbody tr.runtime-summary { transition: background .15s, box-shadow .15s; }
+:is(#page-runtime, #page-runtime-settings, #page-images) .runtime-table tbody tr.runtime-summary:hover,
+:is(#page-runtime, #page-runtime-settings, #page-images) .runtime-table tbody tr.runtime-summary.selected { background: rgba(76, 167, 255, .1); box-shadow: inset 3px 0 var(--mg-blue); }
+:is(#page-runtime, #page-runtime-settings, #page-images) .runtime-select { color: #edf5ff; }
+:is(#page-runtime, #page-runtime-settings, #page-images) .runtime-select .hint { color: #879db8; }
+:is(#page-runtime, #page-runtime-settings, #page-images) .runtime-status { border: 1px solid var(--mg-border); background: #1b2b40; }
+:is(#page-runtime, #page-runtime-settings, #page-images) .runtime-status.success { color: #6ee5a0; background: rgba(53, 208, 127, .12); border-color: rgba(53, 208, 127, .28); }
+:is(#page-runtime, #page-runtime-settings, #page-images) .runtime-status.error { color: #ff9db7; background: rgba(243, 139, 168, .12); }
+:is(#page-runtime, #page-runtime-settings, #page-images) .runtime-detail-row > td { background: #112033; }
+:is(#page-runtime, #page-runtime-settings, #page-images) .runtime-config-grid > div,
+:is(#page-runtime, #page-runtime-settings, #page-images) .runtime-card { background: #14253a; border-color: var(--mg-border); }
+:is(#page-runtime, #page-runtime-settings, #page-images) .managed-runtime { border-color: var(--mg-border-strong); background: linear-gradient(140deg, rgba(24, 42, 64, .78), rgba(16, 29, 46, .86)); }
+:is(#page-runtime, #page-runtime-settings, #page-images) .runtime-feedback { background: rgba(53, 103, 158, .19); border-color: var(--mg-blue); }
+:is(#page-runtime, #page-runtime-settings, #page-images) .runtime-feedback.success { background: rgba(53, 208, 127, .1); border-color: var(--mg-green); }
+:is(#page-runtime, #page-runtime-settings, #page-images) .runtime-feedback.error { background: rgba(243, 139, 168, .1); border-color: #f38ba8; }
+:is(#page-runtime, #page-runtime-settings, #page-images) .runtime-blocked { color: #ffc78f; }
+:is(#page-runtime, #page-runtime-settings, #page-images) .runtime-details { border-top-color: var(--mg-border); }
 
 #page-settings .settings-section {
   margin-top: 14px;
@@ -208,13 +208,13 @@
 #runtime-rename-error { color: #ff9db7; }
 
 @media (max-width: 780px) {
-  :is(#page-runtime, #page-images) .page-header, #page-settings .page-header { padding: 16px; }
-  :is(#page-runtime, #page-images) .runtime-table th, :is(#page-runtime, #page-images) .runtime-table td { padding: 11px 10px; }
-  :is(#page-runtime, #page-images) .runtime-table th:nth-child(2) { width: auto; }
+  :is(#page-runtime, #page-runtime-settings, #page-images) .page-header, #page-settings .page-header { padding: 16px; }
+  :is(#page-runtime, #page-runtime-settings, #page-images) .runtime-table th, :is(#page-runtime, #page-runtime-settings, #page-images) .runtime-table td { padding: 11px 10px; }
+  :is(#page-runtime, #page-runtime-settings, #page-images) .runtime-table th:nth-child(2) { width: auto; }
 }
 @media (max-width: 560px) {
-  :is(#page-runtime, #page-images) .runtime-table th:nth-child(2), :is(#page-runtime, #page-images) .runtime-table td:nth-child(2) { display: none; }
-  :is(#page-runtime, #page-images) .runtime-summary .runtime-actions { justify-content: flex-start; }
+  :is(#page-runtime, #page-runtime-settings, #page-images) .runtime-table th:nth-child(2), :is(#page-runtime, #page-runtime-settings, #page-images) .runtime-table td:nth-child(2) { display: none; }
+  :is(#page-runtime, #page-runtime-settings, #page-images) .runtime-summary .runtime-actions { justify-content: flex-start; }
   #page-settings .settings-section, #page-controls > .card { padding: 16px; }
 }
 /* Keep runtime tuning collapsed until needed. */
@@ -256,19 +256,19 @@
 @media (max-width: 700px) { .arm-source-form { grid-template-columns: 1fr; } .arm-source-item { display: grid; gap: 3px; } }
 
 /* Keep runtime configuration compact until a section is opened. */
-#page-runtime .runtime-settings-group { margin-top: 10px; background: var(--mg-panel); border-color: var(--mg-border); }
-#page-runtime .runtime-config-grid { gap: 10px; margin-top: 0; }
-#page-runtime .runtime-config-grid > .runtime-settings-group { margin-top: 0; }
-#page-runtime .runtime-settings-group > summary::before { content: '+'; display: inline-block; width: 20px; color: var(--mg-blue); }
-#page-runtime .runtime-settings-group[open] > summary::before { content: '−'; }
-#page-runtime .runtime-settings-group > summary:focus-visible { outline: 2px solid var(--mg-blue); outline-offset: 4px; }
-#page-runtime .runtime-settings-group > .runtime-gpu-panel,
-#page-runtime .runtime-settings-group > .runtime-storage-panel,
-#page-runtime .runtime-settings-group > .runtime-arm-panel { margin-top: 12px; }
+:is(#page-runtime, #page-runtime-settings) .runtime-settings-group { margin-top: 10px; background: var(--mg-panel); border-color: var(--mg-border); }
+:is(#page-runtime, #page-runtime-settings) .runtime-config-grid { gap: 10px; margin-top: 0; }
+:is(#page-runtime, #page-runtime-settings) .runtime-config-grid > .runtime-settings-group { margin-top: 0; }
+:is(#page-runtime, #page-runtime-settings) .runtime-settings-group > summary::before { content: '+'; display: inline-block; width: 20px; color: var(--mg-blue); }
+:is(#page-runtime, #page-runtime-settings) .runtime-settings-group[open] > summary::before { content: '−'; }
+:is(#page-runtime, #page-runtime-settings) .runtime-settings-group > summary:focus-visible { outline: 2px solid var(--mg-blue); outline-offset: 4px; }
+:is(#page-runtime, #page-runtime-settings) .runtime-settings-group > .runtime-gpu-panel,
+:is(#page-runtime, #page-runtime-settings) .runtime-settings-group > .runtime-storage-panel,
+:is(#page-runtime, #page-runtime-settings) .runtime-settings-group > .runtime-arm-panel { margin-top: 12px; }
 
-#page-runtime .runtime-page-header { padding: 12px 16px; margin-bottom: 12px; gap: 12px; }
-#page-runtime .runtime-page-header h1 { font-size: 24px; margin: 0; }
-#page-runtime .runtime-page-header .runtime-actions { margin: 0; }
+:is(#page-runtime, #page-runtime-settings) .runtime-page-header { padding: 12px 16px; margin-bottom: 12px; gap: 12px; }
+:is(#page-runtime, #page-runtime-settings) .runtime-page-header h1 { font-size: 24px; margin: 0; }
+:is(#page-runtime, #page-runtime-settings) .runtime-page-header .runtime-actions { margin: 0; }
 #runtime-setup-panel[hidden] { display: none; }
 
 #runtime-table .runtime-checkbox-cell { width: 42px; padding: 10px; text-align: center; }
@@ -291,3 +291,70 @@
 }
 
 #runtime-table .runtime-summary.batch-selected { background: var(--mg-blue-soft); }
+
+/* Keep lifecycle actions on one compact line; labels remain in tooltips/ARIA. */
+#runtime-table .runtime-summary .runtime-actions { flex-wrap: nowrap; gap: 6px; }
+#runtime-table .runtime-action-icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 34px; height: 34px; min-width: 34px; padding: 0; border-radius: 8px;
+}
+#runtime-table .runtime-action-icon svg { width: 17px; height: 17px; pointer-events: none; }
+#runtime-table .runtime-action-icon:focus-visible { outline: 2px solid var(--mg-blue); outline-offset: 3px; }
+.runtime-batch-toolbar .btn { padding: 7px 10px; font-size: 12px; }
+
+/* Usage stays separate from status, including at narrow window sizes. */
+#runtime-table th:nth-child(2) { width: 22%; }
+#runtime-table th:nth-child(3) { width: 19%; }
+#runtime-table .runtime-usage-heading { width: 32%; }
+#runtime-table .runtime-usage-cell { min-width: 250px; }
+.runtime-usage { display: grid; gap: 5px; }
+.runtime-usage-metric { display: grid; grid-template-columns: 46px minmax(44px, 1fr) 100px; align-items: center; gap: 8px; font-size: 11px; line-height: 15px; }
+.runtime-usage-label { color: var(--text-secondary); }
+.runtime-usage-value { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; color: var(--text-secondary); }
+.runtime-usage-track { height: 5px; overflow: hidden; border-radius: 4px; background: rgba(136,174,255,.13); }
+.runtime-usage-track > span { display: block; height: 100%; background: var(--mg-blue); border-radius: inherit; }
+.runtime-usage-metric:nth-child(2) .runtime-usage-track > span { background: #65c7b2; }
+.runtime-usage-metric:nth-child(3) .runtime-usage-track > span { background: #b59af6; }
+.runtime-usage-track.unavailable { opacity: .45; }
+@media (max-width: 700px) {
+  #runtime-table th:nth-child(3), #runtime-table td:nth-child(3) { display: table-cell; }
+  #runtime-table { min-width: 710px; }
+}
+
+#page-runtime-settings .runtime-config-header { display: flex; align-items: center; justify-content: flex-start; gap: 16px; }
+.runtime-config-eyebrow { margin: 0 0 4px; font-size: 12px; color: var(--text-secondary); }
+#runtime-settings-title { overflow-wrap: anywhere; }
+#runtime-settings-title:focus { outline: none; }
+#runtime-settings-content .runtime-card { max-width: none; margin: 0; }
+#legacy-runtime-detail[hidden] { display: none; }
+
+/* A dedicated Settings page should expose every group without an extra gate. */
+#page-runtime-settings .runtime-settings-visible { grid-column: 1 / -1; gap: 10px; margin-top: 0; padding: 0; border: 0; background: transparent; }
+#page-runtime-settings .runtime-settings-visible > .runtime-setting-row { border: 1px solid var(--mg-border); border-radius: 8px; padding: 3px 12px; background: var(--mg-panel); }
+#page-runtime-settings .runtime-settings-visible .runtime-setting-body { padding-bottom: 14px; }
+
+/* Compact runtime settings, with optional diagnostics kept accessible. */
+#page-runtime-settings .runtime-settings-group { padding: 10px 12px; }
+#page-runtime-settings .runtime-setting-row > summary { padding: 8px 2px; }
+#page-runtime-settings .hint { margin-top: 6px; margin-bottom: 6px; }
+#page-runtime-settings .runtime-resource-diagnostics { margin-top: 8px; }
+#page-runtime-settings .runtime-resource-diagnostics > summary,
+#page-runtime-settings #resource-budget-default summary,
+#page-runtime-settings [id^="resource-budget-"] summary { cursor: pointer; color: var(--text-secondary); font-size: 12px; }
+#page-runtime-settings .runtime-card { display: flex; flex-direction: column; gap: 8px; }
+#page-runtime-settings .runtime-config-grid,
+#page-runtime-settings .runtime-settings-visible { display: contents; }
+#page-runtime-settings .runtime-settings-group,
+#page-runtime-settings .runtime-settings-visible > .runtime-setting-row { margin: 0; }
+#page-runtime-settings [data-settings-key$=":gpu"] { order: 1; }
+#page-runtime-settings [data-settings-key$=":resources"] { order: 2; }
+#page-runtime-settings [data-settings-key$=":display"] { order: 3; }
+#page-runtime-settings [data-settings-key$=":storage"] { order: 4; }
+#page-runtime-settings [data-settings-key$=":arm"] { order: 5; }
+#page-runtime-settings [data-settings-key$=":google"] { order: 6; }
+#page-runtime-settings [data-settings-key$=":boot"] { order: 7; }
+#page-runtime-settings [data-settings-key$=":health"] { order: 8; }
+#page-runtime-settings [data-settings-key$=":import"],
+#page-runtime-settings .runtime-details { order: 9; }
+#page-runtime-settings .runtime-setting-row summary small { display: none; }
+#page-runtime-settings .runtime-gpu-panel { padding: 0; border: 0; background: transparent; }

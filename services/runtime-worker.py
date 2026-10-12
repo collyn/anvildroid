@@ -882,6 +882,7 @@ def stop_android(lxc, identifier, boot_completed):
     # Power-off/reboot syscalls are inappropriate for a Waydroid container.
     # After Android acknowledges its flush, terminate its namespace normally.
     print('Android shutdown flush:', 'ready' if ready else reason, flush=True)
+    linux.reap_android_orphans()
     stop_error = None
     try:
         lxc('lxc-stop', identifier, '-k', '--nowait', '--nolock', timeout=5, bounded_output=True)
@@ -892,6 +893,7 @@ def stop_android(lxc, identifier, boot_completed):
     deadline = time.monotonic() + 15
     query_error = None
     while True:
+        linux.reap_android_orphans()
         try:
             if lxc('lxc-info', identifier, '-sH', timeout=2, bounded_output=True) == 'STOPPED': break
         except (RuntimeError, OSError, subprocess.TimeoutExpired) as error:

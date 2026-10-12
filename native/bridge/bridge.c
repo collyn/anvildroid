@@ -35,77 +35,11 @@ extern char *strdup(const char *);
 extern char *getenv(const char *);
 extern int usleep(unsigned int);
 
-/* Waydroid's Android 15 composer configures the HIDL RPC pool twice. The
- * second call can request fewer threads and libhidlbase aborts instead of
- * ignoring the shrink. Keep the first pool size and ignore smaller requests.
- */
-static unsigned long anvil_rpc_pool_size;
+/* Interpose the HIDL ProcessState entry point used by setupBinderPolling.
+ * Leave both configure*RpcThreadpool wrappers alone: one calls the other,
+ * and suppressing that nested call skips actual pool initialization. */
+#include "hidl-pool.inc"
 static int anvil_native_passthrough;
-static void anvil_configure_rpc_pool_impl(unsigned long threads, int caller_joins,
-                                          const char *symbol) {
-  typedef void (*configure_fn)(unsigned long, int);
-  static configure_fn real_configure_rpc;
-  static configure_fn real_configure_binder;
-  configure_fn *slot = strstr(symbol, "configureBinder") != NULL
-      ? &real_configure_binder : &real_configure_rpc;
-  if (!*slot)
-    *slot = (configure_fn)dlsym((void *)-1L, symbol);
-  if (!*slot)
-    return;
-  unsigned long current = __atomic_load_n(&anvil_rpc_pool_size, __ATOMIC_ACQUIRE);
-  while (threads > current) {
-    if (__atomic_compare_exchange_n(&anvil_rpc_pool_size, &current, threads, 0,
-                                    __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
-      (*slot)(threads, caller_joins);
-      return;
-    }
-  }
-  if (threads == current && current == 0)
-    (*slot)(threads, caller_joins);
-}
-
-void anvil_configure_rpc_pool(unsigned long threads, int caller_joins)
-    __asm__("_ZN7android8hardware22configureRpcThreadpoolEmb");
-void anvil_configure_rpc_pool(unsigned long threads, int caller_joins) {
-  anvil_configure_rpc_pool_impl(threads, caller_joins,
-                                "_ZN7android8hardware22configureRpcThreadpoolEmb");
-}
-
-void anvil_configure_binder_rpc_pool(unsigned long threads, int caller_joins)
-    __asm__("_ZN7android8hardware29configureBinderRpcThreadpoolEmb");
-void anvil_configure_binder_rpc_pool(unsigned long threads, int caller_joins) {
-  anvil_configure_rpc_pool_impl(threads, caller_joins,
-                                "_ZN7android8hardware29configureBinderRpcThreadpoolEmb");
-}
-
-/* libbinder's own shrink guard can fire without going through the libhidl
- * wrappers above: the polling setup calls
- * ProcessState::setThreadPoolConfiguration() directly and the guard
- * (mThreadPoolStarted && maxThreads < mMaxThreads) aborts the HWC. Apply
- * the same ignore-the-shrink policy to the direct call. */
-long anvil_process_state_set_thread_pool_configuration(void *self,
-                                                       unsigned long threads,
-                                                       int caller_joins)
-    __asm__("_ZN7android14ProcessState28setThreadPoolConfigurationEmb");
-long anvil_process_state_set_thread_pool_configuration(void *self,
-                                                       unsigned long threads,
-                                                       int caller_joins) {
-  typedef long (*configure_fn)(void *, unsigned long, int);
-  static configure_fn real;
-  if (!real)
-    real = (configure_fn)dlsym((void *)-1L,
-                               "_ZN7android14ProcessState28setThreadPoolConfigurationEmb");
-  if (!real)
-    return 0;
-  unsigned long current = __atomic_load_n(&anvil_rpc_pool_size, __ATOMIC_ACQUIRE);
-  while (threads > current) {
-    if (__atomic_compare_exchange_n(&anvil_rpc_pool_size, &current, threads, 0,
-                                    __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
-      return real(self, threads, caller_joins);
-    }
-  }
-  return 0; /* ignore the shrink; the running pool stays as-is */
-}
 
 struct message {
   const char *name, *signature;
@@ -141,6 +75,7 @@ static _Alignas(8) unsigned char mutex[64];
 
 struct object {
   struct proxy *p;
+  const char *protocol_name; /* Immutable protocol metadata, not proxy internals. */
   struct wl_display *display;
   struct proxy *pointer_surface;
   int full_ui, full_w, full_h, full_canvas_w, full_canvas_h;
@@ -229,6 +164,7 @@ static void scrcpy_mapping_cancel(void);
 static struct task tasks[128];
 static int task_count;
 #include "media-layer.inc"
+static int object_is(const struct object *, const char *);
 static void *task_worker(void *unused);
 static void *ime_worker(void *unused);
 static void ime_protocol_init(void *library);
@@ -289,6 +225,9 @@ static void init(void) {
   window_activation_protocol_init(h);
   if (!pthread_create(&thread, 0, ime_worker, 0))
     pthread_detach(thread);
+}
+static int object_is(const struct object *o, const char *name) {
+  return o && o->p && o->protocol_name && !strcmp(o->protocol_name, name);
 }
 static struct object *find(void *p) {
   for (struct object *o = objects; o; o = o->next)
@@ -478,11 +417,13 @@ static void geometry(struct object *s) {
     }
   }
   if (s->viewport && s->viewport->width > 0) {
-    /* HWC parent is a transparent 1x1 background, not the Android content.
-     * Its viewport does not scale child surfaces. Preserve canvas coordinates. */
-    int w = s->viewport->width, h = s->viewport->height;
-    if (r->x + r->width > w) w = r->x + r->width;
-    if (r->y + r->height > h) h = r->y + r->height;
+    /* The parent is HWC's background, not the Android content; changing
+     * its viewport does not scale children. NVIDIA also uses an opaque
+     * padded background, so shrink as well as grow to the content extent.
+     * xdg geometry/input regions alone do not clip the parent's pixels. */
+    int w = r->x + r->width, h = r->y + r->height;
+    if (w < 1) w = 1;
+    if (h < 1) h = 1;
     union argument a[2] = {{.i = w}, {.i = h}};
     wayland_send(s->viewport->p, 2, a);
   }
@@ -502,7 +443,10 @@ static void geometry(struct object *s) {
         !s->csd->fullscreen) {
       /* The maximized geometry is the workarea exactly; a pitch-snapped
        * content must never push it past and break the maximized state. */
-      a[0].i = 0; a[1].i = 0;
+      a[0].i = r->x; a[1].i = r->y;
+      if (s->csd->pieces[0].surface) {
+        a[0].i -= CSD_BORDER; a[1].i -= CSD_HEADER;
+      }
       a[2].i = s->csd->max_width; a[3].i = s->csd->max_height;
     } else if (s->csd && s->csd->pieces[0].surface && !s->csd->fullscreen) {
       /* HWC positions content children at displayFrame x/y within this
@@ -726,6 +670,7 @@ int wl_proxy_add_listener(struct proxy *p, void (**listener)(void),
     return result;
   }
   struct object *o = track(p);
+  o->protocol_name = p->interface->name;
   o->listener = listener;
   o->listener_data = data;
   int result;
@@ -766,6 +711,7 @@ static struct proxy *bridge_marshal(
   const char *cls = p->interface->name;
   const char *method = p->interface->methods[op].name;
   struct object *o = find(p);
+  if (o) o->protocol_name = cls;
   int skip = 0;
   if ((!strcmp(cls, "xdg_toplevel") || !strcmp(cls, "wl_surface")) && !strcmp(method, "destroy"))
     csd_destroy(o);
@@ -1011,6 +957,7 @@ static struct proxy *bridge_marshal(
   if (result && interface) {
     if (!strcmp(interface->name, "wp_viewporter")) scale_has_viewporter = 1;
     struct object *n = track(result);
+    n->protocol_name = interface->name;
     n->display = o ? o->display : 0;
     if(!strcmp(interface->name,"wl_buffer")) {
       if(!strcmp(cls,"wl_shm_pool"))n->buffer_transport=1;

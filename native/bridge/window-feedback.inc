@@ -26,7 +26,7 @@ static void window_feedback_event(struct object *o,const char *cls,const char *m
 static void window_feedback_snapshot(int *ready,int *activated) {
   *ready=0; *activated=0;
   for (struct object *top=objects;top;top=top->next) {
-    if (!top->p || strcmp(top->p->interface->name,"xdg_toplevel") ||
+    if (!object_is(top,"xdg_toplevel") ||
         !window_is_full(top->surface) || !top->surface->window_configured) continue;
     struct object *s=top->surface;
     int content=s->window_content;

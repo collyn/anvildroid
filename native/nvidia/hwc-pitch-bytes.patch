@@ -1,0 +1,18 @@
+--- a/hwcomposer/hwcomposer.cpp
++++ b/hwcomposer/hwcomposer.cpp
+@@ -221,8 +221,14 @@
+              * including the FRAMEBUFFER_TARGET — through the wl_shm
+              * fallback: the HWC composites at the real stride and the SHM
+              * copy presents with no pitch constraint. */
++            // pixel_stride is in pixels, whereas the import constraint is
++            // in bytes. The SHM path supports these 32-bit RGB formats.
++            const bool rgb32 = metadata.format == HAL_PIXEL_FORMAT_RGBA_8888
++                || metadata.format == HAL_PIXEL_FORMAT_RGBX_8888
++                || metadata.format == HAL_PIXEL_FORMAT_BGRA_8888;
++            const unsigned alignment_pixels = rgb32 ? 256 / 4 : 256;
+             const bool misaligned_pitch = metadata.pixel_stride &&
+-                (metadata.pixel_stride % 256) != 0;
++                (metadata.pixel_stride % alignment_pixels) != 0;
+             const bool undisplayable = layer->handle
+                 && !(layer->flags & HWC_IS_CURSOR_LAYER)
+                 && (misaligned_pitch ||

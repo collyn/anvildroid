@@ -41,15 +41,20 @@ UPSTREAM_REPO = 'quinovax/waydroid-nvidia'
 # (VUID-VkBindBufferMemoryInfo-memory-02726). NVIDIA faults the GPU on draws
 # touching buffers bound in violation (Xid 69 DRAW_VERTEX_ARRAY 0x274,
 # upstream #10/#11), which blocks the skiagl app path on hybrid hosts.
-# Guest files are unchanged from the dev-20261005-a2fb681b pin.
-UPSTREAM_VERSION = 'devfix-20261010-vkr02726'
-PAYLOAD_ROOT = Path('/usr/local/lib/anvildroid-controller/nvidia-devfix-20261010-vkr02726')
+# Guest HWC additionally checks the hybrid import pitch in bytes (not pixels),
+# avoiding CPU readback for valid 32-bit RGB DMA-BUFs. Other guest files
+# remain unchanged from the dev-20261005-a2fb681b pin.
+UPSTREAM_VERSION = 'devfix-20261012-pitchbytes'
+PAYLOAD_ROOT = Path('/usr/local/lib/anvildroid-controller') / f'nvidia-{UPSTREAM_VERSION}'
 ARCHIVES = {
     'host-x86_64': '785a3a8b7f6ace07e497ef5e8975259828fddebca7174b70f9f33d9538c128b5',
-    'guest-android-x86_64': '3e41c050e1c1fb0f319f870c80e196f33f4195914503ff0c6818c5e8078d26d5',
+    'guest-android-x86_64': '65b952dc5a271d669eee5a002020557755774913d6e86c5ede4bb2227a161004',
     'guest-prebuilts': 'ad557bde6a98a6d322c7e7a246b03a88d48d1d3d31bacb05480dff9332ae7a0f',
 }
 
+
+LOG_READ_BYTES = 64 * 1024
+DEVICE_LOSS_TOKEN = b'vk_error_device_lost'
 
 
 def _elf_class(path):
@@ -210,19 +215,35 @@ def image_mounts(root):
     return mounts
 
 
+def renderer_environment(account, icd, *, validation=False):
+    # Keep production rendering free of validation-layer interception. A
+    # diagnostic renderer can opt in without inheriting arbitrary host env.
+    env = {'PATH': '/usr/bin:/bin', 'HOME': account.pw_dir,
+           'LD_LIBRARY_PATH': str(PAYLOAD_ROOT),
+           'RENDER_SERVER_EXEC_PATH': str(PAYLOAD_ROOT / 'virgl_render_server'),
+           'VK_DRIVER_FILES': str(icd), 'VK_ICD_FILENAMES': str(icd),
+           # Keep CPU-readable capture buffers on the safe udmabuf path.
+           'WAYDROID_NVIDIA_CPU_LINEAR': '0'}
+    if validation:
+        env['VK_INSTANCE_LAYERS'] = 'VK_LAYER_KHRONOS_validation'
+    return env
+
+
 class RendererFailure(RuntimeError):
     pass
 
 
 class Renderer:
     """One Venus process group inside one worker's private mount/PID namespaces."""
-    def __init__(self):
+    def __init__(self, *, validation=False):
+        self.validation = validation
         self.process = None
         self.directory = Path('/run/anvil-venus')
         self.endpoint = self.directory / 'venus.sock'
         self.log_path = None
         self.log_start = 0
         self.log_scan = 0
+        self.log_tail = b''
 
     def start(self, uid, log):
         if uid <= 0: raise RuntimeError('NVIDIA renderer requires a desktop user')
@@ -252,16 +273,8 @@ class Renderer:
         self.log_path = getattr(log, 'name', None)
         self.log_start = os.fstat(log.fileno()).st_size
         self.log_scan = self.log_start
-        env = {'PATH': '/usr/bin:/bin', 'HOME': account.pw_dir,
-               'LD_LIBRARY_PATH': str(PAYLOAD_ROOT),
-               'RENDER_SERVER_EXEC_PATH': str(PAYLOAD_ROOT / 'virgl_render_server'),
-               'VK_DRIVER_FILES': str(icds[0]), 'VK_ICD_FILENAMES': str(icds[0]),
-               'VK_INSTANCE_LAYERS': 'VK_LAYER_KHRONOS_validation',
-               # Activity-switch task snapshots and screencap render into
-               # CPU-readable NVIDIA-LINEAR buffers, which faults this driver
-               # (Xid-69 CLEAR_SURFACE 0x19D0, upstream quinovax #16). Force
-               # the udmabuf fallback for those captures instead.
-               'WAYDROID_NVIDIA_CPU_LINEAR': '0'}
+        self.log_tail = b''
+        env = renderer_environment(account, icds[0], validation=self.validation)
         self.process = subprocess.Popen(
             ['/usr/bin/prlimit', '--nofile=65536:65536', '--',
              str(PAYLOAD_ROOT / 'virgl_test_server'), '--no-virgl', '--venus',
@@ -302,15 +315,25 @@ class Renderer:
             return
         try:
             with open(self.log_path, 'rb') as stream:
+                end = os.fstat(stream.fileno()).st_size
+                if end < self.log_scan:
+                    # Log truncation starts a new stream; discard partial tokens.
+                    self.log_start = self.log_scan = 0
+                    self.log_tail = b''
                 stream.seek(self.log_scan)
-                text = stream.read().decode(errors='replace')
-                self.log_scan = stream.tell()
+                # Appends during this scan are handled by the next check.
+                while self.log_scan < end:
+                    chunk = stream.read(min(LOG_READ_BYTES, end - self.log_scan))
+                    if not chunk:
+                        break
+                    text = self.log_tail + chunk.lower()
+                    self.log_scan = stream.tell()
+                    self.log_tail = text[-(len(DEVICE_LOSS_TOKEN) - 1):]
+                    if DEVICE_LOSS_TOKEN in text:
+                        raise RendererFailure(self.failure_detail(
+                            'NVIDIA renderer lost the GPU device; restart the entire runtime. See nvidia-renderer.log.'))
         except OSError:
             return
-        if 'vk_error_device_lost' not in text.lower():
-            return
-        raise RendererFailure(self.failure_detail(
-            'NVIDIA renderer lost the GPU device; restart the entire runtime. See nvidia-renderer.log.'))
 
     def failure_detail(self, fallback=None):
         """Turn a Venus/device-loss crash into an actionable runtime error."""
@@ -319,8 +342,8 @@ class Renderer:
             try:
                 with open(self.log_path, 'rb') as stream:
                     stream.seek(0, os.SEEK_END)
-                    stream.seek(max(self.log_start, stream.tell() - 65536))
-                    text = stream.read(65536).decode(errors='replace')
+                    stream.seek(max(self.log_start, stream.tell() - LOG_READ_BYTES))
+                    text = stream.read(LOG_READ_BYTES).decode(errors='replace')
             except OSError:
                 pass
         lower = text.lower()

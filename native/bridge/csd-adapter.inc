@@ -199,11 +199,11 @@ static void csd_sync(struct object *s, int x, int y, int w, int h) {
   if (!f) return;
   int widths[4] = {w+2*CSD_BORDER,CSD_BORDER,CSD_BORDER,w};
   int heights[4] = {CSD_HEADER,h+CSD_BORDER,h+CSD_BORDER,CSD_BORDER};
-  /* HWC content positions are canvas-relative, not normalized to (0,0).
-   * A small top offset is the transparent Android caption strip: cover it
-   * with the header so no see-through gap opens below the titlebar. */
+  /* Put chrome above the content origin. Clamping the header to zero
+   * overlays the app's first rows, especially on maximized windows. The
+   * xdg geometry includes this negative surface-local header extent. */
   int xs[4] = {x-CSD_BORDER,x-CSD_BORDER,x+w,x};
-  int ys[4] = {s->full_ui ? y-CSD_HEADER : (y<CSD_HEADER ? 0 : y-CSD_HEADER), y,y,y+h};
+  int ys[4] = {y-CSD_HEADER, y,y,y+h};
   /* The maximized window can be taller than the canvas surface: extend the
    * bottom piece over the uncovered strip so it reads black, not see-through. */
   int overflow = 0;

@@ -111,6 +111,33 @@ def ns(kind):
     return os.readlink('/proc/self/ns/' + kind)
 
 
+def reap_android_orphans():
+    """Reap adopted guest zombies only, from the isolated worker's PID 1.
+
+    Killing lxc-attach can orphan its guest child into this namespace. Leaving
+    that child unreaped blocks Android init in zap_pid_ns_processes. Never use
+    waitpid(-1): outer-namespace children belong to subprocess.Popen/LXC.
+    """
+    if os.getpid() != 1:
+        return 0
+    reaped = 0
+    for entry in Path('/proc').iterdir():
+        if not entry.name.isdecimal():
+            continue
+        try:
+            status = dict(line.split(':', 1) for line in (entry / 'status').read_text().splitlines() if ':' in line)
+            if (status.get('PPid', '').strip() != '1'
+                    or not status.get('State', '').strip().startswith('Z')
+                    or len(status.get('NSpid', '').split()) < 2):
+                continue
+            pid, _ = os.waitpid(int(entry.name), os.WNOHANG)
+            reaped += bool(pid)
+        except (FileNotFoundError, ProcessLookupError, ChildProcessError):
+            # Exited/reaped concurrently; never wait on another child instead.
+            continue
+    return reaped
+
+
 def run_bounded(*args, timeout, umask=-1, stdin=subprocess.DEVNULL, operation="Android shutdown", output_limit=8192, full_output=False):
     """A timed-out attach must not leave children holding LXC control descriptors."""
     args = android_command(args)
