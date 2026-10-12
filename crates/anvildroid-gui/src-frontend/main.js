@@ -358,6 +358,7 @@ async function openWaydroid(runtimeId) {
   let ownsAppAction = false;
   try {
     showBanner('Opening Waydroid… Waiting for any current Android action to finish.', 'info');
+    const activationToken = await waydroidActivationToken();
     // Keep this click while the preceding launch completes its startup check.
     for (let attempt = 0; pendingLaunch || pendingAppAction; attempt++) {
       if (attempt >= 180) throw new Error('The previous Android action is still pending. Check its result before retrying.');
@@ -365,37 +366,9 @@ async function openWaydroid(runtimeId) {
     }
     pendingAppAction = true;
     ownsAppAction = true;
-    if(runtimeId==='default') {
-      let result;
-      for (let attempt = 0; attempt < 15; attempt++) {
-        result = await tauriInvoke('open_waydroid');
-        if (result?.success || result?.error_code !== 'BUSY') break;
-        await new Promise(resolve => setTimeout(resolve, 350));
-      }
-      showBanner(result.message,result.success?'success':'error');return;
-    }
-    const record=managedLibrary.find(r=>r.id===runtimeId);
-    if(!record||record.state!=='Running')throw new Error('Start the selected runtime first.');
-    showBanner(`Opening Waydroid · ${record.name}… Switching Android display mode.`, 'info');
-    let job;
-    for (let attempt = 0; attempt < 20; attempt++) {
-      try {
-        job = await controllerRequest({op:'app_action',id:runtimeId,action:'full_ui',package:'org.anvildroid.desktop'});
-        break;
-      } catch (error) {
-        if (!controllerBusy(error) || attempt === 19) throw error;
-        await new Promise(resolve => setTimeout(resolve, 350));
-      }
-    }
-    if (!job?.id || job.runtime_id !== runtimeId || job.action !== 'full_ui' || job.package !== 'org.anvildroid.desktop') throw new Error('Invalid Waydroid launch job');
-    const token=job.id;
-    for(let i=0;job.status==='Running'&&i<150;i++) {
-      await new Promise(resolve=>setTimeout(resolve,300));
-      job=await controllerRequest({op:'app_job',id:runtimeId});
-      if(job.id!==token||job.runtime_id!==runtimeId||job.action!=='full_ui')throw new Error('Operation changed; refresh runtime status.');
-    }
-    if(job.status!=='Succeeded')throw new Error(job.error||'Waydroid window is still pending.');
-    showBanner(`${record.name}: ${job.result?.message||'Waydroid opened'}`,'success');
+    const record = await refreshBatchRecord(runtimeId, 'open');
+    const result = await launchRuntimeWaydroidWindow(record, activationToken);
+    showBanner(`${record.name}: ${describeWaydroidWindow(result)}`, result.window?.state === 'ready' ? 'success' : 'info');
   }catch(e){showBanner(`Cannot open Waydroid: ${e.message||e}`,'error');}
   finally{if(ownsAppAction)pendingAppAction=false;pendingWaydroidRuntime=null;renderApps(allApps);}
 }
@@ -408,7 +381,7 @@ document.getElementById('install-touch-probe').addEventListener('click',async()=
   probeInstallBusy=true;select.disabled=true;
   const button=document.getElementById('install-touch-probe');button.disabled=true;
   try {
-    if(!await window.__TAURI__.dialog.confirm(`Install Touch Probe into ${record.name}?\nRuntime: ${id}\n\nThis diagnostic app observes touch events only in its own window. It requests no permissions. Android verification remains enabled; review any Android prompt yourself. Installation does not enable game touch mapping.`,{title:'Install Touch Probe',kind:'info',okLabel:'Install',cancelLabel:'Cancel'}))return;
+    if(!await AppDialog.confirm(`Install Touch Probe into ${record.name}?\nRuntime: ${id}\n\nThis diagnostic app observes touch events only in its own window. It requests no permissions. Android verification remains enabled; review any Android prompt yourself. Installation does not enable game touch mapping.`,{title:'Install Touch Probe',kind:'info',okLabel:'Install',cancelLabel:'Cancel'}))return;
     status.textContent='Installing in '+record.name+'… Review any Android verification window on your desktop. Do not retry while installation is pending. If verification fails, open Waydroid to inspect Android.';
     const result=await tauriInvoke('install_touch_probe',{runtimeId:id});
     status.textContent=result.message;
@@ -984,13 +957,13 @@ async function appMenuAction(action, pkg, label, blockReason, runtimeId = 'defau
   pendingAppAction = true;
   try {
     if (action === 'force-stop') {
-      const confirmed = await window.__TAURI__.dialog.confirm(
+      const confirmed = await AppDialog.confirm(
         `Force-stop "${label || pkg}"?\n${pkg}\n\nThis stops all app processes and background work, not just its window. Unsaved work may be lost. Installed data is retained.`,
         {title:'Force-stop app', kind:'warning', okLabel:'Force-stop', cancelLabel:'Cancel'});
       if (!confirmed) return;
     }
     if (action === 'uninstall') {
-      const confirmed = await window.__TAURI__.dialog.confirm(
+      const confirmed = await AppDialog.confirm(
         `Uninstall "${label || pkg}"?\n${pkg}\n\nThis permanently removes the app and its Android data.`,
         { title: 'Uninstall app', kind: 'warning', okLabel: 'Uninstall', cancelLabel: 'Cancel' },
       );
@@ -1589,7 +1562,7 @@ document.getElementById('available-runtime-images').addEventListener('click', as
   const rename = event.target.closest('[data-image-rename]');
   if (rename && !rename.disabled) {
     const item = (imageDownloadState?.available_images || []).find(entry => entry.library_id === rename.dataset.imageRename);
-    const name = window.prompt('Custom image name', item?.custom_name || 'Custom image');
+    const name = await AppDialog.prompt('Custom image name', item?.custom_name || 'Custom image', {title:'Rename image', okLabel:'Save name'});
     if (!name?.trim()) return;
     try { renderImageDownload(await controllerRequest({op:'image_rename', image_id:rename.dataset.imageRename, name:name.trim()})); }
     catch (error) { document.getElementById('image-library-message').textContent = `Cannot rename image: ${error}`; }
@@ -1975,7 +1948,7 @@ async function initializeWaydroid() {
   } catch (_) { /* status unavailable; fall through */ }
   if (waydroidInitBusy) return;
   if (['waydroid', 'tools', 'arm_payload'].some(waydroidCheckMissing)) {
-    const confirmed = await window.__TAURI__.dialog.confirm(
+    const confirmed = await AppDialog.confirm(
       `Set up Android on this computer?\n\nAnvilDroid will install Waydroid from its official repository, missing runtime tools and verified experimental ARM app support. Android images may require several GB of downloads. Existing Android data will be kept.\n\nInternet access and your administrator password are required. Progress will appear here; you can close and reopen AnvilDroid while setup continues.`,
       { title: 'Install Waydroid', kind: 'warning', okLabel: 'Install & initialize', cancelLabel: 'Cancel' });
     if (!confirmed) return;
@@ -2040,7 +2013,7 @@ function renderController() {
     const phase = pending?.phase;
     const waiting = ({stopping:'Stopping Android to apply settings…', applying:'Applying settings…', starting:'Restarting Android…'})[phase] || (phase === 'confirm' ? 'Waiting for confirmation…' : phase === 'send' ? 'Sending request…' : 'Waiting for current refresh…');
     const storagePhase = ({copy: 'Copying runtime data…', verify: 'Verifying the copied data…', switch: 'Activating the new location…', cleanup: 'Removing the retained copy…'})[record.storage?.job?.phase];
-    const title = pending ? waiting : appWorking ? (record.appJob.action === 'delete' ? 'Deleting runtime…' : record.appJob.action === 'install' ? 'Installing APK…' : record.appJob.action === 'launch' ? (desktopMode ? 'Launching desktop app…' : 'Launching app in headless Android…') : 'Force-stopping app…') : storageMoving ? storagePhase || 'Moving runtime data…' : record.deletion_pending ? 'Deletion incomplete' : labels[record.state] || record.state;
+    const title = runtimeBatchRestarting.has(record.id) ? 'Restarting…' : RuntimeWindow.isPending(record.id) ? 'Opening Waydroid…' : pending ? waiting : appWorking ? (record.appJob.action === 'delete' ? 'Deleting runtime…' : record.appJob.action === 'install' ? 'Installing APK…' : record.appJob.action === 'full_ui' ? 'Opening Waydroid…' : record.appJob.action === 'launch' ? (desktopMode ? 'Launching desktop app…' : 'Launching app in headless Android…') : 'Force-stopping app…') : storageMoving ? storagePhase || 'Moving runtime data…' : record.deletion_pending ? 'Deletion incomplete' : labels[record.state] || record.state;
     const button = (op, label, allowed, style = '') => `<button class="btn ${style}" data-controller-op="${op}" data-controller-id="${escapeHtml(record.id)}" ${busy || !allowed || (record.deletion_pending && op !== 'delete') ? 'disabled' : ''} ${op === 'delete' && !canDelete ? 'title="Stop this runtime before deleting it"' : ''}>${label}</button>`;
     let actions = '';
     if (record.state === 'Provisioning') actions = button('prepare', 'Preparing…', false, 'btn-primary');
@@ -2067,7 +2040,7 @@ function renderController() {
       }
       if (record.storage?.error) blockedReasons.push(`Storage: ${record.storage.error}`);
     }
-    const kind = failed || record.appJob?.status === 'Failed' ? 'error' : record.state === 'Stopped' && record.shutdown_warning ? 'warning' : record.state === 'Running' || record.state === 'Prepared' ? 'success' : 'info';
+    const kind = runtimeBatchRestarting.has(record.id) ? 'info' : failed || record.appJob?.status === 'Failed' ? 'error' : record.state === 'Stopped' && record.shutdown_warning ? 'warning' : record.state === 'Running' || record.state === 'Prepared' ? 'success' : 'info';
     const showDetailFeedback = Boolean(pending || active || failed || record.shutdown_warning || storageMoving || record.appJob?.status === 'Failed');
     const detailFeedback = showDetailFeedback ? `<div class="runtime-feedback ${kind}" role="status">${pending || active ? '<span class="runtime-spinner" aria-hidden="true"></span>' : ''}<strong>${escapeHtml(title)}</strong><p>${escapeHtml(appWorking ? (record.appJob.action === 'delete' ? 'Removing runtime data. This may take a few minutes.' : record.appJob.action === 'install' ? 'Waiting for Android to finish verification and app optimization. A confirmation dialog is not always required.' : record.appJob.package) : storageMoving ? (record.storage?.job?.phase === 'cleanup' ? 'Removing only the retained copy. The active runtime data is kept.' : 'Keep both disks connected. The original data remains available until the copy is verified.') : descriptions[record.state] || '')}</p></div>` : '';
     const resourceSummary = (() => {
@@ -2082,7 +2055,7 @@ function renderController() {
       const state = effective ? 'active usage' : configured ? 'configured' : 'unavailable';
       return `<div class="runtime-summary-resources" title="${escapeHtml(state)}"><span>${escapeHtml(ram)}</span><span>${escapeHtml(cpu)}</span><span>${escapeHtml(storage)}</span></div>`;
     })();
-    return `<tr class="runtime-summary ${selected ? 'selected' : ''}" data-runtime-select="${escapeHtml(record.id)}" aria-busy="${Boolean(pending || active)}"><td class="runtime-checkbox-cell"><input type="checkbox" data-runtime-check="${escapeHtml(record.id)}" aria-label="Select ${escapeHtml(record.name)}" ${runtimeBatchSelection.has(record.id) ? 'checked' : ''} ${runtimeBatchBusy ? 'disabled' : ''}></td><td>${nameCell}</td><td><span class="runtime-status ${kind}" role="status">${escapeHtml(title)}</span>${resourceSummary}</td><td><div class="runtime-actions">${actions}${record.deletion_pending ? deleteAction : ''}</div></td></tr>
+    return `<tr class="runtime-summary ${selected ? 'selected' : ''}" data-runtime-select="${escapeHtml(record.id)}" aria-busy="${Boolean(runtimeBatchRestarting.has(record.id) || pending || active)}"><td class="runtime-checkbox-cell"><input type="checkbox" data-runtime-check="${escapeHtml(record.id)}" aria-label="Select ${escapeHtml(record.name)}" ${runtimeBatchSelection.has(record.id) ? 'checked' : ''} ${runtimeBatchBusy ? 'disabled' : ''}></td><td>${nameCell}</td><td><span class="runtime-status ${kind}" role="status">${escapeHtml(title)}</span>${resourceSummary}</td><td><div class="runtime-actions">${actions}${record.deletion_pending ? deleteAction : ''}</div></td></tr>
       <tr id="${escapeHtml(detailId)}" class="runtime-detail-row" ${selected ? '' : 'hidden'}><td colspan="4"><article class="runtime-card managed-runtime">
       <div class="runtime-actions">${button('rename', 'Rename…', true, 'btn-quiet')}${!record.deletion_pending ? button('reinstall', 'Reinstall…', canReinstall, 'btn-warning') + deleteAction : ''}</div>
       ${detailFeedback}
@@ -2281,18 +2254,18 @@ async function mutateController(request) {
   try {
     await controllerRefreshDone;
     if (['prepare', 'stop'].includes(request.op)) { controllerPending.phase = 'confirm'; renderController(); }
-    if (request.op === 'prepare' && !await window.__TAURI__.dialog.confirm(
+    if (request.op === 'prepare' && !await AppDialog.confirm(
       runtimeRecord(request.id)?.image_selection
         ? 'Extract the selected downloaded images and build compatible Android support? This uses several GB at this runtime’s storage location. Android data will be created on first start.'
         : 'Copy the installed Android images into this runtime? This uses several GB of disk space. Android data will be created on first start.',
       { title: 'Prepare runtime images', kind: 'info' })) return;
-    if (request.op === 'stop' && !await window.__TAURI__.dialog.confirm(
+    if (request.op === 'stop' && !await AppDialog.confirm(
       'Stop this Android runtime? Its apps will close; saved data will be retained.',
       { title: 'Stop runtime', kind: 'warning' })) return;
-    if (request.op === 'existing_import' && !await window.__TAURI__.dialog.confirm(
+    if (request.op === 'existing_import' && !await AppDialog.confirm(
       'Copy Existing runtime images, apps and Android data into a new managed runtime? This requires extra disk space. Keep Existing runtime stopped until copying and verification finish. The original is retained. App logins and device-bound credentials may require signing in again.',
       {title:'Import Existing runtime',kind:'info'})) return;
-    if (request.op === 'reinstall' && !await window.__TAURI__.dialog.confirm(
+    if (request.op === 'reinstall' && !await AppDialog.confirm(
       `Reinstall this runtime with ${imageForRequest(request)?.custom_name || (request.flavor === 'installed' ? 'Existing Waydroid image' : 'Waydroid ' + request.flavor)}?\nSystem SHA-256: ${request.system_sha256 || 'installed source'}\n\nExisting Android data, apps and settings will be removed. This cannot be undone.`,
       {title:'Reinstall runtime',kind:'warning'})) return;
     if (request.op === 'app_action') {
@@ -2302,7 +2275,7 @@ async function mutateController(request) {
       const prompt = request.action === 'launch'
         ? (desktop ? `Open ${request.package} from runtime ${name} on your desktop?` : `Launch ${request.package} in runtime ${name}? This runs inside headless Android; no desktop window will open yet.`)
         : `Force-stop ${request.package} in runtime ${name}? Unsaved app work may be lost.`;
-      if (!await window.__TAURI__.dialog.confirm(prompt, { title: 'Runtime app action', kind: request.action === 'launch' ? 'info' : 'warning' })) return;
+      if (!await AppDialog.confirm(prompt, { title: 'Runtime app action', kind: request.action === 'launch' ? 'info' : 'warning' })) return;
     }
     controllerPending.phase = 'send';
     renderController();
@@ -2976,8 +2949,8 @@ async function runManagedAppAction(action, pkg, runtimeId) {
   try {
     if (!record || record.state !== 'Running' || record.error) throw new Error('Start this runtime on the Runtime page, then refresh its apps.');
     if (!(managedSnapshots.get(runtimeId) || []).some(app => app.package === pkg && app.launchable === true)) throw new Error('Refresh the app list before retrying.');
-    if (action === 'uninstall' && !await window.__TAURI__.dialog.confirm(`Uninstall ${appName} (${pkg}) from runtime ${record.name}? This removes its data in this runtime.`, {title:'Uninstall app',kind:'warning'})) return;
-    if (action === 'force_stop' && !await window.__TAURI__.dialog.confirm(`Force-stop ${pkg} in runtime ${record.name}? Unsaved app work may be lost.`, {title:'Force-stop app',kind:'warning'})) return;
+    if (action === 'uninstall' && !await AppDialog.confirm(`Uninstall ${appName} (${pkg}) from runtime ${record.name}? This removes its data in this runtime.`, {title:'Uninstall app',kind:'warning'})) return;
+    if (action === 'force_stop' && !await AppDialog.confirm(`Force-stop ${pkg} in runtime ${record.name}? Unsaved app work may be lost.`, {title:'Force-stop app',kind:'warning'})) return;
     const display = await controllerRequest({op:'display_info',id:runtimeId});
     if (action === 'launch' && (display.effective_mode || display.mode) !== 'desktop') throw new Error('Select Desktop mode on the Runtime page and restart this runtime to open app windows.');
     notify(`${action === 'launch' ? 'Opening' : action === 'uninstall' ? 'Uninstalling' : 'Stopping'} ${appName} · ${record.name}…`, 'info');
@@ -3110,6 +3083,7 @@ document.addEventListener('keydown', event => {
 });
 
 // Runtime table selection is independent of the expanded configuration row.
+const runtimeBatchRestarting = new Set();
 function runtimeBatchRecords() {
   return [...controllerRecords, ...(existingRuntime ? [existingRuntime] : [])];
 }
@@ -3166,7 +3140,7 @@ document.getElementById('runtime-batch-toolbar').addEventListener('click', event
   if (!targets.length) return;
   runtimeBatchPlan = {op, targets: targets.map(({id, name}) => ({id, name})), skipped: selected.length - targets.length};
   const destructive = ['delete', 'reinstall'].includes(op);
-  document.getElementById('runtime-batch-title').textContent = `${button.textContent.replace(/ \(\d+\)$/, '')} ${targets.length} runtimes`;
+  document.getElementById('runtime-batch-title').textContent = `${button.textContent.replace(/ \(\d+\)$/, '')} ${targets.length} ${targets.length === 1 ? 'runtime' : 'runtimes'}`;
   document.getElementById('runtime-batch-description').textContent = (destructive
     ? op === 'delete' ? 'Permanently remove these runtimes, apps, data and retained storage copies. This cannot be undone.' : 'Replace these runtimes with the selected image. All existing apps, data and settings will be erased. This cannot be undone.'
     : op === 'open' ? 'Open a Waydroid window for each running Desktop runtime below.' : op === 'start' ? 'Start these runtimes in order.' : 'Apps will close; saved data is retained. Runtimes are processed in order.') +
@@ -3185,12 +3159,12 @@ document.getElementById('runtime-batch-toolbar').addEventListener('click', event
 });
 document.getElementById('runtime-batch-cancel').addEventListener('click', () => document.getElementById('runtime-batch-dialog').close());
 document.getElementById('runtime-batch-dialog').addEventListener('close', () => { runtimeBatchPlan = null; });
-async function refreshBatchRecord(id) {
+async function refreshBatchRecord(id, operation) {
   const record = await controllerRequest({op:'refresh', id});
   if (record?.id !== id) throw new Error('Invalid runtime response.');
   if (id !== 'default') record.appJob = await controllerRequest({op:'app_job', id});
   if (id !== 'default') {
-    record.storage = await controllerRequest({op:'storage_info', id});
+    if (operation !== 'open') record.storage = await controllerRequest({op:'storage_info', id});
     record.display = await controllerRequest({op:'display_info', id});
   }
   if (id === 'default') existingRuntime = {...existingRuntime, ...record};
@@ -3201,9 +3175,9 @@ async function refreshBatchRecord(id) {
   renderController();
   return record;
 }
-async function executeBatchOperation(record, op, imageRequest) {
+async function executeBatchOperation(record, op, imageRequest, activationToken) {
   const id = record.id;
-  if (op === 'open') { await launchRuntimeWaydroidWindow(record); return; }
+  if (op === 'open') return launchRuntimeWaydroidWindow(record, activationToken);
   if (id === 'default' && ['start', 'stop'].includes(op)) {
     if (op === 'start' && controllerRecords.some(item => item.import_status === 'pending' && item.state === 'Provisioning')) throw new Error('Wait for Existing runtime import to finish.');
     const result = await tauriInvoke(op === 'start' ? 'start_runtime' : 'stop_runtime', {runtimeId:'default'});
@@ -3211,7 +3185,7 @@ async function executeBatchOperation(record, op, imageRequest) {
     const deadline = Date.now() + 360000;
     while (Date.now() < deadline) {
       const updated = await refreshBatchRecord(id);
-      if (updated.state === (op === 'start' ? 'Running' : 'Stopped')) return;
+      if (updated.state === (op === 'start' ? 'Running' : 'Stopped')) return updated;
       if (updated.state === 'Error') throw new Error('Existing runtime transition failed.');
       await new Promise(resolve => setTimeout(resolve, 500));
     }
@@ -3246,6 +3220,7 @@ async function executeBatchOperation(record, op, imageRequest) {
     if (result?.id !== id || !result.job?.id) throw new Error('Invalid runtime operation response.');
     const updated = await RuntimeSettings.wait(controllerRequest, id, result.job.id, op === 'start' ? 'Running' : op === 'stop' ? 'Stopped' : 'Prepared');
     Object.assign(runtimeRecord(id), updated);
+    return updated;
   }
 }
 document.getElementById('runtime-batch-form').addEventListener('submit', async event => {
@@ -3277,35 +3252,93 @@ async function runRuntimeBatchPlan(plan, imageRequest) {
   const output = document.getElementById('runtime-batch-result');
   let results;
   try {
+    const activationTokens = new Map();
+    if (plan.op === 'open') {
+      output.textContent = 'Preparing Waydroid windows…';
+      await Promise.all(plan.targets.map(async record => activationTokens.set(record.id, await waydroidActivationToken())));
+    }
     await controllerRefreshDone;
     results = await RuntimeBatch.run(plan.targets, plan.op, {
-      refresh: refreshBatchRecord, execute: (record, op) => executeBatchOperation(record, op, imageRequest),
+      refresh: id => refreshBatchRecord(id, plan.op), execute: (record, op) => executeBatchOperation(record, op, imageRequest, activationTokens.get(record.id)),
       requirements: controllerRequirements || {},
-      progress: (record, index, total) => { output.textContent = `${plan.op}: ${index + 1}/${total} · ${record.name}. Keep AnvilDroid open until this finishes.`; },
+      progress: (record, index, total) => {
+        if (plan.op === 'restart') { runtimeBatchRestarting.add(record.id); renderController(); }
+        output.textContent = `${plan.op}: ${index + 1}/${total} · ${record.name}. Keep AnvilDroid open until this finishes.`;
+      },
+      settled: record => { runtimeBatchRestarting.delete(record.id); renderController(); },
     });
     for (const result of results) if (result.status === 'succeeded' && plan.op !== 'open') runtimeBatchSelection.delete(result.id);
   } catch (error) { output.textContent = `Batch failed: ${error}`; }
   finally {
     controllerMutation = false;
     runtimeBatchBusy = false;
+    runtimeBatchRestarting.clear();
     await Promise.all([refreshController(), refreshStatus()]);
     renderRuntimeBatchSelection();
     renderAvailableImages();
-    if (results) output.innerHTML = `<strong>${plan.op}: ${results.filter(item => item.status === 'succeeded').length} completed · ${results.filter(item => item.status === 'failed').length} failed · ${plan.skipped + results.filter(item => item.status === 'skipped').length} skipped</strong><ul>${results.map(item => `<li>${escapeHtml(item.name)}: ${escapeHtml(item.status)}${item.detail ? ' — ' + escapeHtml(item.detail) : ''}</li>`).join('')}</ul>`;
+    if (results) output.innerHTML = renderRuntimeBatchResult(plan, results);
   }
 }
 
-async function launchRuntimeWaydroidWindow(record) {
+function renderRuntimeBatchResult(plan, results) {
+  const succeeded = results.filter(item => item.status === 'succeeded');
+  const failed = results.filter(item => item.status === 'failed').length;
+  const skipped = (plan.skipped || 0) + results.filter(item => item.status === 'skipped').length;
+  if (plan.op !== 'open') return `<strong>${escapeHtml(plan.op)}: ${succeeded.length} completed · ${failed} failed · ${skipped} skipped</strong><ul>${results.map(item => `<li>${escapeHtml(item.name)}: ${escapeHtml(item.status)}${item.detail ? ' — ' + escapeHtml(item.detail) : ''}</li>`).join('')}</ul>`;
+  const ready = succeeded.filter(item => item.result?.window?.state === 'ready').length;
+  const counts = [];
+  if (ready) counts.push(`${ready} ready`);
+  if (succeeded.length > ready) counts.push(`${succeeded.length - ready} request sent`);
+  if (failed) counts.push(`${failed} failed`);
+  if (skipped) counts.push(`${skipped} skipped`);
+  const rows = results.map(item => `<li>${escapeHtml(item.name)}: ${escapeHtml(item.status === 'succeeded' ? describeWaydroidWindow(item.result) : item.status)}${item.detail ? ' — ' + escapeHtml(item.detail) : ''}</li>`).join('');
+  if (results.length === 1 && !skipped) return `<ul>${rows}</ul>`;
+  return `<strong>Waydroid: ${counts.join(' · ')}</strong><ul>${rows}</ul>`;
+}
+
+async function launchRuntimeWaydroidWindow(record, activationToken) {
+  return RuntimeWindow.measure(record, async stage => {
+    stage('requesting focus');
+    const token = activationToken === undefined ? await waydroidActivationToken() : activationToken;
+    return requestRuntimeWaydroidWindow(record, stage, token);
+  }, {
+    publish: trace => {
+      window.AnvilWaydroidDiagnostics = RuntimeWindow.diagnostics;
+      console.debug('[Waydroid window]', trace);
+      renderController();
+      if (trace.outcome === 'pending') document.getElementById('runtime-batch-result').textContent = `Opening Waydroid · ${record.name} · ${trace.stages.at(-1)?.name || 'request'}…`;
+    },
+  });
+}
+async function requestRuntimeWaydroidWindow(record, stage = () => {}, activationToken = null) {
   if (!RuntimeBatch.eligible(record, 'open')) throw new Error('Start this runtime in Desktop mode first.');
   if (record.id === 'default') {
-    const result = await tauriInvoke('open_waydroid');
+    stage('sending');
+    let result;
+    for (let attempt = 0; attempt < 15; attempt++) {
+      result = await tauriInvoke('open_waydroid', activationToken ? {activationToken} : {});
+      if (result?.success || result?.error_code !== 'BUSY') break;
+      await new Promise(resolve => setTimeout(resolve, 350));
+    }
     if (!result?.success) throw new Error(result?.message || 'Cannot open Waydroid.');
-    return;
+    stage('request accepted');
+    return {window:{state:'unverified'}};
   }
-  let job = await controllerRequest({op:'app_action', id:record.id, action:'full_ui', package:'org.anvildroid.desktop'});
+  stage('sending');
+  let job;
+  for (let attempt = 0; attempt < 20; attempt++) {
+    try {
+      job = await controllerRequest({op:'app_action', id:record.id, action:'full_ui', package:'org.anvildroid.desktop', ...(activationToken ? {activation_token:activationToken} : {})});
+      break;
+    } catch (error) {
+      if (!controllerBusy(error) || attempt === 19) throw error;
+      await new Promise(resolve => setTimeout(resolve, 350));
+    }
+  }
   const token = job?.id;
   const valid = value => value?.id === token && value.runtime_id === record.id && value.action === 'full_ui' && value.package === 'org.anvildroid.desktop';
   if (!token || !valid(job)) throw new Error('Invalid Waydroid launch job.');
+  stage('waiting for Android');
   const deadline = Date.now() + 45000;
   while (job.status === 'Running' && Date.now() < deadline) {
     await new Promise(resolve => setTimeout(resolve, 300));
@@ -3313,4 +3346,20 @@ async function launchRuntimeWaydroidWindow(record) {
     if (!valid(job)) throw new Error('Waydroid launch operation changed.');
   }
   if (job.status !== 'Succeeded') throw new Error(job.error || 'Timed out waiting for Waydroid window.');
+  stage(job.result?.window?.state === 'ready' ? 'window content ready' : 'request completed; window unverified');
+  return {...job.result, window:job.result?.window || {state:'unverified', reason:'worker_upgrade_required'}};
+}
+
+function describeWaydroidWindow(result) {
+  if (result?.window?.state === 'ready') return result.window.activation === 'active'
+    ? 'Waydroid ready and focused' : 'Waydroid ready';
+  if (result?.window?.state === 'pending') return 'Opening Waydroid…';
+  return 'Open request sent';
+}
+
+async function waydroidActivationToken() {
+  try {
+    const token = await tauriInvoke('request_waydroid_activation');
+    return typeof token === 'string' && token.length > 0 && token.length <= 512 && /^[!-~]+$/.test(token) ? token : null;
+  } catch (_) { return null; } // X11/older GUI/compositors keep the open path.
 }

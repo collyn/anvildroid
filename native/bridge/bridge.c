@@ -144,6 +144,7 @@ struct object {
   struct wl_display *display;
   struct proxy *pointer_surface;
   int full_ui, full_w, full_h, full_canvas_w, full_canvas_h;
+  int window_configured, window_content, window_activated;
   int fit_w, fit_h, fit_x, fit_y, fit_sw, fit_sh, fit_bar_focus;
   struct game_fit_state *fit;
   int fit_applied, fit_last_x, fit_last_y, fit_last_w, fit_last_h;
@@ -231,6 +232,9 @@ static int task_count;
 static void *task_worker(void *unused);
 static void *ime_worker(void *unused);
 static void ime_protocol_init(void *library);
+static void window_activation_protocol_init(void *library);
+static void window_activation_global(struct object *,uint32_t,uint32_t);
+static int window_activation_remove(struct object *,uint32_t);
 static void init(void) {
   if (real_marshal)
     return;
@@ -282,6 +286,7 @@ static void init(void) {
   if (!pthread_create(&thread, 0, task_worker, 0))
     pthread_detach(thread);
   ime_protocol_init(h);
+  window_activation_protocol_init(h);
   if (!pthread_create(&thread, 0, ime_worker, 0))
     pthread_detach(thread);
 }
@@ -345,6 +350,8 @@ static void decoration_destroy(struct object *top) {
 #include "scale-adapter.inc"
 #include "boot-canvas.inc"
 #include "window-profile.inc"
+#include "window-activation.inc"
+#include "window-feedback.inc"
 #include "close-adapter.inc"
 #include "keymap-overlay.inc"
 #include "scrcpy-mapping.inc"
@@ -517,6 +524,12 @@ static void geometry(struct object *s) {
 static void configure(void *data, struct proxy *p, int32_t w, int32_t h,
                       void *states) {
   struct object *o = data;
+  if (o->surface) {
+    struct window_states { size_t size, alloc; uint32_t *data; } *a=states;
+    int activated=0;
+    for (size_t i=0;a&&i<a->size/sizeof(uint32_t);++i) if(a->data[i]==4)activated=1;
+    pthread_mutex_lock(mutex);o->surface->window_activated=activated;pthread_mutex_unlock(mutex);
+  }
   if(o->surface&&o->surface->full_ui) {
     pthread_mutex_lock(mutex);
     struct array { size_t size, alloc; uint32_t *data; } *a = states;
@@ -973,6 +986,7 @@ static struct proxy *bridge_marshal(
   struct proxy *result = skip ? 0 : modern
       ? real_array_flags(p, op, interface, version, flags, a)
       : real_marshal(p, op, a, interface, version);
+  if (!skip) window_feedback_event(o,cls,method);
   if(temporary_region){wayland_send(temporary_region,0,0);real_destroy(temporary_region);}
   if (original_identity) a[0].s = original_identity;
   if(o&&o->surface&&o->surface->full_ui&&!strcmp(cls,"xdg_surface")&&!strcmp(method,"ack_configure"))
@@ -1141,6 +1155,7 @@ static void bridge_disconnecting(struct wl_display *display) {
     wayland_send(b->manager,0,0);real_destroy(b->manager);
     *at=b->next;free(b);
   }
+  window_activation_disconnect(display);
   decoration_manager=decoration_bindings?decoration_bindings->manager:0;
   decoration_global_name=decoration_bindings?decoration_bindings->name:0;
   decoration_available=decoration_manager!=0;
@@ -1304,6 +1319,7 @@ static void *task_worker(void *unused) {
         last_snap_width = tasks[i].width;
       }
     }
+    window_feedback_poll();
     profile_poll();
     profile_state_poll();
     close_poll();

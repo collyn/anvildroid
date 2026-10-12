@@ -65,6 +65,8 @@ name = "anvildroid-gui"
 version = "0.1.2"
 dependencies = [
  "anvildroid-core",
+ "cc",
+ "gtk",
  "serde",
  "serde_json",
  "tauri",

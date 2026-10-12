@@ -242,7 +242,7 @@ async fn runtime_controller(
             scope::ensure_legacy(scope::LEGACY_ID).map_err(|e| e.to_string())?;
             Some(guard.try_lock().map_err(|_| "Another operation is in progress.".to_string())?)
         } else { None };
-        if let Request::AppAction { id, action, package } = &request {
+        if let Request::AppAction { id, action, package, .. } = &request {
             if action == "launch" && library::valid_managed_runtime(id) {
                 let exe = std::env::current_exe().map_err(|e| e.to_string())?;
                 desktop::register_managed_window(id, package, &exe).map_err(|e| e.to_string())?;
@@ -957,12 +957,43 @@ async fn install_touch_probe(runtime_id: String, guard: State<'_, OpGuard>) -> R
 }
 
 #[tauri::command]
-async fn open_waydroid(guard: State<'_, OpGuard>) -> Result<OperationResult, ()> {
+async fn request_waydroid_activation(window: tauri::WebviewWindow) -> Result<Option<String>, String> {
+    let (send, receive) = std::sync::mpsc::channel();
+    let source = window.clone();
+    window.run_on_main_thread(move || {
+        #[cfg(target_os = "linux")]
+        let token = {
+            use gtk::prelude::*;
+            use gtk::glib::translate::ToGlibPtr;
+            unsafe extern "C" { fn anvil_activation_token(window: *mut std::ffi::c_void, buffer: *mut std::ffi::c_char, capacity: usize) -> i32; }
+            source.gtk_window().ok().and_then(|gtk| gtk.window()).and_then(|surface| {
+                let mut buffer = [0u8; 513];
+                let ptr: *mut gtk::gdk::ffi::GdkWindow = surface.to_glib_none().0;
+                let success = unsafe { anvil_activation_token(ptr.cast(), buffer.as_mut_ptr().cast(), buffer.len()) };
+                if success == 0 { None } else {
+                    std::ffi::CStr::from_bytes_until_nul(&buffer).ok().and_then(|s| s.to_str().ok()).map(String::from)
+                }
+            })
+        };
+        #[cfg(not(target_os = "linux"))]
+        let token: Option<String> = None;
+        let _ = send.send(token);
+    }).map_err(|e| e.to_string())?;
+    blocking(move || receive.recv_timeout(std::time::Duration::from_secs(1)).map_err(|e| e.to_string())).await
+}
+
+#[tauri::command]
+async fn open_waydroid(activation_token: Option<String>, guard: State<'_, OpGuard>) -> Result<OperationResult, ()> {
     let guard=guard.0.clone();
     Ok(blocking(move || {
         let Ok(_operation)=guard.try_lock() else {return busy_result();};
         if let Err(e)=scope::ensure_legacy("default") {return op_result_err(e);}
-        match std::process::Command::new("waydroid").arg("show-full-ui")
+        let mut command = std::process::Command::new("waydroid");
+        command.arg("show-full-ui");
+        if let Some(token) = activation_token.filter(|token| !token.is_empty() && token.len() <= 512 && token.bytes().all(|byte| byte > 32 && byte < 127)) {
+            command.env("XDG_ACTIVATION_TOKEN", token);
+        }
+        match command
             .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null()).spawn() {
             Ok(mut child)=>{std::thread::spawn(move || {let _=child.wait();});op_result_ok("Waydroid full-window launch requested for Existing runtime.")},
@@ -1176,6 +1207,7 @@ fn main() {
             import_arm_translation,
             install_touch_probe,
             open_waydroid,
+            request_waydroid_activation,
             uninstall_app,
             check_uninstall,
         ])

@@ -286,7 +286,7 @@ class AndroidBackend:
             raise RuntimeError('Invalid installation result; outcome unknown')
         return result
 
-    def app_action(self, identifier, action, package):
+    def app_action(self, identifier, action, package, activation_token=None):
         status = self.status(identifier)
         if status['state'] != 'Running': raise RuntimeError('Start this runtime before using app actions')
         if 'app_actions' not in status.get('capabilities', []):
@@ -297,7 +297,10 @@ class AndroidBackend:
             raise RuntimeError('Update the controller and restart this runtime in Desktop mode to open Waydroid.')
         if action == 'uninstall' and 'uninstall_app' not in status.get('capabilities', []):
             raise RuntimeError('Stop and start this runtime once to enable Uninstall, then retry.')
-        report = self.status(identifier, 'app_action', {'op': 'app_action', 'generation': status['generation'], 'action': action, 'package': package})
+        request = {'op': 'app_action', 'generation': status['generation'], 'action': action, 'package': package}
+        if activation_token and 'window_activation' in status.get('capabilities', []):
+            request['activation_token'] = activation_token
+        report = self.status(identifier, 'app_action', request)
         if report.get('app_error'): raise RuntimeError(report['app_error'])
         if report.get('generation') != status['generation'] or report['state'] != 'Running':
             raise RuntimeError('Worker changed during action; outcome unknown. Check before retrying.')
@@ -443,6 +446,7 @@ class AndroidBackend:
         report = self.status(identifier, 'stop')
         if report['state'] == 'Stopped' and self.quiescent(identifier): return report
         deadline = time.monotonic() + 60
+        cleanup_deadline = None
         while time.monotonic() < deadline:
             report = self.status(identifier)
             if report['state'] == 'Stopped' and self.quiescent(identifier): return report
@@ -468,6 +472,11 @@ class AndroidBackend:
                         self.images.sync_directory(instance)
                     finally: Path(temporary).unlink(missing_ok=True)
                     return report
-                raise RuntimeError(report.get('error') or 'Worker cleanup failed')
+                # Releasing worker.lock can precede scope collection and the
+                # last monitor/process exiting. Allow a bounded grace period
+                # for the existing proof; never kill or detach anything here.
+                if cleanup_deadline is None: cleanup_deadline = time.monotonic() + 5
+                if time.monotonic() >= cleanup_deadline:
+                    raise RuntimeError(report.get('error') or 'Worker cleanup failed')
             time.sleep(.25)
         raise RuntimeError('Worker stop timed out; reconciliation required')

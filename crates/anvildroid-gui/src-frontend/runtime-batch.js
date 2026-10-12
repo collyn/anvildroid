@@ -14,23 +14,42 @@ const RuntimeBatch = (() => {
     if (op === 'restart') return ['Running', 'Frozen'].includes(record.state);
     return ['Prepared', 'Stopped', 'Error'].includes(record.state) && !(record.state === 'Error' && record.job?.operation === 'prepare');
   }
-  async function run(records, op, {refresh, execute, requirements, progress = () => {}}) {
+  async function run(records, op, {refresh, execute, requirements, progress = () => {}, settled = () => {}}) {
     const results = [];
-    for (const snapshot of records) {
-      progress(snapshot, results.length, records.length);
+    async function perform(snapshot, index) {
+      progress(snapshot, index, records.length);
       try {
         const record = await refresh(snapshot.id);
         if (record.id !== snapshot.id) throw new Error('Runtime identity changed.');
         if (['delete', 'reinstall'].includes(op) && record.name !== snapshot.name) throw new Error('Runtime name changed; review confirmation again.');
-        if (!eligible(record, op, requirements)) { results.push({id: snapshot.id, name: snapshot.name, status: 'skipped', detail: 'State changed or action unavailable.'}); continue; }
+        if (!eligible(record, op, requirements)) { return {id: snapshot.id, name: snapshot.name, status: 'skipped', detail: 'State changed or action unavailable.'}; }
+        let result;
         if (op === 'restart') {
-          await execute(record, 'stop');
+          const stopResult = await execute(record, 'stop');
           const stopped = await refresh(record.id);
           if (stopped.id !== record.id || stopped.state !== 'Stopped') throw new Error('Stop did not complete; restart cancelled.');
           await execute(stopped, 'start');
-        } else await execute(record, op);
-        results.push({id: snapshot.id, name: snapshot.name, status: 'succeeded'});
-      } catch (error) { results.push({id: snapshot.id, name: snapshot.name, status: 'failed', detail: String(error)}); }
+          const warning = stopResult?.shutdown_warning || stopped.shutdown_warning;
+          if (warning) result = {shutdown_warning: warning};
+        } else result = await execute(record, op);
+        return {id: snapshot.id, name: snapshot.name, status: 'succeeded', ...(result ? {result} : {}),
+          ...(result?.shutdown_warning ? {detail:result.shutdown_warning} : {})};
+      } catch (error) { return {id: snapshot.id, name: snapshot.name, status: 'failed', detail: String(error)}; }
+      finally { settled(snapshot); }
+    }
+    if (op === 'open') {
+      // Opening independent windows may overlap. Lifecycle/data mutations stay
+      // serialized, and two workers leave headroom in the controller's pool.
+      let next = 0;
+      async function worker() {
+        while (next < records.length) {
+          const index = next++;
+          results[index] = await perform(records[index], index);
+        }
+      }
+      await Promise.all(Array.from({length: Math.min(2, records.length)}, () => worker()));
+    } else {
+      for (let index = 0; index < records.length; index++) results.push(await perform(records[index], index));
     }
     return results;
   }

@@ -179,6 +179,7 @@ static void ime_create(void) {
 static void ime_global(void *data, struct proxy *registry, uint32_t name,
                        const char *interface, uint32_t version) {
   struct object *o = data;
+  if (!strcmp(interface,"xdg_activation_v1")) { window_activation_global(o,name,version); return; }
   if (!strcmp(interface, "zxdg_decoration_manager_v1")) {
     pthread_mutex_lock(mutex);
     struct decoration_binding *binding=decoration_for(o->display);
@@ -218,6 +219,7 @@ static void ime_global(void *data, struct proxy *registry, uint32_t name,
 }
 static void ime_global_remove(void *data, struct proxy *registry, uint32_t name) {
   struct object *o = data;
+  if (window_activation_remove(o,name)) return;
   struct decoration_binding *binding=decoration_for(o->display);
   if (binding && name == binding->name) {
     pthread_mutex_lock(mutex);

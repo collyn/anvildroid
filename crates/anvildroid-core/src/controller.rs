@@ -107,6 +107,8 @@ pub enum Request {
         id: String,
         action: String,
         package: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        activation_token: Option<String>,
     },
     #[serde(rename = "app_job")]
     AppJob {
@@ -463,6 +465,16 @@ fn decode(reader: impl BufRead) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn window_activation_is_optional_and_preserved() {
+        let base = serde_json::json!({"op":"app_action","id":"r-test","action":"full_ui","package":"org.anvildroid.desktop"});
+        let request: Request = serde_json::from_value(base.clone()).unwrap();
+        assert_eq!(serde_json::to_value(request).unwrap(), base);
+        let mut token_request = base;
+        token_request["activation_token"] = serde_json::json!("source-token");
+        let request: Request = serde_json::from_value(token_request.clone()).unwrap();
+        assert_eq!(serde_json::to_value(request).unwrap(), token_request);
+    }
     #[test]
     fn custom_import_uses_descriptor_not_privileged_path() {
         assert!(serde_json::from_str::<Request>(r#"{"op":"image_import","name":"Custom"}"#).is_ok());

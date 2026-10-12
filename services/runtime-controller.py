@@ -520,9 +520,9 @@ class Store:
                 storage_module.atomic(self.app_jobs_path, self.app_jobs)
             finally: self.active_jobs.discard(identifier)
 
-    def app_action_job(self, identifier, job):
+    def app_action_job(self, identifier, job, activation_token=None):
         try:
-            result = self.android.app_action(identifier, job['action'], job['package'])
+            result = self.android.app_action(identifier, job['action'], job['package'], activation_token=activation_token) if activation_token else self.android.app_action(identifier, job['action'], job['package'])
             finished = dict(job, status='Succeeded', result=result)
         except Exception as error:
             finished = dict(job, status='Failed', error=str(error)[-1024:])
@@ -809,8 +809,11 @@ class Store:
         arm_fields = ({'op', 'id', 'enabled'}, {'op', 'id', 'enabled', 'archive_sha256'})
         reinstall_fields = ({'op', 'id', 'flavor', 'confirmed_name'}, {'op', 'id', 'flavor', 'confirmed_name', 'system_sha256', 'vendor_sha256'})
         require(set(request) in reinstall_fields if operation == 'reinstall' else set(request) in arm_fields if operation == 'arm_set' else
-                (set(request) == fields[operation] or (operation == 'start' and set(request) == {'op', 'id', 'display'})),
+                (set(request) == fields[operation] or (operation == 'start' and set(request) == {'op', 'id', 'display'}) or (operation == 'app_action' and set(request) == fields[operation] | {'activation_token'})),
                 'INVALID_REQUEST', 'Unexpected or missing fields')
+        if 'activation_token' in request:
+            token = request['activation_token']
+            require(request.get('action') == 'full_ui' and isinstance(token, str) and 0 < len(token) <= 512 and all(32 < ord(c) < 127 for c in token), 'INVALID_REQUEST', 'Invalid activation token')
         require(apk_fd is None or operation == 'install', 'INVALID_REQUEST', 'Unexpected file descriptor')
         if request.get('id') == 'default':
             require(apk_fd is None, 'INVALID_REQUEST', 'Use the existing APK installation command for system Waydroid')
@@ -1002,7 +1005,7 @@ class Store:
             self.app_jobs[record['id']] = job
             storage_module.atomic(self.app_jobs_path, self.app_jobs)
             self.active_jobs.add(record['id'])
-            self.pool.submit(self.app_action_job, record['id'], dict(job))
+            self.pool.submit(self.app_action_job, record['id'], dict(job), request.get('activation_token'))
             return job
         if operation == 'google_services':
             require(record['id'] not in self.active_jobs, 'BUSY', 'Wait for the runtime operation to finish')

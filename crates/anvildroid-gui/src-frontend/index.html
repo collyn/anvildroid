@@ -7,6 +7,7 @@
   <link rel="stylesheet" href="style.css">
   <link rel="stylesheet" href="shell.css">
   <link rel="stylesheet" href="management.css">
+  <link rel="stylesheet" href="dialogs.css">
 </head>
 <body>
   <div class="layout">
@@ -231,7 +232,7 @@
     </div>
   </div>
   <div id="app-toast" class="app-toast" hidden><p id="app-toast-message" role="status" aria-live="polite" aria-atomic="true"></p><button id="app-toast-close" type="button" aria-label="Dismiss notification">×</button></div>
-  <dialog id="runtime-storage-dialog">
+  <dialog id="runtime-storage-dialog" aria-labelledby="runtime-storage-title" aria-describedby="runtime-storage-description">
     <form id="runtime-storage-form">
       <h2 id="runtime-storage-title">Change storage location</h2>
       <p id="runtime-storage-description"></p>
@@ -250,9 +251,9 @@
       </div>
     </form>
   </dialog>
-  <dialog id="runtime-rename-dialog">
+  <dialog id="runtime-rename-dialog" aria-labelledby="runtime-rename-title">
     <form id="runtime-rename-form">
-      <h2>Rename runtime</h2>
+      <h2 id="runtime-rename-title">Rename runtime</h2>
       <label for="runtime-rename-name">Runtime name</label>
       <input id="runtime-rename-name" class="select-control" maxlength="128" required />
       <p id="runtime-rename-error" role="alert"></p>
@@ -262,7 +263,7 @@
       </div>
     </form>
   </dialog>
-  <dialog id="app-details">
+  <dialog id="app-details" aria-labelledby="detail-name">
     <h2 id="detail-name">App details</h2>
     <div id="detail-content"></div>
     <div class="detail-actions">
@@ -274,16 +275,16 @@
       <button id="detail-close" class="btn">Close details</button>
     </div>
   </dialog>
-  <dialog id="tag-manager-dialog">
+  <dialog id="tag-manager-dialog" aria-labelledby="tag-manager-title">
     <form id="tag-manager-form" method="dialog">
-      <h2>Manage app tags</h2>
+      <h2 id="tag-manager-title">Manage app tags</h2>
       <p class="hint">Create tags such as Work, Games or Favorites, then assign them from an app's details.</p>
       <div id="tag-list" class="tag-list"></div>
       <div class="tag-create-row"><input id="new-tag-name" maxlength="24" placeholder="New tag name" aria-label="New tag name"><button id="tag-create" class="btn btn-primary" type="button">Create tag</button></div>
       <div class="detail-actions"><button id="tag-manager-close" class="btn" type="submit">Close</button></div>
     </form>
   </dialog>
-  <dialog id="runtime-batch-dialog">
+  <dialog id="runtime-batch-dialog" aria-labelledby="runtime-batch-title" aria-describedby="runtime-batch-description">
     <form id="runtime-batch-form">
       <h2 id="runtime-batch-title"></h2>
       <p id="runtime-batch-description"></p>
@@ -291,11 +292,21 @@
       <label id="runtime-batch-image-field" hidden>Image<select id="runtime-batch-image" class="select-control"></select></label>
       <label id="runtime-batch-confirm-field" hidden><span id="runtime-batch-confirm-label"></span><input id="runtime-batch-confirm" autocomplete="off"></label>
       <p id="runtime-batch-dialog-error" role="alert"></p>
-      <div class="runtime-actions"><button id="runtime-batch-submit" class="btn btn-primary" type="submit">Continue</button><button id="runtime-batch-cancel" class="btn" type="button">Cancel</button></div>
+      <div class="runtime-actions"><button id="runtime-batch-cancel" class="btn" type="button">Cancel</button><button id="runtime-batch-submit" class="btn btn-primary" type="submit">Continue</button></div>
     </form>
   </dialog>
+  <dialog id="app-dialog" aria-labelledby="app-dialog-title" aria-describedby="app-dialog-message">
+    <form id="app-dialog-form">
+      <h2 id="app-dialog-title"></h2>
+      <p id="app-dialog-message"></p>
+      <label id="app-dialog-input-field" hidden><span id="app-dialog-input-label">Name</span><input id="app-dialog-input" maxlength="128" autocomplete="off"></label>
+      <div class="dialog-actions"><button id="app-dialog-cancel" class="btn" type="button">Cancel</button><button id="app-dialog-submit" class="btn btn-primary" type="submit">Continue</button></div>
+    </form>
+  </dialog>
+  <script src="app-dialog.js"></script>
   <script src="runtime-settings.js"></script>
   <script src="runtime-batch.js"></script>
+  <script src="runtime-window.js"></script>
   <script src="main.js"></script>
   <script src="keymap-drafts.js"></script>
   <script src="keymap-library.js"></script>

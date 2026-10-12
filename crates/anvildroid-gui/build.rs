@@ -2,6 +2,15 @@ use std::path::Path;
 use std::process::Command;
 
 fn main() {
+    println!("cargo:rerun-if-changed=native");
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
+        cc::Build::new().file("native/activation.c")
+            .file("native/xdg-activation-protocol.c").include("native")
+            .warnings(true).compile("anvil_activation");
+        println!("cargo:rustc-link-lib=wayland-client");
+        println!("cargo:rustc-link-lib=dl");
+    }
+
     // The desktop window controller is loaded by the Android runtime, so it
     // must be rebuilt alongside the GUI release.  Keeping this here makes a
     // plain `cargo build --release` produce the same CSD-enabled artifact as

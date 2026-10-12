@@ -20,6 +20,7 @@ import tempfile
 import threading
 import time
 import uuid
+import shlex
 _format_spec = importlib.util.spec_from_file_location('runtime_image_format', Path(__file__).with_name('runtime-image-format.py'))
 image_format = importlib.util.module_from_spec(_format_spec)
 _format_spec.loader.exec_module(image_format)
@@ -420,17 +421,78 @@ def check_app_startup(instance, identifier, package, before):
                                'check runtime diagnostics. Repeated launches will not repair it.')
 
 
-def app_action(instance, identifier, action, package, desktop=False, generation=None, single_display=False):
+def begin_window_feedback(instance, identifier, activation_token=None):
+    nonce = uuid.uuid4().hex
+    payload = f'ANVIL_WINDOW 1 {nonce}' + (f' {activation_token}' if activation_token else '')
+    # The Android system UID owns this channel. Never write through guest paths
+    # as host/guest root; the fixed name is replaced atomically.
+    script = ('set -C; umask 077; cd /data/waydroid_tmp/anvildroid || exit 1; test -r window-support || exit 2; '
+              f'printf "%s\\n" {shlex.quote(payload)} > window-request-{nonce}.tmp && '
+              f'mv window-request-{nonce}.tmp window-request')
+    try:
+        run('lxc-attach', '-P', instance / 'android', '-n', identifier,
+            '--uid', '1000', '--gid', '1000', '--', '/system/bin/sh', '-c', script,
+            timeout=3, umask=0o077)
+    except (RuntimeError, OSError):
+        return None  # Older images/bridges remain usable, with unverified status.
+    return nonce
+
+
+def wait_window_feedback(android, nonce, nudge, timeout=2.5, await_activation=False):
+    if not nonce:
+        nudge()
+        return {'state': 'unverified', 'reason': 'Bridge feedback unavailable', 'activation': 'unverified'}
+    deadline = time.monotonic() + timeout
+    next_nudge = time.monotonic() + 0.4
+    acknowledged = False
+    nudged = False
+    focus_deadline = None
+    content_ready = False
+    bridge_pid = None
+    while time.monotonic() < deadline:
+        reply = android('sh', '-c', 'head -c 128 /data/waydroid_tmp/anvildroid/window-reply 2>/dev/null || true').split()
+        if (len(reply) == 6 and reply[:2] == ['ANVIL_WINDOW', '1'] and reply[2] == nonce and
+                reply[3] in ('0', '1') and reply[4] in ('0', '1') and reply[5].isdigit() and int(reply[5]) > 0):
+            acknowledged = True
+            content_ready = reply[3] == '1'
+            bridge_pid = int(reply[5])
+            if content_ready and (not await_activation or reply[4] == '1' or (focus_deadline is not None and time.monotonic() >= focus_deadline)):
+                return {'state': 'ready', 'activation': 'active' if reply[4] == '1' else 'unverified',
+                        'bridge_pid': int(reply[5]), 'nudged': nudged}
+            if content_ready and focus_deadline is None:
+                focus_deadline = time.monotonic() + 0.5
+        if not content_ready and not nudged and time.monotonic() >= next_nudge:
+            nudge()
+            nudged = True
+        # A missing bridge never deserves an unbounded loop or false success.
+        if not acknowledged and nudged and time.monotonic() >= next_nudge + 0.4:
+            return {'state': 'unverified', 'reason': 'Bridge did not acknowledge this request', 'activation': 'unverified', 'nudged': True}
+        time.sleep(0.1)
+    if content_ready:
+        return {'state': 'ready', 'activation': 'unverified', 'bridge_pid': bridge_pid, 'nudged': nudged}
+    return {'state': 'pending', 'reason': 'Window content was not confirmed before timeout',
+            'activation': 'unverified', 'nudged': nudged}
+
+
+def app_action(instance, identifier, action, package, desktop=False, generation=None, single_display=False, activation_token=None):
     require(action in ('launch', 'force_stop', 'uninstall', 'keymap_edit', 'full_ui'), 'Unsupported app action')
     require(isinstance(package, str) and len(package) <= 255 and
             re.fullmatch(r'[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)+', package), 'Invalid package')
     require(not (desktop and single_display) or action == 'full_ui',
             'This image uses one Android window. Open Android to manage and launch its apps.')
+    require(activation_token is None or (action == 'full_ui' and isinstance(activation_token, str) and 0 < len(activation_token) <= 512 and all(32 < ord(c) < 127 for c in activation_token)), 'Invalid activation token')
+    started = time.monotonic()
+    command_timings = []
     def android(*args):
-        return run('lxc-attach', '-P', instance / 'android', '-n', identifier, '--',
-                   '/system/bin/' + args[0], *args[1:], timeout=8, umask=0o022, include_stderr=True)
-    def refresh_single_display():
-        if single_display:
+        tick = time.monotonic()
+        try:
+            return run('lxc-attach', '-P', instance / 'android', '-n', identifier, '--',
+                       '/system/bin/' + args[0], *args[1:], timeout=8, umask=0o022, include_stderr=True)
+        finally:
+            if action == 'full_ui':
+                command_timings.append({'command': args[0], 'elapsed_ms': round((time.monotonic() - tick) * 1000)})
+    def refresh_single_display(force=False):
+        if single_display or force:
             # Match Waydroid CLI showFullUI: changing active_apps alone does
             # not invalidate HWC after its host window has been closed.
             try:
@@ -452,18 +514,17 @@ def app_action(instance, identifier, action, package, desktop=False, generation=
     if action == 'full_ui':
         require(desktop, 'Waydroid window requires Desktop mode')
         require(package == 'org.anvildroid.desktop', 'Invalid desktop target')
-        android('input', 'keyevent', '224')  # KEYCODE_WAKEUP, never toggle power.
-        android('setprop', 'waydroid.active_apps', 'Waydroid')
-        # Match Waydroid's app-manager path: a background session can keep
-        # SurfaceFlinger layers alive without publishing a desktop window.
-        android('setprop', 'waydroid.background_start', 'false')
-        android('settings', 'put', 'secure', 'policy_control', 'null*')
-        # `active_apps` alone is only a mode hint. Launching HOME creates the
-        # actual Android task that Waydroid HWC publishes as its full window.
-        android('am', 'start', '--user', '0', '-a',
-                'android.intent.action.MAIN', '-c', 'android.intent.category.HOME')
-        refresh_single_display()
-        return {'action': action, 'package': package, 'message': ('Full Android window requested for this runtime.' if single_display else 'Full Android window requested for this runtime. Opening an individual app returns to app-window mode.')}
+        nonce = begin_window_feedback(instance, identifier, activation_token)
+        # One attach instead of five: these fixed commands contain no user
+        # interpolation. && propagates failure without silently running HOME.
+        android('sh', '-c',
+                'input keyevent 224 && '
+                'setprop waydroid.active_apps Waydroid && '
+                'setprop waydroid.background_start false && '
+                "settings put secure policy_control 'null*' && "
+                'am start --user 0 -a android.intent.action.MAIN -c android.intent.category.HOME')
+        window = wait_window_feedback(android, nonce, lambda: refresh_single_display(force=True), await_activation=bool(activation_token))
+        return {'action': action, 'package': package, 'window': window, 'timings': {'commands': command_timings, 'total_ms': round((time.monotonic() - started) * 1000)}, 'message': ('Full Android window requested for this runtime.' if single_display else 'Full Android window requested for this runtime. Opening an individual app returns to app-window mode.')}
     # Only launcher apps are actionable here; framework/service packages are excluded.
     resolved = android('cmd', 'package', 'resolve-activity', '--brief', '--user', '0',
                        '-a', 'android.intent.action.MAIN', '-c', 'android.intent.category.LAUNCHER', '-p', package)
@@ -771,22 +832,22 @@ def stop_android(lxc, identifier, boot_completed):
     # Power-off/reboot syscalls are inappropriate for a Waydroid container.
     # After Android acknowledges its flush, terminate its namespace normally.
     print('Android shutdown flush:', 'ready' if ready else reason, flush=True)
+    stop_error = None
     try:
         lxc('lxc-stop', identifier, '-k', '--nowait', '--nolock', timeout=5, bounded_output=True)
-    except (RuntimeError, subprocess.TimeoutExpired):
-        # Android can exit between the state check above and lxc-stop (for
-        # example after a graphics-service crash). Treat an already stopped
-        # container as success; surfacing lxc-stop's ENOT running error turns
-        # a recoverable cleanup race into a permanent "Action failed" state.
-        if lxc('lxc-info', identifier, '-sH', timeout=2, bounded_output=True) != 'STOPPED':
-            raise
+    except (RuntimeError, OSError, subprocess.TimeoutExpired) as error:
+        # The monitor may still be exiting after --nowait. A command timeout
+        # does not prove a live container, nor does it prove a stopped one.
+        stop_error = str(error)[-240:]
     deadline = time.monotonic() + 15
+    query_error = None
     while True:
         try:
             if lxc('lxc-info', identifier, '-sH', timeout=2, bounded_output=True) == 'STOPPED': break
-        except (RuntimeError, subprocess.TimeoutExpired):
-            pass  # A stalled monitor is not proof that the container exited.
-        require(time.monotonic() < deadline, 'Container did not stop after Android shutdown')
+        except (RuntimeError, OSError, subprocess.TimeoutExpired) as error:
+            query_error = str(error)[-240:]
+        detail = stop_error or query_error
+        require(time.monotonic() < deadline, 'Container did not stop after Android shutdown' + (': ' + detail if detail else ''))
         time.sleep(.1)
     result = {'shutdown_forced': not ready, 'shutdown_method': 'framework_flush' if ready else 'forced_cleanup'}
     if not ready:
@@ -807,7 +868,8 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
         # LXC creates Android-visible device directories (including /dev/dri).
         # Keep controller files private but do not pass its 0077 mask to Android.
         if bounded_output:
-            return linux.run_bounded(tool, '-P', root, '-n', name, *args, timeout=timeout, umask=0o022)
+            return linux.run_bounded(tool, '-P', root, '-n', name, *args, timeout=timeout, umask=0o022,
+                                     operation='Android ' + tool)
         return run(tool, '-P', root, '-n', name, *args, umask=0o022, timeout=timeout, include_stderr=include_stderr)
     def mount(*args):
         run('mount', *args)
@@ -1423,7 +1485,6 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
         for name in names:
             try:
                 state.update(stop_android(lxc, name, boot_completed))
-                require(lxc('lxc-info', name, '-sH') == 'STOPPED', 'Container did not stop')
             except Exception as error: errors.append(str(error))
         for process in compositors:
             process.terminate()
@@ -1469,7 +1530,7 @@ def main(instance, identifier, generation, original_mnt, original_net, desktop=N
     endpoint.unlink(missing_ok=True)
     state = dict(runtime_id=identifier, generation=generation, state='Starting', error=None, display_mode='desktop' if desktop else 'headless', capabilities=['graphics', 'apps', 'app_actions', 'uninstall_app', 'install_apk', 'google_services'])
     state['capabilities'].append('app_states')
-    if desktop: state['capabilities'].extend(['keymap_editor', 'full_ui'])
+    if desktop: state['capabilities'].extend(['keymap_editor', 'full_ui', 'window_activation'])
     atomic(instance / 'worker-identity.json', dict(runtime_id=identifier, generation=generation))
     (instance / 'worker-result.json').unlink(missing_ok=True)
     stopping, done = threading.Event(), threading.Event()
@@ -1557,11 +1618,11 @@ def main(instance, identifier, generation, original_mnt, original_net, desktop=N
                     elif isinstance(request, dict) and request.get('op') == 'app_action':
                         response = dict(state)
                         try:
-                            require(set(request) == {'op', 'generation', 'action', 'package'}, 'Invalid app action request')
+                            require(set(request) in ({'op', 'generation', 'action', 'package'}, {'op', 'generation', 'action', 'package', 'activation_token'}), 'Invalid app action request')
                             require(request['generation'] == generation, 'Worker generation changed; action refused')
                             require(state['state'] == 'Running' and not stopping.is_set(), 'Android is not running')
                             response['app_result'] = app_action(instance, identifier, request['action'], request['package'], desktop=bool(desktop), generation=generation,
-                                                               single_display=state.get('presentation_mode') == 'android-display')
+                                                               single_display=state.get('presentation_mode') == 'android-display', activation_token=request.get('activation_token'))
                         except (RuntimeError, OSError, subprocess.TimeoutExpired) as error:
                             response['app_error'] = str(error)[-1024:]
                         connection.sendall(json.dumps(response).encode() + b'\n')
