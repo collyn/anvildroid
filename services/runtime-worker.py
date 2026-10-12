@@ -443,7 +443,10 @@ def wait_window_feedback(android, nonce, nudge, timeout=2.5, await_activation=Fa
         nudge()
         return {'state': 'unverified', 'reason': 'Bridge feedback unavailable', 'activation': 'unverified'}
     deadline = time.monotonic() + timeout
-    next_nudge = time.monotonic() + 0.4
+    # Allow one feedback poll before redrawing an unchanged HOME task. Live
+    # measurements showed the old 400 ms delay plus 500 ms shade settle dominated
+    # readiness waits; acknowledged bridges can use a shorter bounded nudge.
+    next_nudge = time.monotonic() + 0.1
     acknowledged = False
     nudged = False
     focus_deadline = None
@@ -499,6 +502,14 @@ def app_action(instance, identifier, action, package, desktop=False, generation=
     require(activation_token is None or (action == 'full_ui' and isinstance(activation_token, str) and 0 < len(activation_token) <= 512 and all(32 < ord(c) < 127 for c in activation_token)), 'Invalid activation token')
     started = time.monotonic()
     command_timings = []
+    stage_timings = []
+    stage_tick = started
+    def timing_stage(name):
+        nonlocal stage_tick
+        tick = time.monotonic()
+        stage_timings.append({'name': name, 'duration_ms': max(0, round((tick - stage_tick) * 1000)),
+                              'elapsed_ms': max(0, round((tick - started) * 1000))})
+        stage_tick = tick
     def android(*args):
         tick = time.monotonic()
         try:
@@ -507,13 +518,13 @@ def app_action(instance, identifier, action, package, desktop=False, generation=
         finally:
             if action == 'full_ui':
                 command_timings.append({'command': args[0], 'elapsed_ms': round((time.monotonic() - tick) * 1000)})
-    def refresh_single_display(force=False):
+    def refresh_single_display(force=False, settle_seconds=0.5):
         if single_display or force:
             # Match Waydroid CLI showFullUI: changing active_apps alone does
             # not invalidate HWC after its host window has been closed.
             try:
                 android('cmd', 'statusbar', 'expand-notifications')
-                time.sleep(0.5)
+                time.sleep(settle_seconds)
             except RuntimeError as error:
                 # Some custom images omit StatusBarManagerService entirely.
                 # Refreshing it is only a compositor nudge, never a boot
@@ -542,7 +553,9 @@ def app_action(instance, identifier, action, package, desktop=False, generation=
                 except (RuntimeError, OSError):
                     pass  # Keep the original error; durable recovery runs at next boot.
                 raise
+        timing_stage('presentation')
         nonce = begin_window_feedback(instance, identifier, activation_token)
+        timing_stage('feedback_request')
         # One attach instead of five: these fixed commands contain no user
         # interpolation. && propagates failure without silently running HOME.
         try:
@@ -556,8 +569,10 @@ def app_action(instance, identifier, action, package, desktop=False, generation=
             if not single_display:
                 presentation_action(instance, identifier, 'leave', session)
             raise
-        window = wait_window_feedback(android, nonce, lambda: refresh_single_display(force=True), await_activation=bool(activation_token))
-        return {'action': action, 'package': package, 'window': window, 'timings': {'commands': command_timings, 'total_ms': round((time.monotonic() - started) * 1000)}, 'message': ('Full Android window requested for this runtime.' if single_display else 'Full Android window requested for this runtime. Close this window to restore app-window mode.')}
+        timing_stage('android_request')
+        window = wait_window_feedback(android, nonce, lambda: refresh_single_display(force=True, settle_seconds=0.1 if nonce else 0.5), await_activation=bool(activation_token))
+        timing_stage('window_feedback')
+        return {'action': action, 'package': package, 'window': window, 'timings': {'stages': stage_timings, 'commands': command_timings, 'total_ms': round((time.monotonic() - started) * 1000)}, 'message': ('Full Android window requested for this runtime.' if single_display else 'Full Android window requested for this runtime. Close this window to restore app-window mode.')}
     # Only launcher apps are actionable here; framework/service packages are excluded.
     resolved = android('cmd', 'package', 'resolve-activity', '--brief', '--user', '0',
                        '-a', 'android.intent.action.MAIN', '-c', 'android.intent.category.LAUNCHER', '-p', package)
