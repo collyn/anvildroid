@@ -22,8 +22,8 @@ done
 install -m 0755 "$ROOT/scripts/setup-waydroid.py" "$DEST/usr/local/lib/anvildroid-controller/scripts/setup-waydroid.py"
 install -m 0755 "$ROOT/scripts/patch-waydroid.py" "$DEST/usr/local/lib/anvildroid-controller/scripts/patch-waydroid.py"
 install -m 0755 "$ROOT/scripts/install-nvidia-payload.py" "$DEST/usr/local/lib/anvildroid-controller/scripts/install-nvidia-payload.py"
-python3 "$ROOT/scripts/build-nvidia-payload.py"
-cp -a "$ROOT/target/nvidia-v0.1.2" "$DEST/usr/local/lib/anvildroid-controller/"
+install -m 0755 "$ROOT/scripts/prepare-nvidia-fork.py" "$DEST/usr/local/lib/anvildroid-controller/scripts/prepare-nvidia-fork.py"
+python3 "$ROOT/scripts/build-nvidia-payload.py" --stage-parent "$DEST/usr/local/lib/anvildroid-controller"
 for f in runtime-host.py runtime-arm.py runtime-arm-source.py; do install -m 0644 "$ROOT/services/$f" "$DEST/usr/local/lib/anvildroid-controller/services/$f"; done
 install -m 0644 "$ROOT/packaging/appimage/org.anvildroid.gui.desktop" "$DEST/usr/share/applications/org.anvildroid.gui.desktop"
 for f in runtime-controller.py runtime-existing.py runtime-host.py runtime-images.py runtime-android.py runtime-worker.py runtime-linux.py runtime-image-format.py runtime-network.py runtime-storage.py runtime-labels.py runtime-transfer.py runtime-catalog.py runtime-download.py runtime-extract.py runtime-provision.py runtime-arm.py runtime-arm-source.py runtime-gpu.py runtime-nvidia.py runtime-resources.py runtime-desktop.py runtime-workarea.py; do

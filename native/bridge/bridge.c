@@ -86,6 +86,7 @@ struct object {
   int buffer_transport, transport_reported, transport_seen;
   struct object *next, *parent, *surface, *xdg, *viewport, *region;
   int region_x, region_y, region_width, region_height, region_valid;
+  int frame_origin_valid, frame_origin_x, frame_origin_y;
   int x, y, width, height, valid, app;
   int source_x, source_y, source_width, source_height;
   struct proxy *attached_buffer;
@@ -164,6 +165,7 @@ static void scrcpy_mapping_cancel(void);
 static struct task tasks[128];
 static int task_count;
 #include "media-layer.inc"
+#include "content-frame.inc"
 static int object_is(const struct object *, const char *);
 static void *task_worker(void *unused);
 static void *ime_worker(void *unused);
@@ -321,10 +323,12 @@ static void geometry(struct object *s) {
     for (int i = 0; i < task_count; i++) {
       if (!strcmp(s->app_id, tasks[i].package)) {
         /* Task bounds are Android coordinates, not Wayland logical units.
+         * NVIDIA subtracts its content-frame origin before placing children;
+         * subtract the same physical origin before scale rounding here.
          * Match HWC child position/viewport rounding; this does NOT repair
          * SurfaceFlinger clipping when a task exceeds the Android display. */
-        exact.x = task_to_logical(tasks[i].x, 0);
-        exact.y = task_to_logical(tasks[i].y, 0);
+        exact.x = task_to_logical(tasks[i].x - s->frame_origin_x, 0);
+        exact.y = task_to_logical(tasks[i].y - s->frame_origin_y, 0);
         exact.width = task_to_logical(tasks[i].width, 1);
         exact.height = task_to_logical(tasks[i].height, 1);
         task_matches++;
@@ -332,7 +336,7 @@ static void geometry(struct object *s) {
     }
   }
   struct object *r = s->region ? s->region : &cached;
-  if (!r->valid) {
+  if (!r->valid && !s->frame_origin_valid) {
     /* The NVIDIA Venus HWC never sets a surface input region, so the
      * region-derived frame is unavailable. Task positions are canvas
      * coordinates, not surface-local: derive the content rect from the
@@ -385,7 +389,8 @@ static void geometry(struct object *s) {
     }
     r = &exact;
   } else if (task_matches == 1) {
-    /* A valid HWC region is in the same canvas coordinates as the task,
+    /* A valid HWC region is in the same surface coordinates as the task
+     * translated through the observed content-frame origin (zero on stock),
      * but may begin in the surface's shadow padding (e.g. y=20 for a
      * task starting at y=32). Use the complete task rectangle: combining
      * the padded origin with the task height chops off the bottom inset. */

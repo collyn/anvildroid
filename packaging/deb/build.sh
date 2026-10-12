@@ -23,8 +23,8 @@ done
 install -m 0755 "$ROOT/scripts/setup-waydroid.py" "$PKG/usr/local/lib/anvildroid-controller/scripts/setup-waydroid.py"
 install -m 0755 "$ROOT/scripts/patch-waydroid.py" "$PKG/usr/local/lib/anvildroid-controller/scripts/patch-waydroid.py"
 install -m 0755 "$ROOT/scripts/install-nvidia-payload.py" "$PKG/usr/local/lib/anvildroid-controller/scripts/install-nvidia-payload.py"
-python3 "$ROOT/scripts/build-nvidia-payload.py"
-cp -a "$ROOT/target/nvidia-v0.1.2" "$PKG/usr/local/lib/anvildroid-controller/"
+install -m 0755 "$ROOT/scripts/prepare-nvidia-fork.py" "$PKG/usr/local/lib/anvildroid-controller/scripts/prepare-nvidia-fork.py"
+python3 "$ROOT/scripts/build-nvidia-payload.py" --stage-parent "$PKG/usr/local/lib/anvildroid-controller"
 for f in runtime-host.py runtime-arm.py runtime-arm-source.py; do install -m 0644 "$ROOT/services/$f" "$PKG/usr/local/lib/anvildroid-controller/services/$f"; done
 install -m 0755 "$ROOT/target/native/libanvildroid-runtime-window.so" "$PKG/usr/local/lib/anvildroid-controller/libanvildroid-window.so"
 install -m 0644 "$ROOT/target/native/libanvildroid-hwc-shim.so" "$PKG/usr/local/lib/anvildroid-controller/libanvildroid-hwc-shim.so"

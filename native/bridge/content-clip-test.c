@@ -18,6 +18,13 @@ static const struct interface si={.name="wl_surface",.methods=surface_methods},
   subi={.name="wl_subsurface",.methods=sub_methods},
   xi={.name="xdg_surface"},bi={.name="wl_buffer"};
 static struct proxy root_p={&si},layer_p={&si},vp_p={&vi},sub_p={&subi},xdg_p={&xi},buffer_p={&bi};
+static const struct interface ti={.name="xdg_toplevel"};
+static struct proxy top_p={&ti};
+static int frame_calls;
+static void frame_original(void *context,int x,int y,int w,int h,double scale) {
+  (void)context;(void)x;(void)y;(void)w;(void)h;(void)scale;
+  frame_calls++;
+}
 static int px,py,dw,dh,source[4],commits,detaches,attaches;
 static struct proxy *record(struct proxy *p,uint32_t op,union argument *a,
                            const struct interface *i,uint32_t v) {
@@ -119,6 +126,41 @@ int main(void) {
   tasks[0].y=64;tasks[0].height=780;
   geometry(root);send_request(&layer_p,6,0);
   assert(py==64&&dh==780&&source[1]==44*256);
+  /* NVIDIA uses a surface-local frame, including shadow padding, and no
+   * input region. Translate the task through the observed HWC origin; the
+   * old origin=0 left a 12px top gap and clipped the mini-player bottom. */
+  struct object *frame_top=track(&top_p);
+  frame_top->surface=root;frame_top->listener_data=&top_p;
+  content_frame_original=frame_original;
+  root->region=0;root->region_valid=0;
+  tasks[0].y=32;tasks[0].height=812;
+  crop[1].i=0;crop[3].i=836*256;
+  dest[1].i=836;pos[1].i=10;
+  anvil_content_frame(&top_p,0,10,652,858,1.0);
+  assert(frame_calls==1&&root->frame_origin_valid);
+  send_request(&vp_p,1,crop);send_request(&vp_p,2,dest);
+  send_request(&sub_p,1,pos);geometry(root);
+  assert(root->by==22&&py==22&&dh==812);
+  assert(source[1]==12*256&&source[3]==812*256);
+  assert(content_clip_input(&layer_p,0,1)==12*256);
+  /* Unknown window and invalid frame cannot alter this surface's origin. */
+  anvil_content_frame(&buffer_p,0,80,640,812,1.0);
+  anvil_content_frame(&top_p,0,90,0,812,1.0);
+  assert(frame_calls==3&&root->frame_origin_y==10);
+  /* A new HWC frame/task position follows without accumulating offsets. */
+  tasks[0].y=64;
+  anvil_content_frame(&top_p,0,42,652,858,1.0);
+  geometry(root);send_request(&layer_p,6,0);
+  assert(root->by==22&&py==22&&dh==812&&source[1]==12*256);
+  /* At 125%, subtract physical origins before floor/ceil conversion. */
+  hwc_scale_120=150;tasks[0].y=40;
+  anvil_content_frame(&top_p,0,25,652,858,1.25);
+  geometry(root);send_request(&layer_p,6,0);
+  assert(root->by==12&&root->bw==512&&root->bh==650);
+  assert(py==12&&dh==650&&source[1]==2*256);
+  hwc_scale_120=120;
+  root->full_ui=1;
+  assert(!content_clip_enabled(root));
   while(objects)forget_proxy(objects->p);
 
   /* CSD style: button cell probes. */

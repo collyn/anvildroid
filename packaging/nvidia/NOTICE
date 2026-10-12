@@ -1,9 +1,13 @@
-NVIDIA Venus payload: quinovax/waydroid-nvidia dev-20261005-a2fb681b
-Local integration pin: devfix-20261012-pitchbytes
-Source and component build pins:
-https://github.com/quinovax/waydroid-nvidia/tree/a2fb681b0e6c
-Local changes: Vulkan external buffer memory fix and HWC byte-pitch admission.
-HWC patch and reproduction notes: native/nvidia/README.md
+NVIDIA Venus payload: collyn/waydroid-nvidia fork-d028cec
+Source commit: d028cec0904514059227e6cc533ddb2bd563182c
+https://github.com/collyn/waydroid-nvidia/tree/d028cec0904514059227e6cc533ddb2bd563182c
+Build provenance: https://github.com/collyn/waydroid-nvidia/actions/runs/38244475616
+Fork changes: RGB32 byte-pitch admission; Vulkan buffer/image external memory;
+compatible hybrid sysmem presentation; Android 13 libc++/NDK r29 compatibility;
+private Wayland configure queue during HWC window construction.
+ANGLE and SurfaceFlinger: checksum-pinned quinovax v0.1.2 prebuilts.
+Input and output pins: services/runtime-nvidia.py
+Reproduction notes: native/nvidia/README.md
 
 This is an experimental third-party renderer, not an NVIDIA driver package.
 No proprietary NVIDIA host driver is included. Host libraries are supplied by
@@ -12,5 +16,4 @@ the distribution; the NVIDIA driver remains installed and maintained by users.
 Components retain their upstream licenses: original integration and Mesa/
 virglrenderer (MIT), minigbm and ANGLE (BSD-style), Android HWC and the unused
 SurfaceFlinger payload (Apache-2.0). See LICENSE.upstream and the corresponding
-source trees and release notices. AnvilDroid carries the local patches described above; other payload binaries
-remain unchanged. It does not install upstream patched Waydroid Python tools.
+source trees and release notices. Backend patches are maintained in the collyn fork. It does not install upstream patched Waydroid Python tools.

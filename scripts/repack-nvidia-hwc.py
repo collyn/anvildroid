@@ -20,6 +20,13 @@ BASE_HASHES = {
     'guest-android-x86_64': '3e41c050e1c1fb0f319f870c80e196f33f4195914503ff0c6818c5e8078d26d5',
     'guest-prebuilts': 'ad557bde6a98a6d322c7e7a246b03a88d48d1d3d31bacb05480dff9332ae7a0f',
 }
+# Freeze this historical reproduction recipe independently of the active fork pin.
+LEGACY_VERSION = 'devfix-20261012-pitchbytes'
+LEGACY_ARCHIVES = {
+    'host-x86_64': '785a3a8b7f6ace07e497ef5e8975259828fddebca7174b70f9f33d9538c128b5',
+    'guest-android-x86_64': '65b952dc5a271d669eee5a002020557755774913d6e86c5ede4bb2227a161004',
+    'guest-prebuilts': 'ad557bde6a98a6d322c7e7a246b03a88d48d1d3d31bacb05480dff9332ae7a0f',
+}
 # Fixed archive timestamp from this local pin, to make the gzip hash repeatable.
 ARCHIVE_MTIME = 1791797685
 HWC = 'vendor/lib64/hw/hwcomposer.waydroid.so'
@@ -63,7 +70,7 @@ def repack(archives, hwc, output):
         source = archives / f'waydroid-nvidia-{component}-{BASE_VERSION}.tar.gz'
         if digest(source) != expected:
             raise RuntimeError('Base archive mismatch: ' + source.name)
-        name = f'waydroid-nvidia-{component}-{nvidia.UPSTREAM_VERSION}.tar.gz'
+        name = f'waydroid-nvidia-{component}-{LEGACY_VERSION}.tar.gz'
         dest = output / name
         if dest.exists():
             raise FileExistsError('Archive already exists: ' + name)
@@ -77,7 +84,7 @@ def repack(archives, hwc, output):
                 else:
                     with source.open('rb') as src:
                         shutil.copyfileobj(src, stream)
-            if digest(staged) != nvidia.ARCHIVES[component]:
+            if digest(staged) != LEGACY_ARCHIVES[component]:
                 raise RuntimeError('Rebuilt archive differs from the pin: ' + name)
             os.link(staged, dest)
         print('Verified:', name)

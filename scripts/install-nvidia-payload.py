@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Stage pinned quinovax v0.1.2 archives; never execute upstream installers.
+"""Stage checksum-pinned NVIDIA archives; never execute upstream installers.
 
-Download the three .tar.gz assets from
-https://github.com/quinovax/waydroid-nvidia/releases/tag/v0.1.2
-then pass their directory. --output stages a local tree for inspection; default
-installation requires root and publishes a new, immutable controller payload.
+--output stages a local tree for inspection. Default installation requires
+root and publishes a new immutable controller payload. Fork CI inputs are
+assembled by prepare-nvidia-fork.py; cached archives work without GitHub auth.
 """
 import argparse
 import hashlib
@@ -23,6 +22,35 @@ if not module.is_file(): module = base / 'runtime-nvidia.py'
 spec = importlib.util.spec_from_file_location('nvidia', module)
 nvidia = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(nvidia)
+
+
+def download_archives(archives):
+    archives.mkdir(parents=True, exist_ok=True)
+    missing = False
+    for component, expected in nvidia.ARCHIVES.items():
+        path = archives / f'waydroid-nvidia-{component}-{nvidia.UPSTREAM_VERSION}.tar.gz'
+        if not path.exists():
+            missing = True
+            continue
+        with path.open('rb') as stream:
+            if hashlib.file_digest(stream, 'sha256').hexdigest() != expected:
+                raise RuntimeError('Cached NVIDIA archive checksum mismatch: ' + path.name)
+    if not missing: return
+    if getattr(nvidia, 'FORK_SOURCE', None):
+        path = base / 'scripts/prepare-nvidia-fork.py'
+        spec = importlib.util.spec_from_file_location('fork_payload', path)
+        prepare = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(prepare)
+        inputs = archives.parent / f'nvidia-{nvidia.UPSTREAM_VERSION}-inputs'
+        prepare.download(inputs)
+        prepare.prepare(inputs, archives)
+        return
+    for component in nvidia.ARCHIVES:
+        filename = f'waydroid-nvidia-{component}-{nvidia.UPSTREAM_VERSION}.tar.gz'
+        url = f'https://github.com/{nvidia.UPSTREAM_REPO}/releases/download/{nvidia.UPSTREAM_VERSION}/{filename}'
+        subprocess.run(['curl', '--fail', '--location', '--proto', '=https',
+                        '--proto-redir', '=https', '--max-time', '300',
+                        '--output', str(archives / filename), url], check=True, timeout=310)
 
 
 def stage(archives, destination):
@@ -57,11 +85,20 @@ def stage(archives, destination):
                         with tar.extractfile(member) as source, target.open('xb') as output:
                             shutil.copyfileobj(source, output)
                         target.chmod(0o755 if component == 'host-x86_64' or relative == 'system/bin/surfaceflinger' else 0o644)
+        notices = base / 'packaging/nvidia'
+        if notices.is_dir():
+            target = root / 'notices'
+            target.mkdir(exist_ok=True)
+            for path in notices.iterdir():
+                if path.is_file():
+                    (target / path.name).write_bytes(path.read_bytes())
+                    (target / path.name).chmod(0o644)
         report = nvidia.validate_payload(root)
         if not report['ok']: raise RuntimeError('; '.join(report['errors']))
         manifest = {'repo': nvidia.UPSTREAM_REPO, 'version': nvidia.UPSTREAM_VERSION,
                     'archives': nvidia.ARCHIVES,
                     'files': {name: hashlib.sha256((root / name).read_bytes()).hexdigest() for name in report['checked']}}
+        if getattr(nvidia, 'FORK_SOURCE', None): manifest['source'] = nvidia.FORK_SOURCE
         (root / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
         (root / 'manifest.json').chmod(0o644)
         for directory in root.rglob('*'):
@@ -83,12 +120,7 @@ if __name__ == '__main__':
     if args.download:
         with tempfile.TemporaryDirectory(prefix='anvil-nvidia-download-') as directory:
             archives = Path(directory)
-            for component in nvidia.ARCHIVES:
-                filename = f'waydroid-nvidia-{component}-{nvidia.UPSTREAM_VERSION}.tar.gz'
-                url = f'https://github.com/{nvidia.UPSTREAM_REPO}/releases/download/{nvidia.UPSTREAM_VERSION}/{filename}'
-                subprocess.run(['curl', '--fail', '--location', '--proto', '=https',
-                                '--proto-redir', '=https', '--max-time', '300',
-                                '--output', str(archives / filename), url], check=True, timeout=310)
+            download_archives(archives)
             report = stage(archives, args.output)
     else:
         report = stage(args.archives, args.output)

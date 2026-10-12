@@ -46,6 +46,10 @@ jobs:
           sudo mkdir -p /usr/lib/android-sdk/platforms/android-23
           sudo ln -sf "$ANDROID_HOME/platforms/android-23/android.jar" /usr/lib/android-sdk/platforms/android-23/android.jar
           sh scripts/prepare-ci-inputs.sh
+      - name: Prepare pinned NVIDIA archives
+        env:
+          GH_TOKEN: ${{ secrets.NVIDIA_ARTIFACT_TOKEN || github.token }}
+        run: python3 scripts/prepare-nvidia-fork.py --download
       - uses: actions/upload-artifact@v4
         with:
           name: shared-ci-inputs
@@ -53,6 +57,7 @@ jobs:
             target/tools/r8-8.3.37.jar
             target/native/init.waydroid.rc
             target/native/framework-res.apk
+            target/tools/nvidia/*.tar.gz
           if-no-files-found: error
 
   build:
@@ -76,6 +81,8 @@ jobs:
           cp tools/r8-8.3.37.jar target/tools/r8-8.3.37.jar
           cp native/init.waydroid.rc target/native/init.waydroid.rc
           cp native/framework-res.apk target/native/framework-res.apk
+          test -d tools/nvidia
+          cp -a tools/nvidia target/tools/nvidia
       - name: Install build dependencies
         run: |
           sudo apt-get update

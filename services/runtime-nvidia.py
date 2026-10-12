@@ -1,4 +1,4 @@
-"""Experimental quinovax Venus backend; no host driver or global Waydroid edits."""
+"""Experimental collyn Venus backend; no host driver or global Waydroid edits."""
 from pathlib import Path
 import re
 import hashlib
@@ -33,23 +33,46 @@ PAYLOAD_FILES = {
     'surfaceflinger': ('system/bin/surfaceflinger',),
 }
 
-UPSTREAM_REPO = 'quinovax/waydroid-nvidia'
-# Local build of the quinovax dev host renderer (dev @ a2fb681b0e6c,
-# virglrenderer base dc35e4d) with one extra patch: vkr_dispatch_vkCreateBuffer
-# chains VkExternalMemoryBufferCreateInfo on every buffer, making the
-# vkr-forced DMA_BUF/OPAQUE_FD memory export spec-conformant
-# (VUID-VkBindBufferMemoryInfo-memory-02726). NVIDIA faults the GPU on draws
-# touching buffers bound in violation (Xid 69 DRAW_VERTEX_ARRAY 0x274,
-# upstream #10/#11), which blocks the skiagl app path on hybrid hosts.
-# Guest HWC additionally checks the hybrid import pitch in bytes (not pixels),
-# avoiding CPU readback for valid 32-bit RGB DMA-BUFs. Other guest files
-# remain unchanged from the dev-20261005-a2fb681b pin.
-UPSTREAM_VERSION = 'devfix-20261012-pitchbytes'
+# Fork CI artifacts are pinned by source commit, artifact ID and digest.
+# ANGLE and SurfaceFlinger remain the verified upstream v0.1.2 binaries.
+UPSTREAM_REPO = 'collyn/waydroid-nvidia'
+UPSTREAM_VERSION = 'fork-d028cec'
+FORK_SOURCE = {
+    "commit": "d028cec0904514059227e6cc533ddb2bd563182c",
+    "run_id": 38244475616,
+    "artifacts": {
+        "guest-vulkan-virtio-x86": {
+            "id": 11744830006,
+            "sha256": "2c29e3593c2583f66613ffcb6212af0392f8e5671a8af9f77767a195cd6c4108"
+        },
+        "host-venus-server": {
+            "id": 11744403068,
+            "sha256": "4ccd25e47292e61c5ec84f9041b6974b8cde9bc9ffdba82c78d12af83e89ec59"
+        },
+        "guest-hwcomposer": {
+            "id": 11744104553,
+            "sha256": "09018e3e05da567ce9eece9d10020c83cb044146e2ffbf1bff9820f58c034ede"
+        },
+        "guest-gralloc": {
+            "id": 11743984471,
+            "sha256": "5d92611c9110db58fd2afc6ffab03a7b6558e171ae2c0cdd8f799af00c35ee06"
+        },
+        "guest-vulkan-virtio-x86_64": {
+            "id": 11743833767,
+            "sha256": "67d88ab296d4b9cb695568d59b78d2d1a53d491a797d9e595d36d6f0f35abea1"
+        }
+    },
+    "prebuilts": {
+        "repo": "quinovax/waydroid-nvidia",
+        "version": "v0.1.2",
+        "sha256": "4881536d77079208d061f43ca204b95d574018346e956ff3c960e1e29e8a6066"
+    }
+}
 PAYLOAD_ROOT = Path('/usr/local/lib/anvildroid-controller') / f'nvidia-{UPSTREAM_VERSION}'
 ARCHIVES = {
-    'host-x86_64': '785a3a8b7f6ace07e497ef5e8975259828fddebca7174b70f9f33d9538c128b5',
-    'guest-android-x86_64': '65b952dc5a271d669eee5a002020557755774913d6e86c5ede4bb2227a161004',
-    'guest-prebuilts': 'ad557bde6a98a6d322c7e7a246b03a88d48d1d3d31bacb05480dff9332ae7a0f',
+    'host-x86_64': '30f256314af49b4f9bb31a568df9bbd9ba2ea327ebdc0eb2c91e272c03d7ce67',
+    'guest-android-x86_64': 'f0aae4be7f6d318f0de40bfe9d80635c814a4144d6487b7d81800ed59239b77a',
+    'guest-prebuilts': 'fc02336a2acec05ac76f392b6cc1a6dcca5e4e0c1566e2fdf8178d6ad1c45bb4',
 }
 
 
@@ -120,7 +143,7 @@ def preflight(root=Path('/')):
         {'id': 'kernel_module', 'status': 'ok' if version_text else 'blocked',
          'detail': 'NVIDIA kernel module detected (closed and open are supported by this backend).' if version_text else 'NVIDIA kernel module is unavailable.'},
         {'id': 'driver', 'status': 'ok' if version and version >= (535, 0, 0) else 'blocked',
-         'detail': 'Quinovax requires driver 535+; Vulkan buffer sharing still needs verification.'},
+         'detail': 'NVIDIA Venus requires driver 535+; Vulkan buffer sharing still needs verification.'},
         {'id': 'modeset', 'status': 'ok' if modeset in ('Y', '1') else 'blocked' if modeset in ('N', '0') else 'unknown',
          'detail': 'Requires nvidia-drm.modeset=1; unreadable state must be checked by the privileged controller.'},
         {'id': 'udmabuf', 'status': 'ok' if (root / 'dev/udmabuf').exists() else 'blocked',
@@ -139,7 +162,7 @@ def preflight(root=Path('/')):
             'upstream_repo': UPSTREAM_REPO, 'upstream_version': UPSTREAM_VERSION,
             'driver_version': '.'.join(map(str, version)) if version else None,
             'checks': checks,
-            'detail': 'Experimental quinovax Venus backend. ' +
+            'detail': 'Experimental collyn Venus backend. ' +
                       next((c['detail'] for c in checks if c['status'] == 'blocked'),
                            'Host buffer sharing, image ABI and renderer lifecycle need validation.')}
 
@@ -157,8 +180,10 @@ def trusted_payload(root=PAYLOAD_ROOT):
     if not stat.S_ISREG(manifest_info.st_mode) or manifest_info.st_uid != 0 or manifest_info.st_mode & 0o022:
         raise RuntimeError('Unsafe NVIDIA payload manifest')
     manifest = json.loads(manifest_path.read_text())
-    if manifest.get('archives') != ARCHIVES:
-        raise RuntimeError('NVIDIA payload is not the pinned quinovax release')
+    if (manifest.get('archives') != ARCHIVES or manifest.get('repo') != UPSTREAM_REPO
+            or manifest.get('version') != UPSTREAM_VERSION
+            or manifest.get('source') != FORK_SOURCE):
+        raise RuntimeError('NVIDIA payload does not match the pinned backend archives')
     for relative in report['checked']:
         path = root / relative
         for component in (path, *path.parents):
@@ -305,7 +330,7 @@ class Renderer:
     def _watch_device_loss(self):
         """Stop the runtime at the first GPU device loss.
 
-        After VK_ERROR_DEVICE_LOST the quinovax render server restarts and the
+        After VK_ERROR_DEVICE_LOST the Venus render server restarts and the
         guest re-imports with stale object ids, so every subsequent submit
         faults the host GPU again (observed: Xid-69 every ~20s for minutes).
         The guest cannot recover from a device loss, so fail the runtime at

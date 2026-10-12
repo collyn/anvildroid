@@ -1,49 +1,60 @@
-# Local NVIDIA HWC pitch fix
+# Pinned NVIDIA fork payload
 
-`hwc-pitch-bytes.patch` is generated from the Android 13 HWC source used by
-`devfix-20261010-vkr02726`. It corrects the hybrid 256-byte DMA-BUF pitch
-constraint: `buffer_metadata.pixel_stride` counts pixels, so 32-bit RGB needs
-64-pixel alignment. The old 256-pixel check sent valid 1920/1088-pixel strides
-through `glReadPixels` and CPU conversion every frame. Unknown formats retain
-the conservative fallback. Acquire fences and the unsupported-buffer fallback
-are unchanged.
+AnvilDroid uses `collyn/waydroid-nvidia` commit
+`d028cec0904514059227e6cc533ddb2bd563182c`, from the successful
+[CI run 38244475616](https://github.com/collyn/waydroid-nvidia/actions/runs/38244475616).
+The payload version is `fork-d028cec`.
 
-Base `hwcomposer/hwcomposer.cpp` SHA-256:
-`0169dcbcc355a3e16e763703b0e9037fc15db1bf60e890870379434f7a649593`.
-The remaining source and headers are from the existing
-`waydroid-nvidia-build/hwc-src` and `wnv` Android 13 build trees. Apply this patch
-to an isolated copy of `hwc-src`, never to an active runtime.
+`services/runtime-nvidia.py` pins the source commit, five artifact IDs and
+SHA-256 digests, the upstream ANGLE/SurfaceFlinger base archive, and all three
+assembled archive hashes. No floating branch or latest-release lookup is used.
 
-The tested build copies `build/hwcomposer` to
-`target/nvidia-hwc-pitch/recipe`, applies the patch in
-`target/nvidia-hwc-pitch/src`, and runs its standalone `build.sh`. Use
-`WNV=<source>/wnv`, `ROOTFS=<source>/wnv/image-rootfs`, NDK `/opt/android-ndk`.
-Add `-nostdinc++ -isystem "$WNV/aosp_libcxx/include"` to CXXFLAGS so the
-Android 13 libc++ headers match the guest, rather than mixing NDK headers with
-the guest ABI config. The build outputs go to `target/nvidia-hwc-pitch/out`.
+The fork includes RGB32 byte-pitch admission, Vulkan buffer/image external
+memory declarations, compatible sysmem allocation on hybrid displays, and
+Android 13 libc++ compatibility with NDK r29, and a private Wayland configure
+queue for safe window construction. Window decorations and runtime
+lifecycle remain in AnvilDroid's own bridge/controller.
 
-Reproduce the pinned archives from the built, stripped ELF:
+The bridge observes the pinned HWC's exported `window::apply_content_frame`
+method to translate Android task coordinates into the window's local frame.
+This keeps shadow padding outside the content rectangle, preventing a black
+strip below the header and clipping of the app's bottom rows. It matches the
+window through listener context without inspecting C++ object layouts.
 
-```sh
-python scripts/repack-nvidia-hwc.py target/tools/nvidia \
-  target/nvidia-hwc-pitch/out/hwcomposer.waydroid.stripped.so \
-  target/nvidia-hwc-pitch/repacked
-```
-
-The repacker verifies the three base archive hashes, replaces exactly one HWC,
-fixes the gzip timestamp, and verifies every output against the new backend pin.
-Host renderer and other guest binaries remain byte-for-byte the existing pin.
-`install-nvidia-payload.py` stages a new immutable payload; do not overwrite an
-active payload or relax manifest verification.
-
-Regression validation:
+## Reproduce and install
 
 ```sh
-python -m unittest discover -s tests -p test_nvidia_hwc_pitch.py
-python -m unittest discover -s tests -p test_runtime_nvidia.py
+# Download requires GitHub CLI authentication for Actions artifact access.
+python3 scripts/prepare-nvidia-fork.py --download
+python3 scripts/build-nvidia-payload.py
+
+# Inspect the staged tree in target/nvidia-fork-d028cec first.
+# Install a new root-owned payload; existing payload directories are retained.
+sudo python3 scripts/install-nvidia-payload.py target/tools/nvidia
 ```
 
-The pitch test compiles the predicate from the shipped patch, checking valid
-RGB pitches, invalid pitches/insets, zero metadata and unknown formats.
-Live measurements and health checks are recorded under
-`target/diagnostics/nvidia-performance-20261012/REPORT.md`.
+The preparer verifies the actual bytes of each input before reading archive
+members, accepts only expected regular files, validates all 14 ELF machines,
+and emits deterministic archives. It verifies every output against the backend
+pin before publishing. ANGLE and SurfaceFlinger come from the checksum-pinned
+upstream v0.1.2 archive; upstream's older HWC is excluded.
+
+Build/package scripts can reuse the verified assembled archives without
+network access or GitHub authentication. Cold builds use the pinned CI inputs;
+Actions artifacts have retention limits, so retain this cache until a permanent
+fork release is published and pinned. There is currently no fork release URL
+for this development payload.
+
+Only a stop/start loads the new payload into an existing worker. Do not overwrite
+an active payload or relax manifest verification. Retain the previous immutable
+payload and installed module backup for rollback.
+
+```sh
+python3 -m unittest discover -s tests -p test_runtime_nvidia.py
+python3 -m unittest discover -s tests -p test_nvidia_fork_payload.py
+```
+
+Live integration evidence is recorded in
+`target/diagnostics/nvidia-fork-20261012/REPORT.md`.
+`hwc-pitch-bytes.patch` and `scripts/repack-nvidia-hwc.py` are the frozen
+historical recipe for `devfix-20261012-pitchbytes`, not the active fork build.
