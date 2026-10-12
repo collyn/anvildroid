@@ -247,6 +247,12 @@ def renderer_environment(account, icd, *, validation=False):
            'LD_LIBRARY_PATH': str(PAYLOAD_ROOT),
            'RENDER_SERVER_EXEC_PATH': str(PAYLOAD_ROOT / 'virgl_render_server'),
            'VK_DRIVER_FILES': str(icd), 'VK_ICD_FILENAMES': str(icd),
+           # ANGLE indexed draws into NVIDIA LINEAR window images can trigger
+           # Xid 69 on hybrid hosts (com.shg.sg451, driver 615.71.09). Render
+           # into block-linear images instead. HWC negotiates the compositor's
+           # modifiers and uses its EGL readback path when AMD/Intel cannot
+           # import them; game rendering remains on NVIDIA.
+           'WAYDROID_NVIDIA_PRESENT': 'block-linear',
            # Keep CPU-readable capture buffers on the safe udmabuf path.
            'WAYDROID_NVIDIA_CPU_LINEAR': '0'}
     if validation:
