@@ -45,6 +45,18 @@ static void full_ui_fit(struct object *s,int w,int h,int maximized) {
   }
   s->full_w=w>0?w:1;s->full_h=h>0?h:1;
 }
+/* Full UI has no Android caption strip to cover. Keep host chrome outside
+ * the canvas and include it in xdg window geometry/configure dimensions. */
+static int full_ui_chrome(struct object *s) {
+  return s->csd && s->csd->pieces[0].surface && !s->csd->fullscreen;
+}
+static void full_ui_geometry(struct object *s, union argument *a) {
+  int chrome=full_ui_chrome(s);
+  a[0].i=chrome?-CSD_BORDER:0;
+  a[1].i=chrome?-CSD_HEADER:0;
+  a[2].i=s->full_w+(chrome?2*CSD_BORDER:0);
+  a[3].i=s->full_h+(chrome?CSD_HEADER+CSD_BORDER:0);
+}
 static void full_ui_apply(struct object *s) {
   int fw,fh,ox,oy;full_ui_box(s,&fw,&fh,&ox,&oy);
   for(struct object *o=objects;o;o=o->next) {
@@ -59,7 +71,7 @@ static void full_ui_apply(struct object *s) {
     }
   }
   if(s->xdg) {
-    union argument a[4]={{.i=0},{.i=0},{.i=s->full_w},{.i=s->full_h}};
+    union argument a[4];full_ui_geometry(s,a);
     wayland_send(s->xdg->p,3,a);
   }
   wayland_send(s->p,6,0);
@@ -82,7 +94,7 @@ static void full_ui_request(struct object *o,const char *cls,const char *method,
     a[0].i=full_ui_scaled(s,a[0].i,0,0)+ox;a[1].i=full_ui_scaled(s,a[1].i,1,0)+oy;
   }
   if(!strcmp(cls,"xdg_surface")&&!strcmp(method,"set_window_geometry")) {
-    a[0].i=0;a[1].i=0;a[2].i=s->full_w;a[3].i=s->full_h;
+    full_ui_geometry(s,a);
   }
   if(!strcmp(cls,"wl_surface")&&!strcmp(method,"set_input_region")&&a[0].o&&csd_compositor&&csd_region_i) {
     struct object *r=find(a[0].o);

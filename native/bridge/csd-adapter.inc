@@ -203,7 +203,7 @@ static void csd_sync(struct object *s, int x, int y, int w, int h) {
    * A small top offset is the transparent Android caption strip: cover it
    * with the header so no see-through gap opens below the titlebar. */
   int xs[4] = {x-CSD_BORDER,x-CSD_BORDER,x+w,x};
-  int ys[4] = {y<CSD_HEADER ? 0 : y-CSD_HEADER, y,y,y+h};
+  int ys[4] = {s->full_ui ? y-CSD_HEADER : (y<CSD_HEADER ? 0 : y-CSD_HEADER), y,y,y+h};
   /* The maximized window can be taller than the canvas surface: extend the
    * bottom piece over the uncovered strip so it reads black, not see-through. */
   int overflow = 0;

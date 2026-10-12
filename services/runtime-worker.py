@@ -474,6 +474,22 @@ def wait_window_feedback(android, nonce, nudge, timeout=2.5, await_activation=Fa
             'activation': 'unverified', 'nudged': nudged}
 
 
+def presentation_action(instance, identifier, action, token):
+    require(action in ('enter', 'leave', 'recover', 'show') and re.fullmatch(r'[a-f0-9]{32}', token),
+            'Invalid presentation transition')
+    def lxc(tool, name, *args, **kwargs):
+        kwargs.pop('bounded_output', None)
+        return run(tool, '-P', instance / 'android', '-n', name, *args, **kwargs)
+    environment = shutdown_environment(lxc, identifier)
+    output = lxc('lxc-attach', identifier, *environment, '--uid', '2000', '--gid', '1000',
+                 '--set-var', 'CLASSPATH=/data/local/tmp/anvildroid-shutdown.jar', '--',
+                 '/system/bin/app_process', '/system/bin',
+                 'org.anvildroid.runtime.RuntimePresentation', action, token,
+                 timeout=8, umask=0o007, include_stderr=True)
+    require('ANVILDROID_PRESENTATION_OK' in output.splitlines(),
+            'Android presentation transition failed: ' + output[-1024:])
+
+
 def app_action(instance, identifier, action, package, desktop=False, generation=None, single_display=False, activation_token=None):
     require(action in ('launch', 'force_stop', 'uninstall', 'keymap_edit', 'full_ui'), 'Unsupported app action')
     require(isinstance(package, str) and len(package) <= 255 and
@@ -514,17 +530,34 @@ def app_action(instance, identifier, action, package, desktop=False, generation=
     if action == 'full_ui':
         require(desktop, 'Waydroid window requires Desktop mode')
         require(package == 'org.anvildroid.desktop', 'Invalid desktop target')
+        session = uuid.uuid4().hex
+        if single_display:
+            presentation_action(instance, identifier, 'show', session)
+        else:
+            try:
+                presentation_action(instance, identifier, 'enter', session)
+            except (RuntimeError, OSError):
+                try:
+                    presentation_action(instance, identifier, 'leave', session)
+                except (RuntimeError, OSError):
+                    pass  # Keep the original error; durable recovery runs at next boot.
+                raise
         nonce = begin_window_feedback(instance, identifier, activation_token)
         # One attach instead of five: these fixed commands contain no user
         # interpolation. && propagates failure without silently running HOME.
-        android('sh', '-c',
-                'input keyevent 224 && '
-                'setprop waydroid.active_apps Waydroid && '
-                'setprop waydroid.background_start false && '
-                "settings put secure policy_control 'null*' && "
-                'am start --user 0 -a android.intent.action.MAIN -c android.intent.category.HOME')
+        try:
+            android('sh', '-c',
+                    'input keyevent 224 && '
+                    'setprop waydroid.active_apps Waydroid && '
+                    'setprop waydroid.background_start false && '
+                    "settings put secure policy_control 'null*' && "
+                    'am start --user 0 -a android.intent.action.MAIN -c android.intent.category.HOME')
+        except (RuntimeError, OSError):
+            if not single_display:
+                presentation_action(instance, identifier, 'leave', session)
+            raise
         window = wait_window_feedback(android, nonce, lambda: refresh_single_display(force=True), await_activation=bool(activation_token))
-        return {'action': action, 'package': package, 'window': window, 'timings': {'commands': command_timings, 'total_ms': round((time.monotonic() - started) * 1000)}, 'message': ('Full Android window requested for this runtime.' if single_display else 'Full Android window requested for this runtime. Opening an individual app returns to app-window mode.')}
+        return {'action': action, 'package': package, 'window': window, 'timings': {'commands': command_timings, 'total_ms': round((time.monotonic() - started) * 1000)}, 'message': ('Full Android window requested for this runtime.' if single_display else 'Full Android window requested for this runtime. Close this window to restore app-window mode.')}
     # Only launcher apps are actionable here; framework/service packages are excluded.
     resolved = android('cmd', 'package', 'resolve-activity', '--brief', '--user', '0',
                        '-a', 'android.intent.action.MAIN', '-c', 'android.intent.category.LAUNCHER', '-p', package)
@@ -546,6 +579,8 @@ def app_action(instance, identifier, action, package, desktop=False, generation=
         _label_cache.pop(str(instance), None)
         _catalog_cache.pop(str(instance), None)
         return {'action': action, 'package': package, 'message': 'App uninstalled from this runtime. Android confirmed removal.'}
+    full_session = desktop and not single_display and action == 'launch' and bool(android('getprop', 'waydroid.anvil_full_ui').strip())
+    require(not full_session, 'Close the full Android window before opening a separate app window.')
     if action == 'launch':
         if desktop:
             android('input', 'keyevent', '224')
@@ -1424,6 +1459,8 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(helper, target)
                 target.chmod(0o644)
+            if desktop and helper.exists() and not single_display:
+                presentation_action(instance, identifier, 'recover', '0' * 32)
             configure_host_desktop(instance, shell, bool(desktop))
             state['boot_wait'] = 'Configuring desktop keyboard'
             try:

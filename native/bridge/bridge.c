@@ -539,7 +539,7 @@ static void configure(void *data, struct proxy *p, int32_t w, int32_t h,
       if (a->data[i] == 2) fullscreen = 1;
     }
     struct csd_frame *f = o->surface->csd;
-    if (f && a && a->size >= sizeof(uint32_t)) {
+    if (f) {
       int changed = f->maximized != maximized || f->fullscreen != fullscreen;
       f->maximized = maximized;
       f->fullscreen = fullscreen;
@@ -549,6 +549,10 @@ static void configure(void *data, struct proxy *p, int32_t w, int32_t h,
     }
     __android_log_print(4, "AnvilDroidCsd", "fullui configure %dx%d max=%d full=%d",
                         w, h, maximized, fullscreen);
+    if (full_ui_chrome(o->surface)) {
+      if (w>0) w=w>2*CSD_BORDER?w-2*CSD_BORDER:1;
+      if (h>0) h=h>CSD_HEADER+CSD_BORDER?h-CSD_HEADER-CSD_BORDER:1;
+    }
     full_ui_fit(o->surface, w, h, maximized);
     pthread_mutex_unlock(mutex);
     return; /* Never hotplug Android's display for a host-window resize. */
@@ -1170,6 +1174,7 @@ static void bridge_disconnecting(struct wl_display *display) {
 
 /* Publish only complete requests; all callers run on the task worker. */
 static int submit_resize_request(int task, int width, int height) {
+  if (presentation_is_full()) return 0; // Full UI owns the complete Android canvas.
   char line[64];
   int length = format_resize_request(line, sizeof(line), task, width, height);
   if (length < 0) return 0;
@@ -1243,7 +1248,7 @@ static void *task_worker(void *unused) {
      * to a desktop-friendly open size. One shot per task id; user resizes
      * afterwards are never re-clamped. */
     static int opened_ids[8], opened_count = 0;
-    for (int i = 0; i < count; i++) {
+    for (int i = 0; i < count && !presentation_is_full(); i++) {
       if (tasks[i].width <= 448 && tasks[i].height <= 704)
         continue;
       int seen = 0;
@@ -1290,7 +1295,7 @@ static void *task_worker(void *unused) {
      * requirement). The companion applies the resize; the next task
      * snapshot then reports the snapped width and the xdg window follows. */
     static int last_snap_task = -1, last_snap_width = 0;
-    for (int i = 0; i < count; i++) {
+    for (int i = 0; i < count && !presentation_is_full(); i++) {
       if (tasks[i].width < 64 || (tasks[i].width & 63) == 0)
         continue;
       if (tasks[i].id == last_snap_task && tasks[i].width == last_snap_width)

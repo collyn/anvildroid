@@ -61,6 +61,15 @@ while true; do
             close_one_task "$task" "$package"
             result=$?
         fi
+        if [ "$task" = '-1' ] && [ "$package" = Waydroid ] && [ -z "$extra" ]; then
+            case "$epoch" in
+                ''|*[!a-f0-9]*) ;;
+                *) if [ "${#epoch}" -eq 32 ]; then
+                    CLASSPATH=/data/local/tmp/anvildroid-shutdown.jar timeout -s KILL 8 app_process /system/bin org.anvildroid.runtime.RuntimePresentation leave "$epoch"
+                    result=$?
+                fi ;;
+            esac
+        fi
         printf '%s %s %s\n' "$task" "$package" "$result" > close-result.tmp
         mv close-result.tmp close-result
         rm -f close.processing
@@ -72,7 +81,7 @@ while true; do
         case "$task:$width:$height" in
             *[!0-9:]*|::*|:*|*:) ;;
             *)
-                if [ -z "$extra" ] && [ "$width" -ge 64 ] && [ "$height" -ge 64 ] &&
+                if [ -z "$extra" ] && [ -z "$(getprop waydroid.anvil_full_ui)" ] && [ "$width" -ge 64 ] && [ "$height" -ge 64 ] &&
                    [ "$width" -le 8192 ] && [ "$height" -le 8192 ]; then
                     cmd activity task resize "$task" 0 0 "$width" "$height"
                     snapshot_ticks=0

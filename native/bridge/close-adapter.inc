@@ -10,6 +10,7 @@ extern int *__errno_location(void);
 static struct close_request close_queue[16];
 static unsigned close_head, close_tail;
 static char close_epoch[40];
+static int (*presentation_property)(const char *, char *);
 static int close_epoch_valid(const char *text) {
   if (strlen(text) != 36)
     return 0;
@@ -19,7 +20,30 @@ static int close_epoch_valid(const char *text) {
       return 0;
   return 1;
 }
+static int presentation_is_full(void) {
+  char token[96] = "";
+  if (!presentation_property) return 0;
+  presentation_property("waydroid.anvil_full_ui", token);
+  return strlen(token) == 32 && window_nonce(token);
+}
 static int close_request_app(struct object *s) {
+  if (s && s->full_ui && presentation_property) {
+    char token[96] = "";
+    presentation_property("waydroid.anvil_full_ui", token);
+    if (strlen(token) == 32 && window_nonce(token)) {
+      unsigned next = (close_tail + 1) % 16;
+      if (next != close_head) {
+        struct close_request *r = &close_queue[close_tail];
+        r->task = -1;
+        snprintf(r->package, sizeof(r->package), "Waydroid");
+        snprintf(r->epoch, sizeof(r->epoch), "%.32s", token);
+        close_tail = next;
+      }
+      // Never call HWC's removeAllVisibleRecentTasks concurrently with the
+      // serialized restore: it could remove apps opened by a newer session.
+      return 1;
+    }
+  }
   if (!s || !s->app || !profile_name(s->app_id, 1) ||
       !close_epoch_valid(close_epoch))
     return 0;
@@ -62,6 +86,8 @@ static void close_poll(void) {
     }
   }
   pthread_mutex_lock(mutex);
+  if (!presentation_property)
+    presentation_property = dlsym((void *)0, "__system_property_get");
   snprintf(close_epoch, sizeof(close_epoch), "%s",
            close_epoch_valid(epoch) ? epoch : "");
   struct close_request request = {0};
