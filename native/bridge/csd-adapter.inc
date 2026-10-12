@@ -197,8 +197,6 @@ static int csd_input(struct proxy *surface, int x, int y, int w, int h) {
 static void csd_sync(struct object *s, int x, int y, int w, int h) {
   struct csd_frame *f = s->csd;
   if (!f) return;
-  __android_log_print(4, "AnvilDroidCsd", "sync %s content=%d,%d %dx%d",
-                      s->app_id ? s->app_id : "?", x, y, w, h);
   int widths[4] = {w+2*CSD_BORDER,CSD_BORDER,CSD_BORDER,w};
   int heights[4] = {CSD_HEADER,h+CSD_BORDER,h+CSD_BORDER,CSD_BORDER};
   /* HWC content positions are canvas-relative, not normalized to (0,0).

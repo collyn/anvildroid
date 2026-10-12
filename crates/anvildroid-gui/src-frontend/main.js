@@ -22,8 +22,8 @@ function invoke(command, args = {}) {
 const navItems = document.querySelectorAll('.nav-item:not(.disabled)');
 const pages = document.querySelectorAll('.page');
 
-function navigatePage(target) {
-  if (!['apps', 'runtime', 'settings', 'controls'].includes(target)) return;
+function navigatePage(target, refresh = true) {
+  if (!['apps', 'runtime', 'images', 'settings', 'controls'].includes(target)) return;
   libraryPage = target === 'apps';
   clearTimeout(appStatesTimer);
   navItems.forEach(n => {
@@ -35,7 +35,8 @@ function navigatePage(target) {
   pages.forEach(p => p.classList.remove('active'));
   document.getElementById(`page-${target}`).classList.add('active');
   if (target === 'apps') { initializeAppLibrary(); refreshAppStates(); }
-  if (target === 'runtime') refreshRuntimePage();
+  if (target === 'runtime' && refresh) refreshRuntimePage();
+  if (target === 'images' && refresh) refreshImagesPage();
   if (target === 'settings') refreshSettings();
   if (target === 'controls') window.AnvilKeymapLibrary?.refresh();
 }
@@ -57,6 +58,7 @@ document.getElementById('btn-gpu-runtimes').addEventListener('click', () => navi
 document.getElementById('btn-resource-runtimes').addEventListener('click', () => navigatePage('runtime'));
 document.getElementById('btn-arm-runtimes').addEventListener('click', () => navigatePage('runtime'));
 document.getElementById('btn-refresh-runtimes').addEventListener('click', refreshRuntimePage);
+document.getElementById('btn-refresh-images').addEventListener('click', refreshImagesPage);
 document.getElementById('btn-start-controller').addEventListener('click', startRuntimeController);
 async function startRuntimeController() {
   const button = document.getElementById('btn-start-controller');
@@ -86,6 +88,15 @@ async function refreshRuntimePage() {
   }
 }
 
+async function refreshImagesPage() {
+  const button = document.getElementById('btn-refresh-images');
+  button.disabled = true;
+  try {
+    await Promise.all([refreshController(), refreshImageDownload()]);
+    await checkOfficialImages(true);
+  } finally { button.disabled = false; }
+}
+
 // --- Runtime status ---
 const stateEl = document.getElementById('runtime-state');
 const sessionEl = document.getElementById('session-service');
@@ -93,7 +104,7 @@ const containerEl = document.getElementById('container-state');
 const gpuEl = document.getElementById('gpu-mode');
 const healthMsgRow = document.getElementById('health-message-row');
 const healthMsgEl = document.getElementById('health-message');
-const btnRefresh = document.getElementById('btn-refresh');
+const btnRefresh = document.getElementById('btn-refresh-runtimes');
 const btnStart = document.getElementById('btn-start');
 const btnStop = document.getElementById('btn-stop');
 const btnRecover = document.getElementById('btn-recover');
@@ -178,7 +189,6 @@ async function refreshStatus() {
   }
 }
 
-btnRefresh.addEventListener('click', refreshStatus);
 
 // --- Runtime actions ---
 async function runtimeAction(action, btn) {
@@ -337,6 +347,7 @@ function trackRuntimeTransition(work) {
 
 var probeInstallBusy = false;
 async function openWaydroid(runtimeId) {
+  if (controllerMutation || runtimeBatchBusy) { showBanner('Wait for the current runtime operation to finish.', 'info'); return; }
   if(probeInstallBusy){showBanner('Installation is pending. Review the Android verification window; Waydroid can be opened when this operation finishes.','info');return;}
   if (pendingWaydroidRuntime !== null) {
     showBanner('Waydroid is already opening. Please wait for the current request to finish.', 'info');
@@ -1279,6 +1290,8 @@ let storageDialogTarget = null;
 const runtimeHealth = new Map();
 const runtimeGraphics = new Map();
 const runtimeSettingsOpen = new Set();
+const runtimeBatchSelection = new Set();
+let runtimeBatchBusy = false, runtimeBatchPlan = null;
 document.addEventListener('toggle', event => {
   const key = event.target.dataset?.settingsKey;
   if (!key || !event.target.isConnected) return;
@@ -1409,15 +1422,15 @@ function renderExistingRuntime() {
   const busy = controllerMutation || runtimeTransition || !record.managed || record.unavailable;
   const button = (op,label,disabled=false) => `<button class="btn btn-quiet" data-controller-op="${op}" data-controller-id="default" ${disabled ? 'disabled' : ''}>${label}</button>`;
   const markup = `${existingRuntimeError ? `<p class="runtime-blocked">${escapeHtml(existingRuntimeError)}</p>` : ''}${!record.managed ? `<p class="hint">Start Existing runtime, then enable management once to keep its settings available after stopping. App data stays in place.</p>${button('existing_claim','Enable management',controllerMutation || record.unavailable || record.state !== 'Running')}` : `${button('rename','Rename…',controllerMutation || record.unavailable)}${button('reinstall','Reinstall runtime…',busy || record.state !== 'Stopped')}`}
-    <div class="runtime-gpu-panel runtime-primary-setting" id="runtime-gpu-default"><h4>GPU &amp; graphics</h4>${renderGpuControls(record,busy)}${button('gpu_check','Check GPU',controllerMutation)}${renderRuntimeGraphics('default')}</div>
+    <details class="runtime-settings-group" data-settings-key="${escapeHtml(record.id)}:gpu" ${runtimeSettingsOpen.has(record.id + ':gpu') ? 'open' : ''}><summary>Graphics</summary><div class="runtime-gpu-panel runtime-primary-setting" id="runtime-gpu-default">${renderGpuControls(record,busy)}${button('gpu_check','Check GPU',controllerMutation)}${renderRuntimeGraphics('default')}</div></details>
     <div class="runtime-config-grid">
-      <div class="runtime-storage-panel"><h4>Storage</h4><p class="runtime-storage-path">${escapeHtml(record.storage?.path || record.storageError || 'Unavailable')}</p>${record.storage ? `<p>Disk free: ${(record.storage.free_bytes / 1024**3).toFixed(2)} / ${(record.storage.total_bytes / 1024**3).toFixed(2)} GiB</p>` : ''}<p class="hint">Waydroid uses its existing data directory. Filesystem capacity is shared; no per-runtime disk quota is configured.</p></div>
-      <div class="runtime-arm-panel"><h4>ARM app support</h4>${renderRuntimeArm(record,busy)}</div>
-      <details class="runtime-settings-group" data-settings-key="${escapeHtml(record.id)}:advanced" ${runtimeSettingsOpen.has(record.id + ':advanced') ? 'open' : ''}><summary>Advanced settings <span class="hint">Performance, Google Play and more</span></summary><div class="runtime-settings-list">
-        <details class="runtime-setting-row" data-settings-key="${escapeHtml(record.id)}:resources" ${runtimeSettingsOpen.has(record.id + ':resources') ? 'open' : ''}><summary><span><strong>Performance</strong><small>RAM and CPU limits</small></span></summary><div class="runtime-setting-body"><div class="runtime-resources-panel"><h4>RAM &amp; CPU limits</h4>${renderResourceControls(record,busy)}</div></div></details>
-        <details class="runtime-setting-row" data-settings-key="${escapeHtml(record.id)}:google" ${runtimeSettingsOpen.has(record.id + ':google') ? 'open' : ''}><summary><span><strong>Google Play</strong><small>Services and device registration</small></span></summary><div class="runtime-setting-body"><div class="runtime-google-panel"><h4>Google Play / Google services</h4>${renderRuntimeGoogle(record)}</div></div></details>
-        <details class="runtime-setting-row" data-settings-key="${escapeHtml(record.id)}:health" ${runtimeSettingsOpen.has(record.id + ':health') ? 'open' : ''}><summary><span><strong>Diagnostics</strong><small>Health checks and error details</small></span></summary><div class="runtime-setting-body"><div class="runtime-health-panel"><h4>Diagnostics</h4>${button('health','Check health',controllerMutation)}${renderRuntimeHealth('default')}</div></div></details>
-        <details class="runtime-setting-row" data-settings-key="${escapeHtml(record.id)}:import" ${runtimeSettingsOpen.has(record.id + ':import') ? 'open' : ''}><summary><span><strong>Managed copy</strong><small>Import existing Android data</small></span></summary><div class="runtime-setting-body"><div class="runtime-import-panel"><h4>Full isolated management</h4><p class="hint">Import installed images, apps and Android data into a managed copy for Desktop / Headless mode, storage relocation and independent deletion. Stop Existing runtime first. The original stays in place.</p>${button('existing_import','Import managed copy…',busy || record.state !== 'Stopped')}</div></div></details>
+      <details class="runtime-settings-group" data-settings-key="${escapeHtml(record.id)}:storage" ${runtimeSettingsOpen.has(record.id + ':storage') ? 'open' : ''}><summary>Storage</summary><div class="runtime-storage-panel"><p class="runtime-storage-path">${escapeHtml(record.storage?.path || record.storageError || 'Unavailable')}</p>${record.storage ? `<p>Disk free: ${(record.storage.free_bytes / 1024**3).toFixed(2)} / ${(record.storage.total_bytes / 1024**3).toFixed(2)} GiB</p>` : ''}<p class="hint">Shared filesystem; no disk quota.</p></div></details>
+      <details class="runtime-settings-group" data-settings-key="${escapeHtml(record.id)}:arm" ${runtimeSettingsOpen.has(record.id + ':arm') ? 'open' : ''}><summary>ARM translation</summary><div class="runtime-arm-panel">${renderRuntimeArm(record,busy)}</div></details>
+      <details class="runtime-settings-group" data-settings-key="${escapeHtml(record.id)}:advanced" ${runtimeSettingsOpen.has(record.id + ':advanced') ? 'open' : ''}><summary>More settings</summary><div class="runtime-settings-list">
+        <details class="runtime-setting-row" data-settings-key="${escapeHtml(record.id)}:resources" ${runtimeSettingsOpen.has(record.id + ':resources') ? 'open' : ''}><summary><span><strong>Performance</strong><small>RAM and CPU limits</small></span></summary><div class="runtime-setting-body"><div class="runtime-resources-panel">${renderResourceControls(record,busy)}</div></div></details>
+        <details class="runtime-setting-row" data-settings-key="${escapeHtml(record.id)}:google" ${runtimeSettingsOpen.has(record.id + ':google') ? 'open' : ''}><summary><span><strong>Google Play</strong><small>Services and device registration</small></span></summary><div class="runtime-setting-body"><div class="runtime-google-panel">${renderRuntimeGoogle(record)}</div></div></details>
+        <details class="runtime-setting-row" data-settings-key="${escapeHtml(record.id)}:health" ${runtimeSettingsOpen.has(record.id + ':health') ? 'open' : ''}><summary><span><strong>Diagnostics</strong><small>Health checks and error details</small></span></summary><div class="runtime-setting-body"><div class="runtime-health-panel">${button('health','Check health',controllerMutation)}${renderRuntimeHealth('default')}</div></div></details>
+        <details class="runtime-setting-row" data-settings-key="${escapeHtml(record.id)}:import" ${runtimeSettingsOpen.has(record.id + ':import') ? 'open' : ''}><summary><span><strong>Managed copy</strong><small>Import existing Android data</small></span></summary><div class="runtime-setting-body"><div class="runtime-import-panel"><h4>Full isolated management</h4><p class="hint">Copy images, apps and data to a separate runtime. Stop this runtime first; the original is kept.</p>${button('existing_import','Import managed copy…',busy || record.state !== 'Stopped')}</div></div></details>
       </div></details>
     </div>`;
   if (panel._runtimeMarkup !== markup) { panel.innerHTML = markup; panel._runtimeMarkup = markup; }
@@ -1579,10 +1592,10 @@ document.getElementById('available-runtime-images').addEventListener('click', as
     const name = window.prompt('Custom image name', item?.custom_name || 'Custom image');
     if (!name?.trim()) return;
     try { renderImageDownload(await controllerRequest({op:'image_rename', image_id:rename.dataset.imageRename, name:name.trim()})); }
-    catch (error) { document.getElementById('controller-message').textContent = `Cannot rename image: ${error}`; }
+    catch (error) { document.getElementById('image-library-message').textContent = `Cannot rename image: ${error}`; }
     return;
   }
-  if (!button || button.disabled || imageDownloadBusy || imageDownloadActive()) return;
+  if (!button || button.disabled || runtimeBatchBusy || imageDownloadBusy || imageDownloadActive()) return;
   const targetId = selectedRuntimeId;
   imageDownloadBusy = true;
   renderAvailableImages();
@@ -1599,12 +1612,13 @@ document.getElementById('available-runtime-images').addEventListener('click', as
     document.getElementById('controller-image').value = selectedValue;
     selectedImageLibraryId = selectedValue.startsWith('custom:') ? selectedValue.slice(7) : '';
     renderCreateImageHint();
+    navigatePage('runtime', false);
     const panel = document.getElementById('runtime-create-panel');
     panel.open = true;
     panel.scrollIntoView({block:'center', behavior:'smooth'});
     document.getElementById('controller-name').focus();
   } catch (error) {
-    document.getElementById('controller-message').textContent = `Cannot select image: ${error}`;
+    document.getElementById('image-library-message').textContent = `Cannot select image: ${error}`;
   } finally { imageDownloadBusy = false; renderAvailableImages(); renderCreateImageHint(); }
 });
 function renderArmSources(force = false) {
@@ -1685,23 +1699,23 @@ function renderCreateImageHint() {
         ? (state.error ? `Image import failed: ${escapeHtml(state.error)}` : '') || (imageDownloadActive() ? `${escapeHtml(state.phase || state.status)} · ${((state.received_bytes || 0) / 1024**3).toFixed(2)} GiB processed` : '')
         : '';
     renderCustomUrlProgress();
-    panel.textContent = ready ? 'Local images inspected and SHA-256 recorded, not officially verified. Prepare checks SDK 33+ and the Waydroid composer. Newer Android support is experimental; successful import does not verify boot or desktop controls. ARM translation is not enabled automatically for custom builds.' : 'Import both system.img and vendor.img from a folder or ZIP before creating this runtime.';
+    panel.textContent = ready ? 'Custom image · Experimental compatibility. ARM translation must be configured separately.' : 'Import both system.img and vendor.img from a folder or ZIP before creating this runtime.';
     return;
   }
-  if (flavor === 'installed') { panel.textContent = 'Copies the existing Waydroid image into a separate runtime. Google services are included only if that source image already contains them.'; return; }
+  if (flavor === 'installed') { panel.textContent = 'Creates a separate runtime from the installed image.'; return; }
   const state = selectedImage || imageDownloadState;
   if (state?.status !== 'Ready' || state.flavor !== flavor) {
-    panel.textContent = `Waydroid ${flavor}: ${IMAGE_FLAVOR_NOTE(flavor)} Download & verify this image in Runtime images below first. It will be used for a new runtime; existing runtimes are kept.`;
+    panel.textContent = `Waydroid ${flavor}: ${IMAGE_FLAVOR_NOTE(flavor)} Download & verify this image in the Images tab first. It will be used for a new runtime; existing runtimes are kept.`;
     return;
   }
-  panel.textContent = `Waydroid ${flavor} — ${IMAGE_FLAVOR_NOTE(flavor)} Verified download: ${state.images.system.filename}; ${state.images.vendor.filename}. Images need ${(state.image_bytes / 1024**3).toFixed(2)} GiB plus data and preparation space. You can change storage location before Prepare. Desktop preview. ARM translation is enabled by default during Prepare; Google sign-in needs device verification.`;
+  panel.textContent = `Waydroid ${flavor} · ${(state.image_bytes / 1024**3).toFixed(2)} GiB + runtime data. ${IMAGE_FLAVOR_NOTE(flavor)}${flavor === 'GAPPS' ? ' Google sign-in requires device registration.' : ''}`;
 }
 document.getElementById('controller-image').addEventListener('change', event => {
   selectedImageLibraryId = event.target.value.startsWith('custom:') ? event.target.value.slice(7) : '';
   renderCreateImageHint();
 });
 async function importCustomImage(folder = false) {
-  if (imageDownloadBusy || imageDownloadActive()) return;
+  if (runtimeBatchBusy || imageDownloadBusy || imageDownloadActive()) return;
   customUrlState = null;
   document.getElementById('controller-image').value = 'CUSTOM';
   imageDownloadBusy = true;
@@ -1750,7 +1764,7 @@ async function importCustomImageUrl() {
   const input = document.getElementById('custom-image-url');
   const url = input.value.trim();
   if (!url.startsWith('https://')) { document.getElementById('custom-image-status').textContent = 'Enter a direct HTTPS URL for a ZIP containing system.img and vendor.img.'; return; }
-  if (imageDownloadBusy || imageDownloadActive()) return;
+  if (runtimeBatchBusy || imageDownloadBusy || imageDownloadActive()) return;
   document.getElementById('controller-image').value = 'CUSTOM';
   imageDownloadBusy = true;
   imageDownloadEpoch++;
@@ -1813,11 +1827,11 @@ async function refreshImageDownload() {
   } catch (error) {
     if (epoch !== imageDownloadEpoch || imageDownloadBusy) return;
     document.getElementById('settings-image-download').textContent = `Cannot read image download status: ${error}`;
-    if (document.getElementById('controller-image').value === 'CUSTOM') document.getElementById('custom-image-status').textContent = `Cannot read import status: ${error}. Refresh runtimes to retry.`;
+    if (document.getElementById('controller-image').value === 'CUSTOM') document.getElementById('custom-image-status').textContent = `Cannot read import status: ${error}. Refresh Images to retry.`;
   }
 }
 async function startImageDownload(flavor) {
-  if (imageDownloadBusy || imageDownloadActive() || imageCatalogState?.status !== 'Ready') return;
+  if (runtimeBatchBusy || imageDownloadBusy || imageDownloadActive() || imageCatalogState?.status !== 'Ready') return;
   const variant = imageCatalogState.report.variants.find(item => item.flavor === flavor);
   if (!variant?.matching_versions) return;
   imageDownloadBusy = true;
@@ -1851,9 +1865,21 @@ document.getElementById('settings-images').addEventListener('click', event => {
   if (button && !button.disabled) startImageDownload(button.dataset.downloadFlavor);
 });
 document.getElementById('btn-cancel-image-download').addEventListener('click', cancelImageDownload);
+let runtimeSetupAutoOpened = false;
+function setRuntimeSetupVisible(visible) {
+  document.getElementById('runtime-setup-panel').hidden = !visible;
+  document.getElementById('btn-runtime-setup-details').setAttribute('aria-expanded', String(visible));
+}
+document.getElementById('btn-runtime-setup-details').addEventListener('click', () => {
+  runtimeSetupAutoOpened = false;
+  setRuntimeSetupVisible(document.getElementById('runtime-setup-panel').hidden);
+});
 function renderControllerSetup() {
   const panel = document.getElementById('controller-setup');
   if (!controllerRequirements) {
+    runtimeSetupAutoOpened = true;
+    setRuntimeSetupVisible(true);
+    updateWaydroidSetupActions();
     document.getElementById('controller-setup-help').open = true;
     panel.innerHTML = `<p class="runtime-feedback warning">${escapeHtml(controllerSetupError || 'Checking Waydroid and Android images…')}</p>`;
     return;
@@ -1861,7 +1887,14 @@ function renderControllerSetup() {
   const missing = controllerRequirements.checks.filter(check => !check.available && check.id !== 'desktop');
   const desktop = controllerRequirements.desktop;
   // Desktop is optional: headless Android can run without a graphical login.
-  if (missing.length) document.getElementById('controller-setup-help').open = true;
+  if (missing.length) {
+    runtimeSetupAutoOpened = true;
+    setRuntimeSetupVisible(true);
+    document.getElementById('controller-setup-help').open = true;
+  } else if (runtimeSetupAutoOpened) {
+    setRuntimeSetupVisible(false);
+    runtimeSetupAutoOpened = false;
+  }
   const sessionLabels = { wayland: 'Wayland', x11: 'X11 (nested Weston)', none: 'none', unknown: 'unknown' };
   const desktopLine = desktop?.desktop
     ? `<p class="hint">Desktop session: ${sessionLabels[desktop.session] ?? 'desktop'} · Experimental — window controls require verification · decoration ${escapeHtml(desktop.decoration || 'unverified')} · placement ${escapeHtml(desktop.placement || 'compositor-managed')}</p><p class="hint">${escapeHtml(desktop.detail || 'Socket presence does not verify window controls. Startup checks the selected compositor for SSD or CSD prerequisites.')}</p>`
@@ -1967,13 +2000,10 @@ function renderController() {
   // Data still refreshes; the next render after focus leaves catches up.
   if (document.activeElement?.dataset?.gpuSelect || document.activeElement?.dataset?.resourceField || document.activeElement?.dataset?.armSelect || document.activeElement?.dataset?.armEngine) return;
   renderExistingRuntime();
+  renderRuntimeBatchSelection();
   const focusedRuntime = document.activeElement?.dataset?.runtimeSelect;
   const panel = document.getElementById('controller-runtimes');
   if (selectedRuntimeId !== 'default' && !controllerRecords.some(record => record.id === selectedRuntimeId)) selectedRuntimeId = null;
-  const reinstallButton = document.getElementById('btn-reinstall-runtime');
-  const selectedRecord = selectedRuntimeId && selectedRuntimeId !== 'default' ? controllerRecords.find(record => record.id === selectedRuntimeId) : null;
-  reinstallButton.disabled = !selectedRecord || !['Allocated', 'Prepared', 'Stopped', 'Error'].includes(selectedRecord.state) || controllerMutation;
-  reinstallButton.title = selectedRuntimeId === 'default' ? 'Reinstall is available for managed runtimes only' : !selectedRecord ? 'Select a managed runtime to reinstall' : reinstallButton.disabled ? 'Stop this runtime and wait for active operations to finish before reinstalling' : 'Choose images and reinstall this runtime';
   document.getElementById('legacy-runtime-detail').hidden = selectedRuntimeId !== 'default';
   document.getElementById('legacy-runtime-row').classList.toggle('selected', selectedRuntimeId === 'default');
   document.querySelectorAll('button.runtime-select[data-runtime-select="default"]').forEach(button => button.setAttribute('aria-expanded', String(selectedRuntimeId === 'default')));
@@ -1982,7 +2012,7 @@ function renderController() {
     const detailId = `runtime-detail-${record.id}`;
     const nameCell = `<button type="button" class="runtime-select" data-runtime-select="${escapeHtml(record.id)}" aria-expanded="${selected}" aria-controls="${escapeHtml(detailId)}">${escapeHtml(record.name)}</button>`;
 
-    if (record.refreshError) return `<tr class="runtime-summary ${selected ? 'selected' : ''}" data-runtime-select="${escapeHtml(record.id)}"><td>${nameCell}</td><td><span class="runtime-status error">Unavailable</span></td><td></td></tr><tr id="${escapeHtml(detailId)}" class="runtime-detail-row" ${selected ? '' : 'hidden'}><td colspan="3"><div class="runtime-feedback error" role="alert"><strong>Status unavailable</strong><p>${escapeHtml(record.refreshError)}</p><p>Use Refresh all to retry.</p></div><p class="hint">ID: ${escapeHtml(record.id)}</p></td></tr>`;
+    if (record.refreshError) return `<tr class="runtime-summary ${selected ? 'selected' : ''}" data-runtime-select="${escapeHtml(record.id)}"><td class="runtime-checkbox-cell"><input type="checkbox" data-runtime-check="${escapeHtml(record.id)}" aria-label="Select ${escapeHtml(record.name)}" ${runtimeBatchSelection.has(record.id) ? 'checked' : ''} ${runtimeBatchBusy ? 'disabled' : ''}></td><td>${nameCell}</td><td><span class="runtime-status error">Unavailable</span></td><td></td></tr><tr id="${escapeHtml(detailId)}" class="runtime-detail-row" ${selected ? '' : 'hidden'}><td colspan="4"><div class="runtime-feedback error" role="alert"><strong>Status unavailable</strong><p>${escapeHtml(record.refreshError)}</p><p>Use Refresh to retry.</p></div><p class="hint">ID: ${escapeHtml(record.id)}</p></td></tr>`;
     const pending = controllerPending?.id === record.id ? controllerPending : null;
     const storageMoving = record.storage?.job?.status === 'Running';
     const appWorking = record.appJob?.status === 'Running';
@@ -2022,9 +2052,7 @@ function renderController() {
       actions = button('start', failed && record.job?.operation === 'start' ? 'Retry start' : 'Start', canStart, 'btn-primary');
       if (failed) actions += button('stop', record.job?.operation === 'stop' ? 'Retry stop' : 'Clean up', true, 'btn-danger');
     }
-    if (!record.deletion_pending) {
-      actions += button('reinstall', 'Reinstall', canReinstall, 'btn-warning');
-    }
+    actions += button('open_waydroid', 'Open Waydroid', RuntimeBatch.eligible(record, 'open'));
     if (record.deletion_pending) actions = '';
     const deleteAction = button('delete', record.deletion_pending ? 'Retry delete…' : 'Delete…', canDelete, 'btn-danger');
     const blocked = !active && ((needsImages && !canPrepare) || (record.state !== 'Running' && !needsImages && !canStart));
@@ -2054,8 +2082,9 @@ function renderController() {
       const state = effective ? 'active usage' : configured ? 'configured' : 'unavailable';
       return `<div class="runtime-summary-resources" title="${escapeHtml(state)}"><span>${escapeHtml(ram)}</span><span>${escapeHtml(cpu)}</span><span>${escapeHtml(storage)}</span></div>`;
     })();
-    return `<tr class="runtime-summary ${selected ? 'selected' : ''}" data-runtime-select="${escapeHtml(record.id)}" aria-busy="${Boolean(pending || active)}"><td>${nameCell}</td><td><span class="runtime-status ${kind}" role="status">${escapeHtml(title)}</span>${resourceSummary}</td><td><div class="runtime-actions">${actions}${button('rename', 'Rename…', true, 'btn-quiet')}${deleteAction}</div></td></tr>
-      <tr id="${escapeHtml(detailId)}" class="runtime-detail-row" ${selected ? '' : 'hidden'}><td colspan="3"><article class="runtime-card managed-runtime">
+    return `<tr class="runtime-summary ${selected ? 'selected' : ''}" data-runtime-select="${escapeHtml(record.id)}" aria-busy="${Boolean(pending || active)}"><td class="runtime-checkbox-cell"><input type="checkbox" data-runtime-check="${escapeHtml(record.id)}" aria-label="Select ${escapeHtml(record.name)}" ${runtimeBatchSelection.has(record.id) ? 'checked' : ''} ${runtimeBatchBusy ? 'disabled' : ''}></td><td>${nameCell}</td><td><span class="runtime-status ${kind}" role="status">${escapeHtml(title)}</span>${resourceSummary}</td><td><div class="runtime-actions">${actions}${record.deletion_pending ? deleteAction : ''}</div></td></tr>
+      <tr id="${escapeHtml(detailId)}" class="runtime-detail-row" ${selected ? '' : 'hidden'}><td colspan="4"><article class="runtime-card managed-runtime">
+      <div class="runtime-actions">${button('rename', 'Rename…', true, 'btn-quiet')}${!record.deletion_pending ? button('reinstall', 'Reinstall…', canReinstall, 'btn-warning') + deleteAction : ''}</div>
       ${detailFeedback}
       ${pending || active ? '<div class="runtime-progress runtime-progress-indeterminate" role="progressbar" aria-label="Runtime operation in progress"><span></span></div>' : ''}
       ${record.image_selection ? (() => {
@@ -2067,42 +2096,43 @@ function renderController() {
         const label = image.flavor === 'CUSTOM'
           ? (image.custom_name || cachedImage?.custom_name || `Custom image · ${systemSha.slice(0, 8)}`)
           : `Waydroid ${image.flavor}`;
-        return `<details class="runtime-image-details"><summary><strong>Image: ${escapeHtml(label)}</strong> · ${escapeHtml(image.flavor)} · ${(image.image_bytes / 1024**3).toFixed(2)} GiB</summary><div class="hint"><p>${escapeHtml(image.images.system.filename)}<br>${escapeHtml(image.images.vendor.filename)}</p><p>System SHA-256: <code>${escapeHtml(systemSha.slice(0, 16))}…</code><br>Vendor SHA-256: <code>${escapeHtml(vendorSha.slice(0, 16))}…</code></p><p>Independent data. ARM translation is configured below; Google sign-in needs device verification.</p></div></details>`;
+        return `<details class="runtime-image-details"><summary><strong>Image: ${escapeHtml(label)}</strong> · ${(image.image_bytes / 1024**3).toFixed(2)} GiB</summary><div class="hint"><p>${escapeHtml(image.images.system.filename)}<br>${escapeHtml(image.images.vendor.filename)}</p><p>System SHA-256: <code>${escapeHtml(systemSha.slice(0, 16))}…</code><br>Vendor SHA-256: <code>${escapeHtml(vendorSha.slice(0, 16))}…</code></p><p></p></div></details>`;
       })() : ''}
       ${record.job?.error ? `<div class="runtime-feedback error" role="alert"><strong>Could not ${escapeHtml(record.job.operation)}</strong><p>${escapeHtml(record.job.error)}</p></div>` : ''}
       ${blocked ? `<p class="runtime-blocked">Prepare / Start is unavailable — ${escapeHtml(blockedReasons.join(' · '))}</p>` : ''}
       ${record.appJob && !(record.appJob.action === 'launch' && record.appJob.status === 'Succeeded') ? `<div class="runtime-feedback ${record.appJob.status === 'Failed' ? 'error' : 'info'}" role="status"><strong>${escapeHtml(record.appJob.action)} · ${escapeHtml(record.appJob.status)}</strong><p>${escapeHtml(record.appJob.package || (record.appJob.action === 'delete' ? 'Runtime deletion' : record.appJob.action === 'install' ? 'APK installation' : ''))}</p><p>${escapeHtml(record.appJob.error || record.appJob.result?.message || 'Waiting for the Android result…')}</p></div>` : ''}
-      <div class="runtime-gpu-panel runtime-primary-setting" id="runtime-gpu-${escapeHtml(record.id)}"><h4>GPU &amp; graphics</h4>${renderGpuControls(record, busy)}<div class="runtime-actions">${button('gpu_check', runtimeGraphics.get(record.id)?.loading ? 'Checking GPU…' : 'Check GPU', !runtimeGraphics.get(record.id)?.loading, 'btn-quiet')}</div>${renderRuntimeGraphics(record.id)}</div>
-      <div class="runtime-config-grid"><div class="runtime-storage-panel">
-        <strong>Storage location · ${escapeHtml(record.name)}</strong><p class="runtime-storage-path">${escapeHtml(record.storage?.path || record.storageLoadError || 'Loading storage location…')}</p>
-        ${record.storage?.total_bytes != null ? `<p class="hint">Disk used: ${(record.storage.used_bytes / 1024 ** 3).toFixed(2)} GiB · free: ${(record.storage.free_bytes / 1024 ** 3).toFixed(2)} GiB / ${(record.storage.total_bytes / 1024 ** 3).toFixed(2)} GiB. Per-runtime disk quota is unavailable on this filesystem; data is not being truncated.</p>` : ''}
-        ${record.storage?.limit_status === 'unavailable' ? '<p class="hint">Disk limit: unavailable. Increasing or reducing runtime capacity is disabled until a verified filesystem quota backend is available.</p>' : ''}
+      <details class="runtime-settings-group" data-settings-key="${escapeHtml(record.id)}:gpu" ${runtimeSettingsOpen.has(record.id + ':gpu') ? 'open' : ''}><summary>Graphics</summary><div class="runtime-gpu-panel runtime-primary-setting" id="runtime-gpu-${escapeHtml(record.id)}">${renderGpuControls(record, busy)}<div class="runtime-actions">${button('gpu_check', runtimeGraphics.get(record.id)?.loading ? 'Checking GPU…' : 'Check GPU', !runtimeGraphics.get(record.id)?.loading, 'btn-quiet')}</div>${renderRuntimeGraphics(record.id)}</div></details>
+      <div class="runtime-config-grid"><details class="runtime-settings-group" data-settings-key="${escapeHtml(record.id)}:storage" ${runtimeSettingsOpen.has(record.id + ':storage') ? 'open' : ''}><summary>Storage</summary><div class="runtime-storage-panel">
+        <p class="runtime-storage-path">${escapeHtml(record.storage?.path || record.storageLoadError || 'Loading storage location…')}</p>
+        ${record.storage?.total_bytes != null ? `<p class="hint">Disk used: ${(record.storage.used_bytes / 1024 ** 3).toFixed(2)} GiB · free: ${(record.storage.free_bytes / 1024 ** 3).toFixed(2)} GiB / ${(record.storage.total_bytes / 1024 ** 3).toFixed(2)} GiB.</p>` : ''}
+        ${record.storage?.limit_status === 'unavailable' ? '<p class="hint">Disk quota unavailable.</p>' : ''}
         <div class="runtime-actions">${button('move', 'Change location…', Boolean(record.storage) && !record.storage.error && !record.storage.previous_path && canMoveState, 'btn-quiet')}
         ${record.storage?.previous_path ? button('discard_previous', 'Remove retained copy…', !record.storage.error, 'btn-quiet') : ''}</div>
         ${!canMoveState && !storageMoving ? '<p class="hint">Stop Android before changing its storage location.</p>' : ''}
-        ${record.storage?.path?.split('/').pop().startsWith('.anvildroid-') ? '<p class="hint">Data is inside this hidden, system-managed folder. Press Ctrl+H in your file manager to show it; its contents require administrator access.</p>' : ''}
-        ${needsImages && canMoveState ? '<p class="hint">You can change location before preparing images. After the move, use Prepare / Retry preparation to create Android images there.</p>' : ''}
+        ${record.storage?.path?.split('/').pop().startsWith('.anvildroid-') ? '<p class="hint">Hidden folder: Ctrl+H to show. Administrator access required.</p>' : ''}
+        ${needsImages && canMoveState ? '<p class="hint">Choose a storage location before Prepare.</p>' : ''}
         ${record.storage?.previous_path ? `<p class="hint">Retained copy: ${escapeHtml(record.storage.previous_path)}. Verify the runtime at its new location before removing this copy to reclaim space. Moving alone does not free space on the original disk.</p>` : ''}
         ${record.storage?.job?.status === 'Succeeded' ? `<p class="setup-ready">Storage operation completed for ${escapeHtml(record.name)}.</p>` : ''}
         ${record.storage?.job?.error || record.storage?.error ? `<p class="runtime-feedback error" role="alert">${escapeHtml(record.storage.error || record.storage.job.error)}</p>` : ''}
-      </div>
-      <div class="runtime-arm-panel"><h4>ARM translation</h4>${renderRuntimeArm(record, busy)}</div>
-      <details class="runtime-settings-group" data-settings-key="${escapeHtml(record.id)}:advanced" ${runtimeSettingsOpen.has(record.id + ':advanced') ? 'open' : ''}><summary>Advanced settings <span class="hint">Performance, Google Play and more</span></summary><div class="runtime-settings-list">
-      <details class="runtime-setting-row" data-settings-key="${escapeHtml(record.id)}:google" ${runtimeSettingsOpen.has(record.id + ':google') ? 'open' : ''}><summary><span><strong>Google Play</strong><small>Services and device registration</small></span></summary><div class="runtime-setting-body"><div class="runtime-google-panel"><h4>Google Play / Google services</h4>${renderRuntimeGoogle(record)}</div></div></details>
+      </div></details>
+      <details class="runtime-settings-group" data-settings-key="${escapeHtml(record.id)}:arm" ${runtimeSettingsOpen.has(record.id + ':arm') ? 'open' : ''}><summary>ARM translation</summary><div class="runtime-arm-panel">${renderRuntimeArm(record, busy)}</div></details>
+      <details class="runtime-settings-group" data-settings-key="${escapeHtml(record.id)}:advanced" ${runtimeSettingsOpen.has(record.id + ':advanced') ? 'open' : ''}><summary>More settings</summary><div class="runtime-settings-list">
+      <details class="runtime-setting-row" data-settings-key="${escapeHtml(record.id)}:google" ${runtimeSettingsOpen.has(record.id + ':google') ? 'open' : ''}><summary><span><strong>Google Play</strong><small>Services and device registration</small></span></summary><div class="runtime-setting-body"><div class="runtime-google-panel">${renderRuntimeGoogle(record)}</div></div></details>
 <details class="runtime-setting-row" data-settings-key="${escapeHtml(record.id)}:boot" ${runtimeSettingsOpen.has(record.id + ':boot') ? 'open' : ''}><summary><span><strong>Startup</strong><small>Automatic launch</small></span></summary><div class="runtime-setting-body"><div class="runtime-boot-panel"><strong>System startup</strong><p class="hint">Start this Android runtime automatically when AnvilDroid starts.</p><div class="runtime-actions"><button class="btn btn-quiet" data-controller-op="start_on_boot" data-controller-id="${escapeHtml(record.id)}" data-start-on-boot="${record.start_on_boot ? "false" : "true"}" ${busy ? "disabled" : ""}>${record.start_on_boot ? "Disable start on boot" : "Enable start on boot"}</button></div></div></div></details>
       <details class="runtime-setting-row" data-settings-key="${escapeHtml(record.id)}:display" ${runtimeSettingsOpen.has(record.id + ':display') ? 'open' : ''}><summary><span><strong>Display</strong><small>Desktop windows or headless</small></span></summary><div class="runtime-setting-body"><div class="runtime-display-panel"><strong>Display mode: ${record.display?.mode === 'desktop' ? 'Desktop (preview)' : 'Headless'}</strong>
       <p class="hint">${record.display?.mode === 'desktop' ? 'App windows and keyboard input in your desktop session. Restart the runtime if the desktop disconnects.' : 'Background tasks on a virtual display, without app windows.'}</p>
       <div class="runtime-actions"><button class="btn btn-quiet" data-controller-op="display_set" data-controller-id="${escapeHtml(record.id)}" data-display-mode="${record.display?.mode === 'desktop' ? 'headless' : 'desktop'}" ${busy || (!canMoveState && record.state !== 'Running') || !record.display ? 'disabled' : ''}>${record.display?.mode === 'desktop' ? 'Use Headless' : 'Use Desktop'}${record.state === 'Running' ? ' & restart' : ''}</button></div>
       ${record.state === 'Running' ? '<p class="hint">Changing mode restarts Android and closes its apps. Saved data is retained.</p>' : ''}${record.displayError ? `<p class="runtime-feedback error">${escapeHtml(record.displayError)}</p>` : ''}</div></div></details>
 
-      <details class="runtime-setting-row" data-settings-key="${escapeHtml(record.id)}:resources" ${runtimeSettingsOpen.has(record.id + ':resources') ? 'open' : ''}><summary><span><strong>Performance</strong><small>RAM and CPU limits</small></span></summary><div class="runtime-setting-body"><div class="runtime-resources-panel"><h4>RAM &amp; CPU limits</h4>${renderResourceControls(record, busy)}</div></div></details>
-      <details class="runtime-setting-row" data-settings-key="${escapeHtml(record.id)}:health" ${runtimeSettingsOpen.has(record.id + ':health') ? 'open' : ''}><summary><span><strong>Diagnostics</strong><small>Health checks and error details</small></span></summary><div class="runtime-setting-body"><div class="runtime-health-panel"><strong>Diagnostics</strong><div class="runtime-actions">${button('health', runtimeHealth.get(record.id)?.loading ? 'Checking health…' : 'Check health', !runtimeHealth.get(record.id)?.loading, 'btn-quiet')}</div>${renderRuntimeHealth(record.id)}</div></div></details>
+      <details class="runtime-setting-row" data-settings-key="${escapeHtml(record.id)}:resources" ${runtimeSettingsOpen.has(record.id + ':resources') ? 'open' : ''}><summary><span><strong>Performance</strong><small>RAM and CPU limits</small></span></summary><div class="runtime-setting-body"><div class="runtime-resources-panel">${renderResourceControls(record, busy)}</div></div></details>
+      <details class="runtime-setting-row" data-settings-key="${escapeHtml(record.id)}:health" ${runtimeSettingsOpen.has(record.id + ':health') ? 'open' : ''}><summary><span><strong>Diagnostics</strong><small>Health checks and error details</small></span></summary><div class="runtime-setting-body"><div class="runtime-health-panel"><div class="runtime-actions">${button('health', runtimeHealth.get(record.id)?.loading ? 'Checking health…' : 'Check health', !runtimeHealth.get(record.id)?.loading, 'btn-quiet')}</div>${renderRuntimeHealth(record.id)}</div></div></details>
       </div></details></div>${record.compatibility?.status === 'experimental' ? `<p class="runtime-feedback warning">Android SDK ${escapeHtml(String(record.compatibility.sdk))} · Experimental compatibility. Verify boot, app controls and desktop behavior with this image.</p>` : ''}<details class="runtime-details"><summary>Runtime details</summary><p>ID: ${escapeHtml(record.id)}</p>${record.compatibility?.caption_detail ? `<p>${escapeHtml(record.compatibility.caption_detail)}</p>` : ''}${record.job ? `<p>Last operation: ${escapeHtml(record.job.operation)} · ${escapeHtml(record.job.status)}</p><p>Job: ${escapeHtml(record.job.id || '')}</p>` : ''}</details>
       </article></td></tr>`;
-  }).join('') : '<tr><td colspan="3" class="hint">No additional runtimes for this user. Create one to begin.</td></tr>';
+  }).join('') : '<tr><td colspan="4" class="hint">No additional runtimes for this user. Create one to begin.</td></tr>';
   if (panel._runtimeMarkup === markup) return;
   panel._runtimeMarkup = markup;
   panel.innerHTML = markup;
+  renderRuntimeBatchSelection();
   if (focusedRuntime) document.querySelectorAll('button.runtime-select').forEach(button => {
     if (button.dataset.runtimeSelect === focusedRuntime) button.focus({preventScroll:true});
   });
@@ -2129,7 +2159,7 @@ function controllerHasActiveWork() {
     record.storage?.job?.status === 'Running');
 }
 document.addEventListener('visibilitychange', () => {
-  if (!document.hidden && (controllerHasActiveWork() || document.getElementById('page-runtime').classList.contains('active'))) refreshController();
+  if (!document.hidden && (controllerHasActiveWork() || document.getElementById('page-runtime').classList.contains('active') || document.getElementById('page-images').classList.contains('active'))) refreshController();
 });
 async function refreshController() {
   if (controllerLoading || controllerMutation) return;
@@ -2210,6 +2240,7 @@ async function refreshController() {
     await refreshExistingRuntime();
     renderController();
     controllerLoading = false;
+    renderRuntimeBatchSelection();
     finishControllerRefresh();
     // Stop polling at completion. Merely running Android is not an active job.
     controllerTimer = null;
@@ -2397,7 +2428,6 @@ function cancelReinstall() {
 }
 document.getElementById('controller-reinstall-cancel').addEventListener('click', cancelReinstall);
 document.getElementById('controller-create').addEventListener('submit', submitRuntimeCreate);
-document.getElementById('btn-reinstall-runtime').addEventListener('click', () => beginReinstall(selectedRuntimeId));
 function selectRuntime(id) {
   if (id !== 'default' && !controllerRecords.some(record => record.id === id)) return;
   selectedRuntimeId = selectedRuntimeId === id ? null : id;
@@ -2407,6 +2437,7 @@ function selectRuntime(id) {
 }
 document.getElementById('runtime-table').addEventListener('click', event => {
   const action = event.target.closest('button');
+  if (event.target.closest('input[type=checkbox], .runtime-checkbox-cell')) return;
   if (action && !action.hasAttribute('data-runtime-select')) return;
   const row = event.target.closest('[data-runtime-select]');
   if (row) selectRuntime(row.dataset.runtimeSelect);
@@ -2414,7 +2445,12 @@ document.getElementById('runtime-table').addEventListener('click', event => {
 function handleRuntimeAction(event) {
   const button = event.target.closest('[data-controller-op]');
   if (!button || button.disabled) return;
-  if (button.dataset.controllerOp === 'existing_apps') { runtimeFilter.value = 'default'; navigatePage('apps'); renderApps(allApps); }
+  if (button.dataset.controllerOp === 'open_waydroid') {
+    const record = runtimeRecord(button.dataset.controllerId);
+    if (!record || controllerMutation || controllerLoading || runtimeBatchBusy || runtimeTransition || pendingLaunch || pendingAppAction || probeInstallBusy) return;
+    runRuntimeBatchPlan({op:'open', targets:[{id:record.id, name:record.name}], skipped:0});
+  }
+  else if (button.dataset.controllerOp === 'existing_apps') { runtimeFilter.value = 'default'; navigatePage('apps'); renderApps(allApps); }
   else if (button.dataset.controllerOp === 'existing_import') mutateController({op:'existing_import',id:'default',name:(existingRuntime?.name || 'Existing runtime') + ' (managed copy)'});
   else if (button.dataset.controllerOp === 'reinstall') {
     beginReinstall(button.dataset.controllerId);
@@ -3072,3 +3108,209 @@ document.addEventListener('keydown', event => {
     document.getElementById('search-apps').focus();
   }
 });
+
+// Runtime table selection is independent of the expanded configuration row.
+function runtimeBatchRecords() {
+  return [...controllerRecords, ...(existingRuntime ? [existingRuntime] : [])];
+}
+function renderRuntimeBatchSelection() {
+  const records = runtimeBatchRecords();
+  const ids = new Set(records.map(record => record.id));
+  for (const id of runtimeBatchSelection) if (!ids.has(id)) runtimeBatchSelection.delete(id);
+  const selected = records.filter(record => runtimeBatchSelection.has(record.id));
+  document.getElementById('runtime-batch-toolbar').hidden = !selected.length;
+  document.getElementById('runtime-batch-count').textContent = `${selected.length} selected`;
+  const all = document.getElementById('runtime-select-all');
+  all.checked = records.length > 0 && selected.length === records.length;
+  all.indeterminate = selected.length > 0 && selected.length < records.length;
+  document.querySelectorAll('[data-controller-op="open_waydroid"]').forEach(button => {
+    button.disabled = controllerMutation || controllerLoading || runtimeBatchBusy || runtimeTransition || pendingLaunch || pendingAppAction || probeInstallBusy || !RuntimeBatch.eligible(runtimeRecord(button.dataset.controllerId), 'open');
+  });
+  all.disabled = runtimeBatchBusy || controllerMutation || !records.length;
+  document.querySelectorAll('[data-runtime-check]').forEach(input => {
+    input.checked = runtimeBatchSelection.has(input.dataset.runtimeCheck);
+    input.disabled = runtimeBatchBusy || controllerMutation || !ids.has(input.dataset.runtimeCheck);
+    input.closest?.('tr')?.classList.toggle('batch-selected', input.checked);
+  });
+  document.querySelectorAll('[data-runtime-batch]').forEach(button => {
+    const op = button.dataset.runtimeBatch;
+    const count = selected.filter(record => RuntimeBatch.eligible(record, op, controllerRequirements || {})).length;
+    button.textContent = `${op === 'open' ? 'Open Waydroid windows' : op[0].toUpperCase() + op.slice(1)} (${count})`;
+    button.disabled = runtimeBatchBusy || controllerMutation || controllerLoading || runtimeTransition || pendingLaunch || pendingAppAction || probeInstallBusy || imageDownloadBusy || imageDownloadActive() || !count;
+    button.title = `${count} of ${selected.length} selected runtimes can ${op}`;
+  });
+  document.getElementById('runtime-batch-clear').disabled = runtimeBatchBusy;
+}
+document.getElementById('runtime-table').addEventListener('change', event => {
+  if (runtimeBatchBusy || controllerMutation) return;
+  const input = event.target;
+  if (input.id === 'runtime-select-all') {
+    runtimeBatchSelection.clear();
+    if (input.checked) runtimeBatchRecords().forEach(record => runtimeBatchSelection.add(record.id));
+  } else if (input.dataset.runtimeCheck) {
+    input.checked ? runtimeBatchSelection.add(input.dataset.runtimeCheck) : runtimeBatchSelection.delete(input.dataset.runtimeCheck);
+  } else return;
+  renderRuntimeBatchSelection();
+});
+document.getElementById('runtime-batch-clear').addEventListener('click', () => {
+  if (runtimeBatchBusy) return;
+  runtimeBatchSelection.clear();
+  renderRuntimeBatchSelection();
+});
+document.getElementById('runtime-batch-toolbar').addEventListener('click', event => {
+  const button = event.target.closest('[data-runtime-batch]');
+  if (!button || button.disabled || controllerMutation || runtimeBatchBusy || controllerLoading || imageDownloadBusy || imageDownloadActive()) return;
+  const op = button.dataset.runtimeBatch;
+  const selected = runtimeBatchRecords().filter(record => runtimeBatchSelection.has(record.id));
+  const targets = selected.filter(record => RuntimeBatch.eligible(record, op, controllerRequirements || {}));
+  if (!targets.length) return;
+  runtimeBatchPlan = {op, targets: targets.map(({id, name}) => ({id, name})), skipped: selected.length - targets.length};
+  const destructive = ['delete', 'reinstall'].includes(op);
+  document.getElementById('runtime-batch-title').textContent = `${button.textContent.replace(/ \(\d+\)$/, '')} ${targets.length} runtimes`;
+  document.getElementById('runtime-batch-description').textContent = (destructive
+    ? op === 'delete' ? 'Permanently remove these runtimes, apps, data and retained storage copies. This cannot be undone.' : 'Replace these runtimes with the selected image. All existing apps, data and settings will be erased. This cannot be undone.'
+    : op === 'open' ? 'Open a Waydroid window for each running Desktop runtime below.' : op === 'start' ? 'Start these runtimes in order.' : 'Apps will close; saved data is retained. Runtimes are processed in order.') +
+    (runtimeBatchPlan.skipped ? ` ${runtimeBatchPlan.skipped} unavailable runtime(s) will be skipped.` : '');
+  document.getElementById('runtime-batch-targets').innerHTML = targets.map(record => `<li>${escapeHtml(record.name)}</li>`).join('');
+  document.getElementById('runtime-batch-confirm-field').hidden = !destructive;
+  document.getElementById('runtime-batch-confirm-label').textContent = `Type ${op.toUpperCase()} to confirm`;
+  document.getElementById('runtime-batch-confirm').value = '';
+  document.getElementById('runtime-batch-image-field').hidden = op !== 'reinstall';
+  const image = document.getElementById('runtime-batch-image');
+  image.innerHTML = '<option value="" disabled selected>Select an image</option>' +
+    (imageDownloadState?.available_images || []).map(item => `<option value="${escapeHtml(item.library_id)}">${escapeHtml(item.custom_name || 'Waydroid ' + item.flavor)}</option>`).join('') +
+    (Array.from(document.getElementById('controller-image').options).some(option => option.value === 'installed') ? '<option value="installed">Existing Waydroid image</option>' : '');
+  document.getElementById('runtime-batch-dialog-error').textContent = '';
+  document.getElementById('runtime-batch-dialog').showModal();
+});
+document.getElementById('runtime-batch-cancel').addEventListener('click', () => document.getElementById('runtime-batch-dialog').close());
+document.getElementById('runtime-batch-dialog').addEventListener('close', () => { runtimeBatchPlan = null; });
+async function refreshBatchRecord(id) {
+  const record = await controllerRequest({op:'refresh', id});
+  if (record?.id !== id) throw new Error('Invalid runtime response.');
+  if (id !== 'default') record.appJob = await controllerRequest({op:'app_job', id});
+  if (id !== 'default') {
+    record.storage = await controllerRequest({op:'storage_info', id});
+    record.display = await controllerRequest({op:'display_info', id});
+  }
+  if (id === 'default') existingRuntime = {...existingRuntime, ...record};
+  else {
+    const index = controllerRecords.findIndex(item => item.id === id);
+    if (index >= 0) controllerRecords[index] = {...controllerRecords[index], ...record};
+  }
+  renderController();
+  return record;
+}
+async function executeBatchOperation(record, op, imageRequest) {
+  const id = record.id;
+  if (op === 'open') { await launchRuntimeWaydroidWindow(record); return; }
+  if (id === 'default' && ['start', 'stop'].includes(op)) {
+    if (op === 'start' && controllerRecords.some(item => item.import_status === 'pending' && item.state === 'Provisioning')) throw new Error('Wait for Existing runtime import to finish.');
+    const result = await tauriInvoke(op === 'start' ? 'start_runtime' : 'stop_runtime', {runtimeId:'default'});
+    if (!result?.success) throw new Error(result?.message || 'Runtime action failed.');
+    const deadline = Date.now() + 360000;
+    while (Date.now() < deadline) {
+      const updated = await refreshBatchRecord(id);
+      if (updated.state === (op === 'start' ? 'Running' : 'Stopped')) return;
+      if (updated.state === 'Error') throw new Error('Existing runtime transition failed.');
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+    throw new Error('Timed out waiting for Existing runtime.');
+  }
+  const request = {op, id, ...(['delete', 'reinstall'].includes(op) ? {confirmed_name:record.name} : {}), ...(op === 'reinstall' ? imageRequest : {})};
+  await activateRequestImage(request);
+  const result = await controllerRequest(request);
+  if (op === 'delete') {
+    if (result?.runtime_id !== id || !result.id) throw new Error('Invalid deletion response.');
+    const deadline = Date.now() + 360000;
+    while (Date.now() < deadline) {
+      const records = await controllerRequest({op:'list'});
+      if (!Array.isArray(records)) throw new Error('Invalid runtime list response.');
+      if (!records.some(item => item.id === id)) return;
+      let job;
+      try { job = await controllerRequest({op:'app_job', id}); }
+      catch (error) {
+        const remaining = await controllerRequest({op:'list'});
+        if (Array.isArray(remaining) && !remaining.some(item => item.id === id)) return;
+        throw error;
+      }
+      if (job?.id !== result.id) throw new Error('Deletion operation changed.');
+      if (job.status === 'Failed') throw new Error(job.error || 'Deletion failed.');
+      if (job.status === 'Succeeded') return;
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+    throw new Error('Timed out waiting for deletion; check status before retrying.');
+  } else if (op === 'reinstall' && id === 'default') {
+    if (result?.id !== id || result.state !== 'Stopped') throw new Error('Could not verify Existing runtime reinstall.');
+  } else {
+    if (result?.id !== id || !result.job?.id) throw new Error('Invalid runtime operation response.');
+    const updated = await RuntimeSettings.wait(controllerRequest, id, result.job.id, op === 'start' ? 'Running' : op === 'stop' ? 'Stopped' : 'Prepared');
+    Object.assign(runtimeRecord(id), updated);
+  }
+}
+document.getElementById('runtime-batch-form').addEventListener('submit', async event => {
+  event.preventDefault();
+  if (!runtimeBatchPlan || runtimeBatchBusy || controllerMutation || controllerLoading || imageDownloadBusy || imageDownloadActive() || runtimeTransition || pendingLaunch || pendingAppAction) return;
+  const plan = runtimeBatchPlan;
+  const error = document.getElementById('runtime-batch-dialog-error');
+  if (['delete', 'reinstall'].includes(plan.op) && document.getElementById('runtime-batch-confirm').value !== plan.op.toUpperCase()) {
+    error.textContent = `Type exactly: ${plan.op.toUpperCase()}`; return;
+  }
+  let imageRequest;
+  if (plan.op === 'reinstall') {
+    const value = document.getElementById('runtime-batch-image').value;
+    const image = (imageDownloadState?.available_images || []).find(item => item.library_id === value);
+    if (value === 'installed') imageRequest = {flavor:'installed'};
+    else if (image) imageRequest = {flavor:image.flavor, system_sha256:image.images.system.sha256, vendor_sha256:image.images.vendor.sha256};
+    else { error.textContent = 'Select an available image.'; return; }
+  }
+  await runRuntimeBatchPlan(plan, imageRequest);
+});
+async function runRuntimeBatchPlan(plan, imageRequest) {
+  if (runtimeBatchBusy || controllerMutation || runtimeTransition || pendingLaunch || pendingAppAction || probeInstallBusy) return;
+  runtimeBatchBusy = true;
+  controllerMutation = true;
+  clearTimeout(controllerTimer);
+  document.getElementById('runtime-batch-dialog').close();
+  renderController();
+  renderAvailableImages();
+  const output = document.getElementById('runtime-batch-result');
+  let results;
+  try {
+    await controllerRefreshDone;
+    results = await RuntimeBatch.run(plan.targets, plan.op, {
+      refresh: refreshBatchRecord, execute: (record, op) => executeBatchOperation(record, op, imageRequest),
+      requirements: controllerRequirements || {},
+      progress: (record, index, total) => { output.textContent = `${plan.op}: ${index + 1}/${total} · ${record.name}. Keep AnvilDroid open until this finishes.`; },
+    });
+    for (const result of results) if (result.status === 'succeeded' && plan.op !== 'open') runtimeBatchSelection.delete(result.id);
+  } catch (error) { output.textContent = `Batch failed: ${error}`; }
+  finally {
+    controllerMutation = false;
+    runtimeBatchBusy = false;
+    await Promise.all([refreshController(), refreshStatus()]);
+    renderRuntimeBatchSelection();
+    renderAvailableImages();
+    if (results) output.innerHTML = `<strong>${plan.op}: ${results.filter(item => item.status === 'succeeded').length} completed · ${results.filter(item => item.status === 'failed').length} failed · ${plan.skipped + results.filter(item => item.status === 'skipped').length} skipped</strong><ul>${results.map(item => `<li>${escapeHtml(item.name)}: ${escapeHtml(item.status)}${item.detail ? ' — ' + escapeHtml(item.detail) : ''}</li>`).join('')}</ul>`;
+  }
+}
+
+async function launchRuntimeWaydroidWindow(record) {
+  if (!RuntimeBatch.eligible(record, 'open')) throw new Error('Start this runtime in Desktop mode first.');
+  if (record.id === 'default') {
+    const result = await tauriInvoke('open_waydroid');
+    if (!result?.success) throw new Error(result?.message || 'Cannot open Waydroid.');
+    return;
+  }
+  let job = await controllerRequest({op:'app_action', id:record.id, action:'full_ui', package:'org.anvildroid.desktop'});
+  const token = job?.id;
+  const valid = value => value?.id === token && value.runtime_id === record.id && value.action === 'full_ui' && value.package === 'org.anvildroid.desktop';
+  if (!token || !valid(job)) throw new Error('Invalid Waydroid launch job.');
+  const deadline = Date.now() + 45000;
+  while (job.status === 'Running' && Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 300));
+    job = await controllerRequest({op:'app_job', id:record.id});
+    if (!valid(job)) throw new Error('Waydroid launch operation changed.');
+  }
+  if (job.status !== 'Succeeded') throw new Error(job.error || 'Timed out waiting for Waydroid window.');
+}

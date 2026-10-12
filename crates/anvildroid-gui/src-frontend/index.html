@@ -23,6 +23,9 @@
         <li class="nav-item" data-page="runtime">
           <span class="nav-icon"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="m12 2 9 5v10l-9 5-9-5V7zM3 7l9 5 9-5M12 12v10M7.5 4.5l9 5"/></svg></span><span>Runtimes</span>
         </li>
+        <li class="nav-item" data-page="images">
+          <span class="nav-icon"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 9 5-9 5-9-5zM3 12l9 5 9-5M3 16l9 5 9-5"/></svg></span><span>Images</span>
+        </li>
         <li class="nav-item" data-page="settings">
           <span class="nav-icon"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.38a2 2 0 0 0-.73-2.73l-.15-.09a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg></span><span>Settings</span>
         </li>
@@ -75,9 +78,8 @@
 
       <!-- Runtime page -->
       <section id="page-runtime" class="page">
-        <div class="page-header"><div><h1>Runtimes</h1><p class="hint">Manage all your Android runtimes in one place.</p></div><div class="runtime-actions"><button id="btn-reinstall-runtime" class="btn btn-warning" type="button" disabled>Reinstall selected</button><button id="btn-refresh-runtimes" class="btn">Refresh all</button></div></div>
-        <div class="controller-heading"><h2>Your runtimes</h2><span id="controller-connection" class="status-badge" role="status" title="Connection to the runtime management service. Each runtime has its own Running or Stopped status in the table.">Connecting to service…</span></div>
-        
+        <div class="page-header runtime-page-header"><h1>Runtimes</h1><div class="runtime-actions"><span id="controller-connection" class="status-badge" role="status" title="Runtime service connection">Connecting…</span><button id="btn-runtime-setup-details" class="btn btn-quiet" type="button" aria-controls="runtime-setup-panel" aria-expanded="false">Setup details</button><button id="btn-refresh-runtimes" class="btn">Refresh</button></div></div>
+        <div id="runtime-setup-panel" hidden>
         <div id="controller-setup" role="status"></div>
         <div id="waydroid-setup-actions" hidden>
           <div class="runtime-actions">
@@ -89,38 +91,54 @@
           </div>
           <p id="waydroid-init-status" class="hint" role="status"></p>
         </div>
-        <details id="controller-setup-help"><summary>Waydroid installation help</summary><div class="runtime-setup-actions"><button id="btn-waydroid-guide" class="btn" type="button">Waydroid setup guide</button><span class="hint">If Waydroid is missing, AnvilDroid still opens and headless setup remains visible. Use the button above to install and initialize Waydroid automatically (you will be asked for your administrator password), or install it manually and refresh.</span></div></details>
+        <details id="controller-setup-help"><summary>Waydroid installation help</summary><div class="runtime-setup-actions"><button id="btn-waydroid-guide" class="btn" type="button">Waydroid setup guide</button><span class="hint">Install Waydroid with the setup guide. Administrator access is required.</span></div></details>
+        </div>
         <details id="runtime-create-panel" class="create-panel"><summary>New runtime</summary>
         <form id="controller-create" class="runtime-actions">
           <div class="form-field"><label for="controller-name">Runtime name</label>
           <input id="controller-name" maxlength="128" required placeholder="My Android" /></div>
-          <div class="form-field"><label for="controller-image">Waydroid image source</label>
+          <div class="form-field"><label for="controller-image">Image</label>
           <select id="controller-image" class="select-control" aria-describedby="controller-image-hint"><option value="" disabled>No available images</option></select></div>
           <button id="controller-create-button" class="btn btn-primary" type="submit" disabled>Create runtime</button>
           <button id="controller-reinstall-cancel" class="btn" type="button" hidden>Cancel reinstall</button>
         </form>
-        <p id="controller-image-hint" class="hint">Copies the existing Waydroid image into a separate runtime. Google services are included only if that source image already contains them.</p></details>
+        <p class="hint"><button class="btn btn-quiet nav-item" data-page="images" type="button">Open Images</button></p>
+        <p id="controller-image-hint" class="hint">Creates a separate runtime from the installed image.</p></details>
         <p id="controller-message" role="status" aria-live="polite"></p>
         <div id="controller-start" style="display:none">
           <button id="btn-start-controller" class="btn btn-primary" type="button">Start runtime controller</button>
-          <p id="controller-start-message" class="hint" role="status">Start or restart the bundled runtime controller. You will be asked for your administrator password.</p>
+          <p id="controller-start-message" class="hint" role="status">Administrator access is required.</p>
         </div>
-        <p class="table-caption">Select a runtime to manage its apps, Google Play and storage.</p>
+        <p class="table-caption">Select a runtime to configure it.</p>
+        <div id="runtime-batch-toolbar" class="runtime-batch-toolbar" hidden>
+          <strong id="runtime-batch-count"></strong>
+          <div class="runtime-actions">
+            <button class="btn btn-primary" type="button" data-runtime-batch="open">Open Waydroid windows</button>
+            <button class="btn" type="button" data-runtime-batch="start">Start</button>
+            <button class="btn" type="button" data-runtime-batch="stop">Stop</button>
+            <button class="btn" type="button" data-runtime-batch="restart">Restart</button>
+            <button class="btn btn-warning" type="button" data-runtime-batch="reinstall">Reinstall</button>
+            <button class="btn btn-danger" type="button" data-runtime-batch="delete">Delete</button>
+            <button id="runtime-batch-clear" class="btn btn-quiet" type="button">Clear selection</button>
+          </div>
+        </div>
+        <div id="runtime-batch-result" role="status" aria-live="polite"></div>
         <div class="runtime-table-scroll"><table id="runtime-table" class="runtime-table">
-          <thead><tr><th scope="col">Runtime</th><th scope="col">Status</th><th scope="col" class="runtime-actions-heading">Actions</th></tr></thead>
+          <thead><tr><th scope="col" class="runtime-checkbox-cell"><input id="runtime-select-all" type="checkbox" aria-label="Select all runtimes"></th><th scope="col">Runtime</th><th scope="col">Status</th><th scope="col" class="runtime-actions-heading">Actions</th></tr></thead>
           <tbody id="controller-runtimes"></tbody>
           <tbody>
-            <tr id="legacy-runtime-row" class="runtime-summary" data-runtime-select="default"><td><button type="button" class="runtime-select" data-runtime-select="default" aria-expanded="false" aria-controls="legacy-runtime-detail"><span id="existing-runtime-label">Existing runtime</span> <span class="hint">Default</span></button></td><td><span id="runtime-state" class="status-value">—</span></td><td>          <div class="runtime-actions">
+            <tr id="legacy-runtime-row" class="runtime-summary" data-runtime-select="default"><td class="runtime-checkbox-cell"><input type="checkbox" data-runtime-check="default" aria-label="Select Existing runtime"></td><td><button type="button" class="runtime-select" data-runtime-select="default" aria-expanded="false" aria-controls="legacy-runtime-detail"><span id="existing-runtime-label">Existing runtime</span> <span class="hint">Default</span></button></td><td><span id="runtime-state" class="status-value">—</span></td><td>          <div class="runtime-actions">
             <button id="btn-start" class="btn btn-primary" style="display:none">Start</button>
+            <button class="btn" type="button" data-controller-op="open_waydroid" data-controller-id="default" disabled>Open Waydroid</button>
             <button id="btn-stop" class="btn btn-danger" style="display:none">Stop</button>
             <button id="btn-recover" class="btn btn-warning" style="display:none">Recover</button>
-            <button id="btn-refresh" class="btn">Refresh</button>
+
           </div>
 </td></tr>
-            <tr id="legacy-runtime-detail" class="runtime-detail-row" hidden><td colspan="3">
-              <h3 id="existing-runtime-name">Existing runtime · Default</h3><p class="hint">The original Waydroid session.</p>
+            <tr id="legacy-runtime-detail" class="runtime-detail-row" hidden><td colspan="4">
+              <h3 id="existing-runtime-name" hidden>Existing runtime · Default</h3>
               <div id="existing-runtime-management" aria-live="polite"></div>
-        <div class="runtime-card">
+        <details class="runtime-settings-group"><summary>Session details</summary><div class="runtime-card">
           <div class="status-row">
             <span class="status-label">Session D-Bus:</span>
             <span id="session-service" class="status-value">—</span>
@@ -137,12 +155,18 @@
             <span class="status-label">Info:</span>
             <span id="health-message" class="status-value">—</span>
           </div>
-        </div>
+        </div></details>
             </td></tr>
           </tbody>
         </table></div>
+      </section>
+
+      <!-- Images page -->
+      <section id="page-images" class="page">
+        <div class="page-header"><div><h1>Images</h1><p class="hint">Download and import Android images for your runtimes.</p></div><button id="btn-refresh-images" class="btn" type="button">Refresh</button></div>
+        <p id="image-library-message" role="status" aria-live="polite"></p>
         <section class="settings-section image-settings runtime-images-section">
-          <div class="section-heading"><div><span class="eyebrow">ANDROID IMAGES</span><h2>Runtime images</h2></div><div class="runtime-actions"><button id="btn-import-images" class="btn" type="button" aria-controls="image-library-import" aria-expanded="false">Import custom image…</button><button id="btn-create-gapps" class="btn btn-primary" type="button">Create GAPPS runtime…</button></div></div>
+          <div class="section-heading"><div><span class="eyebrow">ANDROID IMAGES</span><h2>Image library</h2></div><div class="runtime-actions"><button id="btn-import-images" class="btn" type="button" aria-controls="image-library-import" aria-expanded="false">Import custom image…</button><button id="btn-create-gapps" class="btn btn-primary" type="button">Create GAPPS runtime…</button></div></div>
           <p class="hint">Keep downloaded and imported image pairs here. Use an image to create a runtime or reinstall the selected runtime.</p>
           <p id="custom-image-status" role="status" aria-live="polite"></p>
           <div id="settings-image-download" role="status" aria-live="polite"></div>
@@ -259,7 +283,19 @@
       <div class="detail-actions"><button id="tag-manager-close" class="btn" type="submit">Close</button></div>
     </form>
   </dialog>
+  <dialog id="runtime-batch-dialog">
+    <form id="runtime-batch-form">
+      <h2 id="runtime-batch-title"></h2>
+      <p id="runtime-batch-description"></p>
+      <ul id="runtime-batch-targets"></ul>
+      <label id="runtime-batch-image-field" hidden>Image<select id="runtime-batch-image" class="select-control"></select></label>
+      <label id="runtime-batch-confirm-field" hidden><span id="runtime-batch-confirm-label"></span><input id="runtime-batch-confirm" autocomplete="off"></label>
+      <p id="runtime-batch-dialog-error" role="alert"></p>
+      <div class="runtime-actions"><button id="runtime-batch-submit" class="btn btn-primary" type="submit">Continue</button><button id="runtime-batch-cancel" class="btn" type="button">Cancel</button></div>
+    </form>
+  </dialog>
   <script src="runtime-settings.js"></script>
+  <script src="runtime-batch.js"></script>
   <script src="main.js"></script>
   <script src="keymap-drafts.js"></script>
   <script src="keymap-library.js"></script>

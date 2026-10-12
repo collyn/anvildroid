@@ -1153,6 +1153,24 @@ static void bridge_disconnecting(struct wl_display *display) {
   }
 }
 
+/* Publish only complete requests; all callers run on the task worker. */
+static int submit_resize_request(int task, int width, int height) {
+  char line[64];
+  int length = format_resize_request(line, sizeof(line), task, width, height);
+  if (length < 0) return 0;
+  void *request = fopen("/data/waydroid_tmp/anvildroid/resize.tmp", "w");
+  if (!request) return 0;
+  int written = fprintf(request, "%s", line);
+  int closed = fclose(request);
+  int ok = written == length && !closed &&
+      !rename("/data/waydroid_tmp/anvildroid/resize.tmp",
+              "/data/waydroid_tmp/anvildroid/resize");
+  if (!ok)
+    __android_log_print(6, "AnvilDroid", "failed to publish resize task %d %dx%d",
+                        task, width, height);
+  return ok;
+}
+
 /* The shell-UID companion supplies authoritative task bounds. It never calls
  * Wayland; the renderer thread consumes the snapshot on its next commit.
  */
@@ -1220,7 +1238,10 @@ static void *task_worker(void *unused) {
       /* A surface recreated by a resize must not be re-clamped: fragile
        * apps replace their task while relaying out, which would snap the
        * window back to the default size in a loop. */
-      if (profile_recreated(tasks[i].package)) continue;
+      pthread_mutex_lock(mutex);
+      int recreated = profile_recreated(tasks[i].package);
+      pthread_mutex_unlock(mutex);
+      if (recreated) continue;
       /* Only the first-ever launch of a package gets the default open size;
        * afterwards the per-package profile (the user's last resized size)
        * owns the restore. */
@@ -1236,14 +1257,7 @@ static void *task_worker(void *unused) {
         }
       }
       if (opened_count < 8) opened_ids[opened_count++] = tasks[i].id;
-      void *request = fopen("/data/waydroid_tmp/anvildroid/resize.tmp", "w");
-      if (request) {
-        char line[64];
-        format_resize_request(line, sizeof(line), tasks[i].id, 448, 704);
-        fprintf(request, "%s", line);
-        fclose(request);
-        rename("/data/waydroid_tmp/anvildroid/resize.tmp",
-               "/data/waydroid_tmp/anvildroid/resize");
+      if (submit_resize_request(tasks[i].id, 448, 704)) {
         __android_log_print(4, "AnvilDroid",
                             "open-size task %d %dx%d -> 448x704",
                             tasks[i].id, tasks[i].width, tasks[i].height);
@@ -1281,15 +1295,7 @@ static void *task_worker(void *unused) {
       pthread_mutex_unlock(mutex);
       if (maximized) continue;
       int snapped = resize_task_width(tasks[i].width);
-      void *request = fopen("/data/waydroid_tmp/anvildroid/resize.tmp", "w");
-      if (request) {
-        char line[64];
-        format_resize_request(line, sizeof(line), tasks[i].id, snapped,
-                              tasks[i].height);
-        fprintf(request, "%s", line);
-        fclose(request);
-        rename("/data/waydroid_tmp/anvildroid/resize.tmp",
-               "/data/waydroid_tmp/anvildroid/resize");
+      if (submit_resize_request(tasks[i].id, snapped, tasks[i].height)) {
         __android_log_print(4, "AnvilDroid",
                             "snap resize task %d %dx%d -> %dx%d (pitch)",
                             tasks[i].id, tasks[i].width, tasks[i].height,
@@ -1345,14 +1351,7 @@ static void *task_worker(void *unused) {
     pthread_mutex_unlock(mutex);
     if (id >= 0 && width >= 64 && height >= 64 && width <= 8192 &&
         height <= 8192) {
-      void *request = fopen("/data/waydroid_tmp/anvildroid/resize.tmp", "w");
-      if (request) {
-        char line[64];
-        format_resize_request(line, sizeof(line), id, width, height);
-        fprintf(request, "%s", line);
-        fclose(request);
-        rename("/data/waydroid_tmp/anvildroid/resize.tmp",
-               "/data/waydroid_tmp/anvildroid/resize");
+      if (submit_resize_request(id, width, height)) {
         __android_log_print(4, "AnvilDroid",
                             "resize task %d physical=%dx%d scale=%d/120 after quiet interval",
                             id, width, height, hwc_scale_120);

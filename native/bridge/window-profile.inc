@@ -220,10 +220,6 @@ static void profile_poll(void) {
     if (!s->app || !profile_name(s->app_id,1) || !s->has_bounds || !s->resize.ready) continue;
     if (!profile_unique(s) || s->resize.dragging || s->resize.maximized ||
         s->resize.width || s->preview_width || !profile_size(s->content_width,s->content_height)) {
-      __android_log_print(4,"AnvilDroid","profile skip %s unique=%d drag=%d max=%d pend=%dx%d prev=%dx%d size=%d",
-        s->app_id,profile_unique(s),s->resize.dragging,s->resize.maximized,
-        s->resize.width,s->resize.height,s->preview_width,s->preview_height,
-        profile_size(s->content_width,s->content_height));
       s->profile_ticks=0; continue;
     }
     if (s->profile_restoring) { s->profile_restoring=0; s->profile_dirty=0; }
