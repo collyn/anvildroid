@@ -83,18 +83,33 @@ function watchWaydroidWindow(w, existing) {
         var g = w.frameGeometry;
         if (g.width <= 0 || g.height <= 0) return;
         width = g.width; height = g.height;
-        var x, y;
+        var x, y, destination = output;
         if (persistent && unique() && validPosition(saved, g)) {
             x = saved.x; y = saved.y;
+            var savedOutputs = workspace.screens || workspace.outputs || [];
+            for (var i = 0; i < savedOutputs.length; ++i)
+                if (String(savedOutputs[i].name) === saved.output)
+                    destination = savedOutputs[i];
         } else {
             // Re-select if the initial output disappeared while Android mapped.
             var outputs = workspace.screens || workspace.outputs || [];
             if (outputs.length && outputs.indexOf(output) < 0)
                 output = workspace.screenAt(workspace.cursorPos) || workspace.activeScreen;
             if (!output) return;
+            destination = output;
             var a = areaFor(output);
             x = a.x + Math.max(0, Math.round((a.width - g.width) / 2));
             y = a.y + Math.max(0, Math.round((a.height - g.height) / 2));
+        }
+        // Android can recreate a maximized task before KWin receives its
+        // maximize state. Do not place that workarea-sized surface at the
+        // saved small-window position: KWin may retain the displaced origin
+        // when the pending maximize is acknowledged. Clamp each large axis
+        // to the destination output's workarea, preserving normal positions.
+        if (destination) {
+            var workarea = areaFor(destination);
+            if (g.width >= workarea.width) x = workarea.x;
+            if (g.height >= workarea.height) y = workarea.y;
         }
         if (g.x !== x || g.y !== y) {
             placing = true;
