@@ -236,7 +236,7 @@ async fn runtime_controller(
         use anvildroid_core::controller::Request;
         let changes_existing = match &request {
             Request::ResourcesSet { id, .. } | Request::GpuSet { id, .. }
-            | Request::ArmSet { id, .. } | Request::ExistingClaim { id }
+            | Request::ArmSet { id, .. } | Request::ExistingClaim { id } | Request::SystemIntegration { id }
             | Request::ExistingImport { id, .. }
             | Request::Rename { id, .. } => id == scope::LEGACY_ID,
             _ => false,
@@ -395,7 +395,7 @@ fn stage_setup_payload(bundle: &std::path::Path) -> Result<std::path::PathBuf, S
     std::fs::create_dir(&stage).map_err(|e| format!("Cannot create setup stage: {e}"))?;
     std::fs::set_permissions(&stage, std::fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;
     let result = (|| -> Result<(), String> {
-        for relative in ["scripts/setup-waydroid.py", "services/runtime-host.py", "services/runtime-arm.py", "services/runtime-arm-source.py"] {
+        for relative in ["scripts/setup-waydroid.py", "services/runtime-host.py", "services/runtime-arm.py", "services/runtime-arm-source.py", "services/runtime-extract.py", "services/runtime-download.py", "services/runtime-image-format.py", "services/runtime-existing.py", "services/runtime-resources.py", "services/runtime-gpu.py", "services/runtime-nvidia.py", "services/runtime-linux.py", "services/runtime-storage.py"] {
             let source = bundle.join(relative);
             if !source.is_file() { return Err(format!("Bundled setup payload is missing: {relative}")); }
             let target = stage.join(relative);
@@ -531,7 +531,7 @@ async fn start_runtime_controller() -> Result<StartControllerResult, String> {
 }
 
 #[tauri::command]
-async fn setup_waydroid(flavor: String) -> Result<StartControllerResult, String> {
+async fn setup_waydroid(flavor: String, image_id: Option<String>) -> Result<StartControllerResult, String> {
     blocking(move || {
         if !matches!(flavor.as_str(), "VANILLA" | "GAPPS") {
             return Err("Flavor must be VANILLA or GAPPS".into());
@@ -546,7 +546,11 @@ async fn setup_waydroid(flavor: String) -> Result<StartControllerResult, String>
         let stage = stage_setup_payload(&bundle)?;
         let result = run_pkexec(
             &stage.join(SETUP_HELPER),
-            &["--flavor", flavor.as_str()],
+            &{
+                let mut args = vec!["--flavor", flavor.as_str()];
+                if let Some(id) = image_id.as_deref() { args.extend(["--image-id", id]); }
+                args
+            },
             std::time::Duration::from_secs(1200),
         );
         let _ = std::fs::remove_dir_all(&stage);
@@ -1020,7 +1024,7 @@ async fn open_waydroid(activation_token: Option<String>, guard: State<'_, OpGuar
         match command
             .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null()).spawn() {
-            Ok(mut child)=>{std::thread::spawn(move || {let _=child.wait();});op_result_ok("Waydroid full-window launch requested for Existing runtime.")},
+            Ok(mut child)=>{std::thread::spawn(move || {let _=child.wait();});op_result_ok("Waydroid full-window launch requested for Default runtime.")},
             Err(e)=>op_result_err(AnvilError::Io(e.to_string())),
         }
     }).await)

@@ -303,10 +303,10 @@ pub fn waydroid_icon_dir() -> Option<std::path::PathBuf> {
     dirs::data_dir().map(|d| d.join("waydroid/data/icons"))
 }
 
-/// Library refresh must not start or wake a stopped/frozen session.
-/// Waydroid's app-list command unfreezes a frozen container, so skip it there.
+/// Library refresh never starts a stopped session. A frozen inventory read
+/// uses Waydroid's temporary unfreeze/refreeze; GUI polling serves its cache.
 pub fn list_apps_if_running() -> Result<Vec<AppInfo>, AnvilError> {
-    if crate::runtime::runtime_status().state != crate::models::RuntimeState::Running {
+    if !matches!(crate::runtime::runtime_status().state, crate::models::RuntimeState::Running | crate::models::RuntimeState::Frozen) {
         return Err(AnvilError::BackendFailed(
             "Runtime is not running. Keeping the saved app list; use Start or open an app when needed.".into(),
         ));

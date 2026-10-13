@@ -41,7 +41,7 @@
       for(const p of profiles){
         const row=document.createElement('article');row.className='settings-section';
         line(row,p.package,'h3');
-        line(row,`${p.runtime==='default'?'Existing runtime':p.runtime} · ${p.bindings.length} controls · ${p.source==='runtime'?'Runtime profile':'Legacy GUI draft'} (not active)`);
+        line(row,`${p.runtime==='default'?'Default runtime':p.runtime} · ${p.bindings.length} controls · ${p.source==='runtime'?'Runtime profile':'Legacy GUI draft'} (not active)`);
         line(row,p.bindings.map(b=>`${b.evdev!==undefined?physicalLabel(b.evdev):model.keyLabel(b.key)} (${b.kind})`).join(' · '));
         if(p.source==='runtime'){
           const edit=line(row,'Edit in running app','button');edit.type='button';edit.className='btn';

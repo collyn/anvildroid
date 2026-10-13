@@ -9,6 +9,7 @@ import importlib.util
 import io
 import json
 import os
+import platform
 from pathlib import Path
 import re
 import shutil
@@ -16,6 +17,7 @@ import stat
 import subprocess
 import tempfile
 import time
+import uuid
 
 
 def module(name):
@@ -27,6 +29,7 @@ def module(name):
 
 resources = module('runtime-resources')
 gpu = module('runtime-gpu')
+arm = module('runtime-arm')
 linux = module('runtime-linux')
 storage = module('runtime-storage')
 GOOGLE_PACKAGES = ('com.android.vending', 'com.google.android.gms', 'com.google.android.gsf')
@@ -104,7 +107,9 @@ class ExistingRuntime:
         except FileNotFoundError:
             return {}
         if not isinstance(value, dict) or type(value.get('owner_uid')) is not int:
-            raise RuntimeError('Invalid Existing runtime ownership record')
+            raise RuntimeError('Invalid Default runtime ownership record')
+        if value.get('name') == 'Existing runtime':
+            value['name'] = 'Default runtime'
         return value
 
     def authorize(self, uid):
@@ -112,11 +117,11 @@ class ExistingRuntime:
         saved = self.saved()
         if session:
             if session.get('user_id') != str(uid):
-                raise RuntimeError('Existing runtime belongs to another desktop user')
+                raise RuntimeError('Default runtime belongs to another desktop user')
             if saved and saved['owner_uid'] != uid:
-                raise RuntimeError('Existing runtime management belongs to another user')
+                raise RuntimeError('Default runtime management belongs to another user')
         elif not saved or saved['owner_uid'] != uid:
-            raise RuntimeError('Start Existing runtime, then choose Enable management once before stopping it.')
+            raise RuntimeError('Start Default runtime, then choose Enable management once before stopping it.')
         elif self.state() != 'STOPPED':
             raise RuntimeError('Waydroid container is active without an authenticated session; recover it before managing it')
         return session, saved
@@ -134,10 +139,10 @@ class ExistingRuntime:
 
     def android(self, *args):
         if self.state() != 'RUNNING':
-            raise RuntimeError('Start Existing runtime before querying Android')
+            raise RuntimeError('Start Default runtime before querying Android')
         return linux.run_bounded('lxc-attach', '-P', self.work / 'lxc', '-n', 'waydroid', '--', *args,
                                  timeout=2, full_output=True, output_limit=2 * 1024**2,
-                                 operation='Existing Android query')
+                                 operation='Default Android query')
 
     def config(self):
         cfg = configparser.ConfigParser(interpolation=None)
@@ -162,12 +167,61 @@ class ExistingRuntime:
                 'detail': 'Native desktop bridge and caption overlay installed.' if enabled else
                           'Install Desktop integration while Android is stopped.'}
 
+    def sync_desktop_assets(self, uid=None):
+        """Refresh an enabled Default bridge before the next rootfs mount."""
+        if not self.desktop_overlay(): return
+        self.stopped()
+        work_owner = self.work.lstat().st_uid
+        if uid is not None and work_owner not in (0, uid):
+            raise RuntimeError('Default overlay belongs to another desktop user')
+        trusted_owners = {0, work_owner}
+        for relative in ('vendor/lib64/libanvildroid-window.so', 'vendor/bin/anvildroid-apps.sh',
+                         'vendor/bin/anvildroid-tasks.sh'):
+            source = DESKTOP_ASSETS[relative]
+            for path in (source, *source.parents):
+                info = path.lstat()
+                if path.is_symlink() or info.st_uid != 0 or info.st_mode & 0o022:
+                    raise RuntimeError('Unsafe Desktop integration asset: ' + str(path))
+            if not source.is_file(): raise RuntimeError('Missing Desktop integration asset')
+            target = self.work / 'overlay' / relative
+            data = source.read_bytes()
+            directory = os.open('/', os.O_RDONLY | os.O_DIRECTORY)
+            temporary = '.anvildroid-' + uuid.uuid4().hex
+            try:
+                # Official/rootless Waydroid may have user-owned directories.
+                # Pin each directory rather than writing through a checked
+                # pathname that its owner could replace with a symlink.
+                for part in target.parent.parts[1:]:
+                    child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+                    os.close(directory); directory = child
+                    info = os.fstat(directory)
+                    if info.st_uid not in trusted_owners or info.st_mode & 0o022:
+                        raise RuntimeError('Unsafe Desktop overlay target')
+                fd = os.open(target.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+                with os.fdopen(fd, 'rb') as current:
+                    info = os.fstat(current.fileno())
+                    if not stat.S_ISREG(info.st_mode) or info.st_uid not in trusted_owners or info.st_mode & 0o022 or info.st_nlink != 1:
+                        raise RuntimeError('Unsafe Desktop overlay target')
+                    if current.read(len(data) + 1) == data: continue
+                fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
+                with os.fdopen(fd, 'wb') as output:
+                    os.fchmod(output.fileno(), 0o644 if relative.endswith('.so') else 0o755)
+                    output.write(data); output.flush(); os.fsync(output.fileno())
+                os.rename(temporary, target.name, src_dir_fd=directory, dst_dir_fd=directory)
+                os.fsync(directory)
+            except OSError as error:
+                raise RuntimeError('Unsafe Desktop overlay target: ' + str(target)) from error
+            finally:
+                try: os.unlink(temporary, dir_fd=directory)
+                except FileNotFoundError: pass
+                os.close(directory)
+
     def enable_desktop(self):
         self.stopped()
         root = self.work / 'rootfs'
         source_init = root / 'system/etc/init/init.waydroid.rc'
         marker = 'service vendor.hwcomposer-2-1 /vendor/bin/hw/android.hardware.graphics.composer@2.1-service --desktop_file_hint=Waydroid.desktop\n'
-        text = self.read(source_init)
+        text = self.read(source_init).replace('    setenv LD_PRELOAD /vendor/lib64/libanvildroid-window.so\n', '')
         if text.count(marker) != 1:
             raise RuntimeError('This Waydroid image has no supported desktop composer service')
         framework = root / 'system/framework/framework-res.apk'
@@ -267,7 +321,7 @@ class ExistingRuntime:
             try:
                 if self.android('/system/bin/getprop', 'sys.boot_completed') != '1': display_state = 'Starting'
             except (OSError, RuntimeError): display_state = 'Starting'
-        return {'id': 'default', 'name': saved.get('name', 'Existing runtime'),
+        return {'id': 'default', 'name': saved.get('name', 'Default runtime'),
                 'state': display_state,
                 'managed': bool(saved), 'job': None, 'backend': 'waydroid-system',
                 'display': self.desktop_info()}
@@ -311,6 +365,11 @@ class ExistingRuntime:
     def gpu_info(self):
         result = gpu.info(self.store)
         result['software_supported'] = False  # Imported host setup is not managed here.
+        result['system_nvidia_supported'] = gpu.nvidia.system_integration_available()
+        for device in result['devices']:
+            if not result['system_nvidia_supported'] and (device.get('vendor_id') == '0x10de' or device.get('driver') == 'nvidia'):
+                device['selectable'] = False
+                device['reason'] = 'Restart waydroid-container.service to activate AnvilDroid NVIDIA integration.'
         result['selection'] = self.config().get('waydroid', 'drm_device', fallback='auto') or 'auto'
         return result
 
@@ -324,15 +383,62 @@ class ExistingRuntime:
                 'experimental': True, 'inherited': False, 'abis': ['armeabi-v7a', 'arm64-v8a'],
                 'detail': 'Uses installed ARM libraries. AnvilDroid does not replace an unknown native bridge.'}
 
+    def apply_defaults(self):
+        """Configure stopped system Waydroid without replacing an unknown ARM provider."""
+        self.stopped()
+        cfg = self.config()
+        if not cfg.has_section('properties'): cfg.add_section('properties')
+        values, changes = {}, {}
+        # Prefer Mesa; NVIDIA is eligible only with the live service hooks.
+        device = gpu.automatic_device(include_nvidia=gpu.nvidia.system_integration_available())
+        if device:
+            node = device['node']
+            cfg.set('waydroid', 'drm_device', node)
+            values['gralloc.gbm.device'] = node
+            nodes_path = self.work / 'lxc/waydroid/config_nodes'
+            nodes = [line for line in self.read(nodes_path).splitlines()
+                     if not re.match(r'^\s*lxc\.mount\.entry\s*=\s*/dev/dri/renderD\d+\s', line)]
+            nodes.append(f'lxc.mount.entry = {node} {node[1:]} none bind,create=file 0 0')
+            changes[nodes_path] = '\n'.join(nodes) + '\n'
+        bridge = properties(self.read(self.work / 'waydroid.prop')).get('ro.dalvik.vm.native.bridge', '')
+        if platform.machine() == 'x86_64' and bridge in ('', '0', 'libndk_translation.so'):
+            arm.ensure_archive()
+            with tempfile.TemporaryDirectory(prefix='.default-arm-', dir=self.store) as folder:
+                payload = Path(folder) / 'payload'
+                arm.stage(arm.ARCHIVE, payload, arm.SHA256)
+                manifest = arm.verify(payload, arm.SHA256)
+                overlay = self.work / 'overlay'
+                trusted_owners = {0, self.work.stat().st_uid}
+                for relative in manifest['files']:
+                    target = overlay / relative
+                    for parent in reversed((target.parent, *target.parent.parents)):
+                        if not parent.exists(): parent.mkdir(mode=0o755)
+                        info = parent.lstat()
+                        if not stat.S_ISDIR(info.st_mode) or info.st_uid not in trusted_owners or info.st_mode & 0o022:
+                            if parent == Path('/tmp') and info.st_uid == 0 and info.st_mode & stat.S_ISVTX: continue
+                            raise RuntimeError('Unsafe system ARM overlay directory')
+                    if target.is_symlink(): raise RuntimeError('Unsafe system ARM overlay file')
+                    self.replace_bytes(target, (payload / relative).read_bytes())
+                    target.chmod(stat.S_IMODE((payload / relative).stat().st_mode))
+            values.update(arm.PROPERTIES)
+        for key, value in values.items(): cfg.set('properties', key, value)
+        if values:
+            stream = io.StringIO(); cfg.write(stream)
+            changes[self.work / 'waydroid.cfg'] = stream.getvalue()
+            for name in ('waydroid.prop', 'waydroid_base.prop'):
+                changes[self.work / name] = replace_properties(self.read(self.work / name), values)
+            self.write_transaction(changes)
+
     def reinstall(self, uid, flavor, image_directory=None):
         """Replace system images and clear Android data after a stopped session."""
         session, saved = self.authorize(uid)
         if not saved:
-            raise RuntimeError('Enable management while Existing runtime is running once before reinstalling')
+            raise RuntimeError('Enable management while Default runtime is running once before reinstalling')
         self.stopped()
+        if platform.machine() == 'x86_64': arm.ensure_archive()
         data_path = Path(saved.get('data_path', ''))
         if not data_path.is_absolute() or data_path == Path('/'):
-            raise RuntimeError('Existing Android data directory is unavailable')
+            raise RuntimeError('Default Android data directory is unavailable')
         fd = storage.open_directory(data_path)
         try:
             info = os.fstat(fd)
@@ -387,9 +493,37 @@ class ExistingRuntime:
 
     def _dispatch(self, request, uid, session, saved):
         op = request['op']
+        if op == 'system_integration':
+            self.stopped()
+            wrapper = ASSETS / 'runtime-system.py'
+            for path in (wrapper, *wrapper.parents):
+                info = path.lstat()
+                if path.is_symlink() or info.st_uid != 0 or info.st_mode & 0o022:
+                    raise RuntimeError('Unsafe Waydroid integration payload')
+            if not wrapper.is_file(): raise RuntimeError('Update AnvilDroid to install system Waydroid integration')
+            directory = Path('/usr/lib/systemd/system/waydroid-container.service.d')
+            for path in (*directory.parents,):
+                info = path.lstat()
+                if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+                    raise RuntimeError('Unsafe Waydroid service directory')
+            directory.mkdir(mode=0o755, exist_ok=True)
+            info = directory.lstat()
+            if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+                raise RuntimeError('Unsafe Waydroid service directory')
+            self.replace_bytes(directory / '50-anvildroid.conf', (
+                '[Service]\nExecStart=\nExecStart=/usr/bin/python3 -B ' + str(wrapper) +
+                '\nRuntimeDirectory=anvildroid-system\nRuntimeDirectoryMode=0700\n').encode())
+            linux.run_bounded('systemctl', 'daemon-reload', timeout=10, operation='Load Waydroid integration')
+            linux.run_bounded('systemctl', 'restart', 'waydroid-container.service', timeout=30,
+                              operation='Activate Waydroid integration')
+            deadline = time.monotonic() + 5
+            while not gpu.nvidia.system_integration_available():
+                if time.monotonic() >= deadline: raise RuntimeError('Waydroid integration did not become ready; inspect service logs')
+                time.sleep(.1)
+            return self.gpu_info()
         if op == 'existing_claim':
             if not session or session.get('user_id') != str(uid):
-                raise RuntimeError('Start Existing runtime under your desktop account before enabling management')
+                raise RuntimeError('Start Default runtime under your desktop account before enabling management')
             source = session.get('waydroid_data')
             if not isinstance(source, str) or not source:
                 raise RuntimeError('Waydroid session did not report its Android data directory')
@@ -404,7 +538,7 @@ class ExistingRuntime:
             current = session_info()
             if any(current.get(key) != session.get(key) for key in ('user_id', 'pid', 'waydroid_data')):
                 raise RuntimeError('Waydroid session changed; retry Enable management')
-            storage.atomic(self.metadata, {**saved, 'owner_uid': uid, 'name': saved.get('name', 'Existing runtime'),
+            storage.atomic(self.metadata, {**saved, 'owner_uid': uid, 'name': saved.get('name', 'Default runtime'),
                                            'data_path': source, 'data_identity': identity, 'data_owner_uid': info.st_uid})
             return self.record(session, self.saved())
         if op in ('refresh', 'inspect'):
@@ -415,7 +549,7 @@ class ExistingRuntime:
         if op == 'display_info': return self.record(session, saved)['display']
         if op == 'display_set':
             if request.get('mode') != 'desktop':
-                raise RuntimeError('Existing runtime supports Desktop mode only after installing the AnvilDroid bridge')
+                raise RuntimeError('Default runtime supports Desktop mode only after installing the AnvilDroid bridge')
             return self.enable_desktop()
         if op == 'google_services':
             output = self.android('/system/bin/pm', 'list', 'packages', '--user', '0')
@@ -465,7 +599,7 @@ class ExistingRuntime:
                     report['checks'].append({'name': 'Graphics', 'status': 'warning', 'detail': str(error)})
             return report
         if not saved:
-            raise RuntimeError('Choose Enable management while Existing runtime is running first')
+            raise RuntimeError('Choose Enable management while Default runtime is running first')
         if op == 'rename':
             name = request['name']
             if not isinstance(name, str) or not 0 < len(name.strip()) <= 128 or any(ord(c) < 32 or ord(c) == 127 for c in name):
@@ -490,11 +624,13 @@ class ExistingRuntime:
             if op == 'gpu_set':
                 if request['node'] == 'software':
                     raise RuntimeError('Software compatibility is available only for managed runtimes with a supported image')
-                selected = gpu.choose(request['node'])
+                integrated = gpu.nvidia.system_integration_available()
+                selected = (gpu.automatic_device(include_nvidia=integrated) if request['node'] == 'auto'
+                            else gpu.choose(request['node']))
+                if not selected: raise RuntimeError('No supported Mesa GPU is available for Default runtime')
+                if not integrated and (selected.get('driver') == 'nvidia' or selected.get('vendor_id') == '0x10de'):
+                    raise RuntimeError('Restart waydroid-container.service to activate AnvilDroid NVIDIA integration')
                 node = selected['node']
-                if node == 'auto':
-                    node = next((d['node'] for d in self.gpu_info()['devices'] if d['selectable']), None)
-                    if node is None: raise RuntimeError('No supported GPU is available')
                 cfg.set('waydroid', 'drm_device', node)
                 values = {'gralloc.gbm.device': node}
                 nodes_path = self.work / 'lxc/waydroid/config_nodes'
@@ -527,7 +663,7 @@ class ExistingRuntime:
                 changes[path] = replace_properties(self.read(path), values)
             self.write_transaction(changes)
             return self.gpu_info() if op == 'gpu_set' else self.arm_info()
-        raise RuntimeError('This operation requires an isolated runtime; Existing runtime remains owned by system Waydroid')
+        raise RuntimeError('This operation requires an isolated runtime; Default runtime remains owned by system Waydroid')
 
     def import_source(self, uid):
         _, saved = self.authorize(uid)

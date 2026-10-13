@@ -30,6 +30,16 @@ const RuntimeUsage = (() => {
     ];
   }
   function retain(ids) { for (const id of samples.keys()) if (!ids.has(id)) samples.delete(id); }
-  return {sample, metrics, retain};
+  function gpu(record) {
+    const selected = record.gpu?.selection;
+    if (!selected) return {text: '—', hint: 'GPU selection unavailable'};
+    if (selected === 'auto') return {text: 'Automatic', hint: 'Configured GPU: Automatic; hardware is selected at startup'};
+    if (selected === 'software') return {text: 'CPU rendering', hint: 'Configured GPU: software rendering on CPU'};
+    const device = record.gpu.devices?.find(device => device.node === selected);
+    const vendor = {'0x8086':'Intel', '0x1002':'AMD', '0x10de':'NVIDIA'}[device?.vendor_id];
+    const text = vendor || device?.driver || selected.split('/').pop();
+    return {text, hint: `Configured GPU: ${text}${device?.driver ? ' · ' + device.driver : ''} · ${selected}${device?.selectable === false ? ' · ' + (device.reason || 'Unavailable') : ''}`};
+  }
+  return {sample, metrics, retain, gpu};
 })();
 if (typeof module !== 'undefined') module.exports = RuntimeUsage;

@@ -54,7 +54,7 @@ fn launch_with(
     loop {
         let record = request(Request::Refresh { id: id.into() })?;
         match record["state"].as_str() {
-            Some("Running") => break,
+            Some("Running" | "Frozen") => break,
             Some("Prepared" | "Stopped") if !started => {
                 request(Request::Start {
                     id: id.into(),
@@ -113,6 +113,17 @@ fn launch_with(
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn frozen_shortcut_routes_to_existing_worker_without_starting_another() {
+        let id = "r-11111111111111111111111111111111";
+        let mut replies = vec![json!({"mode":"desktop"}), json!({"state":"Frozen"}),
+            json!({"id":"job","runtime_id":id,"package":"com.example.app","action":"launch","status":"Succeeded"})].into_iter();
+        launch_with(id, "com.example.app", |request| {
+            assert!(!matches!(request, Request::Start { .. }));
+            Ok(replies.next().unwrap())
+        }, || {}).unwrap();
+        assert!(replies.next().is_none());
+    }
     #[test]
     fn stopped_runtime_boots_and_every_request_stays_scoped() {
         let id = "r-11111111111111111111111111111111";

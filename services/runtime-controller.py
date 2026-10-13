@@ -204,7 +204,7 @@ class Store:
                     self.finish(record['id'], record['job']['id'], None if prepared else 'Preparation interrupted; retry prepare')
                 except Exception as error:
                     self.finish(record['id'], record['job']['id'], str(error))
-            elif record['state'] in ('Starting', 'Running', 'Stopping'):
+            elif record['state'] in ('Starting', 'Running', 'Frozen', 'Stopping'):
                 self.reconcile(record)
 
     def _start_on_boot(self):
@@ -233,7 +233,7 @@ class Store:
                     'CONFIG', 'Invalid or duplicate runtime ID')
             ids.add(identifier)
             require(type(record['owner_uid']) is int and record['owner_uid'] >= 0 and
-                    record['state'] in ('Allocated', 'Provisioning', 'Prepared', 'Starting', 'Running', 'Stopping', 'Stopped', 'Error'), 'CONFIG', 'Invalid runtime owner/state')
+                    record['state'] in ('Allocated', 'Provisioning', 'Prepared', 'Starting', 'Running', 'Frozen', 'Stopping', 'Stopped', 'Error'), 'CONFIG', 'Invalid runtime owner/state')
             if data['schema_version'] == 1:
                 require(record['state'] == 'Allocated', 'CONFIG', 'Invalid legacy state')
             else:
@@ -247,7 +247,7 @@ class Store:
                             and isinstance(job['id'], str) and len(job['id']) == 32
                             and all(c in '0123456789abcdef' for c in job['id'])
                             and job['operation'] in (('prepare',) if data['schema_version'] < 3 else ('prepare', 'start', 'stop'))
-                            and job['status'] == {'Provisioning': 'Running', 'Prepared': 'Succeeded', 'Starting': 'Running', 'Running': 'Succeeded', 'Stopping': 'Running', 'Stopped': 'Succeeded', 'Error': 'Failed'}[record['state']]
+                            and job['status'] == {'Provisioning': 'Running', 'Prepared': 'Succeeded', 'Starting': 'Running', 'Running': 'Succeeded', 'Frozen': 'Succeeded', 'Stopping': 'Running', 'Stopped': 'Succeeded', 'Error': 'Failed'}[record['state']]
                             and (job['error'] is None if record['state'] != 'Error' else isinstance(job['error'], str)),
                             'CONFIG', 'Invalid runtime operation')
             validate_name(record['name'])
@@ -293,6 +293,9 @@ class Store:
             instance = self.backend.location(identifier)
             reset = instance / 'reinstall.json'
             if reset.exists():
+                if platform.machine() == 'x86_64':
+                    self.prepare_phases[identifier] = 'Checking ARM translation package…'
+                    worker_module.arm.ensure_archive()
                 self.storage.ensure(identifier)
                 require(self.android.quiescent(identifier), 'BUSY', 'Android worker is still active')
                 storage_module.assert_no_child_mounts(instance)
@@ -329,15 +332,22 @@ class Store:
                     str(Path(__file__).with_name('runtime-provision.py')), str(instance), selection['flavor']],
                     capture_output=True, text=True, timeout=300)
                 if result.returncode: raise RuntimeError('Image compatibility preparation failed: ' + result.stderr[-450:])
-                if selection.get('arm_default') and worker_module.arm.read_config(instance) is None:
-                    self.prepare_phases[identifier] = 'Enabling default ARM app support…'
-                    if not worker_module.arm.ARCHIVE.is_file():
-                        raise RuntimeError('Default ARM support requires the controller ARM package. Install it, then retry Prepare.')
-                    worker_module.arm.configure(instance, True, json.loads((instance / 'support/images.json').read_text()), storage_module.atomic)
             else:
                 self.backend.prepare(identifier)
                 if self.imports.get(identifier) == 'pending':
                     self.import_existing_data(identifier)
+            # New/reinstalled instances receive defaults. Explicit saved choices
+            # remain intact when Prepare is retried on an existing runtime.
+            if not (instance / 'gpu.json').exists():
+                self.prepare_phases[identifier] = 'Selecting compatible GPU…'
+                device = worker_module.gpu.automatic_device()
+                storage_module.atomic(instance / 'gpu.json', device or {'node':'auto'})
+            if platform.machine() == 'x86_64' and (selection is None or selection.get('arm_default')) and worker_module.arm.read_config(instance) is None:
+                self.prepare_phases[identifier] = 'Installing ARM translation…'
+                worker_module.arm.ensure_archive()
+                manifest = self.backend.inspect(identifier)
+                worker_module.arm.configure(instance, True, manifest['images'], storage_module.atomic)
+
         except Exception as error:
             self.finish(identifier, job_id, str(error) or 'Preparation failed')
         else:
@@ -392,7 +402,7 @@ class Store:
             os.close(source_fd)
 
     def reinstall_existing(self, request, uid):
-        require(request.get('confirmed_name') == self.existing.saved().get('name', 'Existing runtime'),
+        require(request.get('confirmed_name') == self.existing.saved().get('name', 'Default runtime'),
                 'INVALID_REQUEST', 'Runtime name changed; review reinstall again')
         flavor = request.get('flavor')
         require(flavor in ('installed', 'VANILLA', 'GAPPS', 'CUSTOM'), 'INVALID_REQUEST', 'Invalid image flavor')
@@ -424,7 +434,7 @@ class Store:
             state = report['state']
             if record['job']['operation'] == 'start' and state == 'Stopped':
                 raise RuntimeError('Start interrupted; worker is stopped')
-            if record['job']['operation'] == 'stop' and state in ('Starting', 'Running'):
+            if record['job']['operation'] == 'stop' and state in ('Starting', 'Running', 'Frozen'):
                 raise RuntimeError('Stop interrupted; worker is still active, retry stop')
             self.replace(dict(record, state=state, job=dict(record['job'],
                 status='Running' if state in ('Starting', 'Stopping') else ('Failed' if state == 'Error' else 'Succeeded'),
@@ -534,6 +544,7 @@ class Store:
 
     def requirements(self, uid=None):
         images = self.backend.source_status()
+        installed_images = images['available']
         # Managed runtimes selected from the image library do not depend on the
         # host Waydroid image directory. Treat a ready custom/downloaded pair as
         # an available preparation source for this user.
@@ -557,24 +568,24 @@ class Store:
              'detail': 'Available' if not missing else 'Missing: ' + ', '.join(missing)},
             {'id': 'arm_payload', 'label': 'ARM app support package',
              'available': worker_module.arm.ARCHIVE.is_file(),
-             'detail': 'Experimental; required for default ARM support in downloaded Android 13 runtimes. Use setup to download it.'},
+             'detail': 'Downloaded automatically during Prepare or setup.'},
             {'id': 'support', 'label': 'Waydroid setup', 'available': support,
              'detail': 'Configuration found' if support else 'Complete Waydroid initialization before starting an additional runtime.'},
             {'id': 'desktop', 'label': 'Desktop session', 'available': desktop_info['desktop'], 'detail': desktop_info['detail']}]
         return {'checks': checks, 'can_prepare': waydroid and images['available'],
                 'can_start': waydroid and not missing and support,
-                'image_bytes': images['bytes'], 'desktop': desktop_info}
+                'image_bytes': images['bytes'], 'installed_images': installed_images, 'desktop': desktop_info}
 
     def resource_report(self, record):
         resource = worker_module.resources
-        result = resource.info(self.backend.location(record['id']), record['id'], record['state'] == 'Running')
+        result = resource.info(self.backend.location(record['id']), record['id'], record['state'] in ('Running', 'Frozen'))
         others = []
         for other in self.data['runtimes']:
-            if other['id'] == record['id'] or other['owner_uid'] != record['owner_uid'] or other['state'] not in ('Running', 'Starting', 'Stopping'):
+            if other['id'] == record['id'] or other['owner_uid'] != record['owner_uid'] or other['state'] not in ('Running', 'Frozen', 'Starting', 'Stopping'):
                 continue
             try:
                 self.storage.ensure(other['id'])
-                others.append(resource.info(self.backend.location(other['id']), other['id'], other['state'] == 'Running'))
+                others.append(resource.info(self.backend.location(other['id']), other['id'], other['state'] in ('Running', 'Frozen')))
             except (OSError, RuntimeError, ValueError): others.append(None)
         result['presets'] = resource.presets(result['host'])
         result['budget'] = resource.budget(result['host'], others, (result.get('effective') or {}).get('memory_current_bytes', 0))
@@ -631,13 +642,15 @@ class Store:
                       'Private IPv4 uplink and DNS are configured. Internet availability depends on the host connection.'
                       if worker.get('network') == 'private_uplink' else
                       'This worker has no Internet uplink. Stop and start it to load the updated network support.')
+            elif worker['state'] == 'Frozen':
+                check('Android worker', 'ok', 'Android is suspended while idle; opening an app resumes it.')
             elif worker['state'] == 'Stopped':
                 check('Android worker', 'ok', 'Worker status reports Android is stopped.')
                 if worker.get('shutdown_forced'):
                     check('Last shutdown', 'warning', worker.get('shutdown_warning') or 'Android required forced cleanup.')
             else:
                 check('Android worker', 'error' if worker['state'] == 'Error' else 'warning', worker.get('error') or worker['state'])
-            if record['state'] in ('Running', 'Stopped', 'Starting', 'Stopping') and worker['state'] != record['state']:
+            if record['state'] in ('Running', 'Frozen', 'Stopped', 'Starting', 'Stopping') and worker['state'] != record['state']:
                 check('State', 'warning', 'Worker state differs from the saved state. Refresh Settings to reconcile.')
         except (OSError, RuntimeError, ValueError) as error:
             check('Android worker', 'error', str(error))
@@ -736,13 +749,13 @@ class Store:
         selection = None
         if operation == 'existing_import':
             require(set(request) == {'op', 'id', 'name'} and request['id'] == 'default' and apk_fd is None,
-                    'INVALID_REQUEST', 'Expected Existing runtime and a new runtime name')
+                    'INVALID_REQUEST', 'Expected Default runtime and a new runtime name')
             validate_name(request['name'])
             source = self.existing.import_source(uid)
             os.close(source)
             require(self.backend.source == Path('/var/lib/waydroid/images'), 'CONFIG', 'Import requires installed Waydroid images')
             require(self.existing.config().get('waydroid', 'images_path', fallback='') == str(self.backend.source),
-                    'CONFIG', 'Existing runtime uses a different image directory; import cannot verify that image pair')
+                    'CONFIG', 'Default runtime uses a different image directory; import cannot verify that image pair')
             require(len(self.active_jobs) < 4 and self.storage.busy is None and
                     not any(self.imports.get(identifier) == 'pending' for identifier in self.active_jobs),
                     'BUSY', 'Wait for current operations to finish')
@@ -805,6 +818,7 @@ class Store:
         fields['keymaps']={'op','id'}
         fields['app_states']={'op','id'}
         fields['existing_claim'] = {'op', 'id'}
+        fields['system_integration'] = {'op', 'id'}
         require(isinstance(operation, str) and operation in fields, 'UNSUPPORTED', 'Operation is not available')
         arm_fields = ({'op', 'id', 'enabled'}, {'op', 'id', 'enabled', 'archive_sha256'})
         reinstall_fields = ({'op', 'id', 'flavor', 'confirmed_name'}, {'op', 'id', 'flavor', 'confirmed_name', 'system_sha256', 'vendor_sha256'})
@@ -817,13 +831,14 @@ class Store:
         require(apk_fd is None or operation == 'install', 'INVALID_REQUEST', 'Unexpected file descriptor')
         if request.get('id') == 'default':
             require(apk_fd is None, 'INVALID_REQUEST', 'Use the existing APK installation command for system Waydroid')
-            require(operation not in ('resources_set', 'gpu_set', 'arm_set', 'existing_claim') or
+            require(operation not in ('resources_set', 'gpu_set', 'arm_set', 'existing_claim', 'system_integration') or
                     not any(self.imports.get(identifier) == 'pending' for identifier in self.active_jobs),
-                    'BUSY', 'Wait for Existing runtime import to finish')
+                    'BUSY', 'Wait for Default runtime import to finish')
             if operation == 'reinstall':
                 return self.reinstall_existing(request, uid)
             return self.existing.dispatch(request, uid)
-        require(operation != 'existing_claim', 'INVALID_REQUEST', 'Only Existing runtime can be registered for system management')
+        require(operation != 'existing_claim', 'INVALID_REQUEST', 'Only Default runtime can be registered for system management')
+        require(operation != 'system_integration', 'INVALID_REQUEST', 'System integration applies only to Default runtime')
         if operation == 'requirements':
             return self.requirements(uid)
         if operation == 'list':
@@ -900,7 +915,7 @@ class Store:
             self.pool.submit(self.delete_job, identifier, dict(job))
             return job
         if operation == 'install':
-            require(record['state'] == 'Running', 'INVALID_STATE', 'Start this runtime before installing an APK')
+            require(record['state'] in ('Running', 'Frozen'), 'INVALID_STATE', 'Start this runtime before installing an APK')
             require(record['id'] not in self.active_jobs and len(self.active_jobs) < 4, 'BUSY', 'Wait for the runtime operation to finish')
             self.storage.ensure(record['id'])
             try: transfer.apk_size(apk_fd)
@@ -947,16 +962,16 @@ class Store:
             # Custom/newer images are allowed to opt in. Provisioning still
             # reports experimental compatibility; the bridge payload is
             # verified before it can be mounted into Android.
-            supported = bool(platform.machine() == 'x86_64' and selection and
-                             (instance / 'support/images.json').is_file())
+            supported = bool(platform.machine() == 'x86_64' and ((instance / 'support/images.json').is_file() or self.backend.inspect(record['id'])))
             if operation == 'arm_info':
                 return dict(worker_module.arm.info(instance, supported, self.arm_sources(uid)), default_enabled=bool(selection and selection.get('arm_default')))
             require(type(request['enabled']) is bool, 'INVALID_REQUEST', 'Expected boolean ARM setting')
             require(record['id'] not in self.active_jobs and self.storage.busy is None
                     and record['state'] in ('Prepared', 'Stopped', 'Error'), 'BUSY', 'Stop Android before changing ARM support')
-            require(supported, 'UNSUPPORTED', 'Prepare a downloaded Android 13 Waydroid image first. Copied system runtimes keep their existing ARM setup.')
+            require(supported, 'UNSUPPORTED', 'Prepare runtime images before changing ARM translation.')
             require(self.android.quiescent(record['id']), 'BUSY', 'Android worker is still active')
-            images = json.loads((instance / 'support/images.json').read_text())
+            support_pin = instance / 'support/images.json'
+            images = json.loads(support_pin.read_text()) if support_pin.exists() else self.backend.inspect(record['id'])['images']
             archive = None
             provider = 'libndk_translation 0.2.3'
             if request.get('archive_sha256'):
@@ -970,7 +985,7 @@ class Store:
             return dict(worker_module.arm.info(instance, supported, self.arm_sources(uid)), default_enabled=bool(selection and selection.get('arm_default')))
         if operation == 'display_info':
             effective = None
-            if record['state'] == 'Running' and record['id'] not in self.active_jobs:
+            if record['state'] in ('Running', 'Frozen') and record['id'] not in self.active_jobs:
                 try: effective = self.android.status(record['id']).get('display_mode', 'headless')
                 except (OSError, RuntimeError, ValueError): pass
             return {'mode': self.displays.get(record['id'], 'headless'), 'effective_mode': effective}
@@ -995,7 +1010,7 @@ class Store:
         if operation == 'app_action':
             require(record['id'] not in self.active_jobs, 'BUSY', 'Runtime already has an operation')
             require(len(self.active_jobs) < 4, 'BUSY', 'Controller operation capacity reached; retry when a job completes')
-            require(record['state'] == 'Running', 'INVALID_STATE', 'Start this runtime before using app actions')
+            require(record['state'] in ('Running', 'Frozen'), 'INVALID_STATE', 'Start this runtime before using app actions')
             require(request['action'] in ('launch', 'force_stop', 'uninstall', 'keymap_edit', 'full_ui'), 'INVALID_REQUEST', 'Unsupported app action')
             require(isinstance(request['package'], str) and len(request['package']) <= 255 and
                     re.fullmatch(r'[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)+', request['package']), 'INVALID_REQUEST', 'Invalid package')
@@ -1009,7 +1024,7 @@ class Store:
             return job
         if operation == 'google_services':
             require(record['id'] not in self.active_jobs, 'BUSY', 'Wait for the runtime operation to finish')
-            require(record['state'] == 'Running', 'INVALID_STATE', 'Start this runtime before checking Google services')
+            require(record['state'] in ('Running', 'Frozen'), 'INVALID_STATE', 'Start this runtime before checking Google services')
             self.storage.ensure(record['id'])
             return self.android.google_services(record['id'])
         if operation == 'keymaps':
@@ -1081,9 +1096,9 @@ class Store:
             require(not (self.backend.location(record['id']) / 'reinstall.json').exists(), 'INVALID_STATE', 'Reinstall interrupted; retry preparation first')
         if operation in ('start', 'stop'):
             require(operation != 'start' or self.imports.get(record['id']) != 'pending',
-                    'INVALID_STATE', 'Finish importing Existing runtime before starting this copy')
+                    'INVALID_STATE', 'Finish importing Default runtime before starting this copy')
             desktop = None
-            if operation == 'start' and self.displays.get(record['id']) == 'desktop' and record['state'] != 'Running':
+            if operation == 'start' and self.displays.get(record['id']) == 'desktop' and record['state'] not in ('Running', 'Frozen'):
                 display = request.get('display')
                 require(isinstance(display, str) and len(display) <= 64, 'DESKTOP_SESSION',
                         'Desktop mode requires a Wayland or X11 graphical session. Open AnvilDroid from your desktop and retry.')
@@ -1109,10 +1124,10 @@ class Store:
                 readiness = self.requirements(uid)
                 require(readiness['can_start'], 'SETUP_REQUIRED', '; '.join(c['detail'] for c in readiness['checks'] if c['id'] != 'images' and not c['available']))
             require(record['state'] not in ('Provisioning', 'Starting', 'Stopping'), 'BUSY', 'Runtime operation in progress')
-            require(record['state'] in ('Prepared', 'Stopped', 'Running', 'Error'), 'INVALID_STATE', 'Prepare runtime images first')
+            require(record['state'] in ('Prepared', 'Stopped', 'Running', 'Frozen', 'Error'), 'INVALID_STATE', 'Prepare runtime images first')
             require(sum(r['state'] in ('Provisioning', 'Starting', 'Stopping') for r in self.data['runtimes']) < 4,
                     'BUSY', 'Worker capacity reached')
-            if operation == 'start' and record['state'] != 'Running':
+            if operation == 'start' and record['state'] not in ('Running', 'Frozen'):
                 budget = self.resource_report(record)
                 require(not budget['admission']['memory_blocked'], 'RESOURCE_BUDGET', budget['admission']['detail'])
             job = {'id': uuid.uuid4().hex, 'operation': operation, 'status': 'Running', 'error': None}

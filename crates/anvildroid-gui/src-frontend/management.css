@@ -299,6 +299,16 @@
   width: 34px; height: 34px; min-width: 34px; padding: 0; border-radius: 8px;
 }
 #runtime-table .runtime-action-icon svg { width: 17px; height: 17px; pointer-events: none; }
+#runtime-table .runtime-action-icon.is-working { position: relative; }
+#runtime-table .runtime-action-icon.is-working svg { visibility: hidden; }
+#runtime-table .runtime-action-icon.is-working::after {
+  content: ''; position: absolute; width: 14px; height: 14px;
+  border: 2px solid rgba(237, 245, 255, .3); border-top-color: #edf5ff;
+  border-radius: 50%; animation: runtime-spin 1s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  #runtime-table .runtime-action-icon.is-working::after { animation: none; }
+}
 #runtime-table .runtime-action-icon:focus-visible { outline: 2px solid var(--mg-blue); outline-offset: 3px; }
 .runtime-batch-toolbar .btn { padding: 7px 10px; font-size: 12px; }
 
@@ -316,6 +326,9 @@
 .runtime-usage-metric:nth-child(2) .runtime-usage-track > span { background: #65c7b2; }
 .runtime-usage-metric:nth-child(3) .runtime-usage-track > span { background: #b59af6; }
 .runtime-usage-track.unavailable { opacity: .45; }
+.runtime-usage-gpu-value { grid-column: 2 / -1; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; }
+.runtime-gpu-warning { margin: 0 0 12px; padding: 8px 10px; border: 1px solid rgba(255, 199, 143, .25); border-radius: 6px; background: rgba(255, 199, 143, .06); color: #ffc78f; font-size: 12px; line-height: 1.5; }
+.runtime-gpu-warning > p { margin: 0 0 8px; }
 @media (max-width: 700px) {
   #runtime-table th:nth-child(3), #runtime-table td:nth-child(3) { display: table-cell; }
   #runtime-table { min-width: 710px; }
@@ -358,3 +371,61 @@
 #page-runtime-settings .runtime-details { order: 9; }
 #page-runtime-settings .runtime-setting-row summary small { display: none; }
 #page-runtime-settings .runtime-gpu-panel { padding: 0; border: 0; background: transparent; }
+
+/* Use the same spaced stack for system and isolated runtime settings. */
+#page-runtime-settings #existing-runtime-management,
+#page-runtime-settings .runtime-card.managed-runtime {
+  display: flex; flex-direction: column; gap: 12px;
+}
+#page-runtime-settings .runtime-settings-actions { padding: 0 0 4px; }
+#page-runtime-settings .runtime-settings-group,
+#page-runtime-settings .runtime-settings-visible > .runtime-setting-row {
+  padding: 12px 16px;
+}
+#page-runtime-settings .runtime-settings-group > summary,
+#page-runtime-settings .runtime-setting-row > summary {
+  display: flex; align-items: center; min-height: 24px; padding: 0;
+  font-size: 13px; font-weight: 600; list-style: none; gap: 0;
+}
+#page-runtime-settings details > summary::after { display: none; }
+#page-runtime-settings .runtime-settings-group > summary::before,
+#page-runtime-settings .runtime-setting-row > summary::before {
+  font-size: 16px; width: 20px; flex-shrink: 0;
+}
+#page-runtime-settings .runtime-setting-body { padding: 12px 0 4px; }
+#page-runtime-settings .runtime-gpu-controls {
+  display: flex; align-items: end; gap: 12px; flex-wrap: wrap;
+}
+#page-runtime-settings .runtime-gpu-controls label {
+  display: flex; flex: 1 1 260px; flex-direction: column; gap: 6px;
+  color: var(--text-secondary); font-size: 12px;
+}
+#page-runtime-settings .runtime-gpu-controls select { width: 100%; min-width: 0; margin: 0; }
+#page-runtime-settings .runtime-gpu-controls > button { min-height: 40px; }
+#page-runtime-settings .runtime-gpu-panel > .runtime-actions { margin-top: 10px; }
+#page-runtime-settings #legacy-runtime-detail > .runtime-settings-group { margin-top: 12px; }
+
+/* Avoid GTK's native grey select surface in the runtime settings WebView. */
+#page-runtime-settings select {
+  -webkit-appearance: none;
+  appearance: none;
+  color: #edf5ff;
+  background-color: var(--mg-panel-raised);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16'%3E%3Cpath d='m4 6 4 4 4-4' fill='none' stroke='%2391a2b8' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  padding-right: 36px;
+  border-color: var(--mg-border-strong);
+}
+#page-runtime-settings select:hover:not(:disabled) { border-color: var(--mg-blue); }
+#page-runtime-settings select:disabled { color: #91a2b8; background-color: #142131; }
+
+/* Section headings stay flat on hover; keyboard focus remains explicit. */
+#page-runtime-settings .runtime-settings-group > summary,
+#page-runtime-settings .runtime-setting-row > summary { transition: color .15s; }
+#page-runtime-settings .runtime-settings-group > summary:hover,
+#page-runtime-settings .runtime-setting-row > summary:hover {
+  background: transparent;
+  color: #acd2ff;
+  border-radius: 0;
+}

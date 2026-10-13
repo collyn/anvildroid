@@ -162,7 +162,7 @@ class AndroidBackend:
         identity = json.loads(identity_path.read_text()) if identity_path.exists() else None
         try:
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
-                connection.settimeout(330 if operation == 'install' else (45 if operation == 'app_action' else 3))
+                connection.settimeout(330 if operation == 'install' else (45 if operation == 'app_action' else 8))
                 connection.connect(str(instance / 'worker.sock'))
                 _, uid, _ = struct.unpack('3i', connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
                 if uid != 0: raise RuntimeError('Untrusted runtime worker')
@@ -192,13 +192,13 @@ class AndroidBackend:
                         'error': 'Worker exited without cleanup acknowledgement' if identity else None}
         if not identity or report.get('runtime_id') != identifier or report.get('generation') != identity.get('generation'):
             raise RuntimeError('Runtime worker identity mismatch')
-        if report.get('state') not in ('Starting', 'Running', 'Stopping', 'Stopped', 'Error'):
+        if report.get('state') not in ('Starting', 'Running', 'Frozen', 'Stopping', 'Stopped', 'Error'):
             raise RuntimeError('Invalid worker state')
         return report
 
     def keymaps(self, identifier):
         status=self.status(identifier)
-        if status['state']!='Running' or 'keymap_editor' not in status.get('capabilities',[]):
+        if status['state'] not in ('Running', 'Frozen') or 'keymap_editor' not in status.get('capabilities',[]):
             raise RuntimeError('Start an updated desktop runtime to read keymaps')
         report=self.status(identifier,'keymaps')
         if report.get('app_error'): raise RuntimeError(report['app_error'])
@@ -226,20 +226,20 @@ class AndroidBackend:
 
     def apps(self, identifier):
         status = self.status(identifier)
-        if status['state'] != 'Running':
+        if status['state'] not in ('Running', 'Frozen'):
             raise RuntimeError('Start this runtime before listing its packages')
         if 'apps' not in status.get('capabilities', []):
             raise RuntimeError('This worker predates app routing. Stop and start this runtime when convenient to load the updated worker.')
         report = self.status(identifier, 'apps')
         if report.get('app_error'): raise RuntimeError(report['app_error'])
-        if report.get('generation') != status.get('generation') or report['state'] != 'Running':
+        if report.get('generation') != status.get('generation') or report['state'] not in ('Running', 'Frozen'):
             raise RuntimeError('Runtime changed while listing packages; refresh and retry')
         if not isinstance(report.get('apps'), list): raise RuntimeError('Worker did not return a package list')
         return {'runtime_id': identifier, 'generation': report['generation'], 'apps': attach_app_icons(self.instance(identifier), identifier, report['apps'])}
 
     def google_services(self, identifier):
         status = self.status(identifier)
-        if status['state'] != 'Running': raise RuntimeError('Start this runtime before checking Google services')
+        if status['state'] not in ('Running', 'Frozen'): raise RuntimeError('Start this runtime before checking Google services')
         if 'google_services' not in status.get('capabilities', []):
             raise RuntimeError('Stop and start this runtime once to load Google services detection, then retry.')
         report = self.status(identifier, 'google_services')
@@ -274,7 +274,7 @@ class AndroidBackend:
 
     def install(self, identifier, fd):
         status = self.status(identifier)
-        if status['state'] != 'Running': raise RuntimeError('Start this runtime before installing an APK')
+        if status['state'] not in ('Running', 'Frozen'): raise RuntimeError('Start this runtime before installing an APK')
         if 'install_apk' not in status.get('capabilities', []):
             raise RuntimeError('Stop and start this runtime once to load APK installation support, then retry.')
         report = self.status(identifier, 'install', {'op': 'install', 'generation': status['generation']}, apk_fd=fd)
@@ -288,7 +288,7 @@ class AndroidBackend:
 
     def app_action(self, identifier, action, package, activation_token=None):
         status = self.status(identifier)
-        if status['state'] != 'Running': raise RuntimeError('Start this runtime before using app actions')
+        if status['state'] not in ('Running', 'Frozen'): raise RuntimeError('Start this runtime before using app actions')
         if 'app_actions' not in status.get('capabilities', []):
             raise RuntimeError('Stop and start this runtime when convenient to load the updated app-action worker.')
         if action=='keymap_edit' and 'keymap_editor' not in status.get('capabilities',[]):
@@ -396,6 +396,12 @@ class AndroidBackend:
         instance = self.instance(identifier)
         previous = self.status(identifier)
         if previous['state'] == 'Running': return previous
+        if previous['state'] == 'Frozen':
+            resumed = self.status(identifier, 'resume')
+            if resumed.get('app_error'): raise RuntimeError(resumed['app_error'])
+            if resumed.get('generation') != previous.get('generation') or resumed['state'] != 'Running':
+                raise RuntimeError('Runtime changed while resuming')
+            return resumed
         if previous['state'] in ('Starting', 'Stopping'):
             raise RuntimeError('Worker transition already in progress')
         self.snapshot_support(identifier)

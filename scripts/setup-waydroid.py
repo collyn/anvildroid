@@ -12,6 +12,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -22,6 +23,7 @@ from pathlib import Path
 PYTHON = '/usr/bin/python3'
 RUN_DIR = Path('/run/anvildroid')
 STORE = Path('/var/lib/anvildroid-controller')
+HOST_IMAGES = Path('/var/lib/waydroid/images')
 STATUS_FILE = RUN_DIR / 'waydroid-init.status'
 INIT_LOG = STORE / 'waydroid-init.log'
 # Exactly the set checked by runtime-controller.py requirements() and read by
@@ -238,7 +240,60 @@ def run_installer(status_path=STATUS_FILE, log_path=INIT_LOG):
     apt('install', '-y', 'waydroid')
 
 
-def run_init(flavor):
+def install_library_images(image_id, owner_uid):
+    """Publish only a verified pair from this administrator-authorized user's cache."""
+    target = HOST_IMAGES
+    if target.is_symlink():
+        raise RuntimeError('Unsafe Waydroid image directory')
+    if all((target / name).is_file() for name in ('system.img', 'vendor.img')):
+        for name in ('system.img', 'vendor.img'):
+            info = (target / name).lstat()
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+                raise RuntimeError('Unsafe installed Waydroid image')
+        return target  # Repair configuration without changing an installed pair.
+    if not image_id or not re.fullmatch(r'[0-9a-f]{64}', image_id):
+        raise RuntimeError('Choose a downloaded or imported image from the Images library first.')
+    cache = STORE / 'image-cache'
+    info = cache.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o077 or cache.resolve() != cache:
+        raise RuntimeError('Unsafe image cache directory')
+    spec = importlib.util.spec_from_file_location('setup_extract', HOST_MODULE.with_name('runtime-extract.py'))
+    extract = importlib.util.module_from_spec(spec); spec.loader.exec_module(extract)
+    library = cache / 'library.json'
+    extract.download.Downloads.check_file(library)
+    if library.stat().st_size > 4 * 1024**2:
+        raise RuntimeError('Image library is too large')
+    item = json.loads(library.read_text()).get(image_id)
+    if not item or item.get('owner_uid') != owner_uid:
+        raise RuntimeError('Selected image is not available for this user')
+    if target.is_symlink() or (target.exists() and any(target.iterdir())):
+        raise RuntimeError('Waydroid image directory is not empty; repair the incomplete image pair first.')
+    write_status(STATUS_FILE, 'initializing', detail='Verifying and unpacking the selected library image…', pid=os.getpid())
+    target.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix='.anvildroid-setup-', dir=target.parent))
+    try:
+        pair = staging / 'images'
+        extract.extract_pair(cache, item['images'], pair, 'default')
+        (pair / 'manifest.json').unlink()
+        if target.exists(): target.rmdir()  # Only an empty directory; never overwrite images.
+        os.rename(pair, target)
+        extract.download.sync(target.parent)
+    finally:
+        shutil.rmtree(staging)
+    return target
+
+
+def offline_init_command(waydroid, images):
+    # Waydroid skips both OTA discovery and download for preinstalled images.
+    # Register our fixed local pair in this child only; no distro file patches.
+    launcher = str(Path(waydroid).resolve())
+    code = ("import sys,runpy;sys.path.insert(0,sys.argv[1]);"
+            "import tools.config;tools.config.defaults['preinstalled_images_paths']=[sys.argv[2]];"
+            "launcher=sys.argv[3];sys.argv=[launcher,'init'];runpy.run_path(launcher,run_name='__main__')")
+    return [PYTHON, '-B', '-c', code, str(Path(launcher).parent), str(images), launcher]
+
+
+def run_init(flavor, image_id=None, owner_uid=None):
     # Body of the --run-init subcommand; runs detached as root.
     if os.geteuid() != 0:
         raise SystemExit('The init subcommand must run as root.')
@@ -249,15 +304,16 @@ def run_init(flavor):
     if support_complete():
         write_status(STATUS_FILE, 'done', flavor=flavor, detail='Android runtime setup is ready.', pid=os.getpid())
         return
+    images = install_library_images(image_id, owner_uid)
     write_status(STATUS_FILE, 'initializing', flavor=flavor,
-                 detail=f'waydroid init -s {flavor}', pid=os.getpid())
+                 detail='Initializing Default runtime from local images…', pid=os.getpid())
     waydroid = shutil.which('waydroid')
     if waydroid is None:
         write_status(STATUS_FILE, 'failed', flavor=flavor,
                      detail='waydroid binary not found after installation.',
                      error='waydroid binary not found after installation')
         raise SystemExit(1)
-    process = subprocess.Popen([waydroid, 'init', '-s', flavor],
+    process = subprocess.Popen(offline_init_command(waydroid, images),
                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                text=True, bufsize=1, env=ENV)
     assert process.stdout is not None
@@ -272,6 +328,10 @@ def run_init(flavor):
     # only written while a session mounts); generate it from base prop + cfg.
     ensure_waydroid_prop()
     if code == 0 and support_complete():
+        write_status(STATUS_FILE, 'initializing', detail='Selecting GPU and installing ARM translation…', pid=os.getpid())
+        spec = importlib.util.spec_from_file_location('setup_existing', HOST_MODULE.with_name('runtime-existing.py'))
+        existing = importlib.util.module_from_spec(spec); spec.loader.exec_module(existing)
+        existing.ExistingRuntime(STORE).apply_defaults()
         write_status(STATUS_FILE, 'done', flavor=flavor,
                      detail=f'Waydroid initialized ({flavor}).', pid=os.getpid())
         raise SystemExit(0)
@@ -284,14 +344,16 @@ def run_init(flavor):
     raise SystemExit(1)
 
 
-def spawn_init(flavor, lock_fd):
+def spawn_init(flavor, lock_fd, image_id=None, owner_uid=None):
     # GUI removes its stage after pkexec returns. Persist BOTH this helper and
     # its dependency before spawn, so delayed exec/reopening the AppImage works.
     helper_dir = STORE / 'setup'
     ensure_directory(helper_dir, 0o700)
     for source, name in ((Path(__file__).resolve(), 'setup-waydroid.py'),
                          (HOST_MODULE, 'runtime-host.py'), (ARM_MODULE, 'runtime-arm.py'),
-                         (ARM_MODULE.with_name('runtime-arm-source.py'), 'runtime-arm-source.py')):
+                         (ARM_MODULE.with_name('runtime-arm-source.py'), 'runtime-arm-source.py'),
+                         *[(HOST_MODULE.with_name(name), name) for name in
+                           ('runtime-extract.py', 'runtime-download.py', 'runtime-image-format.py', 'runtime-existing.py', 'runtime-resources.py', 'runtime-gpu.py', 'runtime-nvidia.py', 'runtime-linux.py', 'runtime-storage.py')]):
         fd, temporary = tempfile.mkstemp(prefix='.setup-', dir=helper_dir)
         try:
             with os.fdopen(fd, 'wb') as stream:
@@ -301,7 +363,8 @@ def spawn_init(flavor, lock_fd):
             Path(temporary).unlink(missing_ok=True)
     with open(INIT_LOG, 'ab') as log:
         process = subprocess.Popen([PYTHON, '-B', str(helper_dir / 'setup-waydroid.py'),
-                                    '--run-init', '--flavor', flavor, '--lock-fd', str(lock_fd)],
+                                    '--run-init', '--flavor', flavor, '--lock-fd', str(lock_fd),
+                                    '--owner-uid', str(owner_uid), *(['--image-id', image_id] if image_id else [])],
                                    stdin=subprocess.DEVNULL, stdout=log, stderr=log,
                                    start_new_session=True, cwd='/', env=ENV, pass_fds=(lock_fd,))
     # The child writes all progress, including its PID. The parent must not
@@ -314,7 +377,12 @@ def main():
     parser.add_argument('--run-init', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--lock-fd', type=int, help=argparse.SUPPRESS)
     parser.add_argument('--flavor', choices=FLAVORS, default='VANILLA')
+    parser.add_argument('--image-id')
+    parser.add_argument('--owner-uid', type=int, help=argparse.SUPPRESS)
     args = parser.parse_args()
+    owner_uid = args.owner_uid if args.run_init else int(os.environ.get('PKEXEC_UID', os.getuid()))
+    if args.image_id and not re.fullmatch(r'[0-9a-f]{64}', args.image_id):
+        raise SystemExit('Invalid image library ID')
     if os.geteuid() != 0:
         raise SystemExit('Run this helper as root via pkexec.')
     os.umask(0o077)
@@ -330,7 +398,7 @@ def main():
             return
         if args.run_init:
             try:
-                run_init(args.flavor)
+                run_init(args.flavor, args.image_id, owner_uid)
             except Exception as error:
                 write_status(STATUS_FILE, 'failed', flavor=args.flavor,
                              detail=tail(str(error)), error=tail(str(error)), pid=os.getpid())
@@ -339,7 +407,7 @@ def main():
         write_status(STATUS_FILE, 'initializing', flavor=args.flavor,
                      detail='Starting Android runtime setup…', pid=os.getpid())
         try:
-            spawn_init(args.flavor, descriptor)
+            spawn_init(args.flavor, descriptor, args.image_id, owner_uid)
         except Exception as error:
             write_status(STATUS_FILE, 'failed', error=tail(str(error)))
             raise

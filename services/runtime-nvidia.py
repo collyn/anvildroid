@@ -91,6 +91,20 @@ FORK_SOURCE = {
     }
 }
 PAYLOAD_ROOT = Path('/usr/local/lib/anvildroid-controller') / f'nvidia-{UPSTREAM_VERSION}'
+
+
+def system_integration_available():
+    marker = Path('/run/anvildroid-system/integration.json')
+    try:
+        info = marker.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022: return False
+        pid = json.loads(marker.read_text())['pid']
+        if type(pid) is not int or pid <= 1: return False
+        process = Path('/proc') / str(pid)
+        wrapper = b'/usr/local/lib/anvildroid-controller/runtime-system.py'
+        return process.stat().st_uid == 0 and wrapper in (process / 'cmdline').read_bytes().split(b'\0')
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
 ARCHIVES = {
     'host-x86_64': '38afc8f3928bb66d111f7183651732059c7416747aa067a10d29143b605a71ba',
     'guest-android-x86_64': '29070d9995d971c12833c772bd483e4624ffe860e5b2438de77b6335b35dd1fe',
@@ -287,11 +301,12 @@ class RendererFailure(RuntimeError):
 
 
 class Renderer:
-    """One Venus process group inside one worker's private mount/PID namespaces."""
-    def __init__(self, *, validation=False):
+    """One Venus process group per Android container session."""
+    def __init__(self, *, validation=False, directory=None, private_host_endpoint=False):
         self.validation = validation
+        self.private_host_endpoint = private_host_endpoint
         self.process = None
-        self.directory = Path('/run/anvil-venus')
+        self.directory = Path(directory) if directory is not None else Path('/run/anvil-venus')
         self.endpoint = self.directory / 'venus.sock'
         self.log_path = None
         self.log_start = 0
@@ -328,17 +343,28 @@ class Renderer:
         self.log_scan = self.log_start
         self.log_tail = b''
         env = renderer_environment(account, icds[0], validation=self.validation)
-        self.process = subprocess.Popen(
-            ['/usr/bin/prlimit', '--nofile=65536:65536', '--',
-             str(PAYLOAD_ROOT / 'virgl_test_server'), '--no-virgl', '--venus',
-             # All clients belong to this private Android runtime. Share the
-             # Vulkan allocator: default per-connection fork recreates its
-             # device for every HWC source, stalling first frames ~150-400ms.
-             '--no-fork', '--multi-clients', '--socket-path', str(self.endpoint)],
-            env=env, user=uid, group=account.pw_gid,
-            extra_groups=os.getgrouplist(account.pw_name, account.pw_gid),
-            start_new_session=True, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
-            umask=0o077)
+        directory_fd = None
+        endpoint = str(self.endpoint)
+        if self.private_host_endpoint:
+            # System Waydroid has no private worker /run. Its root-only parent
+            # hides the world-accessible guest socket from other host users;
+            # the unprivileged server gets access only through this directory FD.
+            directory_fd = os.open(self.directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            endpoint = f'/proc/self/fd/{directory_fd}/venus.sock'
+        try:
+            self.process = subprocess.Popen(
+                ['/usr/bin/prlimit', '--nofile=65536:65536', '--',
+                 str(PAYLOAD_ROOT / 'virgl_test_server'), '--no-virgl', '--venus',
+                 # All clients belong to this private Android runtime. Share the
+                 # Vulkan allocator: default per-connection fork recreates its
+                 # device for every HWC source, stalling first frames ~150-400ms.
+                 '--no-fork', '--multi-clients', '--socket-path', endpoint],
+                env=env, user=uid, group=account.pw_gid,
+                extra_groups=os.getgrouplist(account.pw_name, account.pw_gid),
+                start_new_session=True, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+                umask=0o077, pass_fds=() if directory_fd is None else (directory_fd,))
+        finally:
+            if directory_fd is not None: os.close(directory_fd)
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
             self.check()

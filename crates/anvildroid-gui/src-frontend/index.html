@@ -53,7 +53,7 @@
           </div>
         </div>
         <div class="library-filters unified-filters">
-          <div class="runtime-filter-group"><select id="filter-runtime" class="select-control library-runtime-select" aria-label="Filter by runtime"><option value="all">All runtimes</option><option value="default">Existing runtime</option></select></div>
+          <div class="runtime-filter-group"><select id="filter-runtime" class="select-control library-runtime-select" aria-label="Filter by runtime"><option value="all">All runtimes</option><option value="default">Default runtime</option></select></div>
           <select id="sort-apps" hidden><option value="name-asc">Name A–Z</option><option value="name-desc">Name Z–A</option><option value="package">Package</option><option value="recent">Recently opened</option><option value="favorites">Favorites first</option></select>
           <div class="category-filters"><select id="filter-tag" class="select-control" aria-label="Filter apps by tag"><option value="all">All tags</option></select></div>
           <button id="btn-manage-tags" class="btn btn-quiet" type="button" aria-label="Manage tags" title="Manage tags">+</button>
@@ -62,7 +62,6 @@
         <h1 class="app-list-caption">App Library</h1>
         <div id="library-google-notices" aria-label="Google Play registration"></div>
         <div id="library-runtime-status" class="hint" role="status"></div>
-        <div id="apps-status" class="status-banner" style="display:none"></div>
         <button id="btn-stop-uninstall-wait" class="btn" style="display:none">Stop waiting</button>
         <div id="apps-grid" class="apps-grid">
           <div class="empty-state">
@@ -84,11 +83,10 @@
         <div id="controller-setup" role="status"></div>
         <div id="waydroid-setup-actions" hidden>
           <div class="runtime-actions">
-            <select id="waydroid-init-flavor" class="select-control" aria-label="Waydroid image flavor">
-              <option value="VANILLA" selected>VANILLA — without Google services</option>
-              <option value="GAPPS">GAPPS — includes Google Play</option>
+            <select id="waydroid-init-flavor" class="select-control" aria-label="Default runtime image">
+              <option value="">Choose an image from the Images library</option>
             </select>
-            <button id="btn-init-waydroid" class="btn btn-primary" type="button">Initialize Waydroid</button>
+            <button id="btn-init-waydroid" class="btn btn-primary" type="button">Set up Default runtime</button>
           </div>
           <p id="waydroid-init-status" class="hint" role="status"></p>
         </div>
@@ -127,13 +125,13 @@
           <thead><tr><th scope="col" class="runtime-checkbox-cell"><input id="runtime-select-all" type="checkbox" aria-label="Select all runtimes"></th><th scope="col">Runtime</th><th scope="col">Status</th><th scope="col" class="runtime-usage-heading">Usage</th><th scope="col" class="runtime-actions-heading">Actions</th></tr></thead>
           <tbody id="controller-runtimes"></tbody>
           <tbody>
-            <tr id="legacy-runtime-row" class="runtime-summary" data-runtime-select="default"><td class="runtime-checkbox-cell"><input type="checkbox" data-runtime-check="default" aria-label="Select Existing runtime"></td><td><button type="button" class="runtime-select" data-runtime-select="default" aria-pressed="false"><span id="existing-runtime-label">Existing runtime</span> <span class="hint">Default</span></button></td><td><span id="runtime-state" class="status-value">—</span></td><td id="existing-runtime-usage" class="runtime-usage-cell" data-runtime-usage="default"></td><td>          <div class="runtime-actions">
-            <button id="btn-start" class="btn runtime-action-icon btn-primary" type="button" style="display:none" title="Start" aria-label="Start Existing runtime"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m8 5 11 7-11 7z"/></svg></button>
-            <button id="btn-stop" class="btn runtime-action-icon btn-danger" type="button" style="display:none" title="Stop" aria-label="Stop Existing runtime"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1"/></svg></button>
-            <button class="btn runtime-action-icon" type="button" data-controller-op="restart" data-controller-id="default" title="Restart" aria-label="Restart Existing runtime" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 11a9 9 0 1 1 2.6 7M3 4v7h7"/></svg></button>
-            <button class="btn runtime-action-icon" type="button" data-controller-op="open_waydroid" data-controller-id="default" title="Open Waydroid" aria-label="Open Waydroid Existing runtime" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 8h18m-11 4 4 2-4 2z"/></svg></button>
-            <button type="button" class="btn runtime-action-icon" data-controller-op="settings" data-controller-id="default" title="Settings" aria-label="Settings Existing runtime"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="m9 3-.5 2-2 1L4.5 5l-2 3 1.5 1.5v5L2.5 16l2 3 2-1 2 1 .5 2h6l.5-2 2-1 2 1 2-3-1.5-1.5v-5L21.5 8l-2-3-2 1-2-1L15 3z"/></svg></button>
-            <button id="btn-recover" class="btn runtime-action-icon btn-warning" type="button" style="display:none" title="Recover" aria-label="Recover Existing runtime"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m-4-4 4 4 4-4M4 16v5h16v-5"/></svg></button>
+            <tr id="legacy-runtime-row" class="runtime-summary" data-runtime-select="default"><td class="runtime-checkbox-cell"><input type="checkbox" data-runtime-check="default" aria-label="Select Default runtime"></td><td><button type="button" class="runtime-select" data-runtime-select="default" aria-pressed="false"><span id="existing-runtime-label">Default runtime</span></button></td><td><span id="runtime-state" class="runtime-status info" role="status">—</span></td><td id="existing-runtime-usage" class="runtime-usage-cell" data-runtime-usage="default"></td><td>          <div class="runtime-actions">
+            <button id="btn-start" class="btn runtime-action-icon btn-primary" type="button" style="display:none" title="Start" aria-label="Start Default runtime"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m8 5 11 7-11 7z"/></svg></button>
+            <button id="btn-stop" class="btn runtime-action-icon btn-danger" type="button" style="display:none" title="Stop" aria-label="Stop Default runtime"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1"/></svg></button>
+            <button class="btn runtime-action-icon" type="button" data-controller-op="restart" data-controller-id="default" title="Restart" aria-label="Restart Default runtime" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 11a9 9 0 1 1 2.6 7M3 4v7h7"/></svg></button>
+            <button class="btn runtime-action-icon" type="button" data-controller-op="open_waydroid" data-controller-id="default" title="Open Waydroid" aria-label="Open Waydroid Default runtime" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 8h18m-11 4 4 2-4 2z"/></svg></button>
+            <button type="button" class="btn runtime-action-icon" data-controller-op="settings" data-controller-id="default" title="Settings" aria-label="Settings Default runtime"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="m9 3-.5 2-2 1L4.5 5l-2 3 1.5 1.5v5L2.5 16l2 3 2-1 2 1 .5 2h6l.5-2 2-1 2 1 2-3-1.5-1.5v-5L21.5 8l-2-3-2 1-2-1L15 3z"/></svg></button>
+            <button id="btn-recover" class="btn runtime-action-icon btn-warning" type="button" style="display:none" title="Recover" aria-label="Recover Default runtime"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m-4-4 4 4 4-4M4 16v5h16v-5"/></svg></button>
 
           </div>
 </td></tr>
@@ -150,7 +148,7 @@
         </header>
         <div id="runtime-settings-content"></div>
         <div id="legacy-runtime-detail" hidden>
-              <h3 id="existing-runtime-name" hidden>Existing runtime · Default</h3>
+              <h3 id="existing-runtime-name" hidden>Default runtime</h3>
               <div id="existing-runtime-management" aria-live="polite"></div>
         <details class="runtime-settings-group"><summary>Session details</summary><div class="runtime-card">
           <div class="status-row">
@@ -189,7 +187,7 @@
           <label class="custom-image-name">Image name<input id="custom-image-name" type="text" maxlength="128" placeholder="My custom Android" autocomplete="off"></label>
           <div class="runtime-actions"><button id="btn-import-runtime-folder" type="button" class="btn btn-primary">Choose image folder…</button><button id="btn-import-runtime-image" type="button" class="btn">Choose custom image ZIP…</button><button id="btn-cancel-custom-image" type="button" class="btn" hidden>Cancel import</button></div>
           <div class="runtime-actions custom-image-url-row"><input id="custom-image-url" type="url" placeholder="https://example.com/waydroid-images.zip" aria-label="Custom image ZIP URL" autocomplete="off"><button id="btn-import-runtime-url" type="button" class="btn btn-primary">Download custom image</button></div>
-          <p class="hint">Choose a folder containing system.img and vendor.img directly, or a ZIP containing both files for Waydroid x86_64, Android SDK 33+ (ext4, EROFS, SquashFS or Android sparse). Sparse images are expanded automatically. Newer Android support is experimental: Prepare checks required Waydroid components; boot and desktop controls still depend on the build. Image import creates an independent runtime; it does not replace Existing runtime. Use images from a source you trust. Custom Android builds may not support AnvilDroid desktop controls or ARM translation.</p>
+          <p class="hint">Choose a folder containing system.img and vendor.img directly, or a ZIP containing both files for Waydroid x86_64, Android SDK 33+ (ext4, EROFS, SquashFS or Android sparse). Sparse images are expanded automatically. Newer Android support is experimental: Prepare checks required Waydroid components; boot and desktop controls still depend on the build. Image import creates an independent runtime; it does not replace Default runtime. Use images from a source you trust. Custom Android builds may not support AnvilDroid desktop controls or ARM translation.</p>
         </div>
           </div>
           <h3>Available images</h3>
@@ -203,7 +201,7 @@
 
       <!-- Settings page -->
       <section id="page-settings" class="page">
-        <div class="page-header"><div><h1>Settings</h1><p class="hint">Application settings and existing runtime configuration</p></div><button id="btn-refresh-settings" class="btn">Refresh</button></div>
+        <div class="page-header"><div><h1>Settings</h1><p class="hint">Application settings and default runtime configuration</p></div><button id="btn-refresh-settings" class="btn">Refresh</button></div>
         <div class="settings-section settings-inline"><div><h2>Runtime management</h2><p class="hint">Create, start, stop and configure each Android runtime on the Runtimes page.</p></div><button id="btn-settings-runtimes" class="btn btn-primary">Manage runtimes</button></div>
         <div class="settings-section settings-inline"><div><h2>GPU &amp; graphics</h2><p class="hint">Inspect host GPUs and the Android renderer in each runtime's GPU &amp; graphics panel.</p><p class="hint">Choose a GPU per runtime while it is stopped. NVIDIA: Experimental — not available yet.</p></div><button id="btn-gpu-runtimes" class="btn">View runtime GPUs</button></div>
         <div class="settings-section settings-inline"><div><h2>RAM &amp; CPU limits</h2><p class="hint">Set limits for each managed runtime while stopped. View current memory usage and active CPU quota in runtime details.</p><p class="hint">Limits apply on next start. Resources are shared, not reserved.</p></div><button id="btn-resource-runtimes" class="btn">View runtime limits</button></div>
@@ -213,7 +211,7 @@
           <div id="arm-source-panel" class="arm-source-panel" role="region" aria-label="ARM translation sources"><p class="hint">Loading ARM translation sources…</p></div>
         </div>
         <details id="legacy-runtime-settings" class="settings-section">
-          <summary>Existing runtime · App library and desktop windows</summary>
+          <summary>Default runtime · App library and desktop windows</summary>
           <div id="settings-runtime" class="runtime-card">Open Settings to load the current configuration.</div>
         </details>
         <details class="settings-section roadmap-section">

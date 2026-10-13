@@ -291,7 +291,7 @@ pub fn catalog() -> Result<Catalog, AnvilError> {
         return Err(invalid("Registered data path differs from the current user's Waydroid path; refusing ambiguous routing"));
     }
     Ok(Catalog { registry,configured,concurrent_supported:false,
-        management_note:"Existing runtime uses system Waydroid. Its GPU, RAM/CPU and installed ARM settings are managed on the Runtime page through the runtime controller.".into(),
+        management_note:"Default runtime uses system Waydroid. Its GPU, RAM/CPU and installed ARM settings are managed on the Runtime page through the runtime controller.".into(),
         container_name:"waydroid".into(),session_bus_name:"id.waydro.Session".into(),container_bus_name:"id.waydro.Container".into(),
     })
 }

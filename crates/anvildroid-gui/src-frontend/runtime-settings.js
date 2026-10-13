@@ -6,7 +6,7 @@ const RuntimeSettings = (() => {
     if (!bootOptions.has(request.op)) return {result: await send(request), restarted: false};
     const record = await send({op:'refresh', id:request.id});
     if (record.id !== request.id) throw new Error('Runtime identity changed; refresh and retry.');
-    if (record.state !== 'Running') return {result: await send(request), restarted: false};
+    if (!['Running', 'Frozen'].includes(record.state)) return {result: await send(request), restarted: false};
     progress('stopping');
     await transition('stop', request.id);
     let result, applyError;

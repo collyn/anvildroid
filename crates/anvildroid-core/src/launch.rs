@@ -123,6 +123,16 @@ pub fn ensure_ready(timeout: Duration) -> Result<(), AnvilError> {
             ));
         }
     }
+    if status.lines().any(|line| line.split_once(':').is_some_and(|(key, value)|
+        key.trim() == "Container" && value.trim() == "FROZEN")) {
+        // An explicit Start/Open owns this wakeup. Passive health/library
+        // polling keeps the container asleep.
+        check_output(output_timeout(Command::new("gdbus").args([
+            "call", "--system", "--dest", "id.waydro.Container",
+            "--object-path", "/ContainerManager", "--method",
+            "id.waydro.ContainerManager.Unfreeze",
+        ]), PROBE_TIMEOUT)?)?;
+    }
     if !runtime::session_owner()? {
         if !status.lines().any(|line| {
             line.split_once(':')

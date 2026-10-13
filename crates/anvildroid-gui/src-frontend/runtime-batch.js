@@ -6,7 +6,7 @@ const RuntimeBatch = (() => {
         record.job?.status === 'Running' || record.appJob?.status === 'Running' ||
         record.storage?.job?.status === 'Running' || ['Provisioning', 'Starting', 'Stopping'].includes(record.state)) return false;
     if (record.deletion_pending) return op === 'delete' && record.id !== 'default';
-    if (op === 'open') return record.state === 'Running' && (record.id === 'default' || (record.display?.effective_mode || record.display?.mode) === 'desktop');
+    if (op === 'open') return ['Running', 'Frozen'].includes(record.state) && (record.id === 'default' || (record.display?.effective_mode || record.display?.mode) === 'desktop');
     if (op === 'delete') return record.id !== 'default' && (['Allocated', 'Prepared', 'Stopped'].includes(record.state) || (record.state === 'Error' && record.job?.operation === 'prepare'));
     if (op === 'reinstall') return record.id === 'default' ? record.managed && record.state === 'Stopped' : ['Allocated', 'Prepared', 'Stopped', 'Error'].includes(record.state);
     if (op === 'stop') return ['Running', 'Frozen', 'Error'].includes(record.state);

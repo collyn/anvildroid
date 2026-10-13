@@ -161,27 +161,32 @@ def choose(node):
     return {key: device[key] for key in ('node', 'identity', 'vendor_id', 'device_id', 'driver')}
 
 
+def automatic_device(include_nvidia=True):
+    """Prefer a supported Mesa GPU, then a ready NVIDIA Venus render node."""
+    devices = inventory()
+    candidates = [d for d in devices if d['available'] and d['driver'] in DRIVERS and d['vendor_id'] != '0x10de']
+    if include_nvidia:
+        candidates += [d for d in devices if d['available'] and d['driver'] == 'nvidia' and d['node'].startswith('/dev/dri/')]
+    for device in candidates:
+        if (device.get('driver') == 'amdgpu' and device.get('device_id') == '0x73ff'
+                and os.environ.get('ANVIL_GPU_SAFETY_GUARD') == '1'
+                and os.environ.get('ANVIL_ALLOW_UNSTABLE_AMDGPU') != '1'):
+            continue
+        try:
+            return choose(device['node'])
+        except (OSError, RuntimeError):
+            continue
+    return None
+
+
 def resolve(instance):
     path = instance / 'gpu.json'
     selected = json.loads(path.read_text()) if path.exists() else {'node': 'auto'}
     if selected['node'] == 'software':
         return None
     if selected['node'] == 'auto':
-        # Prefer supported hardware; NVIDIA-only/no-DRM hosts use CPU rendering.
-        devices = [d for d in inventory() if d['available'] and d['driver'] in DRIVERS and d['vendor_id'] != '0x10de']
-        if not devices:
-            return None
-        device = choose(devices[0]['node'])
-        # Navi 33 (0x73ff) is currently unsafe with the Waydroid minigbm
-        # composer on the affected Mesa/kernel combination: starting the
-        # allocator can wedge gfx_0.0.0 and reset the host GPU. Use CPU when
-        # this safety guard is enabled. An explicit opt-in
-        # is available for testing newer drivers.
-        if (device.get('driver') == 'amdgpu' and device.get('device_id') == '0x73ff'
-                and os.environ.get('ANVIL_GPU_SAFETY_GUARD') == '1'
-                and os.environ.get('ANVIL_ALLOW_UNSTABLE_AMDGPU') != '1'):
-            return None
-        return device['node']
+        device = automatic_device()
+        return device['node'] if device else None
     try:
         current = choose(selected['node'])
     except RuntimeError:

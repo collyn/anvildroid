@@ -14,6 +14,10 @@ pub enum Request {
     ExistingClaim {
         id: String,
     },
+    #[serde(rename = "system_integration")]
+    SystemIntegration {
+        id: String,
+    },
     #[serde(rename = "existing_import")]
     ExistingImport {
         id: String,
@@ -384,6 +388,12 @@ fn exchange_files(
     // ARM staging fsyncs hundreds of library files before publishing a version.
     let reply_timeout = if matches!(&request, Request::ArmImport {} | Request::ArmSet { .. }) {
         180
+    } else if matches!(&request, Request::SystemIntegration { .. }) {
+        60
+    } else if matches!(&request, Request::Reinstall { id, .. } if id == "default") {
+        // System Waydroid reinstalls synchronously: image extraction and the
+        // verified ARM package must finish before reporting completion.
+        600
     } else {
         5
     };
@@ -486,12 +496,14 @@ mod tests {
     fn existing_management_requests_reject_privileged_fields() {
         for request in [
             r#"{"op":"existing_claim","id":"default"}"#,
+            r#"{"op":"system_integration","id":"default"}"#,
             r#"{"op":"existing_import","id":"default","name":"Managed copy"}"#,
         ] {
             assert!(serde_json::from_str::<Request>(request).is_ok());
         }
         for request in [
             r#"{"op":"existing_claim","id":"default","uid":0}"#,
+            r#"{"op":"system_integration","id":"default","unit":"sshd.service"}"#,
             r#"{"op":"existing_import","id":"default","name":"Managed copy","source":"/etc"}"#,
         ] {
             assert!(serde_json::from_str::<Request>(request).is_err());

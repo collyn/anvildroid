@@ -76,6 +76,108 @@ def atomic(path, value):
     os.replace(temp, path)
 
 
+def idle_snapshot(output):
+    """Fail closed: only a verified home-only session may be suspended.
+
+    Visible apps (including minimized desktop tasks), Full UI and foreground
+    services keep Android awake. A missing/changed Android API is not idle.
+    """
+    # run_bounded strips leading/trailing whitespace: an empty Full UI
+    # property makes the first section marker the first line of its result.
+    sections = re.split(r'(?m)^ANVIL_IDLE_SECTION\s*$', output)
+    if len(sections) != 4:
+        return False
+    presentation, home, tasks, services = sections
+    if presentation.strip() not in ('', 'none'): return False
+    components = re.findall(r'(?m)^([A-Za-z0-9_.]+/[A-Za-z0-9_.$]+)\s*$', home)
+    if len(components) != 1 or not re.search(r'(?:RootTask|Stack) id=', tasks):
+        return False
+    if 'ACTIVITY MANAGER SERVICES' not in services:
+        return False
+    if re.search(r'\b(?:isForeground|foreground)=true\b', services):
+        return False
+    for line in tasks.splitlines():
+        if 'taskId=' not in line: continue
+        if re.search(r'\bvisible=false\b', line): continue
+        match = re.search(r'taskId=\d+: ([A-Za-z0-9_.]+/[A-Za-z0-9_.$]+).*\bvisible=(true|false)\b', line)
+        if not match: return False
+        if match[2] == 'true' and match[1].split('/')[0] != components[0].split('/')[0]: return False
+    return True
+
+
+class IdleSuspend:
+    """Freeze only the LXC payload; its authenticated worker stays responsive."""
+    grace = 60
+    interval = 10
+    snapshot_command = (
+        "getprop waydroid.anvil_full_ui; printf '\\nANVIL_IDLE_SECTION\\n'; "
+        'cmd package resolve-activity --brief --user 0 -a android.intent.action.MAIN '
+        "-c android.intent.category.HOME; printf '\\nANVIL_IDLE_SECTION\\n'; "
+        "cmd activity stack list; printf '\\nANVIL_IDLE_SECTION\\n'; dumpsys activity services")
+
+    def __init__(self, instance, identifier, state, stopping):
+        self.instance, self.identifier, self.state, self.stopping = instance, identifier, state, stopping
+        self.next_check = time.monotonic() + self.interval
+        self.idle_since = None
+        self.last_action = time.monotonic()
+        self.apps = None
+
+    def lxc(self, tool, *args):
+        return linux.run_bounded(tool, '-P', self.instance / 'android', '-n', self.identifier,
+                                 *args, timeout=3, full_output=True, output_limit=1024 * 1024,
+                                 operation='Android idle suspend')
+
+    def resume(self):
+        require(self.state['state'] in ('Running', 'Frozen') and not self.stopping.is_set(), 'Android is not running')
+        if self.state['state'] == 'Frozen':
+            self.lxc('lxc-unfreeze')
+            require(self.lxc('lxc-info', '-sH').strip() == 'RUNNING', 'Android did not resume')
+            self.state['state'] = 'Running'
+            print('Android resumed from idle suspend', flush=True)
+        self.last_action = time.monotonic()
+        self.idle_since = None
+
+    def tick(self):
+        now = time.monotonic()
+        if self.state['state'] != 'Running' or self.stopping.is_set() or now < self.next_check:
+            return
+        self.next_check = now + self.interval
+        try:
+            command = self.snapshot_command
+            if self.state.get('presentation_mode') == 'android-display':
+                # HOME can be visible inside a single Android window. Its
+                # active_apps selector must explicitly say no window is open;
+                # a stale Waydroid selector keeps it awake conservatively.
+                command = 'getprop waydroid.active_apps; ' + command
+            output = self.lxc('lxc-attach', '--', '/system/bin/sh', '-c', command)
+            if self.state.get('presentation_mode') == 'android-display' and (
+                    not output.splitlines() or output.splitlines()[0].strip() != 'none'):
+                self.idle_since = None
+                return
+            if not idle_snapshot(output):
+                self.idle_since = None
+                return
+            if self.idle_since is None: self.idle_since = now
+            if now - max(self.idle_since, self.last_action) < self.grace: return
+            # Preserve inventory before sleeping; polling can serve it without
+            # entering the frozen guest or waking it every refresh interval.
+            self.apps = list_apps(self.instance, self.identifier,
+                                  single_display=self.state.get('presentation_mode') == 'android-display')
+            if self.stopping.is_set(): return
+            self.lxc('lxc-freeze')
+            require(self.lxc('lxc-info', '-sH').strip() == 'FROZEN', 'Android did not suspend')
+            self.state['state'] = 'Frozen'
+            print('Android suspended after 60s with no app windows or foreground services', flush=True)
+        except (RuntimeError, OSError, subprocess.TimeoutExpired) as error:
+            self.idle_since = None
+            # A partial freeze must never strand a guest behind Running state.
+            try:
+                if self.lxc('lxc-info', '-sH').strip() == 'FROZEN':
+                    self.state['state'] = 'Frozen'
+            except (RuntimeError, OSError, subprocess.TimeoutExpired): pass
+            print('Idle suspend skipped: ' + str(error)[-256:], flush=True)
+
+
 def prepare_overlay_upper(path):
     # overlayfs takes the merged root's permissions from upperdir. The root
     # service's private umask must not make Android / or /vendor root-only.
@@ -855,8 +957,11 @@ def stop_android(lxc, identifier, boot_completed):
     """Quiesce Android services; container teardown remains controller-owned."""
     status_error = None
     try:
-        if lxc('lxc-info', identifier, '-sH', timeout=2, bounded_output=True) == 'STOPPED':
+        current = lxc('lxc-info', identifier, '-sH', timeout=2, bounded_output=True)
+        if current == 'STOPPED':
             return {'shutdown_forced': False}
+        if current == 'FROZEN':
+            lxc('lxc-unfreeze', identifier, timeout=3, bounded_output=True)
     except (RuntimeError, OSError, subprocess.TimeoutExpired) as error:
         status_error = str(error)
     ready = False
@@ -1522,7 +1627,7 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
                     probe.settimeout(1)
                     try: probe.connect(str(watchdog_target))
                     except OSError as error: raise RuntimeError('Desktop session disconnected. Stop / clean up, then start again from your desktop.') from error
-            require(lxc('lxc-info', identifier, '-sH') == 'RUNNING', 'Android container exited')
+            require(lxc('lxc-info', identifier, '-sH') in ('RUNNING', 'FROZEN'), 'Android container exited')
             if compositors: require(compositors[0].poll() is None, 'Desktop compositor exited' if desktop else 'Headless compositor exited')
     except Exception as error:
         detail = str(error)
@@ -1596,8 +1701,10 @@ def main(instance, identifier, generation, original_mnt, original_net, desktop=N
     server.settimeout(.5)
     thread = threading.Thread(target=boot, args=(instance, identifier, generation, state, stopping, done, desktop, host_net_fd))
     thread.start()
+    idle = IdleSuspend(instance, identifier, state, stopping)
     try:
         while not done.is_set():
+            idle.tick()
             try: connection, _ = server.accept()
             except socket.timeout: continue
             with connection:
@@ -1612,74 +1719,89 @@ def main(instance, identifier, generation, original_mnt, original_net, desktop=N
                     if request == {'op': 'stop'}:
                         if state['state'] != 'Error': state['state'] = 'Stopping'
                         stopping.set()
+                    elif request == {'op': 'resume'}:
+                        response = dict(state)
+                        try: idle.resume()
+                        except (RuntimeError, OSError, subprocess.TimeoutExpired) as error:
+                            response['app_error'] = str(error)[-1024:]
+                        connection.sendall(json.dumps(dict(response, state=state['state'])).encode() + b'\n')
+                        continue
                     elif request == {'op': 'graphics'}:
                         response = dict(state)
                         try:
+                            idle.resume()
                             require(state['state'] == 'Running' and not stopping.is_set(), 'Start this runtime to inspect its renderer')
                             output = linux.run_bounded('lxc-attach', '-P', instance / 'android', '-n', identifier, '--',
                                          '/system/bin/sh', '-c', gpu.PROBE_COMMAND, timeout=2, umask=0o022, operation='GPU inspection')
                             response['graphics'] = gpu.probe_report(output)
                         except (RuntimeError, OSError, subprocess.TimeoutExpired) as error:
                             response['graphics_error'] = str(error)[-1024:]
-                        connection.sendall(json.dumps(response).encode() + b'\n')
+                        connection.sendall(json.dumps(dict(response, state=state['state'])).encode() + b'\n')
                         continue
                     elif request == {'op': 'google_services'}:
                         response = dict(state)
                         try:
+                            idle.resume()
                             require(state['state'] == 'Running' and not stopping.is_set(), 'Start this runtime before checking Google services')
                             response['google_services'] = google_services(instance, identifier)
                         except (RuntimeError, OSError, subprocess.TimeoutExpired) as error:
                             response['app_error'] = str(error)[-1024:]
-                        connection.sendall(json.dumps(response).encode() + b'\n')
+                        connection.sendall(json.dumps(dict(response, state=state['state'])).encode() + b'\n')
                         continue
                     elif request == {'op': 'app_states'}:
                         response = dict(state)
                         response['app_states'] = (app_execution_states(instance, identifier)
                                                   if state['state'] == 'Running' and not stopping.is_set() else None)
                         response['checked_at'] = time.time()
-                        connection.sendall(json.dumps(response).encode() + b'\n')
+                        connection.sendall(json.dumps(dict(response, state=state['state'])).encode() + b'\n')
                         continue
                     elif request == {'op': 'apps'}:
                         response = dict(state)
                         try:
-                            require(state['state'] == 'Running' and not stopping.is_set(), 'Start Android before listing packages')
-                            response['apps'] = list_apps(instance, identifier,
-                                                         single_display=state.get('presentation_mode') == 'android-display')
+                            require(state['state'] in ('Running', 'Frozen') and not stopping.is_set(), 'Start Android before listing packages')
+                            if state['state'] == 'Running':
+                                idle.apps = list_apps(instance, identifier,
+                                                      single_display=state.get('presentation_mode') == 'android-display')
+                            require(idle.apps is not None, 'Sleeping app inventory unavailable; resume this runtime')
+                            response['apps'] = idle.apps
                         except (RuntimeError, OSError, subprocess.TimeoutExpired) as error:
                             response['app_error'] = str(error)[-1024:]
-                        connection.sendall(json.dumps(response).encode() + b'\n')
+                        connection.sendall(json.dumps(dict(response, state=state['state'])).encode() + b'\n')
                         continue
                     elif request == {'op':'keymaps'}:
                         response=dict(state)
                         try:
+                            idle.resume()
                             require(desktop and state['state']=='Running','Desktop runtime must be running')
                             response['keymaps']=keymap_profiles(instance,identifier)
                         except (RuntimeError,OSError,ValueError,subprocess.TimeoutExpired) as error:
                             response['app_error']=str(error)[-1024:]
-                        connection.sendall(json.dumps(response).encode()+b'\n')
+                        connection.sendall(json.dumps(dict(response, state=state['state'])).encode()+b'\n')
                         continue
                     elif isinstance(request, dict) and request.get('op') == 'install':
                         response = dict(state)
                         try:
                             require(set(request) == {'op', 'generation'}, 'Invalid install request')
                             require(request['generation'] == generation, 'Worker generation changed; installation refused')
+                            idle.resume()
                             require(state['state'] == 'Running' and not stopping.is_set(), 'Android is not running')
                             response['app_result'] = install_apk(instance, identifier, apk_fd, desktop=bool(desktop))
                         except (RuntimeError, ValueError, OSError, subprocess.TimeoutExpired) as error:
                             response['app_error'] = str(error)[-1024:]
-                        connection.sendall(json.dumps(response).encode() + b'\n')
+                        connection.sendall(json.dumps(dict(response, state=state['state'])).encode() + b'\n')
                         continue
                     elif isinstance(request, dict) and request.get('op') == 'app_action':
                         response = dict(state)
                         try:
                             require(set(request) in ({'op', 'generation', 'action', 'package'}, {'op', 'generation', 'action', 'package', 'activation_token'}), 'Invalid app action request')
                             require(request['generation'] == generation, 'Worker generation changed; action refused')
+                            idle.resume()
                             require(state['state'] == 'Running' and not stopping.is_set(), 'Android is not running')
                             response['app_result'] = app_action(instance, identifier, request['action'], request['package'], desktop=bool(desktop), generation=generation,
                                                                single_display=state.get('presentation_mode') == 'android-display', activation_token=request.get('activation_token'))
                         except (RuntimeError, OSError, subprocess.TimeoutExpired) as error:
                             response['app_error'] = str(error)[-1024:]
-                        connection.sendall(json.dumps(response).encode() + b'\n')
+                        connection.sendall(json.dumps(dict(response, state=state['state'])).encode() + b'\n')
                         continue
                     elif request != {'op': 'status'}: continue
                     connection.sendall(json.dumps(dict(state)).encode() + b'\n')

@@ -1,5 +1,6 @@
 """Native bridge payloads with isolated per-runtime configuration."""
 import hashlib
+import fcntl
 import io
 import json
 import os
@@ -154,6 +155,30 @@ def runtime_properties(instance):
 ARCHIVE = Path('/usr/local/lib/anvildroid-controller/libndk-0.2.3.zip')
 
 
+def ensure_archive():
+    """Reuse the pinned default package or download it once across prepare jobs."""
+    ARCHIVE.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+    lock = os.open(ARCHIVE.with_suffix('.lock'), os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if ARCHIVE.is_file() and not ARCHIVE.is_symlink():
+            info = ARCHIVE.stat()
+            if info.st_uid == 0 and not info.st_mode & 0o022 and info.st_size <= 256 * 1024**2 and hashlib.sha256(ARCHIVE.read_bytes()).hexdigest() == SHA256:
+                return ARCHIVE
+        fd, temporary = tempfile.mkstemp(prefix='.libndk-', dir=ARCHIVE.parent)
+        try:
+            with os.fdopen(fd, 'wb') as output:
+                _source.download('https://codeload.github.com/supremegamers/vendor_google_proprietary_ndk_translation-prebuilt/zip/' + COMMIT, output, SHA256)
+                output.flush(); os.fsync(output.fileno())
+                os.fchmod(output.fileno(), 0o644)
+            os.replace(temporary, ARCHIVE)
+        finally:
+            Path(temporary).unlink(missing_ok=True)
+        return ARCHIVE
+    finally:
+        os.close(lock)
+
+
 def read_config(instance):
     path = instance / 'arm.json'
     if not path.exists(): return None
@@ -165,7 +190,9 @@ def read_config(instance):
         raise RuntimeError('Invalid ARM configuration')
     if not isinstance(config['archive_sha256'], str) or not re.fullmatch(r'[a-f0-9]{64}', config['archive_sha256']):
         raise RuntimeError('Invalid ARM configuration checksum')
-    if config['images'] != json.loads((instance / 'support/images.json').read_text()):
+    support_pin = instance / 'support/images.json'
+    images = json.loads(support_pin.read_text()) if support_pin.exists() else json.loads((instance / 'prepared/manifest.json').read_text())['images']
+    if config['images'] != images:
         raise RuntimeError('ARM configuration does not match runtime images')
     return config
 

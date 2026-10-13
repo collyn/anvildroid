@@ -18,7 +18,7 @@ mkdir -p "$PKG/usr/local/lib/anvildroid-controller/scripts" "$PKG/usr/local/lib/
 install -m 0755 "$ROOT/target/release/anvildroid-gui" "$PKG/usr/bin/anvildroid-gui"
 for size in 32 48 64 128 256; do mkdir -p "$PKG/usr/share/icons/hicolor/${size}x${size}/apps"; install -m 0644 "$ROOT/crates/anvildroid-gui/icons/icon-${size}.png" "$PKG/usr/share/icons/hicolor/${size}x${size}/apps/org.anvildroid.gui.png"; done
 install -m 0644 "$ROOT/packaging/appimage/org.anvildroid.gui.desktop" "$PKG/usr/share/applications/org.anvildroid.gui.desktop"
-for f in runtime-controller.py runtime-existing.py runtime-host.py runtime-images.py runtime-android.py runtime-worker.py runtime-linux.py runtime-image-format.py runtime-network.py runtime-storage.py runtime-labels.py runtime-transfer.py runtime-catalog.py runtime-download.py runtime-extract.py runtime-provision.py runtime-arm.py runtime-arm-source.py runtime-gpu.py runtime-nvidia.py runtime-resources.py runtime-desktop.py runtime-workarea.py; do
+for f in runtime-system.py runtime-controller.py runtime-existing.py runtime-host.py runtime-images.py runtime-android.py runtime-worker.py runtime-linux.py runtime-image-format.py runtime-network.py runtime-storage.py runtime-labels.py runtime-transfer.py runtime-catalog.py runtime-download.py runtime-extract.py runtime-provision.py runtime-arm.py runtime-arm-source.py runtime-gpu.py runtime-nvidia.py runtime-resources.py runtime-desktop.py runtime-workarea.py; do
   install -m 0644 "$ROOT/services/$f" "$PKG/usr/local/lib/anvildroid-controller/$f"
 done
 install -m 0755 "$ROOT/scripts/setup-waydroid.py" "$PKG/usr/local/lib/anvildroid-controller/scripts/setup-waydroid.py"
@@ -27,7 +27,7 @@ install -m 0755 "$ROOT/scripts/install-nvidia-payload.py" "$PKG/usr/local/lib/an
 install -m 0755 "$ROOT/scripts/prepare-nvidia-fork.py" "$PKG/usr/local/lib/anvildroid-controller/scripts/prepare-nvidia-fork.py"
 install -m 0755 "$ROOT/scripts/install-runtime-apparmor.py" "$PKG/usr/local/lib/anvildroid-controller/scripts/install-runtime-apparmor.py"
 python3 "$ROOT/scripts/build-nvidia-payload.py" --stage-parent "$PKG/usr/local/lib/anvildroid-controller"
-for f in runtime-host.py runtime-arm.py runtime-arm-source.py; do install -m 0644 "$ROOT/services/$f" "$PKG/usr/local/lib/anvildroid-controller/services/$f"; done
+for f in runtime-host.py runtime-arm.py runtime-arm-source.py runtime-extract.py runtime-download.py runtime-image-format.py runtime-existing.py runtime-resources.py runtime-gpu.py runtime-nvidia.py runtime-linux.py runtime-storage.py; do install -m 0644 "$ROOT/services/$f" "$PKG/usr/local/lib/anvildroid-controller/services/$f"; done
 install -m 0755 "$ROOT/target/native/libanvildroid-runtime-window.so" "$PKG/usr/local/lib/anvildroid-controller/libanvildroid-window.so"
 install -m 0644 "$ROOT/target/native/libanvildroid-hwc-shim.so" "$PKG/usr/local/lib/anvildroid-controller/libanvildroid-hwc-shim.so"
 install -m 0644 "$ROOT/target/native/libanvildroid-android-window.so" "$PKG/usr/local/lib/anvildroid-controller/libanvildroid-android-window.so"
@@ -45,6 +45,7 @@ install -D -m 0644 "$ROOT/target/native/init.waydroid.rc" "$PKG/usr/local/lib/an
 install -D -m 0644 "$ROOT/target/native/AnvilDroidCaption.apk" "$PKG/usr/local/lib/anvildroid-controller/provision/vendor/overlay/AnvilDroidCaption/AnvilDroidCaption.apk"
 install -m 0644 "$ROOT/target/native/framework-res.apk.sha256" "$PKG/usr/local/lib/anvildroid-controller/provision/framework-res.apk.sha256"
 install -D -m 0644 "$ROOT/packaging/systemd/anvildroid-controller.service" "$PKG/lib/systemd/system/anvildroid-controller.service"
+install -D -m 0644 "$ROOT/packaging/systemd/50-anvildroid.conf" "$PKG/usr/lib/systemd/system/waydroid-container.service.d/50-anvildroid.conf"
 cat > "$PKG/DEBIAN/control" <<EOF
 Package: anvildroid-controller
 Version: $VER
@@ -74,6 +75,11 @@ if [ -f "$net" ] && command -v iptables-nft >/dev/null 2>&1 \
   sed -i 's/command -v iptables-legacy/command -v iptables-nft/g; s/command -v ip6tables-legacy/command -v ip6tables-nft/g' "$net"
 fi
 systemctl daemon-reload
+# Load upgraded Waydroid hooks without interrupting a running Android session.
+if systemctl is-active --quiet waydroid-container.service \
+  && [ "$(lxc-info -P /var/lib/waydroid/lxc -n waydroid -sH 2>/dev/null)" = STOPPED ]; then
+  systemctl try-restart waydroid-container.service
+fi
 systemctl enable anvildroid-controller.service >/dev/null 2>&1 || true
 systemctl restart anvildroid-controller.service
 command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database /usr/share/applications || true
