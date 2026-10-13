@@ -53,11 +53,6 @@ navItems.forEach(item => {
     }
   });
 });
-document.getElementById('btn-manage-runtimes').addEventListener('click', () => navigatePage('runtime'));
-document.getElementById('btn-settings-runtimes').addEventListener('click', () => navigatePage('runtime'));
-document.getElementById('btn-gpu-runtimes').addEventListener('click', () => navigatePage('runtime'));
-document.getElementById('btn-resource-runtimes').addEventListener('click', () => navigatePage('runtime'));
-document.getElementById('btn-arm-runtimes').addEventListener('click', () => navigatePage('runtime'));
 document.getElementById('btn-refresh-runtimes').addEventListener('click', refreshRuntimePage);
 document.getElementById('btn-refresh-images').addEventListener('click', refreshImagesPage);
 document.getElementById('btn-start-controller').addEventListener('click', startRuntimeController);
@@ -249,14 +244,12 @@ async function refreshStatus() {
       healthMsgRow.style.display = 'none';
     }
     updateRuntimeButtons(report.status.state);
-    updateLibraryRuntimeSummary();
     renderApps(allApps);
   } catch (err) {
     updateDefaultRuntimeBadge('Unavailable', String(err));
     updateRuntimeButtons(null);
     libraryDefaultState = 'Unknown';
     renderApps(allApps);
-    updateLibraryRuntimeSummary();
   } finally {
     btnRefresh.disabled = false;
     btnRefresh.textContent = 'Refresh';
@@ -339,8 +332,6 @@ let managedLibraryError = '';
 let libraryDefaultState = 'Unknown';
 const libraryStarts = new Map();
 const libraryStartErrors = new Map();
-let sidebarRuntimeRecords = null;
-let sidebarRuntimeError = '';
 const managedSnapshots = new Map();
 const managedInventoryChecked = new Map();
 const managedPreferences = new Map();
@@ -533,111 +524,6 @@ function appCategory(app) {
   return app.desktop_entry || value.startsWith('com.google') ? 'system' : 'user';
 }
 
-// Keep the compact runtime indicator in the shell driven by the same records
-// used by the library. No additional polling is introduced here.
-function updateLibraryRuntimeSummary(records, error = '') {
-  if (records !== undefined) {
-    sidebarRuntimeRecords = records;
-    sidebarRuntimeError = error;
-  }
-  const target = document.getElementById('sidebar-runtime-status');
-  if (!target) return;
-  const entries = sidebarRuntimeRecords || [];
-  const failed = entry => entry.error || entry.refreshError || ['Error', 'SessionLost'].includes(entry.state);
-  const running = entries.filter(entry => entry.state === 'Running' && !failed(entry)).length;
-  const starting = entries.filter(entry => entry.state === 'Starting' && !failed(entry)).length;
-  const errors = entries.filter(failed).length;
-  const label = sidebarRuntimeError ? 'Runtime status unavailable'
-    : sidebarRuntimeRecords === null ? 'Checking runtimes…'
-    : !entries.length ? 'No managed runtimes'
-    : `${running}/${entries.length} running${starting ? ` · ${starting} starting` : ''}${errors ? ` · ${errors} need attention` : ''}`;
-  target.textContent = label;
-  target.dataset.running = String(!sidebarRuntimeError && running > 0);
-  target.dataset.error = String(!!sidebarRuntimeError || errors > 0);
-  target.setAttribute('aria-label', `Managed runtime status: ${label}`);
-  updateSidebarMetrics(entries);
-}
-let overviewId = '';
-let overviewTimer = null;
-let overviewBusy = false;
-let overviewSample = null;
-let overviewStorage = null;
-function overviewMetric(kind, value, percent) {
-  const label = document.getElementById(`sidebar-${kind}-value`);
-  const bar = document.getElementById(`sidebar-${kind}-bar`);
-  if (label) label.textContent = value;
-  if (bar) bar.style.width = `${Math.max(0, Math.min(100, percent || 0))}%`;
-}
-function updateSidebarMetrics(entries) {
-  const select = document.getElementById('sidebar-runtime-select');
-  if (!select) return;
-  const options = '<option value="default">Default runtime</option>' + entries.map(r => `<option value="${escapeHtml(r.id)}">${escapeHtml(r.name || r.id)}</option>`).join('');
-  if (select.innerHTML !== options) select.innerHTML = options;
-  if (!overviewId || (overviewId !== 'default' && !entries.some(r => r.id === overviewId))) {
-    overviewId = entries.find(r => r.state === 'Running')?.id || entries[0]?.id || 'default';
-    overviewSample = null; overviewStorage = null;
-  }
-  select.value = overviewId;
-  if (!overviewTimer && !overviewBusy) refreshOverview();
-}
-function selectOverview(id) {
-  overviewId = id; overviewSample = null; overviewStorage = null;
-  const select = document.getElementById('sidebar-runtime-select');
-  if (select) select.value = id;
-  for (const kind of ['cpu','ram','storage']) overviewMetric(kind, '—', 0);
-  clearTimeout(overviewTimer); overviewTimer = null;
-  refreshOverview();
-}
-async function refreshOverview() {
-  clearTimeout(overviewTimer); overviewTimer = null;
-  if (overviewBusy || document.hidden) return;
-  const id = overviewId;
-  if (!id) {
-    for (const kind of ['cpu','ram','storage']) overviewMetric(kind, '—', 0);
-    return;
-  }
-  overviewBusy = true;
-  try {
-    const data = await controllerRequest({op:'resources_info', id});
-    if (id !== overviewId || document.hidden) return;
-    const actual = data.effective;
-    const now = Date.now();
-    // CPU percentage is normalized to host logical CPU capacity, not CPU quota.
-    const previous = overviewSample;
-    const cpu = actual && previous && previous.scope === actual.scope && now > previous.time && actual.cpu_usage_usec >= previous.usage
-      ? (actual.cpu_usage_usec - previous.usage) / ((now - previous.time) * 1000 * Math.max(1, data.host?.cpu_count || 1)) * 100 : null;
-    overviewSample = actual ? {time:now, usage:actual.cpu_usage_usec, scope:actual.scope} : null;
-    overviewMetric('cpu', cpu == null ? '—' : `${cpu.toFixed(1)}%`, cpu);
-    const used = actual?.memory_current_bytes;
-    const max = actual?.memory_max_bytes ?? data.host?.memory_total_mib * 1024**2;
-    const knownMax = Number.isFinite(max) && max > 0;
-    overviewMetric('ram', used == null ? '—' : `${(used/1024**3).toFixed(1)} / ${knownMax ? (max/1024**3).toFixed(1) : '—'} GiB`, knownMax ? used/max*100 : 0);
-    document.getElementById('sidebar-ram-value').title = actual?.memory_max_bytes == null
-      ? 'Android RAM usage / total host RAM (no runtime limit configured)'
-      : 'Android RAM usage / active runtime RAM limit';
-    if (!overviewStorage || now - overviewStorage.time > 60000) {
-      const disk = await controllerRequest({op:'storage_info', id});
-      if (id !== overviewId || document.hidden) return;
-      overviewStorage = {time:now, ...disk};
-    }
-    const disk = overviewStorage;
-    overviewMetric('storage', disk?.total_bytes ? `${(disk.used_bytes/1024**3).toFixed(1)} / ${(disk.total_bytes/1024**3).toFixed(1)} GiB` : '—', disk?.total_bytes ? disk.used_bytes/disk.total_bytes*100 : 0);
-  } catch (_) {
-    if (id === overviewId) {
-      overviewSample = null;
-      for (const kind of ['cpu','ram','storage']) overviewMetric(kind, '—', 0);
-    }
-  } finally {
-    overviewBusy = false;
-    if (!document.hidden) overviewTimer = setTimeout(refreshOverview, id === overviewId ? 5000 : 0);
-  }
-}
-document.getElementById('sidebar-runtime-select')?.addEventListener('change', e => selectOverview(e.target.value));
-document.addEventListener('visibilitychange', () => {
-  clearTimeout(overviewTimer); overviewTimer = null; overviewSample = null;
-  if (!document.hidden) refreshOverview();
-});
-
 async function refreshAppStates() {
   clearTimeout(appStatesTimer);
   if (appStatesLoading || !libraryPage || document.hidden) return;
@@ -660,7 +546,6 @@ async function refreshAppStates() {
         execution_state:states ? (states[app.package] || 'not_running') : 'unknown',
         status_checked_at:states ? report.checked_at : 0})));
     }));
-    updateLibraryRuntimeSummary(managedLibrary, managedLibraryError);
     renderManagedLibraryStatus();
     renderApps(allApps);
   } finally {
@@ -1265,41 +1150,183 @@ async function syncLibrary() {
 loadLibrary();
 
 // --- Install APK ---
+let apkInstallBusy = false;
+function apkTargetAvailable(record) {
+  return ['Running', 'Frozen'].includes(record?.state) && !record.unavailable && !record.deletion_pending &&
+    ![record.job, record.appJob, record.storage?.job].some(job => job?.status === 'Running');
+}
+async function loadApkTargets() {
+  const snapshots = await Promise.allSettled([controllerRequest({op:'list'}), controllerRequest({op:'refresh', id:'default'}), invoke('get_runtime_catalog')]);
+  if (snapshots.slice(0, 2).every(result => result.status === 'rejected')) throw new Error('Cannot load runtimes. Try again.');
+  return [
+    ...(snapshots[0].status === 'fulfilled' && Array.isArray(snapshots[0].value) ? snapshots[0].value.filter(record => record.id !== 'default') : []),
+    ...(snapshots[1].status === 'fulfilled' && snapshots[1].value?.id === 'default' ? [{...snapshots[1].value, image_label:snapshots[2].status === 'fulfilled' ? snapshots[2].value?.configured?.settings?.image_kind : null}] : []),
+  ];
+}
+function apkRuntimeImageLabel(record) {
+  const image = record.image_selection;
+  if (image?.flavor === 'CUSTOM') {
+    const cached = (imageDownloadState?.available_images || []).find(item =>
+      item.images?.system?.sha256 === image.images?.system?.sha256 &&
+      item.images?.vendor?.sha256 === image.images?.vendor?.sha256);
+    return image.custom_name || cached?.custom_name || 'Custom image';
+  }
+  if (image?.flavor) return `Waydroid ${image.flavor}`;
+  if (record.image_label) return `Waydroid ${record.image_label}`;
+  return record.id === 'default' || record.import_source === 'default' ? 'System Waydroid image' : 'Installed Waydroid image';
+}
+function chooseApkTargets(records) {
+  const dialog = document.getElementById('apk-install-dialog');
+  const form = document.getElementById('apk-install-form');
+  const targets = document.getElementById('apk-install-targets');
+  const submit = document.getElementById('apk-install-submit');
+  const cancel = document.getElementById('apk-install-cancel');
+  const pick = document.getElementById('apk-install-pick');
+  const error = document.getElementById('apk-install-error');
+  let path = '', picking = false, finished = false;
+  const preferred = runtimeFilter.value;
+  targets.innerHTML = `<table class="apk-runtime-table"><thead><tr><th scope="col"><input id="apk-install-all" type="checkbox" aria-label="Select all available runtimes" title="Select all"></th><th scope="col">Runtime</th><th scope="col">Image</th></tr></thead><tbody>${records.map(record => `<tr><td><input id="apk-target-${escapeHtml(record.id)}" type="checkbox" aria-label="Select ${escapeHtml(record.name)}" value="${escapeHtml(record.id)}" ${!apkTargetAvailable(record) ? 'disabled' : record.id === preferred || records.filter(apkTargetAvailable).length === 1 ? 'checked' : ''}></td><td><label for="apk-target-${escapeHtml(record.id)}">${escapeHtml(record.name)}</label><small id="apk-target-state-${escapeHtml(record.id)}" class="apk-target-state ${record.state === 'Running' ? 'running' : 'idle'}">${escapeHtml(record.state || 'Unavailable')}</small></td><td>${escapeHtml(apkRuntimeImageLabel(record))}</td></tr>`).join('') || '<tr><td colspan="3" class="hint">No runtimes available.</td></tr>'}</tbody></table>`;
+  error.textContent = records.some(apkTargetAvailable) ? '' : 'Start a runtime to install an APK.';
+  const selected = () => Array.from(targets.querySelectorAll('tbody input:checked')).filter(input => !input.disabled).map(input => input.value);
+  const selectAll = document.getElementById('apk-install-all');
+  const update = () => {
+    const available = Array.from(targets.querySelectorAll('tbody input')).filter(input => !input.disabled);
+    const count = selected().length;
+    submit.disabled = !path || !count || picking;
+    selectAll.disabled = !available.length;
+    selectAll.checked = available.length > 0 && count === available.length;
+    selectAll.indeterminate = count > 0 && count < available.length;
+  };
+  targets.onchange = update;
+  selectAll.onchange = () => {
+    targets.querySelectorAll('tbody input').forEach(input => { if (!input.disabled) input.checked = selectAll.checked; });
+    update();
+  };
+  pick.disabled = false;
+  pick.onclick = async () => {
+    if (picking) return;
+    picking = true; pick.disabled = true; update();
+    try {
+      const file = await window.__TAURI__.dialog.open({multiple:false, filters:[{name:'APK', extensions:['apk']}], title:'Choose APK'});
+      if (finished || !file) return;
+      path = typeof file === 'string' ? file : file.path;
+      if (!path) throw new Error('Invalid APK path.');
+      document.getElementById('apk-install-file').textContent = path.split('/').pop();
+    } catch (e) { if (!finished) error.textContent = String(e.message || e); }
+    finally { picking = false; if (!finished) { pick.disabled = false; update(); } }
+  };
+  return new Promise(resolve => {
+    const finish = value => {
+      if (finished) return;
+      finished = true;
+      form.onsubmit = dialog.oncancel = dialog.onclose = cancel.onclick = targets.onchange = pick.onclick = null;
+      selectAll.onchange = null;
+      resolve(value);
+    };
+    form.onsubmit = event => { event.preventDefault(); if (!submit.disabled) finish({ids:selected(), path}); };
+    cancel.onclick = () => { finish(null); dialog.close(); };
+    dialog.oncancel = event => { event.preventDefault(); finish(null); dialog.close(); };
+    dialog.onclose = () => finish(null);
+    update();
+  });
+}
+function apkInstallErrorSummary(message) {
+  if (/not enough space|insufficient.storage|ENOSPC|no space left/i.test(message)) return 'Not enough Android storage';
+  if (/version.downgrade/i.test(message)) return 'A newer version is already installed';
+  if (/update.incompatible|signatures? .*match/i.test(message)) return 'APK signature does not match the installed app';
+  return 'Installation failed';
+}
+function updateApkProgress(results, total, active = null) {
+  document.getElementById('apk-install-progress').hidden = false;
+  const bar = document.getElementById('apk-install-bar');
+  bar.max = total; bar.value = results.length;
+  bar.className = active ? 'is-installing' : '';
+  if (active) bar.removeAttribute('value');
+  document.getElementById('apk-install-progress-label').textContent = active
+    ? `Installing ${results.length + 1}/${total} · ${active.name}` : `${results.length}/${total} runtimes processed`;
+  if (active) {
+    const state = document.getElementById(`apk-target-state-${active.id}`);
+    state.textContent = 'Installing…'; state.className = 'apk-target-state installing';
+  }
+  results.forEach(result => {
+    const state = document.getElementById(`apk-target-state-${result.id}`);
+    state.textContent = {completed:'Installed', failed:'Failed', skipped:'Skipped'}[result.status];
+    state.className = `apk-target-state ${result.status}`;
+    state.title = result.message;
+    if (result.status === 'failed') state.textContent += ` · ${apkInstallErrorSummary(result.message)}`;
+  });
+  document.getElementById('apk-install-error-details').innerHTML = results.filter(result => result.status !== 'completed').map(result => `<details class="apk-install-error-detail"><summary>${escapeHtml(result.name)} · ${escapeHtml(result.status === 'failed' ? apkInstallErrorSummary(result.message) : 'Skipped')}</summary>${/not enough space|insufficient.storage|ENOSPC|no space left/i.test(result.message) ? '<p>Free space on the runtime data disk, then retry.</p>' : ''}<pre>${escapeHtml(result.message)}</pre></details>`).join('');
+
+}
+async function runApkInstall(records, ids, path) {
+  const results = [];
+  for (const id of ids) {
+    const target = records.find(record => record.id === id);
+    if (!target) continue;
+    updateApkProgress(results, ids.length, target);
+    try {
+      const current = await refreshBatchRecord(id, 'install');
+      if (!apkTargetAvailable(current) || current.name !== target.name ||
+          (target.generation != null && current.generation !== target.generation)) {
+        results.push({id, name:target.name, status:'skipped', message:'Runtime changed or is no longer available'});
+      } else {
+        const result = await tauriInvoke('install_apk', {runtimeId:id, path});
+        results.push({id, name:target.name, status:result?.success ? 'completed' : 'failed', message:result?.message || 'Installation failed'});
+      }
+    } catch (error) { results.push({id, name:target.name, status:'failed', message:String(error.message || error)}); }
+    updateApkProgress(results, ids.length);
+  }
+  return results;
+}
 async function installApk() {
-  if(probeInstallBusy)return;
-  const runtimeId = runtimeFilter.value || 'all';
-  if (runtimeId === 'all') { showAppToast('Select a runtime in the library filter before installing an APK.', 'info'); return; }
-  const record = managedLibrary.find(record => record.id === runtimeId);
-  if (runtimeId !== 'default' && record?.state !== 'Running') { showAppToast('Start this runtime on the Runtime page before installing an APK.', 'info'); return; }
-  const targetName = runtimeId === 'default' ? 'Default runtime' : record.name;
-  if (pendingLaunch || pendingAppAction || runtimeTransition) {
-    showAppToast('Wait for the current operation to complete.', 'info');
-    return;
+  if (probeInstallBusy || pendingLaunch || pendingAppAction || runtimeTransition || controllerMutation || runtimeBatchBusy) {
+    showAppToast('Wait for the current operation to complete.', 'info'); return;
   }
   pendingAppAction = true;
+  apkInstallBusy = true;
+  renderController(); renderManagedLibraryStatus();
+  const dialog = document.getElementById('apk-install-dialog');
+  const cancel = document.getElementById('apk-install-cancel');
+  const submit = document.getElementById('apk-install-submit');
+  const form = document.getElementById('apk-install-form');
+  document.getElementById('apk-install-file').textContent = 'No APK selected';
+  document.getElementById('apk-install-targets').textContent = 'Loading runtimes…';
+  document.getElementById('apk-install-error').textContent = '';
+  document.getElementById('apk-install-error-details').innerHTML = '';
+  document.getElementById('apk-install-progress').hidden = true;
+  document.getElementById('apk-install-config').hidden = false;
+  document.getElementById('apk-install-pick').hidden = false;
+  document.getElementById('apk-install-target-hint').textContent = 'Choose runtimes';
+  document.getElementById('apk-install-pick').disabled = true;
+  submit.hidden = false; submit.disabled = true;
+  cancel.disabled = false; cancel.textContent = 'Cancel'; cancel.onclick = () => dialog.close();
+  dialog.showModal();
   try {
-    const selected = await window.__TAURI__.dialog.open({
-      multiple: false,
-      filters: [{ name: 'APK', extensions: ['apk'] }],
-      title: `Install APK into ${targetName}`,
-    });
-    if (!selected) return;
-    const filename = typeof selected === 'string' ? selected.split('/').pop() : 'APK';
-    showAppToast(`Installing ${filename} into ${targetName}… Android is verifying and preparing the app. Large APKs can take several minutes.`, 'info');
-    btnInstallApk.disabled = true;
-    const path = typeof selected === 'string' ? selected : selected.path;
-    const result = await tauriInvoke('install_apk', { runtimeId, path });
-    showAppToast(result.success ? result.message : `Install failed: ${result.message}`, result.success ? 'success' : 'error');
-    if (result.success) {
-      if (runtimeId === 'default') await refreshApps();
-      else await refreshManagedLibrary();
-    }
-  } catch (err) {
-    if (err && err.toString().includes('cancelled')) return;
-    showAppToast(`Error: ${err}`, 'error');
-  } finally {
-    pendingAppAction = false;
-    renderManagedLibraryStatus();
+    const records = await loadApkTargets();
+    if (!dialog.open) return;
+    const choice = await chooseApkTargets(records);
+    if (!choice) return;
+    document.getElementById('apk-install-pick').hidden = true;
+    document.getElementById('apk-install-target-hint').textContent = 'Target runtimes';
+    document.getElementById('apk-install-targets').querySelectorAll('input').forEach(input => { input.disabled = true; });
+    choice.ids.forEach(id => { document.getElementById(`apk-target-state-${id}`).textContent = 'Waiting…'; });
+    submit.hidden = true; cancel.disabled = true;
+    form.onsubmit = event => event.preventDefault();
+    dialog.oncancel = event => event.preventDefault();
+    const results = await runApkInstall(records, choice.ids, choice.path);
+    const completed = results.filter(result => result.status === 'completed').length;
+    const failed = results.filter(result => result.status === 'failed').length;
+    const skipped = results.filter(result => result.status === 'skipped').length;
+    document.getElementById('apk-install-progress-label').textContent = `${completed} completed · ${failed} failed · ${skipped} skipped`;
+    if (completed) await Promise.allSettled([refreshApps(), refreshManagedLibrary()]);
+  } catch (err) { document.getElementById('apk-install-error').textContent = String(err.message || err); }
+  finally {
+    dialog.oncancel = dialog.onclose = null;
+    form.onsubmit = event => event.preventDefault();
+    submit.disabled = true;
+    cancel.disabled = false; cancel.textContent = 'Close'; cancel.onclick = () => dialog.close();
+    pendingAppAction = false; apkInstallBusy = false;
+    renderController(); renderManagedLibraryStatus();
   }
 }
 btnInstallApk.addEventListener('click', installApk);
@@ -1497,7 +1524,7 @@ function renderExistingRuntime() {
     button.disabled = Boolean(controllerMutation || runtimeTransition || runtimeBatchBusy || pendingLaunch || pendingAppAction || record.unavailable);
   });
   document.querySelectorAll('#legacy-runtime-row .runtime-action-icon').forEach(button => button.setAttribute('aria-label', button.title + ' · ' + record.name));
-  const busy = controllerMutation || runtimeTransition || !record.managed || record.unavailable;
+  const busy = controllerMutation || apkInstallBusy || runtimeTransition || !record.managed || record.unavailable;
   const button = (op,label,disabled=false) => `<button class="btn btn-quiet" data-controller-op="${op}" data-controller-id="default" ${disabled ? 'disabled' : ''}>${label}</button>`;
   const markup = `${existingRuntimeError ? `<p class="runtime-blocked">${escapeHtml(existingRuntimeError)}</p>` : ''}<div class="runtime-actions runtime-settings-actions">${!record.managed ? `<p class="hint">Start Default runtime, then enable management once to keep its settings available after stopping. App data stays in place.</p>${button('existing_claim','Enable management',controllerMutation || record.unavailable || record.state !== 'Running')}` : `${button('rename','Rename…',controllerMutation || record.unavailable)}${button('reinstall','Reinstall runtime…',busy || !['Stopped','Running','Frozen'].includes(record.state))}`}</div>
     <details class="runtime-settings-group" data-settings-key="${escapeHtml(record.id)}:gpu" ${runtimeSettingsOpen.has(record.id + ':gpu') ? 'open' : ''}><summary>Graphics</summary><div class="runtime-gpu-panel runtime-primary-setting" id="runtime-gpu-default">${renderGpuControls(record,busy)}<div class="runtime-actions">${button('gpu_check','Check GPU',controllerMutation)}</div>${renderRuntimeGraphics('default')}</div></details>
@@ -1641,6 +1668,15 @@ function selectedImageEntry() {
   }
   return (imageDownloadState?.available_images || []).find(item => item.flavor === flavor) || null;
 }
+function imageActionButton(action, attribute, icon, disabled, primary = false) {
+  const paths = {
+    create: '<path d="m12 2 9 5v10l-9 5-9-5V7zM3 7l9 5 9-5M12 12v10m-3-9h6m-3-3v6"/>',
+    reinstall: '<path d="M3 11a9 9 0 1 1 2.6 7M3 4v7h7"/>',
+    rename: '<path d="m16 3 5 5-12 12-6 1 1-6zM14 5l5 5"/>',
+    download: '<path d="M12 3v12m-5-5 5 5 5-5M3 16v5h18v-5"/>',
+  };
+  return `<button type="button" class="btn runtime-action-icon${primary ? ' btn-primary' : ''}" ${attribute} title="${escapeHtml(action)}" aria-label="${escapeHtml(action)}" ${disabled ? 'disabled' : ''}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[icon]}</svg></button>`;
+}
 function renderAvailableImages() {
   const images = imageDownloadState?.available_images || [];
   const panel = document.getElementById('available-runtime-images');
@@ -1655,10 +1691,10 @@ function renderAvailableImages() {
   panel.innerHTML = `<div class="runtime-table-scroll"><table class="runtime-table image-catalog-table"><thead><tr><th>Image</th><th>Source</th><th>Size</th><th>Actions</th></tr></thead><tbody>${images.concat(officialRows).map(item => {
     if (item.official) {
       const variant = item.official;
-      return `<tr class="image-not-cached"><td><strong>Waydroid ${escapeHtml(variant.flavor)}</strong><br><span class="hint">${escapeHtml(variant.system.version)} · ${escapeHtml(imageCatalogState.report.architecture)}</span></td><td>Official<br><span class="hint">Not downloaded</span></td><td>${(variant.download_bytes / 1024**3).toFixed(2)} GiB</td><td><button class="btn btn-primary" data-download-flavor="${escapeHtml(variant.flavor)}" ${busy || imageDownloadBusy || imageDownloadActive() || !variant.matching_versions ? 'disabled' : ''}>Download</button></td></tr>`;
+      return `<tr class="image-not-cached"><td><strong>Waydroid ${escapeHtml(variant.flavor)}</strong><br><span class="hint">${escapeHtml(variant.system.version)} · ${escapeHtml(imageCatalogState.report.architecture)}</span></td><td>Official<br><span class="hint">Not downloaded</span></td><td>${(variant.download_bytes / 1024**3).toFixed(2)} GiB</td><td>${imageActionButton('Download Waydroid ' + variant.flavor, `data-download-flavor="${escapeHtml(variant.flavor)}"`, 'download', busy || imageDownloadBusy || imageDownloadActive() || !variant.matching_versions, true)}</td></tr>`;
     }
     const label = item.flavor === 'CUSTOM' ? (item.custom_name || 'Custom image ' + item.library_id.slice(0, 8)) : 'Waydroid ' + item.flavor;
-    return `<tr><td><strong>${escapeHtml(label)}</strong><details><summary>Image details</summary>${['system', 'vendor'].map(kind => `<p class="hint">${kind}: ${escapeHtml(item.images[kind].filename)}<br>SHA-256: <code>${escapeHtml(item.images[kind].sha256)}</code></p>`).join('')}</details></td><td>${item.flavor === 'CUSTOM' ? 'Imported' : 'Official'}<br><span class="hint">Ready to use</span></td><td>${(item.image_bytes / 1024**3).toFixed(2)} GiB</td><td><div class="runtime-actions"><button class="btn btn-primary" data-image-use="${escapeHtml(item.library_id)}" ${busy ? 'disabled' : ''}>Create runtime</button><button class="btn" data-image-reinstall="${escapeHtml(item.library_id)}" ${busy || !canReinstall ? 'disabled' : ''} title="Select a stopped runtime first">Reinstall selected</button>${item.flavor === 'CUSTOM' ? `<button class="btn btn-quiet" data-image-rename="${escapeHtml(item.library_id)}" ${busy ? 'disabled' : ''}>Rename</button>` : ''}</div></td></tr>`;
+    return `<tr><td><strong>${escapeHtml(label)}</strong><details><summary>Image details</summary>${['system', 'vendor'].map(kind => `<p class="hint">${kind}: ${escapeHtml(item.images[kind].filename)}<br>SHA-256: <code>${escapeHtml(item.images[kind].sha256)}</code></p>`).join('')}</details></td><td>${item.flavor === 'CUSTOM' ? 'Imported' : 'Official'}</td><td>${(item.image_bytes / 1024**3).toFixed(2)} GiB</td><td><div class="runtime-actions">${imageActionButton('Create runtime · ' + label, `data-image-use="${escapeHtml(item.library_id)}"`, 'create', busy, true)}${imageActionButton(canReinstall ? 'Reinstall ' + target.name + ' · ' + label : 'Select a stopped runtime to reinstall', `data-image-reinstall="${escapeHtml(item.library_id)}"`, 'reinstall', busy || !canReinstall)}${item.flavor === 'CUSTOM' ? imageActionButton('Rename · ' + label, `data-image-rename="${escapeHtml(item.library_id)}"`, 'rename', busy) : ''}</div></td></tr>`;
   }).join('')}</tbody></table></div>`;
 }
 document.getElementById('available-runtime-images').addEventListener('click', async event => {
@@ -1893,7 +1929,16 @@ function openGappsCreation() {
   renderCreateImageHint();
   name.focus();
 }
-document.getElementById('btn-create-gapps').addEventListener('click', openGappsCreation);
+function openImageRuntimeCreation() {
+  if (reinstallTargetId) cancelReinstall();
+  const panel = document.getElementById('runtime-create-panel');
+  panel.open = true;
+  navigatePage('runtime');
+  renderCreateImageHint();
+  panel.scrollIntoView?.({block:'center', behavior:'smooth'});
+  document.getElementById('controller-name').focus();
+}
+document.getElementById('btn-create-runtime-images').addEventListener('click', openImageRuntimeCreation);
 async function refreshImageDownload() {
   if (imageDownloadBusy || ['Connecting', 'Downloading'].includes(customUrlState?.status)) return;
   const epoch = imageDownloadEpoch;
@@ -2175,7 +2220,7 @@ function renderController() {
     const appWorking = record.appJob?.status === 'Running';
     const desktopMode = (record.display?.effective_mode || record.display?.mode) === 'desktop';
     const active = appWorking || storageMoving || ['Provisioning', 'Starting', 'Stopping'].includes(record.state) || record.job?.status === 'Running';
-    const busy = controllerMutation || active;
+    const busy = controllerMutation || apkInstallBusy || active;
     const failed = record.state === 'Error';
     const needsImages = record.state === 'Allocated' || (failed && record.job?.operation === 'prepare');
     const canDelete = record.deletion_pending || ['Allocated', 'Prepared', 'Stopped'].includes(record.state) || (failed && record.job?.operation === 'prepare');
@@ -2261,7 +2306,7 @@ function renderController() {
       <details class="runtime-settings-group" data-settings-key="${escapeHtml(record.id)}:gpu" ${runtimeSettingsOpen.has(record.id + ':gpu') ? 'open' : ''}><summary>Graphics</summary><div class="runtime-gpu-panel runtime-primary-setting" id="runtime-gpu-${escapeHtml(record.id)}">${renderGpuControls(record, busy)}<div class="runtime-actions">${button('gpu_check', runtimeGraphics.get(record.id)?.loading ? 'Checking GPU…' : 'Check GPU', !runtimeGraphics.get(record.id)?.loading, 'btn-quiet')}</div>${renderRuntimeGraphics(record.id)}</div></details>
       <div class="runtime-config-grid"><details class="runtime-settings-group" data-settings-key="${escapeHtml(record.id)}:storage" ${runtimeSettingsOpen.has(record.id + ':storage') ? 'open' : ''}><summary>Storage</summary><div class="runtime-storage-panel">
         <p class="runtime-storage-path">${escapeHtml(record.storage?.path || record.storageLoadError || 'Loading storage location…')}</p>
-        ${record.storage?.total_bytes != null ? `<p class="hint">Disk used: ${(record.storage.used_bytes / 1024 ** 3).toFixed(2)} GiB · free: ${(record.storage.free_bytes / 1024 ** 3).toFixed(2)} GiB / ${(record.storage.total_bytes / 1024 ** 3).toFixed(2)} GiB.</p>` : ''}
+        ${record.storage?.total_bytes != null ? `<p class="hint">Runtime used: ${record.storage.used_bytes == null ? 'Measuring…' : (record.storage.used_bytes / 1024 ** 3).toFixed(2) + ' GiB'} · free: ${(record.storage.free_bytes / 1024 ** 3).toFixed(2)} GiB / ${(record.storage.total_bytes / 1024 ** 3).toFixed(2)} GiB.</p>` : ''}
         ${record.storage?.limit_status === 'unavailable' ? '<p class="hint">Disk quota unavailable.</p>' : ''}
         <div class="runtime-actions">${button('move', 'Change location…', Boolean(record.storage) && !record.storage.error && !record.storage.previous_path && canMoveState, 'btn-quiet')}
         ${record.storage?.previous_path ? button('discard_previous', 'Remove retained copy…', !record.storage.error, 'btn-quiet') : ''}</div>
@@ -2384,7 +2429,6 @@ async function refreshController() {
     const armSources = controllerRecords.flatMap(record => record.arm?.sources || []);
     if (armSources.length) armSourceState.sources = [...new Map(armSources.map(source => [source.sha256, source])).values()];
     renderArmSources();
-    updateLibraryRuntimeSummary(controllerRecords);
     renderController();
     create.disabled = controllerMutation;
     document.getElementById('controller-connection').textContent = 'Service connected';
@@ -2402,7 +2446,6 @@ async function refreshController() {
     document.getElementById('controller-start').style.display = '';
     document.getElementById('btn-start-controller').textContent = 'Restart runtime controller';
     controllerRecords = [];
-    updateLibraryRuntimeSummary([], String(error));
     renderController();
     message.textContent = `Cannot reach runtime controller: ${error}. Start the controller below, or install/start anvildroid-controller.service, then refresh Runtime.`;
   } finally {
@@ -2435,7 +2478,7 @@ async function activateRequestImage(request) {
   }
 }
 async function mutateController(request) {
-  if (controllerMutation || (request.id === 'default' && (runtimeTransition || pendingLaunch || pendingAppAction))) return;
+  if (controllerMutation || apkInstallBusy || (request.id === 'default' && (runtimeTransition || pendingLaunch || pendingAppAction))) return;
   controllerMutation = true;
   document.getElementById('runtime-rename-save').disabled = true;
   document.getElementById('runtime-rename-cancel').disabled = true;
@@ -2630,7 +2673,6 @@ document.getElementById('runtime-settings-back').addEventListener('click', () =>
 function selectRuntime(id) {
   if (id !== 'default' && !controllerRecords.some(record => record.id === id)) return;
   selectedRuntimeId = selectedRuntimeId === id ? null : id;
-  selectOverview(id);
   renderController();
   renderAvailableImages();
 }
@@ -3083,16 +3125,14 @@ async function loadRuntimePackages(id) {
 
 
 runtimeFilter.addEventListener('change', () => {
-  if (runtimeFilter.value !== 'all') selectOverview(runtimeFilter.value);
   removeContextMenu();
   renderManagedLibraryStatus();
   renderApps(allApps);
 });
 function renderManagedLibraryStatus() {
   const selected = runtimeFilter.value || 'all';
-  const installTarget = managedLibrary.find(record => record.id === selected);
-  btnInstallApk.disabled = pendingAppAction || selected === 'all' || !libraryRuntimeRunning(selected);
-  btnInstallApk.title = selected === 'all' ? 'Select a runtime to install an APK' : (selected !== 'default' && installTarget?.state !== 'Running' ? 'Start this runtime on the Runtime page first' : 'Install APK into the selected runtime');
+  btnInstallApk.disabled = pendingAppAction || pendingLaunch || runtimeTransition || controllerMutation || runtimeBatchBusy || Boolean(probeInstallBusy);
+  btnInstallApk.title = 'Choose APK and runtimes';
   const records = managedLibrary.filter(record => selected === 'all' || selected === record.id);
   const markup =
     (managedLibraryError ? `<p>${escapeHtml(managedLibraryError)}</p>` : '') + records.map(record => {
@@ -3102,7 +3142,6 @@ function renderManagedLibraryStatus() {
     }).join('');
   const target = document.getElementById('library-runtime-status');
   if (target.innerHTML !== markup) target.innerHTML = markup;
-  updateLibraryRuntimeSummary();
 }
 async function refreshManagedLibrary({poll = false} = {}) {
   if (managedLibraryLoading) return;
@@ -3156,7 +3195,6 @@ async function refreshManagedLibrary({poll = false} = {}) {
     managedLibrary = managedLibrary.map(record => ({...record,error:managedLibraryError}));
   } finally {
     managedLibraryLoading = false;
-    updateLibraryRuntimeSummary(managedLibrary, managedLibraryError);
     if (!appStatesLoading) { renderManagedLibraryStatus(); renderApps(allApps); }
     if(libraryPage&&!document.hidden&&!appStatesLoading) appStatesTimer=setTimeout(refreshAppStates,0);
   }

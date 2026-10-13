@@ -583,7 +583,8 @@ class ExistingRuntime:
             usage = os.statvfs(path)
             return {'path': path, 'total_bytes': usage.f_blocks * usage.f_frsize,
                     'free_bytes': usage.f_bavail * usage.f_frsize,
-                    'used_bytes': (usage.f_blocks - usage.f_bfree) * usage.f_frsize,
+                    'filesystem_used_bytes': (usage.f_blocks - usage.f_bfree) * usage.f_frsize,
+                    **storage.runtime_usage(path),
                     'limit_status': 'unavailable', 'job': None, 'previous_path': None, 'error': None}
         if op == 'health':
             report = {'runtime_id': 'default', 'checked_at': time.time(), 'checks': [], 'gpu_devices': gpu.inventory(),

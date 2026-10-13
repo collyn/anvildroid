@@ -1054,7 +1054,8 @@ class Store:
             report = copy.deepcopy(self.storage.report(record['id']))
             try:
                 usage = shutil.disk_usage(report['path'])
-                report.update(used_bytes=usage.total - usage.free, free_bytes=usage.free, total_bytes=usage.total, limit_bytes=None, limit_status='unavailable')
+                report.update(filesystem_used_bytes=usage.total - usage.free, free_bytes=usage.free, total_bytes=usage.total, limit_bytes=None, limit_status='unavailable')
+                report.update(storage_module.runtime_usage(report['path']))
             except OSError as error: report['disk_error'] = str(error)
             return report
         if operation == 'inspect':

@@ -34,7 +34,6 @@
           <span class="nav-icon"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M7 6h10c3 0 4 4 5 11 .2 2-2 3-3.5 1L16 15H8l-2.5 3C4 20 1.8 19 2 17 3 10 4 6 7 6Z"/><path d="M7 9v5m-2.5-2.5h5M16 10h.01M18 13h.01"/></svg></span><span>Game Controls</span>
         </li>
       </ul>
-      <div class="sidebar-runtime-card"><div class="sidebar-runtime-title"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="m12 2 9 5v10l-9 5-9-5V7zM3 7l9 5 9-5M12 12v10M7.5 4.5l9 5"/></svg><span>Runtime overview</span></div><p id="sidebar-runtime-status" role="status">Checking runtimes…</p><select id="sidebar-runtime-select" aria-label="Runtime for resource metrics"></select><div class="sidebar-runtime-metrics"><div class="sidebar-metric"><span title="CPU usage as a percentage of host logical CPU capacity">CPU</span><strong id="sidebar-cpu-value">—</strong><div class="sidebar-metric-track"><i id="sidebar-cpu-bar"></i></div></div><div class="sidebar-metric"><span>RAM</span><strong id="sidebar-ram-value">—</strong><div class="sidebar-metric-track"><i id="sidebar-ram-bar"></i></div></div><div class="sidebar-metric"><span title="Used space on the filesystem containing the selected runtime, not per-runtime disk usage">Disk</span><strong id="sidebar-storage-value">—</strong><div class="sidebar-metric-track"><i id="sidebar-storage-bar"></i></div></div></div><button id="btn-sidebar-runtimes" class="sidebar-runtime-link nav-item" data-page="runtime" type="button">Manage runtimes <span aria-hidden="true">→</span></button></div>
       </div>
       <div class="sidebar-footer">
         <span id="app-version" class="version" aria-label="App version">AnvilDroid</span>
@@ -48,7 +47,6 @@
           <label class="global-search"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="10.5" cy="10.5" r="7"/><path d="m16 16 5 5"/></svg><input id="search-apps" type="search" placeholder="Search apps, packages, or activities…" aria-label="Search apps"><span class="search-shortcut" aria-hidden="true"><kbd>Ctrl</kbd><kbd>K</kbd></span></label>
           <div class="page-actions">
             <button id="btn-refresh-apps" class="btn" title="Refresh apps"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M20 7v5h-5M20 12a8 8 0 1 0-2 5M20 7l-3-2"/></svg><span>Refresh</span></button>
-            <button id="btn-manage-runtimes" class="btn"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="m12 2 9 5v10l-9 5-9-5V7zM3 7l9 5 9-5M12 12v10M7.5 4.5l9 5"/></svg>Manage runtimes</button>
             <button id="btn-install-apk" class="btn btn-primary"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m-5-5 5 5 5-5M3 16v5h18v-5"/></svg>Install APK</button>
           </div>
         </div>
@@ -177,8 +175,7 @@
         <div class="page-header"><div><h1>Images</h1><p class="hint">Download and import Android images for your runtimes.</p></div><button id="btn-refresh-images" class="btn" type="button">Refresh</button></div>
         <p id="image-library-message" role="status" aria-live="polite"></p>
         <section class="settings-section image-settings runtime-images-section">
-          <div class="section-heading"><div><span class="eyebrow">ANDROID IMAGES</span><h2>Image library</h2></div><div class="runtime-actions"><button id="btn-import-images" class="btn" type="button" aria-controls="image-library-import" aria-expanded="false">Import custom image…</button><button id="btn-create-gapps" class="btn btn-primary" type="button">Create GAPPS runtime…</button></div></div>
-          <p class="hint">Keep downloaded and imported image pairs here. Use an image to create a runtime or reinstall the selected runtime.</p>
+          <div class="section-heading"><div><h2>Image library</h2></div><div class="runtime-actions"><button id="btn-import-images" class="btn" type="button" aria-controls="image-library-import" aria-expanded="false">Import custom image…</button><button id="btn-create-runtime-images" class="btn btn-primary" type="button">Create runtime</button></div></div>
           <p id="custom-image-status" role="status" aria-live="polite"></p>
           <div id="settings-image-download" role="status" aria-live="polite"></div>
           <button id="btn-cancel-image-download" class="btn" hidden>Cancel download</button>
@@ -190,7 +187,6 @@
           <p class="hint">Choose a folder containing system.img and vendor.img directly, or a ZIP containing both files for Waydroid x86_64, Android SDK 33+ (ext4, EROFS, SquashFS or Android sparse). Sparse images are expanded automatically. Newer Android support is experimental: Prepare checks required Waydroid components; boot and desktop controls still depend on the build. Image import creates an independent runtime; it does not replace Default runtime. Use images from a source you trust. Custom Android builds may not support AnvilDroid desktop controls or ARM translation.</p>
         </div>
           </div>
-          <h3>Available images</h3>
           <div id="available-runtime-images" aria-live="polite"><p class="hint">Loading image library...</p></div>
           <div class="image-library-official">
           <div class="runtime-actions"><button id="btn-check-images" class="btn">Check official images</button></div>
@@ -201,24 +197,15 @@
 
       <!-- Settings page -->
       <section id="page-settings" class="page">
-        <div class="page-header"><div><h1>Settings</h1><p class="hint">Application settings and default runtime configuration</p></div><button id="btn-refresh-settings" class="btn">Refresh</button></div>
-        <div class="settings-section settings-inline"><div><h2>Runtime management</h2><p class="hint">Create, start, stop and configure each Android runtime on the Runtimes page.</p></div><button id="btn-settings-runtimes" class="btn btn-primary">Manage runtimes</button></div>
-        <div class="settings-section settings-inline"><div><h2>GPU &amp; graphics</h2><p class="hint">Inspect host GPUs and the Android renderer in each runtime's GPU &amp; graphics panel.</p><p class="hint">Choose a GPU per runtime while it is stopped. NVIDIA: Experimental — not available yet.</p></div><button id="btn-gpu-runtimes" class="btn">View runtime GPUs</button></div>
-        <div class="settings-section settings-inline"><div><h2>RAM &amp; CPU limits</h2><p class="hint">Set limits for each managed runtime while stopped. View current memory usage and active CPU quota in runtime details.</p><p class="hint">Limits apply on next start. Resources are shared, not reserved.</p></div><button id="btn-resource-runtimes" class="btn">View runtime limits</button></div>
+        <div class="page-header"><div><h1>Settings</h1><p class="hint">Application preferences and ARM packages</p></div><button id="btn-refresh-settings" class="btn">Refresh</button></div>
         <div class="settings-section image-settings">
-          <div class="section-heading"><div><span class="eyebrow">ANDROID SETUP</span><h2>ARM app support</h2></div><button id="btn-arm-runtimes" class="btn">Configure ARM support…</button></div>
-          <p class="hint">Choose ARM translation per runtime. Download a trusted archive over HTTPS or import an extracted payload folder; AnvilDroid verifies required native bridge libraries before making it selectable.</p>
+          <div class="section-heading"><h2>ARM packages</h2></div>
+          <p class="hint">Download or import ARM translation packages.</p>
           <div id="arm-source-panel" class="arm-source-panel" role="region" aria-label="ARM translation sources"><p class="hint">Loading ARM translation sources…</p></div>
         </div>
         <details id="legacy-runtime-settings" class="settings-section">
-          <summary>Default runtime · App library and desktop windows</summary>
+          <summary>Default runtime details</summary>
           <div id="settings-runtime" class="runtime-card">Open Settings to load the current configuration.</div>
-        </details>
-        <details class="settings-section roadmap-section">
-          <summary>Upcoming settings</summary>
-          <div class="settings-roadmap">
-            <div><strong>Disk capacity</strong><p class="hint">Per-runtime disk quota and resizing</p><span class="status-badge">Planned</span></div>
-          </div>
         </details>
       </section>
 
@@ -303,6 +290,23 @@
       <label id="runtime-batch-confirm-field" hidden><span id="runtime-batch-confirm-label"></span><input id="runtime-batch-confirm" autocomplete="off"></label>
       <p id="runtime-batch-dialog-error" role="alert"></p>
       <div class="runtime-actions"><button id="runtime-batch-cancel" class="btn" type="button">Cancel</button><button id="runtime-batch-submit" class="btn btn-primary" type="submit">Continue</button></div>
+    </form>
+  </dialog>
+  <dialog id="apk-install-dialog" aria-labelledby="apk-install-title" aria-describedby="apk-install-file">
+    <form id="apk-install-form">
+      <h2 id="apk-install-title">Install APK</h2>
+      <div id="apk-install-config">
+        <div class="apk-install-file-row"><p id="apk-install-file">No APK selected</p><button id="apk-install-pick" class="btn" type="button">Choose APK…</button></div>
+        <p id="apk-install-target-hint" class="hint">Choose runtimes</p>
+        <div id="apk-install-targets"></div>
+      </div>
+      <p id="apk-install-error" role="alert"></p>
+      <div id="apk-install-progress" hidden aria-live="polite">
+        <p id="apk-install-progress-label" role="status"></p>
+        <progress id="apk-install-bar" value="0" max="1" aria-label="Runtime installation progress"></progress>
+        <div id="apk-install-error-details"></div>
+      </div>
+      <div class="dialog-actions"><button id="apk-install-cancel" class="btn" type="button">Cancel</button><button id="apk-install-submit" class="btn btn-primary" type="submit" disabled>Install</button></div>
     </form>
   </dialog>
   <dialog id="app-dialog" aria-labelledby="app-dialog-title" aria-describedby="app-dialog-message">

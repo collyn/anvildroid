@@ -405,8 +405,8 @@
 #page-runtime-settings .runtime-gpu-panel > .runtime-actions { margin-top: 10px; }
 #page-runtime-settings #legacy-runtime-detail > .runtime-settings-group { margin-top: 12px; }
 
-/* Avoid GTK's native grey select surface in the runtime settings WebView. */
-#page-runtime-settings select {
+/* Avoid GTK's native grey select surface in the WebView. */
+:is(#page-runtime, #page-runtime-settings, #page-images, #page-settings, #page-controls) select {
   -webkit-appearance: none;
   appearance: none;
   color: #edf5ff;
@@ -417,8 +417,8 @@
   padding-right: 36px;
   border-color: var(--mg-border-strong);
 }
-#page-runtime-settings select:hover:not(:disabled) { border-color: var(--mg-blue); }
-#page-runtime-settings select:disabled { color: #91a2b8; background-color: #142131; }
+:is(#page-runtime, #page-runtime-settings, #page-images, #page-settings, #page-controls) select:hover:not(:disabled) { border-color: var(--mg-blue); }
+:is(#page-runtime, #page-runtime-settings, #page-images, #page-settings, #page-controls) select:disabled { color: #91a2b8; background-color: #142131; }
 
 /* Section headings stay flat on hover; keyboard focus remains explicit. */
 #page-runtime-settings .runtime-settings-group > summary,
@@ -429,3 +429,30 @@
   color: #acd2ff;
   border-radius: 0;
 }
+
+#runtime-table input[type="checkbox"] { -webkit-appearance: none; appearance: none; width: 16px; height: 16px; padding: 0; margin: 0; vertical-align: middle; border: 1px solid #637d99; border-radius: 4px; background: #102033; cursor: pointer; }
+#runtime-table input[type="checkbox"]:checked { border-color: #4ca7ff; background: #4ca7ff url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='m3.5 8 3 3 6-6' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / 14px 14px no-repeat; }
+#runtime-table input[type="checkbox"]:indeterminate { border-color: #4ca7ff; background: #4ca7ff url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4 8h8' fill='none' stroke='white' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E") center / 14px 14px no-repeat; }
+#runtime-table input[type="checkbox"]:disabled { opacity: .5; cursor: default; }
+
+/* Compact image library, with controls matching the Refresh button. */
+#page-images .btn { min-height: 32px; padding: 5px 10px; font-size: 12px; border-radius: 8px; }
+#page-images .page-header { padding: 14px 18px; margin-bottom: 14px; }
+#page-images .runtime-images-section { padding: 16px 18px; }
+#page-images .section-heading { margin-bottom: 12px; gap: 12px; }
+#page-images .section-heading h2 { font-size: 16px; }
+#page-images .runtime-actions { gap: 6px; margin: 0; }
+#page-images .image-catalog-table th { padding: 10px 14px; }
+#page-images .image-catalog-table td { padding: 10px 14px; vertical-align: middle; }
+#page-images .image-catalog-table th:last-child { width: 144px; text-align: right; }
+#page-images .image-catalog-table td:nth-child(3) { white-space: nowrap; }
+#page-images .image-catalog-table details { margin-top: 3px; }
+#page-images .image-catalog-table summary { font-size: 12px; min-height: 20px; padding: 0; color: #9aafc7; }
+#page-images .image-catalog-table summary::after { display: none; }
+#page-images .image-library-official { margin-top: 12px; padding-top: 10px; }
+#page-images :is(#image-library-message, #custom-image-status):empty { display: none; }
+
+#page-images .image-catalog-table td:last-child { text-align: right; }
+#page-images .image-catalog-table .runtime-actions { justify-content: flex-end; flex-wrap: nowrap; }
+#page-images .runtime-action-icon { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 32px; width: 32px; height: 32px; min-width: 32px; padding: 0; }
+#page-images .runtime-action-icon svg { width: 17px; height: 17px; pointer-events: none; }

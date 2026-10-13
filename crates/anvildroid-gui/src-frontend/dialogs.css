@@ -71,3 +71,46 @@ body dialog #runtime-storage-picker { margin: 14px 0; padding: 0; border: 0; }
   }
   body dialog .btn { min-height: 40px; }
 }
+
+#apk-install-dialog { width: min(900px, calc(100vw - 40px)); }
+#apk-install-file { overflow-wrap: anywhere; color: #9bb0ca; }
+#apk-install-targets { max-height: 280px; overflow: auto; margin: 12px 0 20px; border: 1px solid #38516c; border-radius: 14px; background: rgba(15,26,41,.7); box-shadow: 0 12px 28px rgba(0,0,0,.12); }
+
+.apk-install-file-row { display: flex; align-items: center; gap: 12px; }
+.apk-install-file-row p { flex: 1; min-width: 0; }
+#apk-install-progress progress { display: block; width: 100%; height: 8px; margin: 12px 0; accent-color: #4ca7ff; }
+#apk-install-progress progress[hidden] { display: none; }
+#apk-install-progress progress::-webkit-progress-bar { background: #1b2b40; border-radius: 8px; }
+#apk-install-progress progress::-webkit-progress-value { background: #4ca7ff; border-radius: 8px; }
+
+.apk-runtime-table { table-layout: fixed; width: 100%; border-collapse: separate; border-spacing: 0; font-size: 13px; text-align: left; }
+.apk-runtime-table th { padding: 13px 16px; background: #17283d; color: #a9c1de; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; border-bottom: 1px solid #38516c; position: sticky; top: 0; z-index: 1; }
+.apk-runtime-table td { padding: 14px 16px; border-bottom: 1px solid rgba(137,180,250,.18); vertical-align: middle; overflow-wrap: anywhere; }
+.apk-runtime-table :is(th, td):not(:last-child) { border-right: 1px solid rgba(137,180,250,.1); }
+.apk-runtime-table tbody tr:last-child td { border-bottom: 0; }
+.apk-runtime-table th:first-child, .apk-runtime-table td:first-child { width: 48px; }
+.apk-runtime-table tbody tr { transition: background .15s; }
+.apk-runtime-table tbody tr:hover, .apk-runtime-table tbody tr:has(input:checked) { background: rgba(76,167,255,.1); }
+body dialog .apk-runtime-table label { margin: 0; color: #edf5ff; cursor: pointer; font-weight: 600; font-size: 13px; }
+.apk-runtime-table td:last-child { color: #a9c1de; font-size: 12px; }
+.apk-runtime-table .apk-target-state { display: block; width: fit-content; max-width: 100%; margin-top: 6px; padding: 3px 7px; border: 1px solid rgba(137,180,250,.18); border-radius: 4px; background: #1b2b40; color: #a9c1de; font-size: 11px; line-height: 1.3; }
+.apk-runtime-table .apk-target-state.running, .apk-runtime-table .apk-target-state.completed { color: #6ee5a0; background: rgba(53,208,127,.12); border-color: rgba(53,208,127,.28); }
+.apk-runtime-table .apk-target-state.installing { background: rgba(76,167,255,.12); border-color: rgba(76,167,255,.3); }
+.apk-runtime-table .apk-target-state.failed { background: rgba(243,139,168,.12); border-color: rgba(243,139,168,.28); }
+body dialog .apk-runtime-table input[type="checkbox"] { -webkit-appearance: none; appearance: none; display: block; width: 16px; height: 16px; min-width: 16px; padding: 0; margin: 0; border: 1px solid #637d99; border-radius: 4px; background: #102033; cursor: pointer; }
+body dialog .apk-runtime-table input[type="checkbox"]:checked { border-color: #4ca7ff; background: #4ca7ff url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='m3.5 8 3 3 6-6' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / 14px 14px no-repeat; }
+body dialog .apk-runtime-table input[type="checkbox"]:disabled { cursor: default; }
+
+body dialog .apk-runtime-table input[type="checkbox"]:indeterminate { border-color: #4ca7ff; background: #4ca7ff url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4 8h8' fill='none' stroke='white' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E") center / 14px 14px no-repeat; }
+
+#apk-install-file { font-weight: 600; color: var(--text-primary); }
+.apk-runtime-table tr:has(input:disabled):not(:has(input:checked)) { opacity: .55; }
+.apk-runtime-table .apk-target-state.installing { color: #4ca7ff; }
+.apk-runtime-table .apk-target-state.completed { color: #35d07f; }
+.apk-runtime-table .apk-target-state.failed { color: var(--error); }
+.apk-runtime-table .apk-target-state.skipped { color: #e5bb69; }
+
+.apk-runtime-table th:nth-child(2) { width: 55%; }
+.apk-install-error-detail { margin-top: 12px; padding: 10px 12px; border: 1px solid rgba(243,139,168,.25); border-radius: 8px; background: rgba(243,139,168,.05); }
+.apk-install-error-detail summary { cursor: pointer; font-size: 13px; color: #ff9db7; }
+.apk-install-error-detail pre { max-height: 200px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; line-height: 1.5; color: #a9c1de; margin: 12px 0 0; }

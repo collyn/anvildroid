@@ -4,11 +4,34 @@ import re
 import json
 import os
 import stat
+from functools import lru_cache
 import importlib.util
 
 _nv_spec = importlib.util.spec_from_file_location('runtime_nvidia', Path(__file__).with_name('runtime-nvidia.py'))
 nvidia = importlib.util.module_from_spec(_nv_spec)
 _nv_spec.loader.exec_module(nvidia)
+
+
+@lru_cache(maxsize=1)
+def pci_names():
+    result = {}
+    for path in ('/usr/share/hwdata/pci.ids', '/usr/share/misc/pci.ids', '/usr/share/pci.ids'):
+        try: lines = Path(path).read_text().splitlines()
+        except OSError: continue
+        vendor = None
+        for line in lines:
+            match = re.match(r'^([0-9a-fA-F]{4})  (.+)$', line)
+            if match: vendor = match[1].lower()
+            else:
+                match = re.match(r'^\t([0-9a-fA-F]{4})  (.+)$', line)
+                if match and vendor: result[(vendor, match[1].lower())] = match[2]
+        break
+    return result
+
+def device_name(vendor, device):
+    name = pci_names().get(((vendor or '').removeprefix('0x'), (device or '').removeprefix('0x')))
+    brand = {'0x10de':'NVIDIA', '0x8086':'Intel', '0x1002':'AMD'}.get(vendor)
+    return (brand + ' ' + name if brand and name else name)
 
 
 def inventory(sysfs=Path('/sys/class/drm'), devices=Path('/dev/dri')):
@@ -23,6 +46,7 @@ def inventory(sysfs=Path('/sys/class/drm'), devices=Path('/dev/dri')):
         driver = driver_path.resolve().name if driver_path.exists() else None
         result.append({'node': str(devices / node.name), 'driver': driver,
                        'vendor_id': value('vendor'), 'device_id': value('device'),
+                       'name': device_name(value('vendor'), value('device')),
                        'identity': str((node / 'device').resolve()),
                        'available': (devices / node.name).exists()})
     # Proprietary NVIDIA exposes /dev/nvidia0 rather than a DRM render node
@@ -46,9 +70,12 @@ def inventory(sysfs=Path('/sys/class/drm'), devices=Path('/dev/dri')):
         minor = values.get('Device Minor', '')
         if not minor.isdecimal(): continue
         node = Path('/dev/nvidia' + minor)
+        model = values.get('Model')
+        for device in result:
+            if device['identity'] == str(identity) and model: device['name'] = model
         if not any(d['identity'] == str(identity) for d in result):
             result.append({'node': str(node), 'driver': 'nvidia', 'vendor_id': '0x10de',
-                           'device_id': device_id, 'identity': str(identity),
+                           'device_id': device_id, 'identity': str(identity), 'name': model or device_name('0x10de', device_id),
                            'available': node.exists()})
     return result
 

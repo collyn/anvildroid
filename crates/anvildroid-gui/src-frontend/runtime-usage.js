@@ -21,12 +21,12 @@ const RuntimeUsage = (() => {
     const memory = number(actual?.memory_current_bytes) ? actual.memory_current_bytes : null;
     const cpu = number(record.cpuUsagePercent) && actual ? record.cpuUsagePercent : null;
     const disk = !record.usageDiskUnavailable && number(record.storage?.used_bytes) ? record.storage.used_bytes : null;
-    const diskMax = record.storage?.total_bytes;
+    const diskMax = positive(record.storage?.limit_bytes) ? record.storage.limit_bytes : number(disk) && number(record.storage?.free_bytes) ? disk + record.storage.free_bytes : null;
     const metric = (name, value, max, text, hint) => ({name, text, hint, percent:value != null && positive(max) ? Math.min(100, Math.max(0, value / max * 100)) : null});
     return [
       metric('Memory', memory, memoryMax, memory == null ? '—' : `${gib(memory)}${positive(memoryMax) ? ' / ' + gib(memoryMax) : ''} GiB`, actual?.memory_max_bytes != null ? 'Runtime memory / RAM limit' : 'Runtime memory / host RAM (no runtime limit)'),
       metric('CPU', cpu, 100, cpu == null ? '—' : `${cpu.toFixed(1)}%`, 'CPU usage / ' + (actual?.cpu_quota_count || data?.host?.cpu_count || 'available') + ' CPUs; sampled between refreshes'),
-      metric('Disk', disk, diskMax, disk == null ? '—' : `${gib(disk)}${positive(diskMax) ? ' / ' + gib(diskMax) : ''} GiB`, 'Used space on the shared filesystem containing runtime data'),
+      metric('Disk', disk, diskMax, disk == null ? '—' : `${gib(disk)}${positive(record.storage?.limit_bytes) ? ' / ' + gib(record.storage.limit_bytes) : ''} GiB`, 'Runtime allocated data and private images (cached); bar compares runtime usage with remaining disk space'),
     ];
   }
   function retain(ids) { for (const id of samples.keys()) if (!ids.has(id)) samples.delete(id); }
@@ -37,7 +37,7 @@ const RuntimeUsage = (() => {
     if (selected === 'software') return {text: 'CPU rendering', hint: 'Configured GPU: software rendering on CPU'};
     const device = record.gpu.devices?.find(device => device.node === selected);
     const vendor = {'0x8086':'Intel', '0x1002':'AMD', '0x10de':'NVIDIA'}[device?.vendor_id];
-    const text = vendor || device?.driver || selected.split('/').pop();
+    const text = device?.name || vendor || device?.driver || selected.split('/').pop();
     return {text, hint: `Configured GPU: ${text}${device?.driver ? ' · ' + device.driver : ''} · ${selected}${device?.selectable === false ? ' · ' + (device.reason || 'Unavailable') : ''}`};
   }
   return {sample, metrics, retain, gpu};

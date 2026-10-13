@@ -17,6 +17,67 @@ import stat
 import subprocess
 import tempfile
 import uuid
+import time
+
+
+# One background scan per data location; status polling never walks the tree.
+_usage_cache = {}
+_usage_lock = threading.Lock()
+_usage_slots = threading.Semaphore(1)
+
+def allocated_tree_bytes(path, deadline_seconds=30):
+    """Allocated blocks, no symlink traversal or filesystem crossings."""
+    deadline = time.monotonic() + deadline_seconds
+    seen = set()
+    root = open_directory(path)
+    device = os.fstat(root).st_dev
+    def names(fd):
+        with os.scandir(fd) as entries:
+            for entry in entries: yield entry.name
+    def walk(fd):
+        info = os.fstat(fd)
+        key = (info.st_dev, info.st_ino)
+        if key in seen or info.st_dev != device: return 0
+        seen.add(key)
+        total = info.st_blocks * 512
+        for name in names(fd):
+            if time.monotonic() > deadline or len(seen) > 500000:
+                raise RuntimeError('Disk usage scan exceeded its limit')
+            try:
+                entry = os.stat(name, dir_fd=fd, follow_symlinks=False)
+                key = (entry.st_dev, entry.st_ino)
+                if entry.st_dev != device or key in seen: continue
+                if stat.S_ISDIR(entry.st_mode):
+                    child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+                    try: total += walk(child)
+                    finally: os.close(child)
+                else:
+                    seen.add(key)
+                    total += entry.st_blocks * 512
+            except FileNotFoundError: pass  # Live Android may remove a temporary file.
+        return total
+    try: return walk(root)
+    finally: os.close(root)
+
+def runtime_usage(path):
+    key = str(path)
+    now = time.monotonic()
+    with _usage_lock:
+        item = _usage_cache.setdefault(key, {'used_bytes': None, 'usage_checked_at': None, 'usage_error': None, 'expires': 0, 'pending': False})
+        if now >= item['expires'] and not item['pending'] and _usage_slots.acquire(blocking=False):
+            item['pending'] = True
+            def scan():
+                try:
+                    used = allocated_tree_bytes(key)
+                    values = {'used_bytes': used, 'usage_checked_at': time.time(), 'usage_error': None}
+                except (OSError, RuntimeError, RecursionError) as error:
+                    values = {'used_bytes': None, 'usage_checked_at': time.time(), 'usage_error': str(error)}
+                finally:
+                    with _usage_lock:
+                        item.update(values, expires=time.monotonic() + 60, pending=False)
+                    _usage_slots.release()
+            threading.Thread(target=scan, daemon=True, name='runtime-disk-usage').start()
+        return {field: item[field] for field in ('used_bytes', 'usage_checked_at', 'usage_error')}
 
 
 def sync_directory(path):
