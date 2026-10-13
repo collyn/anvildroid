@@ -413,15 +413,23 @@ fn run_pkexec(
     args: &[&str],
     deadline_duration: std::time::Duration,
 ) -> Result<StartControllerResult, String> {
+    let mut arguments = vec!["-B".to_string(), script.to_string_lossy().into_owned()];
+    arguments.extend(args.iter().map(|arg| (*arg).to_string()));
+    run_privileged("/usr/bin/python3", &arguments, deadline_duration)
+}
+
+fn run_privileged(
+    program: &str,
+    args: &[String],
+    deadline_duration: std::time::Duration,
+) -> Result<StartControllerResult, String> {
     use std::io::Read;
     use std::process::{Command, Stdio};
     let mut child = Command::new("pkexec")
         // This is a host executable, not an AppImage-bundled executable.
         .env_remove("LD_LIBRARY_PATH")
         .env_remove("LD_PRELOAD")
-        .arg("/usr/bin/python3")
-        .arg("-B")
-        .arg(script)
+        .arg(program)
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -471,7 +479,7 @@ fn run_pkexec(
             ok: false,
             message: format!(
                 "Administrator authentication was cancelled or the authentication agent \
-                 failed; the controller was not started.{}",
+                 failed; the operation was not performed.{}",
                 if output.trim().is_empty() { String::new() } else { format!("\n{output}") }
             ),
         }),
@@ -484,6 +492,19 @@ fn run_pkexec(
             message: format!("pkexec was terminated by a signal:\n{}", tail(&output)),
         }),
     }
+}
+
+// Fixed service and executable: the frontend cannot supply privileged commands.
+#[tauri::command]
+async fn restart_runtime_controller() -> Result<StartControllerResult, String> {
+    blocking(|| {
+        run_privileged(
+            "/usr/bin/systemctl",
+            &["restart".into(), "anvildroid-controller.service".into()],
+            std::time::Duration::from_secs(540),
+        )
+    })
+    .await
 }
 
 #[tauri::command]
@@ -1195,6 +1216,7 @@ fn main() {
             get_runtime_catalog,
             runtime_controller,
             start_runtime_controller,
+            restart_runtime_controller,
             setup_waydroid,
             waydroid_init_status,
             open_waydroid_setup_guide,

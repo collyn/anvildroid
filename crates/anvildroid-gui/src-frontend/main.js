@@ -79,6 +79,62 @@ async function startRuntimeController() {
     button.disabled = false;
   }
 }
+document.getElementById('btn-restart-controller').addEventListener('click', restartRuntimeController);
+function controllerRestartBlocked() {
+  return controllerLoading || controllerMutation || runtimeBatchBusy || runtimeTransition ||
+    pendingLaunch || pendingAppAction || probeInstallBusy || imageDownloadBusy ||
+    imageDownloadActive() || controllerHasActiveWork();
+}
+async function restartRuntimeController() {
+  const button = document.getElementById('btn-restart-controller');
+  if (button.disabled || controllerRestartBlocked()) return;
+  // Reserve the operation before opening the dialog to prevent double clicks.
+  button.disabled = true;
+  let locked = false;
+  try {
+    const confirmed = await AppDialog.confirm(
+      'Restart the controller service? Running managed runtimes and their windows may stop. You can start them again after reconnecting.',
+      {title:'Restart controller', kind:'warning', okLabel:'Restart', cancelLabel:'Cancel'});
+    if (!confirmed || controllerRestartBlocked()) return;
+    controllerMutation = true;
+    locked = true;
+    clearTimeout(controllerTimer);
+    button.textContent = 'Restarting…';
+    renderController();
+    const connection = document.getElementById('controller-connection');
+    connection.textContent = 'Restarting controller…';
+    connection.className = 'status-badge';
+    document.getElementById('controller-message').textContent = 'Requesting administrator access…';
+    const result = await tauriInvoke('restart_runtime_controller');
+    if (!result?.ok) throw new Error(result?.message || 'Controller restart failed');
+    // systemctl waits for the job, but Type=simple may not have bound its socket yet.
+    let reachable = false;
+    let lastError;
+    for (let attempt = 0; attempt < 30; attempt++) {
+      try {
+        const records = await controllerRequest({op:'list'});
+        if (!Array.isArray(records)) throw new Error('Invalid runtime list');
+        reachable = true;
+        break;
+      } catch (error) {
+        lastError = error;
+        if (attempt < 29) await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+    }
+    if (!reachable) throw new Error(`Service restart finished, but reconnect failed: ${lastError}`);
+    controllerNotice = 'Controller restarted.';
+  } catch (error) {
+    controllerNotice = `Cannot restart controller: ${error}`;
+    showBanner(controllerNotice, 'error');
+  } finally {
+    if (locked) {
+      controllerMutation = false;
+      await refreshController();
+    }
+    button.textContent = 'Restart controller';
+    button.disabled = controllerRestartBlocked();
+  }
+}
 async function refreshRuntimePage() {
   const button = document.getElementById('btn-refresh-runtimes');
   button.disabled = true;
@@ -3226,6 +3282,7 @@ function runtimeBatchRecords() {
   return [...controllerRecords, ...(existingRuntime ? [existingRuntime] : [])];
 }
 function renderRuntimeBatchSelection() {
+  document.getElementById('btn-restart-controller').disabled = controllerRestartBlocked();
   const records = runtimeBatchRecords();
   const ids = new Set(records.map(record => record.id));
   for (const id of runtimeBatchSelection) if (!ids.has(id)) runtimeBatchSelection.delete(id);
