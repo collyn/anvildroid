@@ -25,6 +25,8 @@ ARTIFACT_FILES = {
     'guest-vulkan-virtio-x86_64': ('vendor/lib64/hw/vulkan.virtio.so',),
     'guest-gralloc': ('vendor/lib64/libgbm_mesa_wrapper.so',),
     'guest-hwcomposer': ('vendor/lib64/hw/hwcomposer.waydroid.so',),
+    'guest-angle': tuple(p for group in ('guest32', 'guest64')
+                         for p in nvidia.PAYLOAD_FILES[group] if '/egl/' in p) + ('LICENSE', 'NOTICE'),
 }
 PREBUILT_FILES = tuple(p for group in ('guest32', 'guest64', 'surfaceflinger')
                        for p in nvidia.PAYLOAD_FILES[group]
@@ -86,12 +88,13 @@ def zip_files(data, allowed):
 
 
 def collect(inputs):
-    host, guest = {}, {}
-    for name, allowed in ARTIFACT_FILES.items():
-        pin = nvidia.FORK_SOURCE['artifacts'][name]
+    host, guest, angle = {}, {}, {}
+    for name, pin in nvidia.FORK_SOURCE['artifacts'].items():
+        allowed = ARTIFACT_FILES[name]
         data = verified_bytes(inputs / (name + '.zip'), pin['sha256'])
         files = zip_files(data, allowed)
-        (host if name == 'host-venus-server' else guest).update(files)
+        (host if name == 'host-venus-server' else
+         angle if name == 'guest-angle' else guest).update(files)
     pin = nvidia.FORK_SOURCE['prebuilts']
     data = verified_bytes(inputs / f"waydroid-nvidia-guest-prebuilts-{pin['version']}.tar.gz", pin['sha256'])
     prebuilts = {}
@@ -105,6 +108,10 @@ def collect(inputs):
                 raise RuntimeError('Unexpected prebuilt member: ' + name)
             prebuilts[name] = archive.extractfile(item).read()
     if set(prebuilts) != set(PREBUILT_FILES): raise RuntimeError('Incomplete upstream prebuilts')
+    if nvidia.FORK_SOURCE.get('angle') and not angle:
+        raise RuntimeError('Pinned ASTC-enabled ANGLE artifact is required')
+    # Apply last: verified upstream fallback must never replace our ASTC build.
+    prebuilts.update(angle)
     # Verify actual ELF machines/classes using the controller validator before
     # emitting archives. Never extract untrusted member paths to the filesystem.
     with tempfile.TemporaryDirectory(prefix='fork-elf-check-') as directory:

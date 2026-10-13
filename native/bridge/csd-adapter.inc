@@ -90,7 +90,7 @@ static struct proxy *csd_paint(int part, int w, int h, int state) {
   uint32_t *pixels = mmap(0, size, 3, 1, fd, 0);
   if (pixels == (void *)-1) { close(fd); return 0; }
   for (int y = 0; y < h; y++) for (int x = 0; x < w; x++) {
-    uint32_t color = 0xff30343b;
+    uint32_t color = 0;
     if(part==4) {
       color=0x24050910; /* Subtle premultiplied scrim; app stays legible. */
     }
@@ -120,6 +120,7 @@ static struct proxy *csd_paint(int part, int w, int h, int state) {
 }
 static void csd_create(struct object *top) {
   if (!ANVIL_CSD_EXPERIMENT || !top || top->csd ||
+      (top->decoration && top->decoration_mode != 1) ||
       !top->surface || (!top->surface->app && !top->surface->full_ui) ||
       !csd_compositor || !csd_subcompositor || !csd_shm)
     return;

@@ -28,6 +28,9 @@ static void window_feedback_snapshot(int *ready,int *activated) {
   for (struct object *top=objects;top;top=top->next) {
     if (!object_is(top,"xdg_toplevel") ||
         !window_is_full(top->surface) || !top->surface->window_configured) continue;
+    /* A protocol/import error can leave HWC alive with all cached surface
+     * flags intact, although the compositor has removed every window. */
+    if (top->display && real_display_get_error && real_display_get_error(top->display)) continue;
     struct object *s=top->surface;
     int content=s->window_content;
     for (struct object *sub=objects;sub;sub=sub->next)

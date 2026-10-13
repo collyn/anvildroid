@@ -1,10 +1,11 @@
 #ifndef ANVILDROID_CSD_LAYOUT_H
 #define ANVILDROID_CSD_LAYOUT_H
 /* Logical surface coordinates, not Android display coordinates. */
-#define CSD_BORDER 2   /* Visible frame thickness. */
+#define CSD_BORDER 1   /* Transparent frame; retained for resize input. */
+#define CSD_RADIUS 8
 #define CSD_GRIP 6     /* Invisible top resize grip inside the header. */
-#define CSD_HEADER 38
-#define CSD_BUTTON 28
+#define CSD_HEADER 33 /* Main app: 32px controls + 1px divider. */
+#define CSD_BUTTON 36
 enum { CSD_MOVE = 100, CSD_MINIMIZE, CSD_MAXIMIZE, CSD_CLOSE };
 static inline int csd_button_center(int action, int width) {
   return width - CSD_BORDER - CSD_BUTTON / 2 - (CSD_CLOSE - action) * CSD_BUTTON;

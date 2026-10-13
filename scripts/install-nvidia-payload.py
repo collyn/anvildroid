@@ -79,8 +79,8 @@ def stage(archives, destination):
                         notice = relative in ('README.txt', 'SHA256SUMS.prebuilts', 'LICENSE', 'COPYING', 'NOTICE')
                         if not member.isfile() or (relative not in allowed and not notice): continue
                         if member.size > 256 * 1024**2: raise RuntimeError('Oversized NVIDIA library')
-                        base = root if component == 'host-x86_64' else root / 'guest'
-                        target = root / 'notices' / component / relative if notice else base / relative
+                        payload_base = root if component == 'host-x86_64' else root / 'guest'
+                        target = root / 'notices' / component / relative if notice else payload_base / relative
                         target.parent.mkdir(parents=True, exist_ok=True)
                         with tar.extractfile(member) as source, target.open('xb') as output:
                             shutil.copyfileobj(source, output)

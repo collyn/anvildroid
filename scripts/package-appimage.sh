@@ -67,7 +67,7 @@ cmp -s target/native/libanvildroid-window.so target/native/libanvildroid-runtime
   echo 'Native bridge artifacts differ; rebuild runtime desktop first.' >&2
   exit 1
 }
-python3 -m py_compile scripts/bootstrap-appimage.py scripts/start-runtime-controller.py scripts/setup-waydroid.py scripts/install-runtime-controller.py || {
+python3 -m py_compile scripts/bootstrap-appimage.py scripts/start-runtime-controller.py scripts/setup-waydroid.py scripts/install-runtime-controller.py scripts/install-runtime-apparmor.py || {
   echo 'Controller launcher scripts failed to compile' >&2
   exit 1
 }
@@ -124,7 +124,7 @@ chmod 755 "$appdir/AppRun.wrapped"
 mkdir -p "$appdir/scripts" "$appdir/services" "$appdir/target/native" \
   "$appdir/target/ime" "$appdir/target/shutdown" "$appdir/native" \
   "$appdir/packaging/systemd"
-cp scripts/bootstrap-appimage.py scripts/install-runtime-controller.py scripts/start-runtime-controller.py scripts/setup-waydroid.py "$appdir/scripts/"
+cp scripts/bootstrap-appimage.py scripts/install-runtime-controller.py scripts/install-runtime-apparmor.py scripts/start-runtime-controller.py scripts/setup-waydroid.py "$appdir/scripts/"
 cp services/*.py "$appdir/services/"
 cp native/anvildroid-*.rc native/anvildroid-*.sh "$appdir/native/"
 cp -a native/overlay "$appdir/native/"
@@ -173,7 +173,7 @@ for helper in WebKitWebProcess WebKitNetworkProcess WebKitGPUProcess injected-bu
   }
 done
 squash="$stage/inspect/squashfs-root"
-for bundled in scripts/bootstrap-appimage.py scripts/start-runtime-controller.py scripts/setup-waydroid.py scripts/install-runtime-controller.py \
+for bundled in scripts/bootstrap-appimage.py scripts/start-runtime-controller.py scripts/setup-waydroid.py scripts/install-runtime-controller.py scripts/install-runtime-apparmor.py \
     target/native/libanvildroid-runtime-window.so target/native/overlay-key.p12 \
     target/ime/AnvilDroidIme.apk target/shutdown/anvildroid-shutdown.jar \
     native/anvildroid-apps.sh native/overlay/AndroidManifest.xml \

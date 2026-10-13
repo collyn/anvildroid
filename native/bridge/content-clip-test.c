@@ -184,16 +184,34 @@ int main(void) {
 
   /* CSD style: button cell probes. */
   {
-    int w = 200, h = 38;
+    int w = 200, h = CSD_HEADER;
     int st = csd_style_state(0, 0, 0);
     int cxm = csd_button_center(CSD_MINIMIZE, w), cxc = csd_button_center(CSD_CLOSE, w);
     uint32_t base = csd_header_pixel(30, 19, w, h, st);
+    assert(base == 0xff212121);
+    assert(csd_header_pixel(30,h-1,w,h,st) == 0xff333333);
+    assert(CSD_HEADER == 33 && CSD_BUTTON == 36 && CSD_BORDER == 1);
+    assert(csd_header_pixel(0,0,w,h,st) == 0);
+    assert(csd_header_pixel(w-1,0,w,h,st) == 0);
+    assert(csd_header_pixel(CSD_BORDER,0,w,h,csd_style_state(1,0,0)) == 0xff212121);
+    for(int y=0;y<h;++y) {
+      assert(csd_header_pixel(0,y,w,h,st)==0);
+      assert(csd_header_pixel(w-1,y,w,h,st)==0);
+    }
+    assert(csd_header_pixel(CSD_BORDER,h-2,w,h,st)==0xff212121);
+    assert(csd_header_pixel(w-CSD_BORDER-1,h-2,w,h,st)==0xff212121);
     uint32_t hover = csd_style_state(0, CSD_MINIMIZE, 0);
-    /* Pill fill inside the minimize button, clear of the glyph line. */
+    /* Hover fill inside the minimize button, clear of the glyph line. */
     uint32_t pill = csd_header_pixel(cxm, 10, w, h, hover);
-    assert(pill != base);
-    /* Minimize dash ink sits at the bottom of the glyph envelope (y ~24). */
-    uint32_t ink = csd_header_pixel(cxm, 24, w, h, hover);
+    assert(pill == 0xff383838);
+    assert(csd_header_pixel(cxm,0,w,h,hover)==0xff383838);
+    assert(csd_hit(0,cxm,0,w,h)==1); /* Visual fill must not steal resize input. */
+    uint32_t close_hover=csd_style_state(0,CSD_CLOSE,0);
+    assert(csd_header_pixel(cxc,0,w,h,close_hover)==0xffb83a4a);
+    assert(csd_header_pixel(w-CSD_BORDER-1,8,w,h,close_hover)==0xffb83a4a);
+    assert(csd_header_pixel(w-1,0,w,h,close_hover)==0);
+    /* Minimize dash ink sits at the bottom of the glyph envelope (3px below center). */
+    uint32_t ink = csd_header_pixel(cxm, h/2+3, w, h, hover);
     assert(((ink >> 16) & 255) > 200 && ((ink >> 8) & 255) > 200);
     /* Close button hover turns red, away from the X strokes. */
     uint32_t red = csd_header_pixel(cxc, 10, w, h,

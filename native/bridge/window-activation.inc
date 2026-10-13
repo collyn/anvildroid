@@ -39,6 +39,7 @@ static int window_activate(const char *token){
  for(struct object *top=objects;top;top=top->next){
   if(!object_is(top,"xdg_toplevel")||!top->surface||
     !top->surface->window_configured||!top->surface->app_id||strcmp(top->surface->app_id,"Waydroid"))continue;
+  if(top->display&&real_display_get_error&&real_display_get_error(top->display))continue;
   for(struct window_activation_binding *b=window_activations;b;b=b->next)if(b->display==top->display){
    union argument a[2]={{.s=token},{.o=top->surface->p}};wayland_send(b->manager,2,a);
    if(real_display_flush)real_display_flush(b->display);

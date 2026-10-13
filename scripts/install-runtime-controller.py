@@ -15,6 +15,7 @@ import io
 import zipfile
 import subprocess
 import tempfile
+import importlib.util
 
 ROOT = Path(__file__).resolve().parent.parent
 MODULES = ('runtime-controller.py', 'runtime-existing.py', 'runtime-host.py', 'runtime-images.py', 'runtime-android.py',
@@ -84,6 +85,11 @@ def install_controller_files(source_root, destination=DESTINATION, arm_archive=N
     for name in ('anvildroid-apps.rc', 'anvildroid-tasks.rc', 'anvildroid-apps.sh', 'anvildroid-tasks.sh'):
         assets[name] = (source_root / 'native' / name).read_bytes()
     assets['overlay-key.p12'] = (source_root / 'target/native/overlay-key.p12').read_bytes()
+    policy_spec = importlib.util.spec_from_file_location(
+        'install_runtime_apparmor', source_root / 'scripts/install-runtime-apparmor.py')
+    policy = importlib.util.module_from_spec(policy_spec)
+    policy_spec.loader.exec_module(policy)
+    print(policy.install())
     trusted_directory(destination.parent, strict=False)
     trusted_directory(destination)
     for name, data in sources.items():

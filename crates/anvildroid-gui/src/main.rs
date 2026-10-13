@@ -4,7 +4,10 @@ use anvildroid_core::error::AnvilError;
 use anvildroid_core::models::{AppInfo, HealthReport, OperationResult};
 use anvildroid_core::{apps, backend, desktop, launch, library, runtime, scope};
 
-use tauri::State;
+use tauri::{Manager, State};
+
+#[cfg(target_os = "linux")]
+mod titlebar;
 
 #[derive(Clone)]
 struct CustomImageJob {
@@ -1149,6 +1152,14 @@ fn main() {
             tauri::WebviewUrl::App("index.html?view=controls".into());
     }
     tauri::Builder::default()
+        .setup(|app| {
+            #[cfg(target_os = "linux")]
+            titlebar::install(app)?;
+            if let Some(window) = app.get_webview_window("main") {
+                window.show()?;
+            }
+            Ok(())
+        })
         .plugin(tauri_plugin_dialog::init())
         .manage(OpGuard(Arc::new(Mutex::new(()))))
         .register_asynchronous_uri_scheme_protocol("appicon", |_ctx, request, responder| {

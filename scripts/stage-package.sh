@@ -1,6 +1,7 @@
 #!/bin/sh
 # Stage files shared by Debian, RPM and Arch package builders.
 set -eu
+umask 022
 ROOT=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
 DEST=${1:?staging directory required}
 rm -rf "$DEST"
@@ -23,6 +24,7 @@ install -m 0755 "$ROOT/scripts/setup-waydroid.py" "$DEST/usr/local/lib/anvildroi
 install -m 0755 "$ROOT/scripts/patch-waydroid.py" "$DEST/usr/local/lib/anvildroid-controller/scripts/patch-waydroid.py"
 install -m 0755 "$ROOT/scripts/install-nvidia-payload.py" "$DEST/usr/local/lib/anvildroid-controller/scripts/install-nvidia-payload.py"
 install -m 0755 "$ROOT/scripts/prepare-nvidia-fork.py" "$DEST/usr/local/lib/anvildroid-controller/scripts/prepare-nvidia-fork.py"
+install -m 0755 "$ROOT/scripts/install-runtime-apparmor.py" "$DEST/usr/local/lib/anvildroid-controller/scripts/install-runtime-apparmor.py"
 python3 "$ROOT/scripts/build-nvidia-payload.py" --stage-parent "$DEST/usr/local/lib/anvildroid-controller"
 for f in runtime-host.py runtime-arm.py runtime-arm-source.py; do install -m 0644 "$ROOT/services/$f" "$DEST/usr/local/lib/anvildroid-controller/services/$f"; done
 install -m 0644 "$ROOT/packaging/appimage/org.anvildroid.gui.desktop" "$DEST/usr/share/applications/org.anvildroid.gui.desktop"
@@ -36,7 +38,7 @@ install -m 0644 "$ROOT/services/runtime-path-guard.py" "$DEST/usr/local/lib/anvi
 install -m 0644 "$ROOT/target/native/libanvildroid-path-guard.so" "$DEST/usr/local/lib/anvildroid-controller/libanvildroid-path-guard.so"
 install -m 0644 "$ROOT/target/ime/AnvilDroidIme.apk" "$DEST/usr/local/lib/anvildroid-controller/AnvilDroidIme.apk"
 install -m 0644 "$ROOT/target/shutdown/anvildroid-shutdown.jar" "$DEST/usr/local/lib/anvildroid-controller/anvildroid-shutdown.jar"
-cp -a "$ROOT/native/overlay/." "$DEST/usr/local/lib/anvildroid-controller/provision/"
+cp -a "$ROOT/native/overlay" "$DEST/usr/local/lib/anvildroid-controller/provision/"
 for f in anvildroid-apps.rc anvildroid-tasks.rc anvildroid-apps.sh anvildroid-tasks.sh; do
   install -m 0755 "$ROOT/native/$f" "$DEST/usr/local/lib/anvildroid-controller/provision/$f"
 done
@@ -45,3 +47,6 @@ install -D -m 0644 "$ROOT/target/native/init.waydroid.rc" "$DEST/usr/local/lib/a
 install -D -m 0644 "$ROOT/target/native/AnvilDroidCaption.apk" "$DEST/usr/local/lib/anvildroid-controller/provision/vendor/overlay/AnvilDroidCaption/AnvilDroidCaption.apk"
 install -m 0644 "$ROOT/target/native/framework-res.apk.sha256" "$DEST/usr/local/lib/anvildroid-controller/provision/framework-res.apk.sha256"
 install -m 0644 "$ROOT/packaging/systemd/anvildroid-controller.service" "$DEST/usr/lib/systemd/system/anvildroid-controller.service"
+# Normalize copied assets as well as newly created directories: cp -a keeps
+# group-write permissions from the source checkout.
+chmod -R go-w "$DEST"

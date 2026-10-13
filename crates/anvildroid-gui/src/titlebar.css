@@ -1,0 +1,54 @@
+.anvildroid-titlebar {
+    min-height: 32px;
+    padding: 0;
+    margin: 0;
+    background-image: none;
+    background-color: #0c1827;
+    color: #aab9ce;
+    border: 0;
+    border-bottom: 1px solid #263b53;
+    box-shadow: none;
+}
+.anvildroid-titlebar label {
+    font-size: 12px;
+    font-weight: 600;
+}
+.anvildroid-titlebar button.anvildroid-window-button {
+    min-width: 36px;
+    min-height: 32px;
+    padding: 0;
+    margin: 0;
+    background-image: none;
+    background-color: transparent;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+}
+.anvildroid-titlebar button.anvildroid-window-button:hover,
+.anvildroid-titlebar button.anvildroid-window-button:focus {
+    background-color: #1d3046;
+}
+.anvildroid-titlebar button.anvildroid-window-button.close:hover {
+    background-color: #b83a4a;
+}
+
+window.anvildroid-main {
+    background-color: transparent;
+}
+window.anvildroid-main decoration {
+    border-radius: 8px;
+}
+window.anvildroid-main .anvildroid-titlebar {
+    border-radius: 8px 8px 0 0;
+}
+window.anvildroid-main .anvildroid-window-button.close {
+    border-top-right-radius: 8px;
+}
+window.anvildroid-main.maximized decoration,
+window.anvildroid-main.fullscreen decoration,
+window.anvildroid-main.maximized .anvildroid-titlebar,
+window.anvildroid-main.fullscreen .anvildroid-titlebar,
+window.anvildroid-main.maximized .anvildroid-window-button.close,
+window.anvildroid-main.fullscreen .anvildroid-window-button.close {
+    border-radius: 0;
+}

@@ -396,7 +396,9 @@ struct wl_proxy *wl_proxy_marshal_array_flags(struct wl_proxy *proxy, uint32_t o
     decoration = manager ? marshal(manager, 1, &decoration_interface, 1, 0, create) : NULL;
     if (decoration) {
       listen(decoration, decoration_listener, NULL);
-      union wl_argument mode = {.u=2};
+      /* Every AnvilDroid window owns its CSD; never ask the desktop to
+       * add another header around the fixed Android canvas. */
+      union wl_argument mode = {.u=1};
       marshal(decoration, 1, NULL, 1, 0, &mode);
     }
   }

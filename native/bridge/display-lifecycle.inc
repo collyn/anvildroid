@@ -9,6 +9,7 @@ static struct wl_display *(*real_display_connect)(const char *);
 static struct wl_display *(*real_display_connect_fd)(int);
 static void (*real_display_disconnect)(struct wl_display *);
 static int (*real_display_flush)(struct wl_display *);
+static int (*real_display_get_error)(struct wl_display *);
 static struct wl_event_queue *(*real_create_queue)(struct wl_display *);
 static void (*real_queue_destroy)(struct wl_event_queue *);
 static void *(*real_create_wrapper)(void *);
@@ -42,6 +43,8 @@ static void display_symbols(void *h) {
       (void (*)(struct wl_display *))dlsym(h, "wl_display_disconnect");
   real_display_flush =
       (int (*)(struct wl_display *))dlsym(h, "wl_display_flush");
+  real_display_get_error =
+      (int (*)(struct wl_display *))dlsym(h, "wl_display_get_error");
   real_create_queue = (struct wl_event_queue * (*)(struct wl_display *))
       dlsym(h, "wl_display_create_queue");
   real_queue_destroy =

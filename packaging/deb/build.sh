@@ -1,5 +1,6 @@
 #!/bin/sh
 set -eu
+umask 022
 ROOT=$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)
 VER=${1:-$(python3 "$ROOT/scripts/release-version.py" --debian)}
 case "$VER" in
@@ -24,6 +25,7 @@ install -m 0755 "$ROOT/scripts/setup-waydroid.py" "$PKG/usr/local/lib/anvildroid
 install -m 0755 "$ROOT/scripts/patch-waydroid.py" "$PKG/usr/local/lib/anvildroid-controller/scripts/patch-waydroid.py"
 install -m 0755 "$ROOT/scripts/install-nvidia-payload.py" "$PKG/usr/local/lib/anvildroid-controller/scripts/install-nvidia-payload.py"
 install -m 0755 "$ROOT/scripts/prepare-nvidia-fork.py" "$PKG/usr/local/lib/anvildroid-controller/scripts/prepare-nvidia-fork.py"
+install -m 0755 "$ROOT/scripts/install-runtime-apparmor.py" "$PKG/usr/local/lib/anvildroid-controller/scripts/install-runtime-apparmor.py"
 python3 "$ROOT/scripts/build-nvidia-payload.py" --stage-parent "$PKG/usr/local/lib/anvildroid-controller"
 for f in runtime-host.py runtime-arm.py runtime-arm-source.py; do install -m 0644 "$ROOT/services/$f" "$PKG/usr/local/lib/anvildroid-controller/services/$f"; done
 install -m 0755 "$ROOT/target/native/libanvildroid-runtime-window.so" "$PKG/usr/local/lib/anvildroid-controller/libanvildroid-window.so"
@@ -36,7 +38,7 @@ install -m 0644 "$ROOT/target/shutdown/anvildroid-shutdown.jar" "$PKG/usr/local/
 if [ -r "$ROOT/target/input-diagnostic/scrcpy-server-cancel.jar" ]; then
   install -m 0644 "$ROOT/target/input-diagnostic/scrcpy-server-cancel.jar" "$PKG/usr/local/lib/anvildroid-controller/scrcpy-server-cancel.jar"
 fi
-cp -a "$ROOT/native/overlay/." "$PKG/usr/local/lib/anvildroid-controller/provision/"
+cp -a "$ROOT/native/overlay" "$PKG/usr/local/lib/anvildroid-controller/provision/"
 for f in anvildroid-apps.rc anvildroid-tasks.rc anvildroid-apps.sh anvildroid-tasks.sh; do install -m 0755 "$ROOT/native/$f" "$PKG/usr/local/lib/anvildroid-controller/provision/$f"; done
 install -m 0644 "$ROOT/target/native/overlay-key.p12" "$PKG/usr/local/lib/anvildroid-controller/provision/overlay-key.p12"
 install -D -m 0644 "$ROOT/target/native/init.waydroid.rc" "$PKG/usr/local/lib/anvildroid-controller/provision/system/etc/init/init.waydroid.rc"
@@ -58,6 +60,7 @@ cat > "$PKG/DEBIAN/postinst" <<'EOF'
 #!/bin/sh
 set -e
 install -d -m 0700 /var/lib/anvildroid-controller /run/anvildroid
+python3 /usr/local/lib/anvildroid-controller/scripts/install-runtime-apparmor.py
 python3 /usr/local/lib/anvildroid-controller/scripts/patch-waydroid.py || true
 # Ubuntu kernels commonly provide nftables without the legacy iptables tables
 # expected by Waydroid's bundled network helper.
@@ -78,6 +81,10 @@ command -v gtk-update-icon-cache >/dev/null 2>&1 && gtk-update-icon-cache -f -t 
 exit 0
 EOF
 chmod 0755 "$PKG/DEBIAN/postinst"
+# cp -a preserves source permissions, including group-write bits from a
+# developer checkout. Installed controller/payload assets must be immutable
+# to non-root users, regardless of the build host's umask.
+chmod -R go-w "$PKG"
 mkdir -p "$OUT"
 dpkg-deb --build --root-owner-group "$PKG" "$OUT/anvildroid-controller_${VER}_amd64.deb" >/dev/null
 rm -rf "$PKG"

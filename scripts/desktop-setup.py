@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install the IME APK and one KDE window rule; keep native overlay separate."""
+"""Install the IME APK and retire the legacy KDE header override."""
 import argparse
 import hashlib
 import json
@@ -13,6 +13,8 @@ import uuid
 PACKAGE = "org.anvildroid.ime"
 IME = PACKAGE + "/.BridgeIme"
 RULE = "anvildroid-native-titlebar"
+# Retained for validating existing desktop bundles. The bridge now negotiates
+# its own CSD; this override must no longer be installed into KWin.
 RULE_BODY = """Description=AnvilDroid native desktop titlebar
 wmclass=^waydroid\\..*
 wmclassmatch=3
@@ -66,6 +68,26 @@ def set_key(body, key, value):
 
 
 def configure_rules(text, rule=RULE, body=RULE_BODY):
+    if rule == RULE:
+        existing = group(text, rule)
+        if existing is not None:
+            # Both historical variants forced KWin's decoration choice. Only
+            # migrate our exact rule; retain/refuse user-customized variants.
+            normalize = lambda value: sorted(line for line in value.splitlines() if line.strip())
+            if normalize(existing) not in (normalize(RULE_BODY),
+                                           normalize(RULE_BODY.replace('noborder=false', 'noborder=true'))):
+                raise ValueError("Existing AnvilDroid rule differs; refusing to remove")
+            text = re.sub(r'(?ms)^\[' + re.escape(rule) + r'\][ \t]*\n.*?(?=^\[|\Z)', '', text)
+        general = group(text, "General")
+        if general is None:
+            return text
+        match = re.search(r"(?m)^rules=(.*)$", general)
+        if match is None or rule not in match[1].split(','):
+            return text
+        rules = [name for name in match[1].split(',') if name and name != rule]
+        general = set_key(general, "rules", ','.join(rules))
+        general = set_key(general, "count", str(len(rules)))
+        return put_group(text, "General", general)
     existing = group(text, rule)
     if existing is not None:
         entries = lambda body: dict(line.split("=", 1) for line in body.splitlines()

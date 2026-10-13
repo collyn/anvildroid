@@ -34,24 +34,29 @@ PAYLOAD_FILES = {
 }
 
 # Fork CI artifacts are pinned by source commit, artifact ID and digest.
-# ANGLE and SurfaceFlinger remain the verified upstream v0.1.2 binaries.
+# ANGLE's dual-ABI fork build includes CPU ASTC decode; SurfaceFlinger is
+# retained from the verified upstream v0.1.2 archive.
 UPSTREAM_REPO = 'collyn/waydroid-nvidia'
-UPSTREAM_VERSION = 'fork-d028cec'
+UPSTREAM_VERSION = 'fork-gpu-present-adba126'
 FORK_SOURCE = {
     "commit": "d028cec0904514059227e6cc533ddb2bd563182c",
     "run_id": 38244475616,
     "artifacts": {
+        "guest-angle": {
+            "id": 11762269620,
+            "sha256": "c1dadc14ae910ebc99a9bd162dca84b6da9ebc47f4a6fb6809b2fc934d256fb5"
+        },
         "guest-vulkan-virtio-x86": {
             "id": 11744830006,
             "sha256": "2c29e3593c2583f66613ffcb6212af0392f8e5671a8af9f77767a195cd6c4108"
         },
         "host-venus-server": {
-            "id": 11744403068,
-            "sha256": "4ccd25e47292e61c5ec84f9041b6974b8cde9bc9ffdba82c78d12af83e89ec59"
+            "id": 11785946856,
+            "sha256": "b7b9b6bd5a5e8742db137a0d915c15bf9e83c56a89777ad1e2d0c60258abb969"
         },
         "guest-hwcomposer": {
-            "id": 11744104553,
-            "sha256": "09018e3e05da567ce9eece9d10020c83cb044146e2ffbf1bff9820f58c034ede"
+            "id": 11786285879,
+            "sha256": "647e481c7e0b11b2bddd5a0cda9978818bc5094d7c4b319e33479608a5f2ceda"
         },
         "guest-gralloc": {
             "id": 11743984471,
@@ -62,6 +67,23 @@ FORK_SOURCE = {
             "sha256": "67d88ab296d4b9cb695568d59b78d2d1a53d491a797d9e595d36d6f0f35abea1"
         }
     },
+    "renderer": {
+        "commit": "adba12650c099874972f095e24625a4756bb7a22",
+        "run_id": 38338813236,
+        "gpu_presentation_copy": True
+    },
+    "hwcomposer": {
+        "commit": "adba12650c099874972f095e24625a4756bb7a22",
+        "run_id": 38338813236,
+        "framebuffer_modifier_admission": True,
+        "gpu_presentation_copy": True
+    },
+    "angle": {
+        "commit": "c1a25085dd9e4a8cd6c72be278c0b4bdf6ce2824",
+        "recipe_commit": "fa5044cd1804453a5cbe408191bb19279624e022",
+        "run_id": 38284147292,
+        "astc_decoder": True
+    },
     "prebuilts": {
         "repo": "quinovax/waydroid-nvidia",
         "version": "v0.1.2",
@@ -70,9 +92,9 @@ FORK_SOURCE = {
 }
 PAYLOAD_ROOT = Path('/usr/local/lib/anvildroid-controller') / f'nvidia-{UPSTREAM_VERSION}'
 ARCHIVES = {
-    'host-x86_64': '30f256314af49b4f9bb31a568df9bbd9ba2ea327ebdc0eb2c91e272c03d7ce67',
-    'guest-android-x86_64': 'f0aae4be7f6d318f0de40bfe9d80635c814a4144d6487b7d81800ed59239b77a',
-    'guest-prebuilts': 'fc02336a2acec05ac76f392b6cc1a6dcca5e4e0c1566e2fdf8178d6ad1c45bb4',
+    'host-x86_64': '38afc8f3928bb66d111f7183651732059c7416747aa067a10d29143b605a71ba',
+    'guest-android-x86_64': '29070d9995d971c12833c772bd483e4624ffe860e5b2438de77b6335b35dd1fe',
+    'guest-prebuilts': 'f4d9b58b6d06ea5d16c8007d2c219eb6ca400efe264e1adadd98ab7b2f545e84',
 }
 
 
@@ -250,7 +272,7 @@ def renderer_environment(account, icd, *, validation=False):
            # ANGLE indexed draws into NVIDIA LINEAR window images can trigger
            # Xid 69 on hybrid hosts (com.shg.sg451, driver 615.71.09). Render
            # into block-linear images instead. HWC negotiates the compositor's
-           # modifiers and uses its EGL readback path when AMD/Intel cannot
+           # modifiers and uses a GPU presentation copy when AMD/Intel cannot
            # import them; game rendering remains on NVIDIA.
            'WAYDROID_NVIDIA_PRESENT': 'block-linear',
            # Keep CPU-readable capture buffers on the safe udmabuf path.
@@ -309,7 +331,10 @@ class Renderer:
         self.process = subprocess.Popen(
             ['/usr/bin/prlimit', '--nofile=65536:65536', '--',
              str(PAYLOAD_ROOT / 'virgl_test_server'), '--no-virgl', '--venus',
-             '--multi-clients', '--socket-path', str(self.endpoint)],
+             # All clients belong to this private Android runtime. Share the
+             # Vulkan allocator: default per-connection fork recreates its
+             # device for every HWC source, stalling first frames ~150-400ms.
+             '--no-fork', '--multi-clients', '--socket-path', str(self.endpoint)],
             env=env, user=uid, group=account.pw_gid,
             extra_groups=os.getgrouplist(account.pw_name, account.pw_gid),
             start_new_session=True, stdin=subprocess.DEVNULL, stdout=log, stderr=log,

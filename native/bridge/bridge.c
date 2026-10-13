@@ -263,7 +263,7 @@ static void decoration_configure(void *data, struct proxy *p, uint32_t mode) {
   pthread_mutex_unlock(mutex);
 }
 static void (*decoration_listener[])(void) = {(void (*)(void))decoration_configure};
-static void request_server_decoration(struct object *top) {
+static void request_window_decoration(struct object *top) {
   if (!top) return;
   struct decoration_binding *binding=decoration_for(top->display);
   struct proxy *manager=top->display ? (binding ? binding->manager : 0) : decoration_manager;
@@ -276,8 +276,11 @@ static void request_server_decoration(struct object *top) {
                                  &decoration_interface, 1);
   if (!top->decoration) return;
   real_listen(top->decoration, decoration_listener, top);
-  union argument mode = {.u = 2};
+  /* The desktop bridge draws its own frame. Asking KWin for server-side
+   * decoration as well creates two headers on a fresh desktop profile. */
+  union argument mode = {.u = 1};
   wayland_send(top->decoration, 1, &mode);
+  __android_log_print(4, "AnvilDroid", "decoration request mode=%u", mode.u);
 }
 static void decoration_destroy(struct object *top) {
   if (!top || !top->decoration) return;
@@ -735,8 +738,15 @@ static struct proxy *bridge_marshal(
     decoration_destroy(o);
   if (!strcmp(cls, "xdg_surface") && !strcmp(method, "ack_configure") && o) {
     for (struct object *top = objects; top; top = top->next)
-      if (top->decoration && top->surface == o->surface)
+      if (top->decoration && top->surface == o->surface) {
         top->decoration_mode = top->decoration_pending;
+        /* Apply decoration negotiation with its matching configure. A
+         * compositor can decline CSD; never draw a second frame over SSD. */
+        if (top->decoration_mode == 2)
+          csd_destroy(top);
+        else if (top->decoration_mode == 1)
+          csd_create(top);
+      }
   }
   char runtime_identity[1024];
   const char *original_identity = 0;
@@ -999,7 +1009,7 @@ static struct proxy *bridge_marshal(
         n->surface->viewport = n;
     }
     if (!strcmp(interface->name, "xdg_toplevel"))
-      request_server_decoration(n);
+      request_window_decoration(n);
   }
   if (modern && (flags & 1)) forget_proxy(p);
   pthread_mutex_unlock(mutex);

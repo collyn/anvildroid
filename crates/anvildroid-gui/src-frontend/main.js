@@ -271,6 +271,7 @@ const libraryStartErrors = new Map();
 let sidebarRuntimeRecords = null;
 let sidebarRuntimeError = '';
 const managedSnapshots = new Map();
+const managedInventoryChecked = new Map();
 const managedPreferences = new Map();
 const managedPreferenceErrors = new Map();
 const managedPreferenceVersions = new Map();
@@ -498,7 +499,8 @@ function overviewMetric(kind, value, percent) {
 function updateSidebarMetrics(entries) {
   const select = document.getElementById('sidebar-runtime-select');
   if (!select) return;
-  select.innerHTML = '<option value="default">Existing runtime</option>' + entries.map(r => `<option value="${escapeHtml(r.id)}">${escapeHtml(r.name || r.id)}</option>`).join('');
+  const options = '<option value="default">Existing runtime</option>' + entries.map(r => `<option value="${escapeHtml(r.id)}">${escapeHtml(r.name || r.id)}</option>`).join('');
+  if (select.innerHTML !== options) select.innerHTML = options;
   if (!overviewId || (overviewId !== 'default' && !entries.some(r => r.id === overviewId))) {
     overviewId = entries.find(r => r.state === 'Running')?.id || entries[0]?.id || 'default';
     overviewSample = null; overviewStorage = null;
@@ -569,7 +571,7 @@ async function refreshAppStates() {
   if (appStatesLoading || !libraryPage || document.hidden) return;
   appStatesLoading = true;
   try {
-    await Promise.all([refreshLibraryDefaultState(), refreshManagedLibrary()]);
+    await Promise.all([refreshLibraryDefaultState(), refreshManagedLibrary({poll: true})]);
     await Promise.all(managedLibrary.filter(r=>r.state==='Running').map(async record => {
       if (pendingAppAction || pendingLaunch) return;
       let report;
@@ -632,6 +634,7 @@ function renderApps(apps) {
       return;
     }
     appsGrid._appMarkup = null;
+    appsGrid._appStructure = null;
     appsGrid.innerHTML = `
       <div class="empty-state">
         <p>No matching apps.</p>
@@ -641,6 +644,7 @@ function renderApps(apps) {
   }
 
   const sorted = sortApps(apps, currentSort);
+  const structure = JSON.stringify(sorted.map(app => [app.runtime_id || 'default', app.package, app.label, app.runtime_name, libraryIconUrl(app), isFavorite(app), pendingWaydroidRuntime === (app.runtime_id || 'default') && !!app.desktop_entry]));
   const markup = sorted.map(app => `
     <div class="app-card${pendingWaydroidRuntime === (app.runtime_id || 'default') && app.desktop_entry ? ' processing' : ''}" tabindex="${pendingWaydroidRuntime === (app.runtime_id || 'default') && app.desktop_entry ? '-1' : '0'}" role="button" aria-disabled="${pendingWaydroidRuntime === (app.runtime_id || 'default') && app.desktop_entry ? 'true' : 'false'}" data-package="${escapeHtml(app.package)}" data-runtime-id="${escapeHtml(app.runtime_id || 'default')}" data-app-status="${escapeHtml(appExecutionLabel(app))}" aria-label="${escapeHtml(appAccessibleLabel(app))}" title="${escapeHtml(`${app.package} · ${app.runtime_name || (app.runtime_id === 'default' ? 'Existing runtime' : 'Runtime')}`)}">
       <button type="button" class="app-favorite-button favorite-mark${isFavorite(app) ? ' active' : ''}" aria-label="${isFavorite(app) ? 'Remove favorite' : 'Add favorite'}">♡</button>
@@ -659,8 +663,27 @@ function renderApps(apps) {
   appsGrid.setAttribute('aria-busy', String(pendingLaunch !== null));
   // Polling must not replace focused/clicked cards when nothing has changed.
   if (appsGrid._appMarkup === markup) return;
+  const cards = appsGrid.querySelectorAll('.app-card');
+  if (appsGrid._appStructure === structure && cards.length === sorted.length) {
+    // Live status changes must retain cards, images, focus and the scroll container.
+    cards.forEach((card, index) => {
+      const app = sorted[index];
+      const status = appExecutionLabel(app);
+      if (card.dataset.appStatus === status) return;
+      card.dataset.appStatus = status;
+      card.setAttribute('aria-label', appAccessibleLabel(app));
+      const dot = card.querySelector('.app-status-dot');
+      dot.classList.toggle('running', status === 'Foreground' || status === 'Background process');
+      dot.setAttribute('aria-label', status);
+    });
+    appsGrid._appMarkup = markup;
+    return;
+  }
+  const scrollTop = appsGrid.scrollTop;
   appsGrid._appMarkup = markup;
+  appsGrid._appStructure = structure;
   appsGrid.innerHTML = markup;
+  appsGrid.scrollTop = scrollTop;
 
   appsGrid.querySelectorAll('.app-card').forEach(card => {
     card.addEventListener('click', () => {
@@ -764,8 +787,7 @@ async function refreshLibraryDefaultState() {
       saveAppsCache(apps);
     }
   } catch (_) { libraryDefaultState = 'Unknown'; }
-  renderManagedLibraryStatus();
-  renderApps(allApps);
+  if (!appStatesLoading) { renderManagedLibraryStatus(); renderApps(allApps); }
 }
 
 function renderLibraryEmpty(selected) {
@@ -782,6 +804,7 @@ function renderLibraryEmpty(selected) {
   appsGrid.setAttribute('aria-busy', String(libraryStarts.size > 0));
   if (appsGrid._appMarkup === markup) return;
   appsGrid._appMarkup = markup;
+  appsGrid._appStructure = null;
   appsGrid.innerHTML = markup;
 }
 
@@ -2971,15 +2994,17 @@ function renderManagedLibraryStatus() {
   btnInstallApk.disabled = pendingAppAction || selected === 'all' || !libraryRuntimeRunning(selected);
   btnInstallApk.title = selected === 'all' ? 'Select a runtime to install an APK' : (selected !== 'default' && installTarget?.state !== 'Running' ? 'Start this runtime on the Runtime page first' : 'Install APK into the selected runtime');
   const records = managedLibrary.filter(record => selected === 'all' || selected === record.id);
-  document.getElementById('library-runtime-status').innerHTML =
+  const markup =
     (managedLibraryError ? `<p>${escapeHtml(managedLibraryError)}</p>` : '') + records.map(record => {
       const count = managedSnapshots.get(record.id)?.length;
       const note = record.error || (record.state !== 'Running' ? 'Select this runtime to start it.' : `${count ?? 0} apps`);
       return `<p><strong>${escapeHtml(record.name)}</strong> · ${escapeHtml(record.state)} · ${escapeHtml(note)}${managedPreferenceErrors.has(record.id) ? ` · ${escapeHtml(managedPreferenceErrors.get(record.id))}` : ''}</p>`;
     }).join('');
+  const target = document.getElementById('library-runtime-status');
+  if (target.innerHTML !== markup) target.innerHTML = markup;
   updateLibraryRuntimeSummary();
 }
-async function refreshManagedLibrary() {
+async function refreshManagedLibrary({poll = false} = {}) {
   if (managedLibraryLoading) return;
   managedLibraryLoading = true;
   try {
@@ -3005,11 +3030,12 @@ async function refreshManagedLibrary() {
             if (Array.isArray(saved) && saved.every(app => typeof app.package === 'string' && app.launchable === true)) managedSnapshots.set(record.id, saved);
           } catch (_) { /* A corrupt cache is not an app inventory. */ }
         }
-        if (current.state === 'Running' && !pendingAppAction && !pendingLaunch) {
+        if (current.state === 'Running' && !pendingAppAction && !pendingLaunch && (!poll || !managedSnapshots.has(record.id) || Date.now() - (managedInventoryChecked.get(record.id) || 0) >= 60000 || managedLibrary.find(r => r.id === record.id)?.state !== 'Running')) {
           const report = await controllerRequest({op:'apps', id:record.id});
           if (report?.runtime_id !== record.id || !Array.isArray(report.apps)) throw new Error('Invalid app inventory');
           if (!report.apps.every(app => typeof app.package === 'string' && app.launchable === true)) throw new Error('Stop and start on the Runtime page to update launcher filtering.');
           managedSnapshots.set(record.id, report.apps);
+          managedInventoryChecked.set(record.id, Date.now());
           try { localStorage.setItem(`anvildroid_managed_apps:${record.id}`, JSON.stringify(report.apps)); } catch (_) {}
         }
         return current;
@@ -3031,8 +3057,7 @@ async function refreshManagedLibrary() {
   } finally {
     managedLibraryLoading = false;
     updateLibraryRuntimeSummary(managedLibrary, managedLibraryError);
-    renderManagedLibraryStatus();
-    renderApps(allApps);
+    if (!appStatesLoading) { renderManagedLibraryStatus(); renderApps(allApps); }
     if(libraryPage&&!document.hidden&&!appStatesLoading) appStatesTimer=setTimeout(refreshAppStates,0);
   }
 }

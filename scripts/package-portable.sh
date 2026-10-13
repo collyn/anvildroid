@@ -25,7 +25,7 @@ stage="$(mktemp -d "$(pwd)/target/.portable.XXXXXX")"
 trap 'rm -rf "$stage"' EXIT
 mkdir -p "$stage/bin" "$stage/scripts" "$stage/services" "$stage/packaging/systemd" "$stage/target/native" "$stage/target/ime" "$stage/target/shutdown" "$stage/native"
 cp "$gui_bin" "$cli_bin" "$stage/bin/"
-cp scripts/install-portable.sh scripts/install-runtime-controller.py scripts/start-runtime-controller.py scripts/setup-waydroid.py "$stage/scripts/"
+cp scripts/install-portable.sh scripts/install-runtime-controller.py scripts/install-runtime-apparmor.py scripts/start-runtime-controller.py scripts/setup-waydroid.py "$stage/scripts/"
 cp packaging/systemd/anvildroid-controller.service "$stage/packaging/systemd/"
 cp services/*.py "$stage/services/"
 cp native/anvildroid-*.rc native/anvildroid-*.sh "$stage/native/"

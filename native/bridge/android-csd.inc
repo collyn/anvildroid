@@ -1,6 +1,6 @@
 /* CSD for the fixed Android canvas. Only the small frame uses SHM;
  * Android buffers stay on their existing GPU/viewport path. */
-#include "csd-layout.h"
+#include "csd-style.h"
 #include "keymap-font.h"
 extern long syscall(long, ...);
 extern int ftruncate(int, long);
@@ -37,22 +37,12 @@ static struct wl_proxy *csd_paint(int part, int w, int h, int maximized) {
   uint32_t *pixels = mmap(0, size, 3, 1, fd, 0);
   if (pixels == (void *)-1) { close(fd); return 0; }
   for (int y = 0; y < h; y++) for (int x = 0; x < w; x++) {
-    uint32_t color = 0xff30343b;
-    if (part == 0 && y >= CSD_BORDER) {
-      int action = csd_hit(part, x, y, w, h);
-      int cx = w - CSD_BORDER - CSD_BUTTON / 2;
-      if (action == CSD_MAXIMIZE) cx -= CSD_BUTTON;
-      if (action == CSD_MINIMIZE) cx -= 2 * CSD_BUTTON;
-      int dx = x - cx, dy = y - (CSD_BORDER + (CSD_HEADER-CSD_BORDER)/2);
-      int ink = (action == CSD_CLOSE && dx >= -5 && dx <= 5 && (dy == dx || dy == -dx)) ||
-        (action == CSD_MINIMIZE && dx >= -5 && dx <= 5 && dy == 3) ||
-        (action == CSD_MAXIMIZE && dx >= -5 && dx <= 5 && dy >= -5 && dy <= 5 &&
-          (dx == -5 || dx == 5 || dy == -5 || dy == 5 || (maximized && dy == -2)));
-      if (ink) color = 0xfff2f2f2;
-    }
+    uint32_t color = part == 0
+      ? csd_header_pixel(x, y, w, h, csd_style_state(maximized, 0, 0))
+      : 0;
     pixels[(size_t)y*w+x] = color;
   }
-  if(part==0 && w>260)keymap_text(pixels,w,h,16,15,"ANDROID",0xfff2f2f2);
+  if(part==0 && w>260)keymap_text(pixels,w,h,12,(h-7)/2,"ANDROID",0xffc5c5c5);
 
   union wl_argument pool_a[3] = {{.o=0}, {.i=fd}, {.i=(int)size}};
   struct wl_proxy *pool = marshal(csd_shm, 0, csd_pool_i, 1, 0, pool_a);

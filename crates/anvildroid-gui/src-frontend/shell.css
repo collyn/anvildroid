@@ -399,3 +399,12 @@ html, body { height:100%; overflow:hidden; }
 @media(max-width:760px) {
   #page-apps .unified-filters .category-filters { flex-basis:150px; }
 }
+
+/* The alpha-backed WebView clips the bottom corners; GTK owns the top corners. */
+html, body { background: transparent; }
+.layout {
+  background: radial-gradient(900px 600px at 80% -10%, #163452 0%, transparent 65%), var(--bg-primary);
+  border-radius: 0 0 8px 8px;
+}
+.window-square .layout { border-radius: 0; }
+#page-apps.active .apps-grid { scrollbar-gutter: stable; }

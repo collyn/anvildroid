@@ -39,17 +39,17 @@ int main(void) {
  /* No decoration manager (GNOME), compositor refusal, and accepted SSD. */
  fullscreen=0;fullscreen_requested=-1;
  struct wl_array empty={0,0,NULL};
- top_configure(NULL,&t,1284,760,&empty);
+ top_configure(NULL,&t,1280+2*CSD_BORDER,720+CSD_HEADER+CSD_BORDER,&empty);
  assert(csd_visible() && host_w==1280 && host_h==720);
  union wl_argument geometry[4];csd_geometry(geometry);
- assert(geometry[0].i==-2 && geometry[1].i==-38 && geometry[2].i==1284 && geometry[3].i==760);
+ assert(geometry[0].i==-CSD_BORDER && geometry[1].i==-CSD_HEADER && geometry[2].i==1280+2*CSD_BORDER && geometry[3].i==720+CSD_HEADER+CSD_BORDER);
  manager=&t;decoration=&t;decoration_configure(NULL,&t,2);
  top_configure(NULL,&t,1000,600,&empty);
  assert(!csd_visible() && host_w==1000 && host_h==600);
  decoration_configure(NULL,&t,1);
- top_configure(NULL,&t,1004,640,&empty);
+ top_configure(NULL,&t,1000+2*CSD_BORDER,600+CSD_HEADER+CSD_BORDER,&empty);
  assert(csd_visible() && host_w==1000 && host_h==600);
- state=1;top_configure(NULL,&t,1604,940,&states);
+ state=1;top_configure(NULL,&t,1600+2*CSD_BORDER,900+CSD_HEADER+CSD_BORDER,&states);
  assert(maximized && host_w==1600 && host_h==900);
  top_configure(NULL,&t,0,0,&empty);
  assert(!maximized && host_w==1000 && host_h==600);
@@ -58,7 +58,7 @@ int main(void) {
  top_configure(NULL,&t,0,0,&empty);
  assert(csd_visible() && host_w==1000 && host_h==600);
  /* Valid seat/serial for move and resize; controls never enter Android. */
- ime_seat=&keyboard;csd_part=0;csd_pieces[0].width=1004;csd_pieces[0].height=38;
+ ime_seat=&keyboard;csd_part=0;csd_pieces[0].width=1000+2*CSD_BORDER;csd_pieces[0].height=CSD_HEADER;
  csd_x=100;csd_y=20;csd_button(42,0x110,1);assert(last_opcode==5 && last_proxy==&t);
  csd_x=2;csd_y=2;csd_button(43,0x110,1);assert(last_opcode==6);
  csd_x=920;csd_y=20;csd_button(44,0x110,1);csd_button(45,0x110,0);assert(last_opcode==13);

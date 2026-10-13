@@ -1,11 +1,20 @@
-NVIDIA Venus payload: collyn/waydroid-nvidia fork-d028cec
-Source commit: d028cec0904514059227e6cc533ddb2bd563182c
+NVIDIA Venus payload: collyn/waydroid-nvidia fork-gpu-present-adba126
+Base Venus/gralloc source commit: d028cec0904514059227e6cc533ddb2bd563182c
 https://github.com/collyn/waydroid-nvidia/tree/d028cec0904514059227e6cc533ddb2bd563182c
-Build provenance: https://github.com/collyn/waydroid-nvidia/actions/runs/38244475616
+Base Venus/gralloc build: https://github.com/collyn/waydroid-nvidia/actions/runs/38244475616
 Fork changes: RGB32 byte-pitch admission; Vulkan buffer/image external memory;
 compatible hybrid sysmem presentation; Android 13 libc++/NDK r29 compatibility;
 private Wayland configure queue during HWC window construction.
-ANGLE and SurfaceFlinger: checksum-pinned quinovax v0.1.2 prebuilts.
+Host renderer and HWC commit: adba12650c099874972f095e24625a4756bb7a22
+Host renderer and HWC build: https://github.com/collyn/waydroid-nvidia/actions/runs/38338813236
+HWC validates full UI framebuffer modifiers before compositor import.
+Hybrid presentation uses host Vulkan tiled-to-LINEAR copies and a release-tracked ring;
+producer rendering remains tiled on NVIDIA. Unsupported paths retain wl_shm.
+ANGLE recipe commit: fa5044cd1804453a5cbe408191bb19279624e022
+ANGLE source: c1a25085dd9e4a8cd6c72be278c0b4bdf6ce2824
+ANGLE build: https://github.com/collyn/waydroid-nvidia/actions/runs/38284147292
+ANGLE includes the CPU ASTC-to-RGBA upload fallback; GPU rendering stays on NVIDIA.
+SurfaceFlinger: checksum-pinned quinovax v0.1.2 prebuilt.
 Input and output pins: services/runtime-nvidia.py
 Reproduction notes: native/nvidia/README.md
 
@@ -17,3 +26,6 @@ Components retain their upstream licenses: original integration and Mesa/
 virglrenderer (MIT), minigbm and ANGLE (BSD-style), Android HWC and the unused
 SurfaceFlinger payload (Apache-2.0). See LICENSE.upstream and the corresponding
 source trees and release notices. Backend patches are maintained in the collyn fork. It does not install upstream patched Waydroid Python tools.
+
+astc-encoder: Copyright 2020-2025 Arm Limited (Apache-2.0), compiled in
+decompression-only mode. License text is retained in LICENSE.astc-encoder.
