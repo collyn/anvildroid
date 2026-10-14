@@ -27,6 +27,7 @@ static int presentation_is_full(void) {
   return strlen(token) == 32 && window_nonce(token);
 }
 static int close_request_app(struct object *s) {
+  if (s && s->app_id) profile_forget_resize(s->app_id);
   if (s && s->full_ui && presentation_property) {
     char token[96] = "";
     presentation_property("waydroid.anvil_full_ui", token);
@@ -96,6 +97,7 @@ static void close_poll(void) {
     request = close_queue[head];
   pthread_mutex_unlock(mutex);
   if (request.task) {
+    if (request.task>0) hwc_transition_call(2,request.task,request.package);
     fd = openat(dir, "close",
                 PROFILE_NOFOLLOW | PROFILE_CLOEXEC | PROFILE_NONBLOCK);
     if (fd >= 0)

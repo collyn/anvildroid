@@ -14,7 +14,7 @@ cargo build --release -p anvildroid-gui -p anvildroid-cli
 # not build the Java IME/shutdown helpers, and cached native outputs may be old.
 gui_bin="${CARGO_TARGET_DIR:-target}/release/anvildroid-gui"
 cli_bin="${CARGO_TARGET_DIR:-target}/release/anvildroid"
-for f in "$gui_bin" "$cli_bin" target/native/libanvildroid-path-guard.so target/native/libanvildroid-runtime-window.so target/native/libanvildroid-window.so target/native/overlay-key.p12 target/ime/AnvilDroidIme.apk target/shutdown/anvildroid-shutdown.jar; do
+for f in "$gui_bin" "$cli_bin" target/native/libanvildroid-path-guard.so target/native/libanvildroid-runtime-window.so target/native/libanvildroid-window.so target/native/overlay-key.p12 target/ime/AnvilDroidIme.apk target/shutdown/anvildroid-shutdown.jar target/input-diagnostic/scrcpy-server-cancel.jar; do
   [ -s "$f" ] || { echo "Missing or empty release artifact: $f" >&2; exit 1; }
 done
 cmp -s target/native/libanvildroid-window.so target/native/libanvildroid-runtime-window.so || {

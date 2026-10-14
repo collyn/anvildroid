@@ -1,22 +1,16 @@
-/* Shared aspect-preserving app presentation. Normal apps still resize their
- * Android task after release; the compatibility game only resizes its host.
+/* Shared aspect-preserving app presentation. Layout mode resizes the Android
+ * task after release; Keep resolution only resizes its host.
  * Source bounds come from the task; host windows use a separate contain transform.
  * Real Wayland child buffers remain owned by HWC (no screenshots/copies).
  */
-#ifndef ANVIL_GAME_FIT
-#define ANVIL_GAME_FIT 0
-#endif
 struct game_fit_state {
   struct csd_piece bars[4];
   struct proxy *viewports[4];
   int applied, x, y, sw, sh, w, h, csd, fullscreen;
   struct proxy *above;
 };
-static int game_fit_package(const char *package) {
-  return resize_mode_fixed(package);
-}
 static int game_fit_enabled(struct object *s) {
-  return scale_has_viewporter && s && game_fit_package(s->app_id);
+  return scale_has_viewporter && s && resize_mode_fixed(s->app_id);
 }
 static int window_fit_enabled(struct object *s) {
   return game_fit_enabled(s) || (scale_has_viewporter && s && s->app &&

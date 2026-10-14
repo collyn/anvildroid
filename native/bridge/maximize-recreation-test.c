@@ -55,7 +55,7 @@ int main(void) {
   assert(fresh.csd->restore_width==1152&&fresh.csd->restore_height==703);
   state=0;
   fresh.csd->maximize_pending=0; /* Recovery expires, or user clicks restore. */
-  configure(&top,&top_proxy,0,0,&states);
+  configure(&top,&top_proxy,1916,996,&states); /* KWin knows only the large surface. */
   assert(!fresh.csd->maximized);
   assert(fresh.resize.width==1152&&fresh.resize.height==703);
   /* A normal resize must remain normal after recreation. */
@@ -63,9 +63,35 @@ int main(void) {
   struct csd_frame normal={0};
   assert(profile_restore_frame(fresh.app_id,&normal)&&!normal.maximized);
   tasks[0].id=85;
-  assert(!profile_restore_frame(fresh.app_id,&normal)); /* Genuine relaunch. */
+  assert(!profile_restore_frame(fresh.app_id,&normal)); /* Different bounds. */
+  tasks[0].width=1152;tasks[0].height=703;
+  assert(profile_restore_frame(fresh.app_id,&normal)); /* Game replaces task. */
+  assert(profile_recreated(fresh.app_id));
+  fresh.csd->normal_pending=1;
+  fresh.csd->pieces[0].surface=&proxies[0];
+  fresh.resize.width=fresh.resize.height=0;
+  configure(&top,&top_proxy,1152,703,&states);
+  assert(fresh.csd->restore_width==1152&&fresh.csd->restore_height==703);
+  assert(fresh.resize.width==1152&&fresh.resize.height==703);
+  configure(&top,&top_proxy,1152+2*CSD_BORDER,703+CSD_HEADER+CSD_BORDER,&states);
+  assert(!fresh.csd->normal_pending);
+  profile_forget_resize(fresh.app_id); /* Explicit close is a genuine launch. */
+  assert(!profile_restore_frame(fresh.app_id,&normal));
+  fresh.profile_loaded=0;fresh.resize.width=fresh.resize.height=0;
+  configure(&top,&top_proxy,1152,703,&states);
+  assert(!fresh.resize.width&&!fresh.resize.height); /* Wait for initial profile. */
+  profile_note_resize(fresh.app_id,84);
   tasks[0].id=84;profile_tick+=200;
   assert(!profile_restore_frame(fresh.app_id,&normal)); /* Expired history. */
+  struct object first={.app=1,.app_id="com.new",.content_width=640,.content_height=800,.profile_loaded=1};
+  struct object first_top={.p=&top_proxy,.surface=&first};objects=&first;
+  csd_create(&first_top);
+  assert(first.csd->normal_pending); /* Fresh CSD also has a queued content-only configure. */
+  first.csd->restore_width=640;first.csd->restore_height=800;
+  configure(&first_top,&top_proxy,640,800,&states);
+  assert(!first.resize.width&&!first.resize.height);
+  assert(first.csd->restore_width==640&&first.csd->restore_height==800);
+  free(first_top.csd);
   free(top.csd);
   while(profile_seen) {
     struct profile_task_seen *next=profile_seen->next;

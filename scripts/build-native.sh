@@ -19,7 +19,7 @@ PY
 if [ -f /var/lib/waydroid/rootfs/system/framework/framework-res.apk ]; then
     cp /var/lib/waydroid/rootfs/system/framework/framework-res.apk "$out/framework-res.apk"
 fi
-clang --target=x86_64-linux-android33 -DANVIL_CSD_EXPERIMENT=1 -DANVIL_BOOT_CANVAS=1 -DANVIL_KEYMAP_EDITOR=1 -DANVIL_GAME_FIT=1 -ffreestanding -fPIC -fno-stack-protector -O2 -Wall -Wextra -Werror \
+clang --target=x86_64-linux-android33 -DANVIL_CSD_EXPERIMENT=1 -DANVIL_BOOT_CANVAS=1 -DANVIL_KEYMAP_EDITOR=1 -ffreestanding -fPIC -fno-stack-protector -O2 -Wall -Wextra -Werror \
   -nostdlib -shared -fuse-ld=lld -Wl,-soname,libanvildroid-window.so \
   native/bridge/bridge.c native/ime/text-state.c -o "$out/libanvildroid-window.so"
 clang --target=x86_64-linux-android33 -ffreestanding -fPIC -fno-stack-protector -O2 -Wall -Wextra -Werror \

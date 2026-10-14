@@ -31,13 +31,16 @@ int main(void) {
   s.fit_w=700;s.profile_dirty=1;settle();
   assert(profile_read(dir,"com.fitted","r-unit",&w,&h)==1&&w==466);
   objects=0;for(int n=0;n<3;++n)profile_poll();
-  struct object fresh={.app=1,.app_id="com.fitted",.has_bounds=1,.viewport=&viewport,.fit=&fit,
+  struct csd_frame frame={.restore_width=512,.restore_height=704};
+  struct object fresh={.app=1,.app_id="com.fitted",.has_bounds=1,.viewport=&viewport,.fit=&fit,.csd=&frame,
     .content_width=512,.content_height=704,.fit_w=512,.fit_h=704,
     .fit_delivered_w=512,.fit_delivered_h=704,.resize={.ready=1}};
   tasks[0].id=13;tasks[0].width=512;tasks[0].height=704;
+  viewport.height=640; /* Current background must not clamp the saved host. */
   objects=&fresh;settle();
   assert(fresh.resize.width==448&&fresh.resize.height==701&&fresh.profile_restoring);
   assert(fresh.fit_w==448&&fresh.fit_h==701&&!fresh.preview_width);
+  assert(frame.restore_width==448&&frame.restore_height==701);
   objects=0;
   assert(!unlinkat(dir,"com.fitted",0));close(dir);assert(!rmdir(profile_root));
   while(profile_seen){struct profile_task_seen *next=profile_seen->next;free(profile_seen);profile_seen=next;}

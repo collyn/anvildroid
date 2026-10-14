@@ -14,14 +14,14 @@ int main(void) {
     .resize={.width=721,.height=633,.dirty=1}},other=s;
   s.next=&other;objects=&s;
   resize_mode_load(s.app_id);
-  assert(resize_mode_fixed(s.app_id));
+  assert(!resize_mode_fixed(s.app_id));
   resize_mode_set(s.app_id,1);
   assert(!s.resize.width&&!other.resize.width&&!s.resize.dirty);
   resize_mode_set(s.app_id,0);
   assert(s.resize.width==721&&other.resize.height==633);
   resize_mode_poll();
   assert(!resize_modes->dirty);
-  /* Explicit layout choice overrides the compatibility default on restart. */
+  /* Both user choices survive a reload without any package exception. */
   resize_modes->loaded=0;resize_modes->fixed=1;
   resize_mode_load(s.app_id);
   assert(!resize_mode_fixed(s.app_id));

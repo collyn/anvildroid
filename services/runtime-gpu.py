@@ -195,10 +195,6 @@ def automatic_device(include_nvidia=True):
     if include_nvidia:
         candidates += [d for d in devices if d['available'] and d['driver'] == 'nvidia' and d['node'].startswith('/dev/dri/')]
     for device in candidates:
-        if (device.get('driver') == 'amdgpu' and device.get('device_id') == '0x73ff'
-                and os.environ.get('ANVIL_GPU_SAFETY_GUARD') == '1'
-                and os.environ.get('ANVIL_ALLOW_UNSTABLE_AMDGPU') != '1'):
-            continue
         try:
             return choose(device['node'])
         except (OSError, RuntimeError):
@@ -220,10 +216,6 @@ def resolve(instance):
         if selected.get('driver') == 'nvidia' or selected['node'].startswith('/dev/nvidia'):
             raise
         # A saved render node may disappear when moving a runtime to another host.
-        return None
-    if (current.get('driver') == 'amdgpu' and current.get('device_id') == '0x73ff'
-            and os.environ.get('ANVIL_GPU_SAFETY_GUARD') == '1'
-            and os.environ.get('ANVIL_ALLOW_UNSTABLE_AMDGPU') != '1'):
         return None
     if current != selected:
         raise RuntimeError('Selected GPU identity changed. Select the GPU again before starting.')

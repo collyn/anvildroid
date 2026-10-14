@@ -8,9 +8,6 @@ struct resize_mode_entry {
   struct resize_mode_entry *next;
 };
 static struct resize_mode_entry *resize_modes;
-static int resize_mode_default(const char *package) {
-  return package && (!strcmp(package,"com.shg.sg432") || !strcmp(package,"com.shg.sg451"));
-}
 static struct resize_mode_entry *resize_mode_find(const char *package,int create) {
   if(!profile_name(package,1))return 0;
   for(struct resize_mode_entry *n=resize_modes;n;n=n->next)
@@ -19,12 +16,12 @@ static struct resize_mode_entry *resize_mode_find(const char *package,int create
   struct resize_mode_entry *n=calloc(1,sizeof(*n));
   if(!n)return 0;
   snprintf(n->package,sizeof(n->package),"%s",package);
-  n->fixed=resize_mode_default(package);n->next=resize_modes;resize_modes=n;
+  n->next=resize_modes;resize_modes=n;
   return n;
 }
 static int resize_mode_fixed(const char *package) {
   struct resize_mode_entry *n=resize_mode_find(package,0);
-  return n?n->fixed:resize_mode_default(package);
+  return n?n->fixed:0;
 }
 static int resize_mode_worker_fixed(const char *package) {
   pthread_mutex_lock(mutex);
@@ -60,7 +57,7 @@ static void resize_mode_load(const char *package) {
   int loading=n&&!n->loaded;
   pthread_mutex_unlock(mutex);
   if(!loading)return;
-  int fixed=resize_mode_default(package),dir=resize_mode_dir();
+  int fixed=0,dir=resize_mode_dir();
   if(dir>=0) {
     int fd=openat(dir,package,PROFILE_NOFOLLOW|PROFILE_CLOEXEC|PROFILE_NONBLOCK);
     if(fd>=0) {

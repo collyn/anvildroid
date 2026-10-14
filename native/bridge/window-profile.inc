@@ -59,8 +59,22 @@ static void profile_note_resize(const char *package, int task) {
       return;
     }
 }
+/* Some games replace the Android task as well as the Wayland surface. Accept
+ * that handoff only briefly, with the exact bounds requested by this bridge. */
+static int profile_resize_task_matches(struct profile_task_seen *n, int i) {
+  if (tasks[i].id==n->resized_task) return 1;
+  if (!n->frame_valid || profile_tick-n->resize_tick>=PROFILE_RECREATE_TICKS) return 0;
+  int w=n->maximized?n->max_width-2*CSD_BORDER:n->restore_width;
+  int h=n->maximized?n->max_height-CSD_HEADER-CSD_BORDER:n->restore_height;
+  return tasks[i].width==resize_task_width(logical_to_task(w),resize_uses_nvidia()) &&
+         tasks[i].height==logical_to_task(h);
+}
+static void profile_forget_resize(const char *package) {
+  for (struct profile_task_seen *n=profile_seen;n;n=n->next)
+    if (!strcmp(n->package,package)) {n->frame_valid=0;n->resize_tick=0;n->tick=0;}
+}
 /* A recreated xdg_toplevel has no inherited compositor state. Reapply the
- * state captured before task relayout, scoped to the same Android task.
+ * state captured before task relayout, scoped to the matching task handoff.
  * Retain normal bounds too, so the next restore does not use the large task. */
 static int profile_restore_frame(const char *package, struct csd_frame *frame) {
   if (!package) return 0;
@@ -71,7 +85,7 @@ static int profile_restore_frame(const char *package, struct csd_frame *frame) {
     for (int i=0; i<task_count; ++i)
       if (!strcmp(tasks[i].package,package)) {
         ++matches;
-        same_task=tasks[i].id==n->resized_task;
+        same_task=profile_resize_task_matches(n,i);
       }
     if (matches!=1 || !same_task) return 0;
     frame->maximized=n->maximized;
@@ -90,10 +104,11 @@ static int profile_recreated(const char *package) {
     if (n->tick && profile_tick - n->tick <= PROFILE_RECREATE_TICKS) return 1;
     /* Surface recreation can take seconds, not two polls. A recently resized
      * task must not restore an old profile just because its surface had a gap.
-     * A real relaunch creates a new task and remains eligible for restoration. */
+     * A task handoff with matching bounds is a recreation too. Explicit close
+     * clears this history, so a relaunch remains eligible for restoration. */
     if (n->resize_tick && profile_tick-n->resize_tick < 200)
       for(int i=0;i<task_count;++i)
-        if(tasks[i].id==n->resized_task && !strcmp(tasks[i].package,package)) return 1;
+        if(!strcmp(tasks[i].package,package) && profile_resize_task_matches(n,i)) return 1;
   }
   return 0;
 }
@@ -170,7 +185,11 @@ static int profile_read_state(int dir, const char *package, const char *runtime,
         (strcmp(state,"true") && strcmp(state,"false"))) return -1;
     *maximized=!strcmp(state,"true");
   }
-  if (version != 1 || strcmp(r,runtime) || strcmp(p,package) || !profile_size(*w,*h)) return -1;
+  /* The same system Waydroid runtime was renamed existing -> default. Read
+   * its legacy profile, then the next save writes the canonical identity.
+   * Managed runtimes must never inherit this alias. */
+  int identity=!strcmp(r,runtime) || (!strcmp(runtime,"default") && !strcmp(r,"existing"));
+  if (version != 1 || !identity || strcmp(p,package) || !profile_size(*w,*h)) return -1;
   for (int i=used; i<count; ++i)
     if (bytes[i]!='\n' && bytes[i]!='\r' && bytes[i]!=' ' && bytes[i]!='\t') return -1;
   return 1;
@@ -268,6 +287,7 @@ static void profile_poll(void) {
     s->profile_dirty=0;
     if (loading && result==1 && saved_maximized && s->csd) {
       s->csd->restore_width=saved_w;s->csd->restore_height=saved_h;
+      s->csd->maximized=1;s->resize.maximized=1;
       s->csd->maximize_pending=40;
       s->profile_restoring=1;
       wayland_send(s->csd->top->p,9,0);
@@ -275,7 +295,9 @@ static void profile_poll(void) {
     } else if (loading && result==1 && (saved_w!=w || saved_h!=h)) {
       /* Bound by known HWC canvas; the compositor may further constrain the
        * window to its workarea. Never rewrite saved size merely due to clamp. */
-      if (s->viewport) {
+      /* Fitted windows have an independently sized host viewport. The HWC
+       * background can be only the current task size, not a canvas limit. */
+      if (s->viewport && !window_fit_enabled(s)) {
         int available_w=s->viewport->width-(s->bx>0?s->bx:0);
         int available_h=s->viewport->height-(s->by>0?s->by:0);
         if (available_w>=64 && saved_w>available_w) saved_w=available_w;
@@ -288,6 +310,7 @@ static void profile_poll(void) {
         s->fit_width_snapped=resize_uses_nvidia();
       }
       s->resize.width=saved_w; s->resize.height=saved_h; s->resize.dirty=1; s->resize.quiet_ticks=0;
+      if (s->csd) {s->csd->restore_width=saved_w;s->csd->restore_height=saved_h;}
       if(window_fit_enabled(s)) {s->fit_w=saved_w;s->fit_h=saved_h;}
       else {s->preview_width=saved_w;s->preview_height=saved_h;}
       s->profile_restoring=1;

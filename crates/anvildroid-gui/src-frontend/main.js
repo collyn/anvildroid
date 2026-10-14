@@ -184,19 +184,6 @@ const btnStart = document.getElementById('btn-start');
 const btnStop = document.getElementById('btn-stop');
 const btnRecover = document.getElementById('btn-recover');
 
-function stateClass(state) {
-  if (!state) return 'unknown';
-  const type_ = typeof state === 'string' ? state : state.type;
-  switch (type_) {
-    case 'Running': return 'running';
-    case 'Frozen': return 'frozen';
-    case 'Starting': return 'warning';
-    case 'Stopped': return 'stopped';
-    case 'NotInstalled': case 'SessionLost': case 'Error': return 'error';
-    default: return 'unknown';
-  }
-}
-
 function stateLabel(state) {
   if (!state) return '—';
   const type_ = typeof state === 'string' ? state : state.type;
@@ -1201,11 +1188,6 @@ tagFilter?.addEventListener('change', () => {
 });
 renderTagFilters();
 document.getElementById('favorites-only').addEventListener('change', () => renderApps(allApps));
-async function syncLibrary() {
-  if (!appLibraryStarted || document.hidden || runtimeTransition || pendingLaunch || pendingAppAction || refreshingApps || preferenceBusy) return;
-  await refreshApps();
-  await loadLibrary();
-}
 // Inventory refresh is explicit or follows an app mutation; focus is not a refresh.
 
 // --- Install APK ---
@@ -1551,7 +1533,6 @@ document.getElementById('google-registration-close').addEventListener('click', (
   googleRegistrationTarget = null;
 });
 document.getElementById('google-registration-dialog').addEventListener('close', () => { googleRegistrationTarget = null; });
-const runtimePackages = new Map();
 function controllerBusy(error) {
   // The current Rust transport serializes controller errors as message strings.
   const message = String(error?.message || error);
@@ -2697,7 +2678,6 @@ async function mutateController(request) {
     if (restarted) {
       controllerNotice = 'Settings applied. Android restarted successfully.';
       message.textContent = controllerNotice;
-      runtimePackages.delete(request.id);
     }
     renderController();
     if (request.op === 'reinstall') {
@@ -2821,7 +2801,6 @@ function handleRuntimeAction(event) {
     document.getElementById('arm-source-panel')?.scrollIntoView({block:'center',behavior:'smooth'});
   }
   else if (button.dataset.controllerOp === 'rename') openRuntimeRename(button.dataset.controllerId);
-  else if (button.dataset.controllerOp === 'apps') loadRuntimePackages(button.dataset.controllerId);
   else if (button.dataset.controllerOp === 'google_services') checkRuntimeGoogle(button.dataset.controllerId);
   else if (button.dataset.controllerOp === 'create_gapps') openGappsCreation();
   else if (button.dataset.controllerOp === 'google_guide') {
@@ -3206,30 +3185,6 @@ async function checkRuntimeHealth(id) {
     if (report?.runtime_id !== id || !Array.isArray(report.checks)) throw new Error('Invalid health report');
     runtimeHealth.set(id, { report });
   } catch (error) { runtimeHealth.set(id, { error: `Health check failed: ${error}` }); }
-  renderController();
-}
-
-
-function renderRuntimePackages(id) {
-  const entry = runtimePackages.get(id);
-  if (!entry) return '<p class="hint">List apps with a launcher from this runtime to open or stop them.</p>';
-  if (entry.loading) return '<p role="status">Reading packages from this runtime…</p>';
-  if (entry.error) return `<p class="runtime-feedback error" role="alert">${escapeHtml(entry.error)}</p>`;
-  const record = runtimeRecord(id);
-  const desktop = (record?.display?.effective_mode || record?.display?.mode) === 'desktop';
-  const disabled = controllerMutation || !['Running', 'Frozen'].includes(record?.state) || record?.appJob?.status === 'Running' || record?.storage?.job?.status === 'Running';
-  if(entry.apps.some(app=>app.package==='org.anvildroid.desktop'&&app.desktop_entry))return `<p class="hint">This image uses one Android window. Open and manage apps inside Android.</p><button class="btn btn-quiet" data-controller-op="app_action" data-controller-id="${escapeHtml(id)}" data-app-action="full_ui" data-package="org.anvildroid.desktop" ${disabled||!desktop?'disabled':''}>Open Android</button>`;
-  return `<p class="hint">Package snapshot · ${escapeHtml(entry.checkedAt)} · ${entry.apps.filter(app => app.launchable === true).length} launchable apps. ${entry.apps.some(app => app.launchable !== true) ? 'This worker predates launcher filtering. Stop and start this runtime, then list apps again.' : 'System services without a launcher are excluded.'} ${desktop ? 'Launch opens a desktop window.' : 'Launch is headless; no desktop window opens.'}</p><div class="runtime-package-list">${entry.apps.map(app => `<div class="runtime-package-row"><span>${escapeHtml(app.package)}</span><div class="runtime-actions">${(app.launchable === true ? ['launch','force_stop'] : []).map(action => `<button class="btn btn-quiet" data-controller-op="app_action" data-controller-id="${escapeHtml(id)}" data-app-action="${action}" data-package="${escapeHtml(app.package)}" ${disabled ? 'disabled' : ''}>${action === 'launch' ? (desktop ? 'Open app' : 'Launch (headless)') : 'Force-stop'}</button>`).join('')}${app.launchable !== true ? '<span class="hint">Launcher not verified</span>' : ''}</div></div>`).join('') || 'No launchable apps found.'}</div>`;
-}
-async function loadRuntimePackages(id) {
-  if (controllerMutation || runtimePackages.get(id)?.loading) return;
-  runtimePackages.set(id, { loading: true });
-  renderController();
-  try {
-    const report = await controllerRequest({ op: 'apps', id });
-    if (report?.runtime_id !== id || !Array.isArray(report.apps) || !report.apps.every(app => typeof app.package === 'string')) throw new Error('Invalid runtime package list');
-    runtimePackages.set(id, { apps: report.apps, checkedAt: new Date().toLocaleTimeString() });
-  } catch (error) { runtimePackages.set(id, { error: `Cannot list packages: ${error}` }); }
   renderController();
 }
 

@@ -1,5 +1,4 @@
 #define ANVIL_KEYMAP_EDITOR 1
-#define ANVIL_GAME_FIT 1
 #include "bridge.c"
 #include <assert.h>
 int __android_log_print(int level,const char *tag,const char *format,...) {

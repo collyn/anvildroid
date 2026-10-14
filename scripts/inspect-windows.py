@@ -70,6 +70,7 @@ try {
     result.timerApi = typeof QTimer;
     result.activeOutput = workspace.activeScreen ? workspace.activeScreen.name : null;
     result.cursorOutput = workspace.screenAt(workspace.cursorPos).name;
+    result.activeWindow = workspace.activeWindow ? String(workspace.activeWindow.resourceClass) : null;
     for (var w of workspace.windowList()) {
         if (!/^(waydroid(?:\.|$)|anvildroid\.r-[a-f0-9]{32}\.)/i.test(String(w.resourceClass))) continue;
         if (String(w.resourceClass) === ACTIVATE) { workspace.activeWindow = w; ACTION }
@@ -77,6 +78,7 @@ try {
         var c = w.clientGeometry;
         var area = workspace.clientArea(KWin.MaximizeArea, w);
         result.windows.push({id: String(w.internalId), app: String(w.resourceClass),
+            active:workspace.activeWindow === w,
             desktopFileName: String(w.desktopFileName),
             frame: {x:f.x,y:f.y,width:f.width,height:f.height},
             client: c ? {x:c.x,y:c.y,width:c.width,height:c.height} : null,

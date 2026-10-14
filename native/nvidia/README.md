@@ -6,15 +6,17 @@ The guest Venus/gralloc base uses `collyn/waydroid-nvidia` commit
 ANGLE is built at fork recipe commit
 `fa5044cd1804453a5cbe408191bb19279624e022`
 ([CI run 38284147292](https://github.com/collyn/waydroid-nvidia/actions/runs/38284147292)).
-Host renderer and HWC come from commit `adba12650c099874972f095e24625a4756bb7a22`
-([CI run 38338813236](https://github.com/collyn/waydroid-nvidia/actions/runs/38338813236));
-both component jobs succeeded. HWC checks framebuffer-target modifiers as
+The host renderer comes from commit `adba12650c099874972f095e24625a4756bb7a22`
+([CI run 38338813236](https://github.com/collyn/waydroid-nvidia/actions/runs/38338813236)).
+HWC comes from commit `5c5d35d11aa5a513560d30f55bc2c16023008c13`
+([CI run 38547350782](https://github.com/collyn/waydroid-nvidia/actions/runs/38547350782));
+the guest HWC job succeeded. HWC checks framebuffer-target modifiers as
 well as app layers. On AMD/Intel desktops that cannot import NVIDIA tiled
 buffers, the host copies them with Vulkan into three release-tracked LINEAR
 presentation buffers in system memory. Android renders into tiled NVIDIA
 buffers; no CPU frame readback is needed on this supported path. Unsupported
 formats or hosts retain the existing wl_shm fallback.
-The payload version is `fork-gpu-present-adba126`.
+The payload version is `fork-window-transition-5c5d35d`.
 
 `services/runtime-nvidia.py` pins the base source commit, the renderer, HWC and ANGLE recipe/upstream commits, six artifact
 IDs and SHA-256 digests, the upstream SurfaceFlinger base archive, and all three
@@ -24,7 +26,18 @@ The fork includes RGB32 byte-pitch admission, Vulkan buffer/image external
 memory declarations, compatible sysmem allocation on hybrid displays, and
 Android 13 libc++ compatibility with NDK r29, and a private Wayland configure
 queue for safe window construction. Window decorations and runtime
-lifecycle remain in AnvilDroid's own bridge/controller.
+lifecycle are coordinated with AnvilDroid's own bridge/controller.
+
+Before a task resize, the bridge arms HWC's optional window transition ABI.
+HWC retains the existing xdg_toplevel, CSD, position and focus while Android
+recreates its rendering activity or task. A unique replacement task of the
+same package takes over that window. Missing content retains its imported
+Wayland buffers without CPU screenshots. Close cancels retention; ordinary
+non-resize task removal still closes immediately. An eight-second grace period
+can be renewed by a live Android task, bounded to 60 seconds to avoid stale
+windows. Simultaneous tasks/windows of the same package are never merged.
+Stock HWC without the ABI continues to use the bridge's profile restoration.
+The fork documents the ABI in `docs/window-transitions.md`.
 
 The bridge observes the pinned HWC's exported `window::apply_content_frame`
 method to translate Android task coordinates into the window's local frame.
@@ -39,7 +52,7 @@ window through listener context without inspecting C++ object layouts.
 python3 scripts/prepare-nvidia-fork.py --download
 python3 scripts/build-nvidia-payload.py
 
-# Inspect the staged tree in target/nvidia-fork-gpu-present-adba126 first.
+# Inspect the staged tree in target/nvidia-fork-window-transition-5c5d35d first.
 # Install a new root-owned payload; existing payload directories are retained.
 sudo python3 scripts/install-nvidia-payload.py target/tools/nvidia
 ```

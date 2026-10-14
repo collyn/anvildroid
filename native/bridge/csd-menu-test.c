@@ -1,5 +1,4 @@
 #define ANVIL_KEYMAP_EDITOR 1
-#define ANVIL_GAME_FIT 1
 #include "bridge.c"
 #include <assert.h>
 extern int setenv(const char *,const char *,int);
@@ -122,8 +121,16 @@ int main(void) {
   s.fit_w=800;s.fit_h=600;
   f.menu_open=1;f.menu_submenu=1;csd_menu_activate(&f,2);
   assert(!resize_mode_fixed(s.app_id)&&s.resize.width==800&&s.resize.height==600);
-  assert(resize_mode_fixed("com.shg.sg451"));
-  assert(resize_mode_fixed("com.shg.sg432"));
+  assert(!resize_mode_fixed("com.shg.sg451"));
+  assert(!resize_mode_fixed("com.shg.sg432"));
+  s.app_id="com.shg.sg451";s.resize.width=s.resize.height=0;
+  f.menu_open=1;f.menu_submenu=1;
+  assert(csd_menu_enabled(&f,2)&&csd_menu_enabled(&f,3));
+  csd_menu_activate(&f,3);
+  assert(resize_mode_fixed(s.app_id)&&!s.resize.width);
+  f.menu_open=1;f.menu_submenu=1;csd_menu_activate(&f,2);
+  assert(!resize_mode_fixed(s.app_id)&&s.resize.width==800&&s.resize.height==600);
+  s.app_id="com.test";s.resize.width=s.resize.height=0;f.menu_submenu=0;
   /* Escape consumes input, including the subsequent release after close. */
   f.menu_open=1;struct object keyboard={.keyboard_focus=&s};
   assert(csd_menu_key(&keyboard,1,1)&&!f.menu_open);

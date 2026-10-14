@@ -39,6 +39,7 @@ struct csd_frame {
   int fullscreen, maximized, paint_maximized;
   int maximize_pending;
   int maximize_retry;
+  int normal_pending;
   int restore_width, restore_height;
   int max_width, max_height;  /* The compositor's maximized workarea. */
   struct csd_piece menu;
@@ -151,6 +152,7 @@ static void csd_create(struct object *top) {
   struct csd_frame *f = calloc(1, sizeof(*f));
   if (!f) abort();
   f->top = top;
+  f->normal_pending = top->surface->app && !top->surface->full_ui;
   for (int i = 0; i < 4; i++) {
     union argument a = {.o=0};
     f->pieces[i].surface = real_marshal(csd_compositor, 0, &a, csd_surface_i, 1);
@@ -192,6 +194,7 @@ static void csd_create(struct object *top) {
         s->fit_delivered_w=s->fit_w;s->fit_delivered_h=s->fit_h;
       }
       f->maximize_pending = f->maximized ? 40 : 0;
+      f->normal_pending = !f->maximized;
       wayland_send(top->p, f->maximized ? 9 : 10, 0);
       __android_log_print(4, "AnvilDroidCsd",
                           "restore recreated frame %s maximized=%d normal=%dx%d",
@@ -228,6 +231,9 @@ static int csd_input(struct proxy *surface, int x, int y, int w, int h) {
 static void csd_sync(struct object *s, int x, int y, int w, int h) {
   struct csd_frame *f = s->csd;
   if (!f) return;
+  if (f->normal_pending && !f->maximized && !f->restore_width && w>=64 && h>=64) {
+    f->restore_width=w;f->restore_height=h;
+  }
   int repaint_frame=f->paint_maximized!=f->maximized;
   /* Extend only transparent input surfaces outside the 1px xdg frame.
    * Keep visual header and configure/restore dimensions exactly as before. */

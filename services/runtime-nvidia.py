@@ -37,7 +37,7 @@ PAYLOAD_FILES = {
 # ANGLE's dual-ABI fork build includes CPU ASTC decode; SurfaceFlinger is
 # retained from the verified upstream v0.1.2 archive.
 UPSTREAM_REPO = 'collyn/waydroid-nvidia'
-UPSTREAM_VERSION = 'fork-gpu-present-adba126'
+UPSTREAM_VERSION = 'fork-window-transition-5c5d35d'
 FORK_SOURCE = {
     "commit": "d028cec0904514059227e6cc533ddb2bd563182c",
     "run_id": 38244475616,
@@ -55,8 +55,8 @@ FORK_SOURCE = {
             "sha256": "b7b9b6bd5a5e8742db137a0d915c15bf9e83c56a89777ad1e2d0c60258abb969"
         },
         "guest-hwcomposer": {
-            "id": 11786285879,
-            "sha256": "647e481c7e0b11b2bddd5a0cda9978818bc5094d7c4b319e33479608a5f2ceda"
+            "id": 11884444450,
+            "sha256": "c5b76d4e1291661281ed16adf5ac3f55e8fc0211de065f6b2736a6800e292f0a"
         },
         "guest-gralloc": {
             "id": 11743984471,
@@ -73,8 +73,9 @@ FORK_SOURCE = {
         "gpu_presentation_copy": True
     },
     "hwcomposer": {
-        "commit": "adba12650c099874972f095e24625a4756bb7a22",
-        "run_id": 38338813236,
+        "commit": "5c5d35d11aa5a513560d30f55bc2c16023008c13",
+        "run_id": 38547350782,
+        "resize_task_handoff": True,
         "framebuffer_modifier_admission": True,
         "gpu_presentation_copy": True
     },
@@ -107,7 +108,7 @@ def system_integration_available():
         return False
 ARCHIVES = {
     'host-x86_64': '38afc8f3928bb66d111f7183651732059c7416747aa067a10d29143b605a71ba',
-    'guest-android-x86_64': '29070d9995d971c12833c772bd483e4624ffe860e5b2438de77b6335b35dd1fe',
+    'guest-android-x86_64': '340833ee71a3df8b96095e894bc6468c2d21b5d31194e195de46b8d81652c1bc',
     'guest-prebuilts': 'f4d9b58b6d06ea5d16c8007d2c219eb6ca400efe264e1adadd98ab7b2f545e84',
 }
 

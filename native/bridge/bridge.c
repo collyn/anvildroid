@@ -4,6 +4,7 @@
  */
 #include "resize-policy.h"
 #include "resize-request.h"
+#include "open-size-policy.h"
 #include <stddef.h>
 #include <stdint.h>
 #include <stdarg.h>
@@ -319,6 +320,7 @@ static void decoration_destroy(struct object *top) {
 #include "resize-mode.inc"
 #include "window-activation.inc"
 #include "window-feedback.inc"
+#include "window-transition.inc"
 #include "close-adapter.inc"
 #include "keymap-overlay.inc"
 #include "scrcpy-mapping.inc"
@@ -564,7 +566,21 @@ static void configure(void *data, struct proxy *p, int32_t w, int32_t h,
         maximized = 1;
       if (a->data[i] == 2) fullscreen = 1;
     }
+    /* The initial content-only geometry predates our CSD frame. Wait for the
+     * durable profile before letting normal configures relayout Android;
+     * otherwise that relayout can recreate a game before restoration runs. */
+    if (s->app && !game_fit_enabled(s) && !s->profile_loaded && !resizing && !maximized &&
+        !profile_recreated(s->app_id)) {
+      pthread_mutex_unlock(mutex);
+      return;
+    }
     if (s->csd) {
+      /* A recreated toplevel can have a content-only configure queued before
+       * its CSD geometry is committed. It must not eat the header twice. */
+      if (s->csd->normal_pending && !resizing && !maximized &&
+          w==s->csd->restore_width && h==s->csd->restore_height) {
+        w+=2*CSD_BORDER;h+=CSD_HEADER+CSD_BORDER;
+      } else if (w>0 && h>0) s->csd->normal_pending=0;
       /* A new toplevel may already have a normal configure queued before
        * the restored maximize request. Ack it, but do not overwrite the
        * remembered state or enqueue a normal Android relayout. */
@@ -584,6 +600,13 @@ static void configure(void *data, struct proxy *p, int32_t w, int32_t h,
           (s->preview_width ? s->preview_width : s->content_width);
         s->csd->restore_height = window_fit_enabled(s)&&s->fit_h ? s->fit_h :
           (s->preview_height ? s->preview_height : s->content_height);
+      }
+      /* A recreated maximized toplevel has no normal geometry in KWin yet.
+       * Its first restore configure can still be the large Android surface. */
+      if (!maximized && s->csd->maximized && !resizing &&
+          s->csd->restore_width>=64 && s->csd->restore_height>=64) {
+        w=s->csd->restore_width;h=s->csd->restore_height;
+        if (s->csd->pieces[0].surface) {w+=2*CSD_BORDER;h+=CSD_HEADER+CSD_BORDER;}
       }
       /* Android activities may request immersive/fullscreen for their own
        * content. In desktop mode that must not remove the host window frame:
@@ -1192,9 +1215,17 @@ static int submit_resize_request(int task, int width, int height) {
   if (!request) return 0;
   int written = fprintf(request, "%s", line);
   int closed = fclose(request);
+  char package[256]={0};
+  pthread_mutex_lock(mutex);
+  for (int i=0;i<task_count;++i)
+    if (tasks[i].id==task) snprintf(package,sizeof(package),"%s",tasks[i].package);
+  pthread_mutex_unlock(mutex);
+  int retained=written==length && !closed && package[0] &&
+      hwc_transition_call(1,task,package);
   int ok = written == length && !closed &&
       !rename("/data/waydroid_tmp/anvildroid/resize.tmp",
               "/data/waydroid_tmp/anvildroid/resize");
+  if (!ok && retained) hwc_transition_call(4,task,package);
   if (!ok)
     __android_log_print(6, "AnvilDroid", "failed to publish resize task %d %dx%d",
                         task, width, height);
@@ -1236,6 +1267,8 @@ static void *task_worker(void *unused) {
       }
       fclose(f);
     }
+    for (int i=0;i<count;++i) hwc_transition_call(5,snapshot[i].id,snapshot[i].package);
+    hwc_transition_call(3,0,0);
     for (int i = 0; i < count; i++) resize_mode_load(snapshot[i].package);
     resize_mode_poll();
     pthread_mutex_lock(mutex);
@@ -1263,15 +1296,15 @@ static void *task_worker(void *unused) {
     /* First sight of a task: shrink Android's default freeform (~512x824)
      * to a desktop-friendly open size. One shot per task id; user resizes
      * afterwards are never re-clamped. */
-    static int opened_ids[8], opened_count = 0;
+    static struct open_size_history opened;
+    int task_ids[128], first_open[128]={0}, opening[128]={0};
+    for (int i=0;i<count;++i) task_ids[i]=tasks[i].id;
+    open_size_snapshot(&opened,task_ids,count,first_open);
     for (int i = 0; i < count && !presentation_is_full(); i++) {
+      if (!first_open[i]) continue;
       if (resize_mode_worker_fixed(tasks[i].package)) continue;
       if (tasks[i].width <= 448 && tasks[i].height <= 704)
         continue;
-      int seen = 0;
-      for (int j = 0; j < opened_count; j++)
-        if (opened_ids[j] == tasks[i].id) { seen = 1; break; }
-      if (seen) continue;
       /* A surface recreated by a resize must not be re-clamped: fragile
        * apps replace their task while relaying out, which would snap the
        * window back to the default size in a loop. */
@@ -1290,11 +1323,11 @@ static void *task_worker(void *unused) {
           int saved_w = 0, saved_h = 0;
           int found = profile_read(dir, tasks[i].package, rid, &saved_w, &saved_h);
           close(dir);
-          if (found == 1) continue;
+          if (found != 0) continue; /* Preserve invalid/unreadable saved files too. */
         }
       }
-      if (opened_count < 8) opened_ids[opened_count++] = tasks[i].id;
       if (submit_resize_request(tasks[i].id, 448, 704)) {
+        opening[i]=1;
         __android_log_print(4, "AnvilDroid",
                             "open-size task %d %dx%d -> 448x704",
                             tasks[i].id, tasks[i].width, tasks[i].height);
@@ -1323,11 +1356,8 @@ static void *task_worker(void *unused) {
       if (tasks[i].id == last_snap_task && tasks[i].width == last_snap_width)
         continue;
       /* The open-size request already owns this task's initial bounds. */
-      int opened = 0;
-      for (int j = 0; j < opened_count; j++)
-        if (opened_ids[j] == tasks[i].id) { opened = 1; break; }
-      if (opened) continue;
-      /* Do not relayout the compatibility game or overwrite a user resize.
+      if (opening[i]) continue;
+      /* Respect Keep resolution and never overwrite a user resize.
        * With viewporter, aligned content fits inside the exact host frame. */
       int protected = 0;
       pthread_mutex_lock(mutex);
@@ -1385,7 +1415,10 @@ static void *task_worker(void *unused) {
          * recreating an Android activity would do no useful work. */
         if (!resize_noop) profile_note_resize(s->app_id, id);
         snprintf(persist_package, sizeof(persist_package), "%s", s->app_id);
-        if (!s->resize.maximized) {
+        /* Initial compositor configures can precede the profile read. They
+         * must not replace the saved user size before it can be restored. */
+        if (!s->resize.maximized && s->profile_loaded &&
+            !s->profile_restoring && !s->profile_recreated) {
           persist_w = s->resize.width;
           persist_h = s->resize.height;
         }
@@ -1418,10 +1451,10 @@ static void *task_worker(void *unused) {
         if (!rid || !*rid) rid = "existing";
         int dir = open(PROFILE_ROOT, PROFILE_DIRECTORY | PROFILE_NOFOLLOW | PROFILE_CLOEXEC);
         if (dir >= 0) {
-          profile_write(dir, persist_package, rid, persist_w, persist_h);
+          int saved=profile_write(dir, persist_package, rid, persist_w, persist_h);
           close(dir);
-          __android_log_print(4, "AnvilDroid", "persist profile %s %dx%d",
-                              persist_package, persist_w, persist_h);
+          __android_log_print(saved?4:5, "AnvilDroid", "%s profile %s %dx%d",
+                              saved?"persist":"failed to persist",persist_package, persist_w, persist_h);
         }
       }
     }
