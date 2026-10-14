@@ -252,8 +252,39 @@ static void keymap_hints_destroy(struct object *s) {
   if(p->surface){wayland_send(p->surface,0,0);real_destroy(p->surface);}
   free(s->hints);s->hints=0;
 }
+/* A full Android canvas has no package app_id. Only select an unambiguous
+ * visible app task. The launcher is the fallback when no app is visible. */
+static const struct task *keymap_canvas_task(struct object *s) {
+  if(!s||!s->full_ui)return 0;
+  const struct task *target=0,*launcher=0;
+  for(int i=0;i<task_count;++i) {
+    const struct task *t=&tasks[i];
+    if(!strcmp(t->package,"com.android.systemui")||!strcmp(t->package,"android"))continue;
+    if(!strcmp(t->package,"com.android.launcher3")) {
+      if(launcher)return 0;
+      launcher=t;continue;
+    }
+    if(target)return 0;
+    if(t->id<=0||t->x<0||t->y<0||t->width<2||t->height<2||
+       t->x>s->full_canvas_w-t->width||t->y>s->full_canvas_h-t->height)return 0;
+    target=t;
+  }
+  if(!target)target=launcher;
+  if(target&&(target->id<=0||target->x<0||target->y<0||target->width<2||target->height<2||
+       target->x>s->full_canvas_w-target->width||target->y>s->full_canvas_h-target->height))return 0;
+  return target;
+}
+static const char *keymap_package(struct object *s) {
+  if(!s)return 0;
+  if(!s->full_ui)return s->app_id;
+  const struct task *t=keymap_canvas_task(s);
+  return t?t->package:0;
+}
 static int keymap_task_owner(struct object *s) {
-  if(!s->app||!s->app_id||!s->has_bounds)return 0;
+  if(s&&s->full_ui) {
+    const struct task *t=keymap_canvas_task(s);return t?t->id:0;
+  }
+  if(!s||!s->app||!s->app_id||!s->has_bounds)return 0;
   int id=0,count=0,surfaces=0;
   for(int i=0;i<task_count;++i)if(!strcmp(tasks[i].package,s->app_id)) {
     id=tasks[i].id;++count;
@@ -261,6 +292,17 @@ static int keymap_task_owner(struct object *s) {
   for(struct object *o=objects;o;o=o->next)
     if(o->app&&o->app_id&&!strcmp(o->app_id,s->app_id))++surfaces;
   return count==1&&surfaces==1?id:0;
+}
+static int full_ui_scaled(struct object *,int,int,int);
+static void keymap_canvas_bounds(struct object *s) {
+  const struct task *t=keymap_canvas_task(s);
+  if(!t){s->has_bounds=0;return;}
+  int fw,fh,ox,oy;full_ui_box(s,&fw,&fh,&ox,&oy);
+  s->bx=ox+full_ui_scaled(s,t->x,0,0);
+  s->by=oy+full_ui_scaled(s,t->y,1,0);
+  s->bw=full_ui_scaled(s,t->x+t->width,0,1)-(s->bx-ox);
+  s->bh=full_ui_scaled(s,t->y+t->height,1,1)-(s->by-oy);
+  s->has_bounds=1;
 }
 static void keymap_hints_clear(struct object *s) {
   if(!s||!s->hints)return;
@@ -512,6 +554,7 @@ static void keymap_done(void *unused, struct proxy *callback, uint32_t serial) {
   real_destroy(callback);
   for (struct object *s = objects; s; s = s->next)
     if (s->overlay || s->hints) {
+      if(s->full_ui)keymap_canvas_bounds(s);
       keymap_overlay_sync(s, s->bx, s->by, s->bw, s->bh);
       wayland_send(s->p, 6, 0);
     }
@@ -552,10 +595,10 @@ static struct object *keymap_owner(struct proxy *p) {
   struct object *s = find(p);
   if (!s)
     return 0;
-  if (s && s->app)
+  if (s && (s->app||s->full_ui))
     return s;
   for (struct object *o = objects; o; o = o->next)
-    if (o->surface == s && o->parent && o->parent->app &&
+    if (o->surface == s && o->parent && (o->parent->app||o->parent->full_ui) &&
         !strcmp(o->p->interface->name, "wl_subsurface"))
       return o->parent;
   return 0;
@@ -582,6 +625,7 @@ static void keymap_kleave(void *data, struct proxy *p, uint32_t serial,
   struct object *o = data;
   pthread_mutex_lock(mutex);
   keymap_shortcut_task = 0;
+  if(o->keyboard_focus&&o->keyboard_focus->csd&&o->keyboard_focus->csd->menu_open)csd_menu_close(o->keyboard_focus->csd);
   keymap_hints_clear(o->keyboard_focus);
   o->keyboard_focus = 0;
   for (int i = 0; i < 24; ++i)
@@ -594,6 +638,7 @@ static void keymap_key(void *data, struct proxy *p, uint32_t serial,
                        uint32_t time, uint32_t key, uint32_t state) {
   struct object *o = data;
   pthread_mutex_lock(mutex);
+  if(csd_menu_key(o,key,state)){pthread_mutex_unlock(mutex);return;}
   struct keymap_overlay *f = o->keyboard_focus ? o->keyboard_focus->overlay : 0;
   int blocked =
       key < 768 && (o->keymap_blocked_keys[key / 32] & (1u << (key % 32)));
@@ -628,7 +673,7 @@ static void keymap_key(void *data, struct proxy *p, uint32_t serial,
       } else if (keymap_connection_ready() && keymap_task_owner(s)) {
         keymap_shortcut_task = keymap_task_owner(s);
         snprintf(keymap_shortcut_package, sizeof(keymap_shortcut_package),
-                 "%s", s->app_id);
+                 "%s", keymap_package(s));
         keymap_hints_clear(s);
       }
     }
@@ -806,7 +851,7 @@ static void keymap_hints_set(struct object *s,const struct keymap_model *model,i
   f->passive=1;f->model=*model;f->model.selected=-1;
   f->disabled=s->keymap_disabled;f->hints_hidden=s->keymap_hidden;
   f->task=task;f->dirty=1;f->close_pending=!model->count;
-  snprintf(f->package,sizeof(f->package),"%s",s->app_id);
+  snprintf(f->package,sizeof(f->package),"%s",keymap_package(s));
   for(int i=0;i<24;++i)f->active_keys[i]=0;
   memset(f->flash_ticks,0,sizeof(f->flash_ticks));
   keymap_wake();
@@ -828,13 +873,15 @@ static void keymap_hints_poll(const char *runtime) {
   }
   if(keymap_connection_ready())for(struct object *s=objects;s;s=s->next) {
     int owner=keymap_task_owner(s);
+    if(s->full_ui)keymap_canvas_bounds(s);
+    if(s->hints_task!=owner&&!s->hints)s->hints_task=0;
     if(s->hints&&owner!=s->hints->task) {
       s->hints->close_pending=1;keymap_wake();
     }
     if(!token&&owner&&!s->overlay&&!s->hints&&s->hints_task!=owner&&
-       profile_name(s->app_id,1)) {
+       profile_name(keymap_package(s),1)) {
       s->hints_task=owner;token=s->hints_probe=++keymap_token;task=owner;
-      snprintf(pkg,sizeof(pkg),"%s",s->app_id);
+      snprintf(pkg,sizeof(pkg),"%s",keymap_package(s));
     }
   }
   pthread_mutex_unlock(mutex);
@@ -845,7 +892,7 @@ static void keymap_hints_poll(const char *runtime) {
   if(dir>=0)close(dir);
   pthread_mutex_lock(mutex);
   for(struct object *s=objects;s;s=s->next)
-    if(s->hints_probe==token&&s->app_id&&!strcmp(s->app_id,pkg)&&
+    if(s->hints_probe==token&&keymap_package(s)&&!strcmp(keymap_package(s),pkg)&&
        !s->overlay&&keymap_task_owner(s)==task) {
       if(loaded==1)keymap_hints_set(s,&model,task);
       break;
@@ -926,7 +973,9 @@ static void keymap_io_poll(void) {
         busy = 1;
       if (s->overlay)
         busy = 1;
-      if (s->app && s->app_id && !strcmp(s->app_id, pkg) && s->has_bounds) {
+      if(s->full_ui)keymap_canvas_bounds(s);
+      if ((s->app||s->full_ui) && keymap_package(s) &&
+          !strcmp(keymap_package(s),pkg) && keymap_task_owner(s)==task && s->has_bounds) {
         target = s;
         ++matches;
       }
@@ -989,8 +1038,8 @@ static void keymap_io_poll(void) {
             if (tasks[i].id == f->task)
               owner = 1;
           }
-        if (matching != 1 || !owner || !s->app_id ||
-            strcmp(s->app_id, f->package)) {
+        if (matching != 1 || !owner || !keymap_package(s) ||
+            strcmp(keymap_package(s), f->package)) {
           f->close_pending = 1;
           f->close_result = 3;
           f->save_pending = 0;

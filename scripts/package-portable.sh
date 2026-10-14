@@ -30,6 +30,9 @@ cp packaging/systemd/anvildroid-controller.service "$stage/packaging/systemd/"
 cp services/*.py "$stage/services/"
 cp native/anvildroid-*.rc native/anvildroid-*.sh "$stage/native/"
 cp -a native/overlay "$stage/native/"
+cp native/menu-font-OFL.txt "$stage/native/"
+mkdir -p "$stage/target/input-diagnostic"
+cp target/input-diagnostic/scrcpy-server-cancel.jar "$stage/target/input-diagnostic/"
 for f in target/native/libanvildroid-path-guard.so target/native/libanvildroid-runtime-window.so target/native/overlay-key.p12 target/ime/AnvilDroidIme.apk target/shutdown/anvildroid-shutdown.jar; do
   cp "$f" "$stage/$f"
 done

@@ -1,7 +1,7 @@
 #ifndef ANVILDROID_KEYMAP_FONT_H
 #define ANVILDROID_KEYMAP_FONT_H
 /* Small original 5x7 raster alphabet for the in-process editor toolbar. */
-static void keymap_text_scaled(uint32_t *pixels, int w, int h, int x, int y,
+static void keymap_text_scaled_clipped(uint32_t *pixels, int w, int h, int clip_width, int x, int y,
                         const char *text, uint32_t color, int scale) {
   static const unsigned char letters[39][7] = {
       {14, 17, 17, 31, 17, 17, 17}, {30, 17, 17, 30, 17, 17, 30},
@@ -35,10 +35,15 @@ static void keymap_text_scaled(uint32_t *pixels, int w, int h, int x, int y,
           for (int dy = 0; dy < scale; ++dy)
             for (int dx = 0; dx < scale; ++dx) {
               int px = x + col * scale + dx, py = y + row * scale + dy;
-              if (px >= 0 && px < w && py >= 0 && py < h)
+              if (px >= 0 && px < w && px < clip_width && py >= 0 && py < h)
                 pixels[(size_t)py * w + px] = color;
             }
   }
+}
+/* Buffer row stride remains w even when drawing into a narrower panel. */
+static void keymap_text_scaled(uint32_t *pixels, int w, int h, int x, int y,
+                        const char *text, uint32_t color, int scale) {
+  keymap_text_scaled_clipped(pixels,w,h,w,x,y,text,color,scale);
 }
 static void keymap_text(uint32_t *pixels, int w, int h, int x, int y,
                         const char *text, uint32_t color) {

@@ -219,7 +219,7 @@ static void profile_poll(void) {
     if(game_fit_enabled(s))continue; /* Old task-size profiles must not relayout games. */
     if (!s->app || !profile_name(s->app_id,1) || !s->has_bounds || !s->resize.ready) continue;
     if (!profile_unique(s) || s->resize.dragging || s->resize.maximized ||
-        s->resize.width || s->preview_width || !profile_size(s->content_width,s->content_height)) {
+        s->resize.width || !window_fit_settled(s) || !profile_size(s->content_width,s->content_height)) {
       s->profile_ticks=0; continue;
     }
     if (s->profile_restoring) { s->profile_restoring=0; s->profile_dirty=0; }
@@ -235,13 +235,15 @@ static void profile_poll(void) {
       continue;
     }
     /* 500ms of confirmed normal content, not a transient configure/drag. */
-    if (s->profile_width!=s->content_width || s->profile_height!=s->content_height) {
-      s->profile_width=s->content_width; s->profile_height=s->content_height; s->profile_ticks=0;
+    int host_w=window_fit_enabled(s)?s->fit_w:s->content_width;
+    int host_h=window_fit_enabled(s)?s->fit_h:s->content_height;
+    if (s->profile_width!=host_w || s->profile_height!=host_h) {
+      s->profile_width=host_w; s->profile_height=host_h; s->profile_ticks=0;
     }
     if (++s->profile_ticks<10) continue;
     if (!s->profile_token) s->profile_token=++profile_next_token;
     token=s->profile_token; loading=!s->profile_loaded;
-    w=s->content_width; h=s->content_height;
+    w=host_w; h=host_h;
     snprintf(package,sizeof(package),"%s",s->app_id);
     break;
   }
@@ -259,7 +261,9 @@ static void profile_poll(void) {
   for (struct object *s=objects;s;s=s->next) {
     if (s->profile_token!=token) continue; /* Never act on a destroyed/reused surface. */
     if (!profile_unique(s) || s->resize.dragging || s->resize.maximized || s->resize.width ||
-        s->preview_width || s->content_width!=w || s->content_height!=h) { s->profile_ticks=0; break; }
+        !window_fit_settled(s) ||
+        (window_fit_enabled(s)?s->fit_w:s->content_width)!=w ||
+        (window_fit_enabled(s)?s->fit_h:s->content_height)!=h) { s->profile_ticks=0; break; }
     s->profile_loaded=1;
     s->profile_dirty=0;
     if (loading && result==1 && saved_maximized && s->csd) {
@@ -277,8 +281,16 @@ static void profile_poll(void) {
         if (available_w>=64 && saved_w>available_w) saved_w=available_w;
         if (available_h>=64 && saved_h>available_h) saved_h=available_h;
       }
+      /* Migrate older arbitrary host widths before publishing the restored
+       * frame, so alignment never waits for a later Android buffer. */
+      if(window_fit_enabled(s)) {
+        saved_w=window_layout_width(s,saved_w);
+        s->fit_width_snapped=resize_uses_nvidia();
+      }
       s->resize.width=saved_w; s->resize.height=saved_h; s->resize.dirty=1; s->resize.quiet_ticks=0;
-      s->preview_width=saved_w; s->preview_height=saved_h; s->profile_restoring=1;
+      if(window_fit_enabled(s)) {s->fit_w=saved_w;s->fit_h=saved_h;}
+      else {s->preview_width=saved_w;s->preview_height=saved_h;}
+      s->profile_restoring=1;
       __android_log_print(4,"AnvilDroid","restore profile %s logical=%dx%d",package,saved_w,saved_h);
     } else if (!loading && result==1) {
       __android_log_print(4,"AnvilDroid","saved profile %s logical=%dx%d",package,w,h);

@@ -32,6 +32,7 @@ gpu = module('runtime-gpu')
 arm = module('runtime-arm')
 linux = module('runtime-linux')
 storage = module('runtime-storage')
+keymap = module('runtime-keymap')
 GOOGLE_PACKAGES = ('com.android.vending', 'com.google.android.gms', 'com.google.android.gsf')
 ASSETS = Path('/usr/local/lib/anvildroid-controller')
 DESKTOP_ASSETS = {
@@ -41,6 +42,11 @@ DESKTOP_ASSETS = {
     'vendor/etc/init/anvildroid-tasks.rc': ASSETS / 'provision/anvildroid-tasks.rc',
     'vendor/bin/anvildroid-tasks.sh': ASSETS / 'provision/anvildroid-tasks.sh',
     'vendor/overlay/AnvilDroidCaption/AnvilDroidCaption.apk': ASSETS / 'provision/vendor/overlay/AnvilDroidCaption/AnvilDroidCaption.apk',
+}
+KEYMAP_ASSETS = {
+    'vendor/etc/init/anvildroid-keymap.rc': ASSETS / 'provision/anvildroid-keymap.rc',
+    'vendor/bin/anvildroid-keymap.sh': ASSETS / 'provision/anvildroid-keymap.sh',
+    'vendor/framework/anvildroid-scrcpy-server.jar': ASSETS / 'scrcpy-server-cancel.jar',
 }
 RESOURCE_KEYS = ('lxc.cgroup2.memory.max', 'lxc.cgroup2.memory.swap.max', 'lxc.cgroup2.cpu.max')
 ARM_KEYS = ('ro.product.cpu.abilist', 'ro.product.cpu.abilist32', 'ro.product.cpu.abilist64',
@@ -78,6 +84,7 @@ class ExistingRuntime:
         self.store = store
         self.work = work
         self.metadata = store / 'existing-runtime.json'
+        self.keymap_process = None
 
     def read(self, path):
         # Official Waydroid installations may be owned by the desktop account
@@ -175,16 +182,17 @@ class ExistingRuntime:
         if uid is not None and work_owner not in (0, uid):
             raise RuntimeError('Default overlay belongs to another desktop user')
         trusted_owners = {0, work_owner}
+        init_relative = 'system/etc/init/init.waydroid.rc'
         for relative in ('vendor/lib64/libanvildroid-window.so', 'vendor/bin/anvildroid-apps.sh',
-                         'vendor/bin/anvildroid-tasks.sh'):
-            source = DESKTOP_ASSETS[relative]
-            for path in (source, *source.parents):
+                         'vendor/bin/anvildroid-tasks.sh', init_relative, *KEYMAP_ASSETS):
+            source = (self.work / 'overlay' / init_relative if relative == init_relative else (DESKTOP_ASSETS | KEYMAP_ASSETS)[relative])
+            for path in (() if relative == init_relative else (source, *source.parents)):
                 info = path.lstat()
                 if path.is_symlink() or info.st_uid != 0 or info.st_mode & 0o022:
                     raise RuntimeError('Unsafe Desktop integration asset: ' + str(path))
             if not source.is_file(): raise RuntimeError('Missing Desktop integration asset')
             target = self.work / 'overlay' / relative
-            data = source.read_bytes()
+            data = (self.keymap_init(self.read(source)).encode() if relative == init_relative else source.read_bytes())
             directory = os.open('/', os.O_RDONLY | os.O_DIRECTORY)
             temporary = '.anvildroid-' + uuid.uuid4().hex
             try:
@@ -192,20 +200,28 @@ class ExistingRuntime:
                 # Pin each directory rather than writing through a checked
                 # pathname that its owner could replace with a symlink.
                 for part in target.parent.parts[1:]:
-                    child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+                    try:
+                        child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+                    except FileNotFoundError:
+                        os.mkdir(part, mode=0o755, dir_fd=directory)
+                        child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
                     os.close(directory); directory = child
                     info = os.fstat(directory)
                     if info.st_uid not in trusted_owners or info.st_mode & 0o022:
                         raise RuntimeError('Unsafe Desktop overlay target')
-                fd = os.open(target.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
-                with os.fdopen(fd, 'rb') as current:
-                    info = os.fstat(current.fileno())
-                    if not stat.S_ISREG(info.st_mode) or info.st_uid not in trusted_owners or info.st_mode & 0o022 or info.st_nlink != 1:
-                        raise RuntimeError('Unsafe Desktop overlay target')
-                    if current.read(len(data) + 1) == data: continue
+                try:
+                    fd = os.open(target.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+                except FileNotFoundError:
+                    if relative not in KEYMAP_ASSETS: raise
+                else:
+                    with os.fdopen(fd, 'rb') as current:
+                        info = os.fstat(current.fileno())
+                        if not stat.S_ISREG(info.st_mode) or info.st_uid not in trusted_owners or info.st_mode & 0o022 or info.st_nlink != 1:
+                            raise RuntimeError('Unsafe Desktop overlay target')
+                        if current.read(len(data) + 1) == data: continue
                 fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
                 with os.fdopen(fd, 'wb') as output:
-                    os.fchmod(output.fileno(), 0o644 if relative.endswith('.so') else 0o755)
+                    os.fchmod(output.fileno(), 0o644 if relative.endswith(('.so', '.rc', '.jar')) else 0o755)
                     output.write(data); output.flush(); os.fsync(output.fileno())
                 os.rename(temporary, target.name, src_dir_fd=directory, dst_dir_fd=directory)
                 os.fsync(directory)
@@ -215,6 +231,70 @@ class ExistingRuntime:
                 try: os.unlink(temporary, dir_fd=directory)
                 except FileNotFoundError: pass
                 os.close(directory)
+
+    @staticmethod
+    def keymap_init(text):
+        marker = '    setenv LD_PRELOAD /vendor/lib64/libanvildroid-window.so\n'
+        if text.count(marker) != 1:
+            raise RuntimeError('Default desktop composer configuration is unsupported')
+        text = re.sub(r'^    setenv ANVILDROID_RUNTIME_(?:ID|GENERATION) .*\n', '', text, flags=re.M)
+        return text.replace(marker, marker + '    setenv ANVILDROID_RUNTIME_ID default\n' +
+                            '    setenv ANVILDROID_RUNTIME_GENERATION ' + uuid.uuid4().hex + '\n')
+
+    def ensure_keymap_receiver(self):
+        if self.keymap_process is not None and self.keymap_process.poll() is None:
+            return
+        # Check without connecting: scrcpy has exactly one control client,
+        # reserved for the bridge, so a readiness probe must not consume it.
+        sockets = self.android('/system/bin/cat', '/proc/net/unix')
+        if any(line.split()[-1:] == ['@scrcpy_00000000'] for line in sockets.splitlines()):
+            return
+        data = self.android('/system/bin/head', '-c', '16385', '/data/system/environ/classpath')
+        values = [line.removeprefix('export BOOTCLASSPATH ') for line in data.splitlines()
+                  if line.startswith('export BOOTCLASSPATH ')]
+        if len(data.encode()) > 16384 or len(values) != 1 or not values[0] or not all(
+                re.fullmatch(r'/(?:apex|system)/[A-Za-z0-9_./-]+\.jar', path) and
+                '..' not in path.split('/') for path in values[0].split(':')):
+            raise RuntimeError('Invalid Android boot classpath for keymap receiver')
+        # The jar is a trusted read-only overlay asset. Never copy or chown
+        # Android-controlled /data paths as root to launch the receiver.
+        command = ['lxc-attach', '-P', self.work/'lxc', '-n', 'waydroid',
+                   '--clear-env', '--uid', '2000', '--gid', '2000']
+        environment = {'PATH': '/system/bin:/system/xbin:/vendor/bin',
+                       'ANDROID_ROOT': '/system', 'ANDROID_DATA': '/data',
+                       'ANDROID_ART_ROOT': '/apex/com.android.art',
+                       'ANDROID_I18N_ROOT': '/apex/com.android.i18n',
+                       'ANDROID_TZDATA_ROOT': '/apex/com.android.tzdata',
+                       'ANDROID_RUNTIME_ROOT': '/apex/com.android.runtime',
+                       'BOOTCLASSPATH': values[0]}
+        for key, value in environment.items(): command += ['--set-var', key+'='+value]
+        command += ['--', '/system/bin/sh', '/vendor/bin/anvildroid-keymap.sh']
+        self.keymap_process = subprocess.Popen(list(map(str, command)), stdin=subprocess.DEVNULL,
+                                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        deadline = time.monotonic()+3
+        while time.monotonic() < deadline:
+            if self.keymap_process.poll() is not None:
+                raise RuntimeError('Keymap receiver could not start; restart Default runtime after updating')
+            sockets = self.android('/system/bin/cat', '/proc/net/unix')
+            if any(line.split()[-1:] == ['@scrcpy_00000000'] for line in sockets.splitlines()): return
+            time.sleep(.05)
+        self.keymap_process.terminate()
+        raise RuntimeError('Keymap receiver did not become ready')
+
+    def edit_keymap(self, package):
+        text = self.read(self.work / 'overlay/system/etc/init/init.waydroid.rc')
+        match = re.search(r'^    setenv ANVILDROID_RUNTIME_GENERATION ([0-9a-f]{32})$', text, re.M)
+        if not match or '    setenv ANVILDROID_RUNTIME_ID default\n' not in text:
+            raise RuntimeError('Restart Default runtime once to enable keymap editing')
+        state = self.state()
+        if state == 'FROZEN':
+            linux.run_bounded('gdbus', 'call', '--system', '--dest', 'id.waydro.Container',
+                              '--object-path', '/ContainerManager', '--method',
+                              'id.waydro.ContainerManager.Unfreeze', timeout=3, operation='Resume Default runtime')
+        elif state != 'RUNNING':
+            raise RuntimeError('Start Default runtime and open the app before editing keymap')
+        self.ensure_keymap_receiver()
+        return keymap.open_keymap(self.work/'lxc', 'waydroid', match[1], package, self.android)
 
     def enable_desktop(self):
         self.stopped()
@@ -226,8 +306,8 @@ class ExistingRuntime:
             raise RuntimeError('This Waydroid image has no supported desktop composer service')
         framework = root / 'system/framework/framework-res.apk'
         overlay = self.work / 'overlay'
-        changes = {'system/etc/init/init.waydroid.rc': text.replace(marker, marker + '    setenv LD_PRELOAD /vendor/lib64/libanvildroid-window.so\n')}
-        for relative, source in DESKTOP_ASSETS.items():
+        changes = {'system/etc/init/init.waydroid.rc': self.keymap_init(text.replace(marker, marker + '    setenv LD_PRELOAD /vendor/lib64/libanvildroid-window.so\n'))}
+        for relative, source in (DESKTOP_ASSETS | KEYMAP_ASSETS).items():
             if not source.is_file(): raise RuntimeError('Desktop integration asset is missing: ' + str(source))
             changes[relative] = source.read_bytes()
         expected = ASSETS / 'provision/framework-res.apk.sha256'
@@ -542,7 +622,19 @@ class ExistingRuntime:
                                            'data_path': source, 'data_identity': identity, 'data_owner_uid': info.st_uid})
             return self.record(session, self.saved())
         if op in ('refresh', 'inspect'):
-            return self.record(session, saved)
+            record = self.record(session, saved)
+            if session and record['state']=='Running' and self.desktop_overlay():
+                try: self.ensure_keymap_receiver()
+                except (OSError, RuntimeError) as error: record['keymap_warning']=str(error)
+            return record
+        if op == 'app_action':
+            if request.get('action') != 'keymap_edit':
+                raise RuntimeError('Unsupported Default app action')
+            return self.edit_keymap(request.get('package'))
+        if op == 'keymaps':
+            if self.state() != 'RUNNING':
+                return {'runtime_id': 'default', 'profiles': [], 'invalid_count': 0}
+            return keymap.keymap_profiles(self.work/'lxc', 'waydroid', 'default')
         if op == 'resources_info': return self.resource_info()
         if op == 'gpu_info': return self.gpu_info()
         if op == 'arm_info': return self.arm_info()

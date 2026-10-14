@@ -1000,8 +1000,8 @@ function showContextMenu(e, pkg, label, runtimeId = 'default') {
     item.className = `ctx-item${action === 'uninstall' ? ' ctx-danger' : ''}`;
     item.textContent = title;
     item.setAttribute('role', 'menuitem');
-    item.disabled = !!((action==='keymap'&&runtimeId==='default') || ((action==='details'||action==='info')&&runtimeId!=='default') || pendingLaunch || pendingAppAction || preferenceBusy || (action === 'favorite' && runtimeId !== 'default' && !managedPreferences.has(runtimeId)) || ((action === 'uninstall' || action === 'force-stop') && blockReason));
-    if(action==='keymap')item.title=runtimeId==='default'?'Overlay editor currently requires a managed desktop runtime':'Open one window of this app, then edit controls on its overlay';
+    item.disabled = !!(((action==='details'||action==='info')&&runtimeId!=='default') || pendingLaunch || pendingAppAction || preferenceBusy || (action === 'favorite' && runtimeId !== 'default' && !managedPreferences.has(runtimeId)) || ((action === 'uninstall' || action === 'force-stop') && blockReason));
+    if(action==='keymap')item.title='Open one window of this app, then edit controls on its overlay';
     if ((action === 'uninstall' || action === 'force-stop') && blockReason) item.title = blockReason;
     item.addEventListener('click', () => {
       removeContextMenu();
@@ -1022,11 +1022,15 @@ function removeContextMenu() {
 }
 async function openKeymapOverlay(runtimeId,pkg){
   if(pendingAppAction||pendingLaunch)return;
-  if(!/^r-[0-9a-f]{32}$/.test(runtimeId)){showAppToast('Overlay editing requires a managed desktop runtime.','info');return;}
+  if(runtimeId!=='default'&&!/^r-[0-9a-f]{32}$/.test(runtimeId)){showAppToast('Overlay editing requires a managed desktop runtime.','info');return;}
   pendingAppAction=true;
   try{
     showAppToast('Opening keymap overlay on the running app…','info');
     let job=await controllerRequest({op:'app_action',id:runtimeId,action:'keymap_edit',package:pkg});
+    if(runtimeId==='default'){
+      if(job?.action!=='keymap_edit'||job.package!==pkg||job.success!==true)throw new Error('Overlay request not confirmed');
+      showAppToast(job.message||'Overlay attached.','success');return;
+    }
     const token=job.id,deadline=Date.now()+15000;
     while(true){
       if(job.id!==token||job.runtime_id!==runtimeId||job.package!==pkg||job.action!=='keymap_edit')throw new Error('App operation changed; overlay request not confirmed');
@@ -1471,7 +1475,7 @@ function controllerBusy(error) {
   return error?.code === 'BUSY' || /(?:Runtime already has an operation|Wait for the runtime operation to finish|Runtime operation is completing|Controller operation capacity reached)/.test(message);
 }
 const controllerRequest = async request => {
-  if (request.id === 'default' && request.op === 'app_action') {
+  if (request.id === 'default' && request.op === 'app_action' && request.action !== 'keymap_edit') {
     const command = {launch:'launch_app', force_stop:'force_stop_app'}[request.action];
     if (!command) throw new Error('Unsupported Default runtime app action');
     const result = await invoke(command, {package:request.package});

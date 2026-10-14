@@ -26,9 +26,11 @@ install -m 0755 "$ROOT/scripts/install-nvidia-payload.py" "$DEST/usr/local/lib/a
 install -m 0755 "$ROOT/scripts/prepare-nvidia-fork.py" "$DEST/usr/local/lib/anvildroid-controller/scripts/prepare-nvidia-fork.py"
 install -m 0755 "$ROOT/scripts/install-runtime-apparmor.py" "$DEST/usr/local/lib/anvildroid-controller/scripts/install-runtime-apparmor.py"
 python3 "$ROOT/scripts/build-nvidia-payload.py" --stage-parent "$DEST/usr/local/lib/anvildroid-controller"
-for f in runtime-host.py runtime-arm.py runtime-arm-source.py runtime-extract.py runtime-download.py runtime-image-format.py runtime-existing.py runtime-resources.py runtime-gpu.py runtime-nvidia.py runtime-linux.py runtime-storage.py; do install -m 0644 "$ROOT/services/$f" "$DEST/usr/local/lib/anvildroid-controller/services/$f"; done
+mkdir -p "$DEST/usr/share/doc/anvildroid-controller"
+install -m 0644 "$ROOT/native/menu-font-OFL.txt" "$DEST/usr/share/doc/anvildroid-controller/menu-font-OFL.txt"
+for f in runtime-host.py runtime-arm.py runtime-arm-source.py runtime-extract.py runtime-download.py runtime-image-format.py runtime-existing.py runtime-keymap.py runtime-resources.py runtime-gpu.py runtime-nvidia.py runtime-linux.py runtime-storage.py; do install -m 0644 "$ROOT/services/$f" "$DEST/usr/local/lib/anvildroid-controller/services/$f"; done
 install -m 0644 "$ROOT/packaging/appimage/org.anvildroid.gui.desktop" "$DEST/usr/share/applications/org.anvildroid.gui.desktop"
-for f in runtime-system.py runtime-controller.py runtime-existing.py runtime-host.py runtime-images.py runtime-android.py runtime-worker.py runtime-linux.py runtime-image-format.py runtime-network.py runtime-storage.py runtime-labels.py runtime-transfer.py runtime-catalog.py runtime-download.py runtime-extract.py runtime-provision.py runtime-arm.py runtime-arm-source.py runtime-gpu.py runtime-nvidia.py runtime-resources.py runtime-desktop.py runtime-workarea.py; do
+for f in runtime-system.py runtime-controller.py runtime-existing.py runtime-keymap.py runtime-host.py runtime-images.py runtime-android.py runtime-worker.py runtime-linux.py runtime-image-format.py runtime-network.py runtime-storage.py runtime-labels.py runtime-transfer.py runtime-catalog.py runtime-download.py runtime-extract.py runtime-provision.py runtime-arm.py runtime-arm-source.py runtime-gpu.py runtime-nvidia.py runtime-resources.py runtime-desktop.py runtime-workarea.py; do
   install -m 0644 "$ROOT/services/$f" "$DEST/usr/local/lib/anvildroid-controller/$f"
 done
 install -m 0755 "$ROOT/target/native/libanvildroid-runtime-window.so" "$DEST/usr/local/lib/anvildroid-controller/libanvildroid-window.so"
@@ -38,8 +40,9 @@ install -m 0644 "$ROOT/services/runtime-path-guard.py" "$DEST/usr/local/lib/anvi
 install -m 0644 "$ROOT/target/native/libanvildroid-path-guard.so" "$DEST/usr/local/lib/anvildroid-controller/libanvildroid-path-guard.so"
 install -m 0644 "$ROOT/target/ime/AnvilDroidIme.apk" "$DEST/usr/local/lib/anvildroid-controller/AnvilDroidIme.apk"
 install -m 0644 "$ROOT/target/shutdown/anvildroid-shutdown.jar" "$DEST/usr/local/lib/anvildroid-controller/anvildroid-shutdown.jar"
+install -m 0644 "$ROOT/target/input-diagnostic/scrcpy-server-cancel.jar" "$DEST/usr/local/lib/anvildroid-controller/scrcpy-server-cancel.jar"
 cp -a "$ROOT/native/overlay" "$DEST/usr/local/lib/anvildroid-controller/provision/"
-for f in anvildroid-apps.rc anvildroid-tasks.rc anvildroid-apps.sh anvildroid-tasks.sh; do
+for f in anvildroid-apps.rc anvildroid-tasks.rc anvildroid-apps.sh anvildroid-tasks.sh anvildroid-keymap.rc anvildroid-keymap.sh; do
   install -m 0755 "$ROOT/native/$f" "$DEST/usr/local/lib/anvildroid-controller/provision/$f"
 done
 install -m 0644 "$ROOT/target/native/overlay-key.p12" "$DEST/usr/local/lib/anvildroid-controller/provision/overlay-key.p12"

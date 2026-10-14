@@ -22,6 +22,10 @@
         try{
           const runtimes=await invoke('runtime_controller',{request:{op:'list'}});
           if(!Array.isArray(runtimes))throw new Error('Invalid runtime list');
+          try{
+            const record=await invoke('runtime_controller',{request:{op:'refresh',id:'default'}});
+            if(record?.id==='default')runtimes.push(record);
+          }catch(error){failures.push(`Default runtime: ${error.message||error}`);}
           for(const r of runtimes.filter(r=>r.state==='Running')){
             try{
               const result=await invoke('runtime_controller',{request:{op:'keymaps',id:r.id}});

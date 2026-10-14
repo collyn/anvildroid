@@ -3,7 +3,7 @@
  * while a resize preview waits for Android to relayout. Keep HWC coordinates
  * unchanged in our records so subsequent frames, input and growth can recover. */
 static int content_clip_enabled(struct object *s) {
-  return s && s->app && !s->full_ui && !game_fit_enabled(s);
+  return s && s->app && !s->full_ui && !(window_fit_enabled(s) && s->fit);
 }
 
 static int content_clip_layer(struct object *sub, int x, int y, int w, int h) {

@@ -78,6 +78,8 @@ static void full_ui_apply(struct object *s) {
   /* Track the frame with the new fitted extents immediately; the canvas
    * HWC commits sparsely, so waiting for its next commit leaves the CSD
    * pieces lagging behind a resize or maximize. */
+  keymap_canvas_bounds(s);
+  keymap_overlay_sync(s,s->bx,s->by,s->bw,s->bh);
   csd_sync(s, 0, 0, s->full_w > 0 ? s->full_w : 1,
            s->full_h > 0 ? s->full_h : 1);
 }

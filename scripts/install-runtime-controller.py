@@ -18,7 +18,7 @@ import tempfile
 import importlib.util
 
 ROOT = Path(__file__).resolve().parent.parent
-MODULES = ('runtime-system.py', 'runtime-controller.py', 'runtime-existing.py', 'runtime-host.py', 'runtime-images.py', 'runtime-android.py',
+MODULES = ('runtime-system.py', 'runtime-controller.py', 'runtime-existing.py', 'runtime-keymap.py', 'runtime-host.py', 'runtime-images.py', 'runtime-android.py',
            'runtime-worker.py', 'runtime-path-guard.py', 'runtime-linux.py', 'runtime-image-format.py', 'runtime-network.py', 'runtime-storage.py', 'runtime-labels.py', 'runtime-transfer.py', 'runtime-catalog.py', 'runtime-download.py', 'runtime-extract.py', 'runtime-provision.py', 'runtime-arm.py', 'runtime-arm-source.py', 'runtime-gpu.py', 'runtime-nvidia.py', 'runtime-resources.py', 'runtime-desktop.py', 'runtime-workarea.py')
 DESTINATION = Path('/usr/local/lib/anvildroid-controller')
 SOCKET_PATH = Path('/run/anvildroid/control.sock')
@@ -82,8 +82,9 @@ def install_controller_files(source_root, destination=DESTINATION, arm_archive=N
     with zipfile.ZipFile(io.BytesIO(shutdown)) as archive:
         if archive.read('classes.dex')[:4] != b'dex\n': raise RuntimeError('Build the Android shutdown helper first')
     assets = {str(path.relative_to(source_root / 'native')): path.read_bytes() for path in (source_root / 'native/overlay').rglob('*') if path.is_file()}
-    for name in ('anvildroid-apps.rc', 'anvildroid-tasks.rc', 'anvildroid-apps.sh', 'anvildroid-tasks.sh'):
+    for name in ('anvildroid-apps.rc', 'anvildroid-tasks.rc', 'anvildroid-apps.sh', 'anvildroid-tasks.sh', 'anvildroid-keymap.rc', 'anvildroid-keymap.sh'):
         assets[name] = (source_root / 'native' / name).read_bytes()
+    assets['menu-font-OFL.txt'] = (source_root / 'native/menu-font-OFL.txt').read_bytes()
     assets['overlay-key.p12'] = (source_root / 'target/native/overlay-key.p12').read_bytes()
     policy_spec = importlib.util.spec_from_file_location(
         'install_runtime_apparmor', source_root / 'scripts/install-runtime-apparmor.py')
@@ -95,6 +96,7 @@ def install_controller_files(source_root, destination=DESTINATION, arm_archive=N
     for name, data in sources.items():
         replace(destination / name, data)
     if arm_archive is not None: replace(destination / 'libndk-0.2.3.zip', arm_archive)
+    replace(destination / 'scrcpy-server-cancel.jar', (source_root / 'target/input-diagnostic/scrcpy-server-cancel.jar').read_bytes())
     replace(destination / 'libanvildroid-window.so', bridge)
     replace(destination / 'libanvildroid-path-guard.so', path_guard)
     replace(destination / 'AnvilDroidIme.apk', ime)

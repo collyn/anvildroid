@@ -353,7 +353,7 @@ def spawn_init(flavor, lock_fd, image_id=None, owner_uid=None):
                          (HOST_MODULE, 'runtime-host.py'), (ARM_MODULE, 'runtime-arm.py'),
                          (ARM_MODULE.with_name('runtime-arm-source.py'), 'runtime-arm-source.py'),
                          *[(HOST_MODULE.with_name(name), name) for name in
-                           ('runtime-extract.py', 'runtime-download.py', 'runtime-image-format.py', 'runtime-existing.py', 'runtime-resources.py', 'runtime-gpu.py', 'runtime-nvidia.py', 'runtime-linux.py', 'runtime-storage.py')]):
+                           ('runtime-extract.py', 'runtime-download.py', 'runtime-image-format.py', 'runtime-existing.py', 'runtime-keymap.py', 'runtime-resources.py', 'runtime-gpu.py', 'runtime-nvidia.py', 'runtime-linux.py', 'runtime-storage.py')]):
         fd, temporary = tempfile.mkstemp(prefix='.setup-', dir=helper_dir)
         try:
             with os.fdopen(fd, 'wb') as stream:

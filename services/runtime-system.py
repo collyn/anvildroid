@@ -65,6 +65,10 @@ class Integration:
         try:
             # Updating the installed GUI alone used to leave Default's bridge
             # stale, causing its CSD plus KDE's SSD to appear together.
+            # The system D-Bus service outlives container restarts and package
+            # upgrades. Refresh the adapter before preparing each new boot.
+            global existing
+            existing = module('runtime-existing')
             runtime = existing.ExistingRuntime(Path('/var/lib/anvildroid-controller'))
             runtime.sync_desktop_assets(int(session['user_id']))
             if self.nvidia:

@@ -1,6 +1,6 @@
-/* Compatibility presentation for the explicitly tested game. No Android task
- * resize, display resize or guessed supported resolution. Source bounds come
- * from the game's task; host windows use a separate contain transform.
+/* Shared aspect-preserving app presentation. Normal apps still resize their
+ * Android task after release; the compatibility game only resizes its host.
+ * Source bounds come from the task; host windows use a separate contain transform.
  * Real Wayland child buffers remain owned by HWC (no screenshots/copies).
  */
 #ifndef ANVIL_GAME_FIT
@@ -12,16 +12,42 @@ struct game_fit_state {
   int applied, x, y, sw, sh, w, h, csd, fullscreen;
   struct proxy *above;
 };
+static int game_fit_package(const char *package) {
+  return resize_mode_fixed(package);
+}
 static int game_fit_enabled(struct object *s) {
-  return ANVIL_GAME_FIT && scale_has_viewporter && s && s->app_id &&
-    !strcmp(s->app_id,"com.shg.sg432");
+  return scale_has_viewporter && s && game_fit_package(s->app_id);
+}
+static int window_fit_enabled(struct object *s) {
+  return game_fit_enabled(s) || (scale_has_viewporter && s && s->app &&
+    !s->full_ui && s->app_id && s->viewport);
+}
+/* xdg configure is a suggested size. Accept the supported width during the
+ * interactive grab; ack_configure publishes this geometry immediately, so the
+ * compositor keeps its active resize edge anchored and release has no second
+ * frame correction. Keep enough width for the existing header controls. */
+static int window_layout_width(struct object *s,int width) {
+  if(!resize_uses_nvidia()||game_fit_enabled(s)||!window_fit_enabled(s)||width<64||width>8192)return width;
+  int physical=logical_to_task(width);
+  if(physical<64||physical>8192)return width;
+  int aligned=resize_task_width(physical,1);
+  int minimum=s->csd&&s->csd->pieces[0].surface?160:64;
+  if(task_to_logical(aligned,1)<minimum)aligned+=64;
+  return task_to_logical(aligned,1);
+}
+static int window_fit_settled(struct object *s) {
+  if (!window_fit_enabled(s)) return !s->preview_width;
+  if (s->fit_w != s->fit_delivered_w || s->fit_h != s->fit_delivered_h) return 0;
+  int width = resize_task_width(logical_to_task(s->fit_delivered_w), resize_uses_nvidia());
+  return s->content_width == task_to_logical(width, 1) &&
+    s->content_height == task_to_logical(logical_to_task(s->fit_delivered_h), 1);
 }
 static struct object *game_fit_owner(struct object *s) {
   if(!s)return 0;
-  if(game_fit_enabled(s))return s;
+  if(window_fit_enabled(s))return s;
   for(struct object *o=objects;o;o=o->next)
-    if(o->surface==s&&o->parent&&game_fit_enabled(o->parent)&&
-       !strcmp(o->p->interface->name,"wl_subsurface"))return o->parent;
+    if(o->surface==s&&o->parent&&window_fit_enabled(o->parent)&&
+       object_is(o,"wl_subsurface"))return o->parent;
   return 0;
 }
 static void game_fit_report_transport(struct object *layer) {
@@ -29,7 +55,7 @@ static void game_fit_report_transport(struct object *layer) {
   /* The HWC parent and our four solid bars legitimately use tiny SHM buffers.
    * Only report Android content children, never mistake chrome for game pixels.
    * Transport is evidence about buffer import, not the game's GL renderer. */
-  if(!s||s==layer||!layer->attached)return;
+  if(!s||!game_fit_enabled(s)||s==layer||!layer->attached)return;
   if(layer->transport_seen&&layer->transport_reported==layer->buffer_transport)return;
   const char *names[]={"unknown","shm","dmabuf","native-handle"};
   __android_log_print(layer->buffer_transport==1?5:4,"AnvilGameFit",
@@ -39,6 +65,10 @@ static void game_fit_report_transport(struct object *layer) {
   layer->transport_seen=1;layer->transport_reported=layer->buffer_transport;
 }
 static struct game_fit_rect game_fit_area(struct object *s) {
+  /* Settled layout widths match their task, including NVIDIA snapped host
+   * frames. Absorb the <=1px fractional-scale round trip instead of bars. */
+  if(!game_fit_enabled(s) && (!resize_uses_nvidia()||s->fit_width_snapped) && window_fit_settled(s))
+    return (struct game_fit_rect){0,0,s->fit_w,s->fit_h};
   return game_fit_rect(s->fit_sw,s->fit_sh,s->fit_w,s->fit_h);
 }
 static int game_fit_scaled(struct object *s,int value,int axis) {
@@ -102,8 +132,10 @@ static int game_fit_create(struct object *s) {
   if(s->fit)return 1;
   struct object *porter=0;
   for(struct object *o=objects;o;o=o->next)
-    if(!strcmp(o->p->interface->name,"wp_viewporter")){porter=o;break;}
-  if(!porter||!csd_compositor||!csd_subcompositor||!csd_shm)return 0;
+    if(o->display==s->display&&object_is(o,"wp_viewporter")){porter=o;break;}
+  if(!porter||!porter->protocol_interface||!csd_compositor||!csd_subcompositor||!csd_shm)return 0;
+  const struct interface *vi=porter->protocol_interface->methods[1].types[0];
+  if(!vi)return 0;
   s->fit=calloc(1,sizeof(*s->fit));if(!s->fit)return 0;
   for(int i=0;i<4;++i) {
     union argument id={.o=0};
@@ -114,7 +146,6 @@ static int game_fit_create(struct object *s) {
     b->subsurface=real_marshal(csd_subcompositor,1,sub,csd_subsurface_i,1);
     if(!b->subsurface)goto failed;
     union argument vp[2]={{.o=0},{.o=b->surface}};
-    const struct interface *vi=porter->p->interface->methods[1].types[0];
     s->fit->viewports[i]=real_marshal(porter->p,1,vp,vi,1);
     if(!s->fit->viewports[i])goto failed;
   }
@@ -147,7 +178,7 @@ static void game_fit_request(struct object *o,const char *cls,const char *method
   if(!strcmp(cls,"wl_surface")&&!strcmp(method,"set_input_region")) {
     int px=0,py=0;
     if(o!=s)for(struct object *sub=objects;sub;sub=sub->next)
-      if(sub->surface==o&&sub->parent==s&&!strcmp(sub->p->interface->name,"wl_subsurface")) {
+      if(sub->surface==o&&sub->parent==s&&object_is(sub,"wl_subsurface")) {
         px=r.x+game_fit_scaled(s,sub->x-s->fit_x,0);
         py=r.y+game_fit_scaled(s,sub->y-s->fit_y,1);break;
       }
@@ -163,27 +194,33 @@ static void game_fit_request(struct object *o,const char *cls,const char *method
   }
 }
 static int game_fit_geometry(struct object *s,int x,int y,int sw,int sh) {
-  if(!game_fit_enabled(s)||!s->viewport||sw<1||sh<1||sw>8192||sh>8192)return 0;
+  if(!window_fit_enabled(s)||!s->viewport||sw<1||sh<1||sw>8192||sh>8192)return 0;
   if(!game_fit_create(s))return 0;
   s->fit_x=x;s->fit_y=y;s->fit_sw=sw;s->fit_sh=sh;
-  if(s->fit_w<1||s->fit_h<1){s->fit_w=sw;s->fit_h=sh;}
+  if(s->fit_w<1||s->fit_h<1) {
+    s->fit_w=s->preview_width?s->preview_width:sw;
+    s->fit_h=s->preview_height?s->preview_height:sh;
+  }
   struct game_fit_rect r=game_fit_area(s);
-  s->preview_width=s->preview_height=0;s->resize.width=s->resize.height=0;
-  s->resize.ready=1;
+  if(!s->fit_delivered_w) {s->fit_delivered_w=sw;s->fit_delivered_h=sh;}
+  s->preview_width=s->preview_height=0;
+  if(game_fit_enabled(s)) {
+    s->resize.width=s->resize.height=0;s->resize.ready=1;
+  }
   struct game_fit_state *f=s->fit;
-  int csd=s->csd&&!decoration_available,fullscreen=s->csd&&s->csd->fullscreen;
+  int csd=s->csd&&s->csd->pieces[0].surface,fullscreen=s->csd&&s->csd->fullscreen;
   int changed=!f->applied||f->x!=x||f->y!=y||f->sw!=sw||f->sh!=sh||
     f->w!=s->fit_w||f->h!=s->fit_h||f->csd!=csd||f->fullscreen!=fullscreen;
   if(changed){
-    __android_log_print(4,"AnvilGameFit",
-      "presentation app=%s source=%dx%d host=%dx%d content=%d,%d %dx%d task_resize=0",
-      s->app_id,sw,sh,s->fit_w,s->fit_h,r.x,r.y,r.width,r.height);
+    __android_log_print(4,game_fit_enabled(s)?"AnvilGameFit":"AnvilWindowFit",
+      "presentation app=%s source=%dx%d host=%dx%d content=%d,%d %dx%d task_resize=%d",
+      s->app_id,sw,sh,s->fit_w,s->fit_h,r.x,r.y,r.width,r.height,!game_fit_enabled(s));
     union argument dest[2]={{.i=s->fit_w},{.i=s->fit_h}};
     wayland_send(s->viewport->p,2,dest);
   }
   struct proxy *above=0;
   for(struct object *sub=objects;sub;sub=sub->next) {
-    if(sub->parent!=s||!sub->surface||strcmp(sub->p->interface->name,"wl_subsurface"))continue;
+    if(sub->parent!=s||!sub->surface||!object_is(sub,"wl_subsurface"))continue;
     if(!above)above=sub->surface->p;
     struct object *vp=sub->surface->viewport;
     if(!vp||vp->width<1||vp->height<1)continue;
@@ -222,8 +259,11 @@ static int game_fit_geometry(struct object *s,int x,int y,int sw,int sh) {
   }
   if(changed||above!=f->above)csd_sync(s,0,0,s->fit_w,s->fit_h);
   keymap_overlay_sync(s,r.x,r.y,r.width,r.height);
+  /* HWC layers, bars and hints may have been restacked this frame. The menu
+   * owns the top input/paint layer even when its dimensions did not change. */
+  if(s->csd&&s->csd->menu_open)csd_menu_sync(s->csd,0,0,s->fit_w,s->fit_h);
   union argument g[4]={{.i=0},{.i=0},{.i=s->fit_w},{.i=s->fit_h}};
-  if(s->csd&&!decoration_available&&!s->csd->fullscreen){
+  if(csd&&!fullscreen){
     g[0].i=-CSD_BORDER;g[1].i=-CSD_HEADER;
     g[2].i+=2*CSD_BORDER;g[3].i+=CSD_HEADER+CSD_BORDER;
   }

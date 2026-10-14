@@ -1,0 +1,2 @@
+# The authenticated host adapter starts a UID shell control-only receiver.
+# No privileged Android init service is needed.

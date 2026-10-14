@@ -15,7 +15,7 @@ static int csd_square(int dx, int dy, int cx, int cy, int half, int stroke) {
 static uint32_t csd_round_header(uint32_t color, int x, int y, int w, int state) {
   /* Header geometry includes the transparent resize border. Its visible
    * outline must align with Android content, not protrude by that border. */
-  if (x < CSD_BORDER || x >= w-CSD_BORDER) return 0;
+  if (x < CSD_BORDER || x >= w-CSD_BORDER) return state & 1 ? 0xff212121 : 0;
   x -= CSD_BORDER;
   w -= 2*CSD_BORDER;
   if (state & 1) return color; /* Maximized windows keep square corners. */
@@ -30,6 +30,18 @@ static uint32_t csd_round_header(uint32_t color, int x, int y, int w, int state)
          (((color>>16)&255)*count/16<<16) |
          (((color>>8)&255)*count/16<<8) | ((color&255)*count/16);
 }
+/* Only the 1px band inside xdg geometry is painted when maximized.
+ * The extra resize margin remains transparent, including corner extensions. */
+static inline uint32_t csd_edge_pixel(int part,int x,int y,int w,int h,int state) {
+  int inset=CSD_RESIZE-CSD_BORDER;
+  if(part==8&&x>=CSD_RESIZE&&x<w-CSD_RESIZE&&y<h-CSD_RESIZE)return 0xff000000;
+  if(!(state&1))return 0;
+  if(part==1&&x>=w-CSD_BORDER&&y<h-inset)return 0xff212121;
+  if(part==2&&x<CSD_BORDER&&y<h-inset)return 0xff212121;
+  if(part==3&&x>=inset&&x<w-inset&&y<CSD_BORDER)return 0xff212121;
+  if(part==8&&x>=inset&&x<w-inset&&y<h-inset)return 0xff212121;
+  return 0;
+}
 /* Four-by-four coverage sampling in eighth-pixel coordinates keeps every
  * glyph centered on the same axis without adding a font or GPU dependency.
  * Button geometry matches the main app; neutral chrome blends with Android. */
@@ -38,7 +50,8 @@ static uint32_t csd_header_pixel(int x, int y, int w, int h, int state) {
   /* Paint the complete button cell, including the invisible top resize
    * grip. Pointer hit testing still reserves that strip for resizing. */
   int action = csd_hit(0, x, CSD_GRIP, w, h);
-  if (action < CSD_MINIMIZE || action > CSD_CLOSE) return csd_round_header(base,x,y,w,state);
+  if ((state & 2) && x >= CSD_BORDER && x < CSD_BORDER+CSD_BUTTON) action=CSD_MENU;
+  if (action < CSD_MINIMIZE || action > CSD_MENU) return csd_round_header(base,x,y,w,state);
   int hover = (state >> 8) & 255, pressed = (state >> 16) & 255;
   uint32_t fill = base;
   if (hover == action && (!pressed || pressed == action))
@@ -47,7 +60,7 @@ static uint32_t csd_header_pixel(int x, int y, int w, int h, int state) {
   uint32_t ink = 0xffdedede;
   /* Glyphs sit dead center of the full header bar: equal clearance above
    * and below within the compact chrome. */
-  int cx = csd_button_center(action, w) * 8, cy = h * 4;
+  int cx = (action==CSD_MENU ? CSD_BORDER+CSD_BUTTON/2 : csd_button_center(action, w)) * 8, cy = h * 4;
   unsigned red=0, green=0, blue=0;
   for (int sy=1; sy<8; sy+=2) for (int sx=1; sx<8; sx+=2) {
     int dx=x*8+sx-cx, dy=y*8+sy-cy;
@@ -57,6 +70,7 @@ static uint32_t csd_header_pixel(int x, int y, int w, int h, int state) {
     int glyph = 0;
     /* The minimize dash anchors the bottom of the glyph envelope; the
      * square and X stay centered. */
+    if (action == CSD_MENU) glyph = ax<=7 && (ay<=7 || csd_abs(ay-32)<=7);
     if (action == CSD_MINIMIZE) glyph = ax<=40 && dy>=19 && dy<=29;
     if (action == CSD_CLOSE)
       glyph = ax<=40 && ay<=40 && (csd_abs(dx-dy)<=7 || csd_abs(dx+dy)<=7);

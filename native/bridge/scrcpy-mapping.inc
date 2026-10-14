@@ -47,9 +47,10 @@ static void scrcpy_mapping_cancel(void) {
   map_count=0;memset(map_points,0,sizeof(map_points));
 }
 static int map_task(struct object *s, int *x, int *y, int *w, int *h) {
-  if (!s || !s->app_id) return 0;
+  const char *package=keymap_package(s);
+  if (!package) return 0;
   int found = 0;
-  for (int i=0;i<task_count;++i) if (!strcmp(tasks[i].package,s->app_id)) {
+  for (int i=0;i<task_count;++i) if (!strcmp(tasks[i].package,package)) {
     if (found++) return 0; /* never guess between duplicate package tasks */
     *x=tasks[i].x;*y=tasks[i].y;*w=tasks[i].width;*h=tasks[i].height;
   }
@@ -83,7 +84,7 @@ static int scrcpy_mapping_key(struct object *s, struct keymap_overlay *h, int ke
   if(!s||!h||h->passive!=1||h->model.count<1||key<2||key>=768)return 0;
   int i=-1;for(int j=0;j<h->model.count;++j)if(h->model.points[j].key==key){i=j;break;}
   if(i<0)return 0;
-  if(!s->app_id||strcmp(s->app_id,h->package)||keymap_task_owner(s)!=h->task) {
+  if(!keymap_package(s)||strcmp(keymap_package(s),h->package)||keymap_task_owner(s)!=h->task) {
     scrcpy_mapping_cancel();return 1;
   }
   if(map_broken)return 1;

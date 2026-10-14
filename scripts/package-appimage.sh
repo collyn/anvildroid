@@ -128,6 +128,9 @@ cp scripts/bootstrap-appimage.py scripts/install-runtime-controller.py scripts/i
 cp services/*.py "$appdir/services/"
 cp native/anvildroid-*.rc native/anvildroid-*.sh "$appdir/native/"
 cp -a native/overlay "$appdir/native/"
+cp native/menu-font-OFL.txt "$appdir/native/"
+mkdir -p "$appdir/target/input-diagnostic"
+cp target/input-diagnostic/scrcpy-server-cancel.jar "$appdir/target/input-diagnostic/"
 cp target/native/libanvildroid-path-guard.so target/native/libanvildroid-runtime-window.so target/native/libanvildroid-window.so \
   target/native/overlay-key.p12 "$appdir/target/native/"
 cp target/ime/AnvilDroidIme.apk "$appdir/target/ime/"

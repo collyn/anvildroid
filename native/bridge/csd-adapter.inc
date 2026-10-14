@@ -4,6 +4,7 @@
  * All functions execute under bridge mutex except original listener calls. */
 #include "csd-layout.h"
 #include "csd-style.h"
+#include "csd-cursor.h"
 #ifndef ANVIL_CSD_EXPERIMENT
 #define ANVIL_CSD_EXPERIMENT 0
 #endif
@@ -12,6 +13,7 @@ extern int ftruncate(int, long);
 extern void *mmap(void *, size_t, int, int, int, long);
 extern int munmap(void *, size_t);
 extern int close(int);
+static void csd_cursor_show(struct object *);
 static void keymap_overlay_sync(struct object *,int,int,int,int);
 static void keymap_overlay_destroy(struct object *);
 static int keymap_overlay_enter(struct object *,struct proxy *);
@@ -34,15 +36,34 @@ struct csd_frame {
   struct object *top;
   struct csd_piece pieces[4]; /* Client frame only; no side toolbar. */
   struct csd_piece bars[4];   /* Full-UI letterbox covers: opaque black. */
-  int fullscreen, maximized;
+  int fullscreen, maximized, paint_maximized;
   int maximize_pending;
   int maximize_retry;
   int restore_width, restore_height;
   int max_width, max_height;  /* The compositor's maximized workarea. */
+  struct csd_piece menu;
+  int menu_open, menu_hover, menu_pressed, menu_submenu;
+  int menu_x, menu_y;
   int hover, pressed;
   uint32_t header_click_time;
   int header_click_valid, header_click_x, header_click_y;
 };
+static void csd_menu_sync(struct csd_frame *,int,int,int,int);
+static void csd_menu_close(struct csd_frame *);
+static void csd_menu_toggle(struct csd_frame *);
+static void csd_menu_destroy(struct csd_frame *);
+static int csd_menu_enter(struct object *,struct proxy *);
+static void csd_menu_motion(struct object *);
+static void csd_menu_button(struct object *,uint32_t,uint32_t);
+static int csd_menu_key(struct object *,uint32_t,uint32_t);
+static void csd_menu_paint(uint32_t *,int,int);
+static struct csd_frame *csd_menu_paint_context;
+static int csd_frame_hit(struct csd_frame *f,int part,int x,int y,int w,int h) {
+  if(f->fullscreen)return 0;
+  if(part==0 && (f->top->surface->app||f->top->surface->full_ui) && y>=CSD_GRIP && y<h &&
+     x>=CSD_BORDER && x<CSD_BORDER+CSD_BUTTON)return CSD_MENU;
+  return csd_hit(part,x,y,w,h);
+}
 struct csd_buffer { struct proxy *proxy; struct csd_buffer *next; };
 static struct csd_buffer *csd_buffers;
 static struct proxy *csd_compositor, *csd_subcompositor, *csd_shm;
@@ -80,8 +101,8 @@ static void csd_release(void *data, struct proxy *p) {
 }
 static void (*csd_buffer_listener[])(void) = {(void (*)(void))csd_release};
 static struct proxy *csd_paint(int part, int w, int h, int state) {
-  if (w < 1 || h < 1 || w > 8204 || h > 8204) return 0;
-  if (part==4 && (int64_t)w*h>16777216) return 0;
+  if (w < 1 || h < 1 || w > 8240 || h > 8240) return 0;
+  if ((part==4 || part==6) && (int64_t)w*h>16777216) return 0;
   /* memfd_create on the bridge's supported x86_64 Android ABI. */
   int fd = (int)syscall(319, "anvildroid-csd", 1);
   if (fd < 0) return 0;
@@ -94,11 +115,14 @@ static struct proxy *csd_paint(int part, int w, int h, int state) {
     if(part==4) {
       color=0x24050910; /* Subtle premultiplied scrim; app stays legible. */
     }
+    if(part==7)color=csd_cursor_pixel(x,y);
+    if((part>=1&&part<=3)||part==8)color=csd_edge_pixel(part,x,y,w,h,state);
     if(part==5)color=0xff000000; /* Letterbox, not a toolbar. */
     if (part == 0) color = csd_header_pixel(x,y,w,h,state);
     pixels[(size_t)y*w+x] = color;
   }
   if(part==4)keymap_overlay_paint(pixels,w,h);
+  if(part==6)csd_menu_paint(pixels,w,h);
   union argument pool_a[3] = {{.o=0}, {.i=fd}, {.i=(int)size}};
   struct proxy *pool = real_marshal(csd_shm, 0, pool_a, csd_pool_i, 1);
   struct proxy *buffer = 0;
@@ -161,6 +185,12 @@ static void csd_create(struct object *top) {
      * or fragile apps need two clicks to maximize. */
     if (profile_restore_frame(top->surface->app_id, f)) {
       top->surface->resize.maximized = f->maximized;
+      if(top->surface->app && !top->surface->full_ui) {
+        struct object *s=top->surface;
+        s->fit_w=f->maximized?f->max_width-2*CSD_BORDER:f->restore_width;
+        s->fit_h=f->maximized?f->max_height-CSD_HEADER-CSD_BORDER:f->restore_height;
+        s->fit_delivered_w=s->fit_w;s->fit_delivered_h=s->fit_h;
+      }
       f->maximize_pending = f->maximized ? 40 : 0;
       wayland_send(top->p, f->maximized ? 9 : 10, 0);
       __android_log_print(4, "AnvilDroidCsd",
@@ -198,34 +228,37 @@ static int csd_input(struct proxy *surface, int x, int y, int w, int h) {
 static void csd_sync(struct object *s, int x, int y, int w, int h) {
   struct csd_frame *f = s->csd;
   if (!f) return;
-  int widths[4] = {w+2*CSD_BORDER,CSD_BORDER,CSD_BORDER,w};
-  int heights[4] = {CSD_HEADER,h+CSD_BORDER,h+CSD_BORDER,CSD_BORDER};
+  int repaint_frame=f->paint_maximized!=f->maximized;
+  /* Extend only transparent input surfaces outside the 1px xdg frame.
+   * Keep visual header and configure/restore dimensions exactly as before. */
+  int widths[4] = {w+2*CSD_BORDER,CSD_RESIZE,CSD_RESIZE,w+2*CSD_RESIZE};
+  int heights[4] = {CSD_HEADER,h+CSD_HEADER+CSD_RESIZE,h+CSD_HEADER+CSD_RESIZE,CSD_RESIZE};
   /* Put chrome above the content origin. Clamping the header to zero
    * overlays the app's first rows, especially on maximized windows. The
    * xdg geometry includes this negative surface-local header extent. */
-  int xs[4] = {x-CSD_BORDER,x-CSD_BORDER,x+w,x};
-  int ys[4] = {y-CSD_HEADER, y,y,y+h};
+  int xs[4] = {x-CSD_BORDER,x-CSD_RESIZE,x+w,x-CSD_RESIZE};
+  int ys[4] = {y-CSD_HEADER,y-CSD_HEADER,y-CSD_HEADER,y+h};
   /* The maximized window can be taller than the canvas surface: extend the
    * bottom piece over the uncovered strip so it reads black, not see-through. */
   int overflow = 0;
   if (s->full_ui && s->full_canvas_h > 0 && h > s->full_canvas_h)
     overflow = h - s->full_canvas_h;
   if (overflow) {
-    heights[3] = CSD_BORDER + overflow;
+    heights[3] = CSD_RESIZE + overflow;
     ys[3] = y + h - overflow;
   }
   if (!s->full_ui) csd_input(s->p,x,y,w,h);
   struct proxy *above = 0;
   for (struct object *sub=objects; sub; sub=sub->next) {
-    if (sub->parent != s || !sub->surface || strcmp(sub->p->interface->name,"wl_subsurface")) continue;
+    if (sub->parent != s || !sub->surface || !object_is(sub,"wl_subsurface")) continue;
     /* HWC appends new layers above old siblings. objects is newest-first. */
     if (!above) above=sub->surface->p;
     /* The full-UI canvas scales its own children and rewrites their input
      * regions; never override them here. */
-    if(!game_fit_enabled(s) && !s->full_ui)csd_input(sub->surface->p,
+    if(!(window_fit_enabled(s) && s->fit) && !s->full_ui)csd_input(sub->surface->p,
       x-sub->x-sub->surface->clip_x,y-sub->y-sub->surface->clip_y,
       sub->surface->clip_hidden?0:w,sub->surface->clip_hidden?0:h);
-    if (!game_fit_enabled(s) && !s->full_ui && csd_compositor && csd_region_i)
+    if (!(window_fit_enabled(s) && s->fit) && !s->full_ui && csd_compositor && csd_region_i)
       wayland_send(sub->surface->p,6,0); /* Fit already committed its transformed child. */
   }
   for (int i=0; i<4; i++) {
@@ -241,17 +274,19 @@ static void csd_sync(struct object *s, int x, int y, int w, int h) {
       union argument empty[3] = {{.o=0},{.i=0},{.i=0}};
       wayland_send(p->surface, 1, empty);
       p->width = p->height = 0;
-    } else if (p->width != widths[i] || p->height != heights[i]) {
+      csd_input(p->surface,0,0,0,0);
+    } else if (p->width != widths[i] || p->height != heights[i] || repaint_frame) {
       /* The overflow strip uses the letterbox black, not the frame color. */
-      struct proxy *buffer = csd_paint(i == 3 && overflow ? 5 : i,
+      struct proxy *buffer = csd_paint(i == 3 && overflow ? 8 : i,
         widths[i], heights[i],
-        csd_style_state(f->maximized,f->hover,f->pressed));
+        (csd_style_state(f->maximized,f->hover,f->pressed) | ((s->app||s->full_ui) ? 2 : 0)));
       if (!buffer) continue;
       union argument attach[3] = {{.o=buffer},{.i=0},{.i=0}};
       wayland_send(p->surface, 1, attach);
       union argument damage[4] = {{.i=0},{.i=0},{.i=widths[i]},{.i=heights[i]}};
       wayland_send(p->surface, 2, damage);
       p->width = widths[i]; p->height = heights[i];
+      csd_input(p->surface,0,0,widths[i],heights[i]);
     }
     wayland_send(p->surface, 6, 0);
   }
@@ -294,6 +329,8 @@ static void csd_sync(struct object *s, int x, int y, int w, int h) {
       }
     }
   }
+  f->paint_maximized=f->maximized;
+  csd_menu_sync(f,x,y,w,h);
   /* Present the pieces without waiting for the next HWC frame: the canvas
    * (and idle apps) commit sparsely, and synchronized subsurfaces only
    * surface their new buffers on a parent commit. */
@@ -305,7 +342,7 @@ static void csd_repaint_header(struct csd_frame *f) {
                       f->maximized, f->hover, f->pressed);
   if (f->fullscreen || !p->surface || p->width<1 || !csd_shm) return;
   struct proxy *buffer=csd_paint(0,p->width,p->height,
-    csd_style_state(f->maximized,f->hover,f->pressed));
+    (csd_style_state(f->maximized,f->hover,f->pressed) | ((f->top->surface->app||f->top->surface->full_ui) ? 2 : 0)));
   if (!buffer) return;
   union argument attach[3]={{.o=buffer},{.i=0},{.i=0}};
   union argument damage[4]={{.i=0},{.i=0},{.i=p->width},{.i=p->height}};
@@ -325,14 +362,16 @@ static void csd_pointer_feedback(struct object *o) {
   struct csd_frame *f=o->csd_focus;
   if (!f) return;
   struct csd_piece *p=&f->pieces[o->csd_part];
-  int action=csd_hit(o->csd_part,o->csd_x,o->csd_y,p->width,p->height);
+  int action=csd_frame_hit(f,o->csd_part,o->csd_x,o->csd_y,p->width,p->height);
   csd_feedback(f,action>=CSD_MINIMIZE?action:0,
     o->csd_pressed>=CSD_MINIMIZE?o->csd_pressed:0);
 }
 static void csd_destroy(struct object *o) {
   if (!o || !o->csd) return;
   struct csd_frame *f = o->csd;
+  csd_menu_destroy(f);
   for (struct object *at=objects; at; at=at->next) {
+    if (at->menu_focus == f) {at->menu_focus=0;at->csd_suppress=1;}
     if (at->csd == f) at->csd = 0;
     if (at->csd_resize == f) at->csd_resize = 0;
     if (at->csd_focus == f) { at->csd_focus = 0; at->csd_suppress = 1; }
@@ -366,6 +405,7 @@ static void csd_pointer_enter(void *data, struct proxy *p, uint32_t serial,
                                struct proxy *surface, int32_t x, int32_t y) {
   struct object *o = data;
   pthread_mutex_lock(mutex);
+  o->cursor_serial=serial;
   /* A compositor-owned resize consumes the release. Its subsequent enter
    * ends that grab, even when the pointer returns to Android content or a
    * different window. The transient header focus is already gone. */
@@ -373,6 +413,7 @@ static void csd_pointer_enter(void *data, struct proxy *p, uint32_t serial,
   csd_feedback(o->csd_focus,0,0);
   o->csd_focus = 0; o->csd_suppress = 0; o->csd_pressed = 0;
   o->overlay_focus=0;o->overlay_pressed=0;
+  o->menu_focus=0;
   o->pointer_surface=surface;
   o->fit_bar_focus=game_fit_bar(surface);
   if(o->fit_bar_focus){o->csd_suppress=1;pthread_mutex_unlock(mutex);return;}
@@ -384,12 +425,16 @@ static void csd_pointer_enter(void *data, struct proxy *p, uint32_t serial,
   o->csd_x=x/256; o->csd_y=y/256;
   csd_pointer_feedback(o);
   if(keymap_overlay_enter(o,surface))o->csd_suppress=1;
+  if(csd_menu_enter(o,surface))o->csd_suppress=1;
   x=content_clip_input(surface,x,0);y=content_clip_input(surface,y,1);
   x=game_fit_input(surface,x,0);y=game_fit_input(surface,y,1);
   pthread_mutex_unlock(mutex);
   /* Upstream enter only updates focus/cursor, never injects Android input. */
   ((void (*)(void *,struct proxy *,uint32_t,struct proxy *,int32_t,int32_t))o->listener[0])(
     o->listener_data,p,serial,surface,x,y);
+  pthread_mutex_lock(mutex);
+  csd_cursor_show(o);
+  pthread_mutex_unlock(mutex);
 }
 static void csd_pointer_leave(void *data, struct proxy *p, uint32_t serial, struct proxy *surface) {
   struct object *o=data;
@@ -397,9 +442,10 @@ static void csd_pointer_leave(void *data, struct proxy *p, uint32_t serial, stru
   int was_bar=o->fit_bar_focus;o->fit_bar_focus=0;
   keymap_overlay_pointer_cancel(o);
   csd_feedback(o->csd_focus,0,0);
-  o->pointer_surface=0;
+  o->pointer_surface=0;o->cursor_serial=0;
   o->csd_focus=0; o->csd_pressed=0;
   o->overlay_focus=0;o->overlay_pressed=0;
+  o->menu_focus=0;
   /* Keep suppress through trailing frame/axis events, until next enter. */
   pthread_mutex_unlock(mutex);
   if(was_bar)return;
@@ -411,6 +457,7 @@ static void csd_pointer_motion(void *data, struct proxy *p, uint32_t time, int32
   o->csd_x=x/256; o->csd_y=y/256;
   csd_pointer_feedback(o);
   if(o->overlay_focus)keymap_overlay_motion(o);
+  if(o->menu_focus)csd_menu_motion(o);
   int suppress=o->csd_suppress;
   x=content_clip_input(o->pointer_surface,x,0);y=content_clip_input(o->pointer_surface,y,1);
   x=full_ui_input(o->pointer_surface,x,0);y=full_ui_input(o->pointer_surface,y,1);
@@ -450,9 +497,10 @@ static void csd_pointer_button(void *data, struct proxy *p, uint32_t serial, uin
   struct csd_frame *f=o->csd_focus;
   if (button==0x110 && state==0) csd_resize_finished(o);
   if(o->overlay_focus)keymap_overlay_button(o,button,state);
+  if(o->menu_focus)csd_menu_button(o,button,state);
   if (f && button==0x110) {
     struct csd_piece *piece=&f->pieces[o->csd_part];
-    int action=csd_hit(o->csd_part,o->csd_x,o->csd_y,piece->width,piece->height);
+    int action=csd_frame_hit(f,o->csd_part,o->csd_x,o->csd_y,piece->width,piece->height);
     if (state==1) {
       o->csd_pressed=action;
       if (action!=CSD_MOVE) f->header_click_valid=0;
@@ -467,6 +515,7 @@ static void csd_pointer_button(void *data, struct proxy *p, uint32_t serial, uin
       }
     } else {
       if (action && action==o->csd_pressed) {
+        if (action==CSD_MENU) csd_menu_toggle(f);
         if (action==CSD_MINIMIZE) wayland_send(f->top->p,13,0);
         if (action==CSD_MAXIMIZE) {
           csd_toggle_maximize(f);
@@ -494,7 +543,8 @@ static void csd_pointer_button(void *data, struct proxy *p, uint32_t serial, uin
 }
 /* HWC binds wl_seat v5: keep the complete nine-event pointer ABI. */
 static void csd_pointer_axis(void *d,struct proxy *p,uint32_t t,uint32_t axis,int32_t value) {
-  struct object *o=d; if (!o->csd_suppress) ((void (*)(void *,struct proxy *,uint32_t,uint32_t,int32_t))o->listener[4])(o->listener_data,p,t,axis,value);
+  struct object *o=d;
+  if (!o->csd_suppress) ((void (*)(void *,struct proxy *,uint32_t,uint32_t,int32_t))o->listener[4])(o->listener_data,p,t,axis,value);
 }
 static void csd_pointer_frame(void *d,struct proxy *p) {
   struct object *o=d; if (!o->csd_suppress && o->listener[5]) ((void (*)(void *,struct proxy *))o->listener[5])(o->listener_data,p);

@@ -40,6 +40,19 @@ extern int usleep(unsigned int);
  * and suppressing that nested call skips actual pool initialization. */
 #include "hidl-pool.inc"
 static int anvil_native_passthrough;
+/* This socket is configured only by runtime-nvidia.py. Detect the selected
+ * guest backend, never merely the presence of an NVIDIA GPU on the host. */
+static int resize_nvidia_backend = -1;
+static int resize_uses_nvidia(void) {
+  int enabled = __atomic_load_n(&resize_nvidia_backend, __ATOMIC_ACQUIRE);
+  if (enabled >= 0) return enabled;
+  int (*get)(const char *, char *) = dlsym((void *)0, "__system_property_get");
+  char socket[92] = "";
+  enabled = get && get("mesa.vtest.socket.name", socket) > 0 &&
+    !strcmp(socket, "/dev/venus/venus.sock");
+  __atomic_store_n(&resize_nvidia_backend, enabled, __ATOMIC_RELEASE);
+  return enabled;
+}
 
 struct message {
   const char *name, *signature;
@@ -76,11 +89,13 @@ static _Alignas(8) unsigned char mutex[64];
 struct object {
   struct proxy *p;
   const char *protocol_name; /* Immutable protocol metadata, not proxy internals. */
+  const struct interface *protocol_interface;
   struct wl_display *display;
   struct proxy *pointer_surface;
   int full_ui, full_w, full_h, full_canvas_w, full_canvas_h;
   int window_configured, window_content, window_activated;
   int fit_w, fit_h, fit_x, fit_y, fit_sw, fit_sh, fit_bar_focus;
+  int fit_delivered_w, fit_delivered_h, fit_width_snapped;
   struct game_fit_state *fit;
   int fit_applied, fit_last_x, fit_last_y, fit_last_w, fit_last_h;
   int buffer_transport, transport_reported, transport_seen;
@@ -89,6 +104,8 @@ struct object {
   int frame_origin_valid, frame_origin_x, frame_origin_y;
   int x, y, width, height, valid, app;
   int source_x, source_y, source_width, source_height;
+  struct proxy *edit_cursor;
+  uint32_t cursor_serial;
   struct proxy *attached_buffer;
   int attach_x, attach_y, clip_hidden, clip_x, clip_y;
   int bx, by, bw, bh, has_bounds, attached;
@@ -105,7 +122,7 @@ struct object {
   void *listener_data;
   struct proxy *decoration;
   uint32_t decoration_pending, decoration_mode;
-  struct csd_frame *csd, *csd_focus, *csd_resize;
+  struct csd_frame *csd, *csd_focus, *csd_resize, *menu_focus;
   struct keymap_overlay *overlay;
   struct keymap_overlay *hints;
   unsigned long hints_probe;
@@ -124,7 +141,11 @@ static struct object *objects;
 static int32_t full_ui_input(struct proxy *,int32_t,int);
 static int32_t content_clip_input(struct proxy *,int32_t,int);
 static int content_clip_layer(struct object *,int,int,int,int);
+static void geometry(struct object *);
 static int game_fit_enabled(struct object *);
+static int window_fit_enabled(struct object *);
+static int window_fit_settled(struct object *);
+static int window_layout_width(struct object *,int);
 static int game_fit_bar(struct proxy *);
 static int32_t game_fit_input(struct proxy *,int32_t,int);
 static int game_fit_geometry(struct object *,int,int,int,int);
@@ -290,10 +311,12 @@ static void decoration_destroy(struct object *top) {
   top->decoration_pending = top->decoration_mode = 0;
 }
 #include "csd-adapter.inc"
+#include "csd-cursor.inc"
 #include "ime-adapter.inc"
 #include "scale-adapter.inc"
 #include "boot-canvas.inc"
 #include "window-profile.inc"
+#include "resize-mode.inc"
 #include "window-activation.inc"
 #include "window-feedback.inc"
 #include "close-adapter.inc"
@@ -303,6 +326,7 @@ static void decoration_destroy(struct object *top) {
 #include "full-ui.inc"
 #include "game-fit.inc"
 #include "content-clip.inc"
+#include "csd-menu.inc"
 static void ime_protocol_init(void *library) {
   ime_object_types[0] = &ime_text_interface;
   ime_object_types[1] = dlsym(library, "wl_seat_interface");
@@ -314,6 +338,8 @@ static void geometry(struct object *s) {
   if (s->full_ui) {
     /* The canvas presentation owns its geometry, viewport and input; the
      * CSD frame merely overlays the fitted extents inside the surface. */
+    keymap_canvas_bounds(s);
+    keymap_overlay_sync(s,s->bx,s->by,s->bw,s->bh);
     csd_sync(s, 0, 0, s->full_w > 0 ? s->full_w : 1,
              s->full_h > 0 ? s->full_h : 1);
     return;
@@ -413,7 +439,7 @@ static void geometry(struct object *s) {
      * keeping the unsnapped frame would leave content outside the CSD. */
     int settled = r->width == s->preview_width && r->height == s->preview_height;
     if (task_matches == 1 &&
-        r->width == task_to_logical(resize_task_width(logical_to_task(s->preview_width)), 1) &&
+        r->width == task_to_logical(resize_task_width(logical_to_task(s->preview_width), resize_uses_nvidia()), 1) &&
         r->height == task_to_logical(logical_to_task(s->preview_height), 1))
       settled = 1;
     if (!s->resize.dragging && settled) {
@@ -554,9 +580,9 @@ static void configure(void *data, struct proxy *p, int32_t w, int32_t h,
        * Android task size after maximize. Preview is the latest accepted
        * host size when Android is still catching up with a drag. */
       if (maximized && !s->csd->maximized) {
-        s->csd->restore_width = game_fit_enabled(s)&&s->fit_w ? s->fit_w :
+        s->csd->restore_width = window_fit_enabled(s)&&s->fit_w ? s->fit_w :
           (s->preview_width ? s->preview_width : s->content_width);
-        s->csd->restore_height = game_fit_enabled(s)&&s->fit_h ? s->fit_h :
+        s->csd->restore_height = window_fit_enabled(s)&&s->fit_h ? s->fit_h :
           (s->preview_height ? s->preview_height : s->content_height);
       }
       /* Android activities may request immersive/fullscreen for their own
@@ -589,7 +615,7 @@ static void configure(void *data, struct proxy *p, int32_t w, int32_t h,
           gx-=CSD_BORDER;gy-=CSD_HEADER;
         }
         union argument g[4] = {{.i=gx},{.i=gy},{.i=w},{.i=h}};
-        wayland_send(s->xdg->p, 3, g);
+        if(s->xdg) wayland_send(s->xdg->p, 3, g);
       }
       if (!fullscreen && s->csd->pieces[0].surface) {
         /* Only the client-drawn frame eats into the configured size; with
@@ -635,7 +661,19 @@ static void configure(void *data, struct proxy *p, int32_t w, int32_t h,
           }
       }
       if (!display_sized) {
-        resize_configure(&s->resize, w, h, s->content_width, s->content_height,
+        int fitted = window_fit_enabled(s) && s->fit;
+        s->fit_width_snapped=0;
+        if(fitted&&!maximized&&!fullscreen&&w>=64&&h>=64&&w<=8192&&h<=8192) {
+          w=window_layout_width(s,w);
+          s->fit_width_snapped=resize_uses_nvidia();
+          if(s->csd){s->csd->restore_width=w;s->csd->restore_height=h;}
+        }
+        if (fitted && w >= 64 && h >= 64 && w <= 8192 && h <= 8192) {
+          s->fit_w = w; s->fit_h = h;
+        }
+        resize_configure(&s->resize, w, h,
+                         fitted && s->fit_delivered_w ? s->fit_delivered_w : s->content_width,
+                         fitted && s->fit_delivered_h ? s->fit_delivered_h : s->content_height,
                          resizing, maximized);
         /* An explicit user drag wins over a delayed initial profile read. */
         if (resizing) {
@@ -649,14 +687,13 @@ static void configure(void *data, struct proxy *p, int32_t w, int32_t h,
           s->profile_ticks = 0;
         }
         if (w >= 64 && h >= 64 && w <= 8192 && h <= 8192 && s->resize.ready) {
-          /* A near-match configure (frame accounting delta) must not leave
-           * a stale preview that blocks the profile poll forever. */
-          int dw = w - s->content_width, dh = h - s->content_height;
-          if (dw < 0) dw = -dw;
-          if (dh < 0) dh = -dh;
-          if (dw > 48 || dh > 48) {
+          /* Legacy compositors without a fit viewport retain their pending
+           * frame. Cancelled drags must clear that frame immediately. */
+          if (!fitted && s->resize.width) {
             s->preview_width = w;
             s->preview_height = h;
+          } else {
+            s->preview_width = s->preview_height = 0;
           }
         }
       }
@@ -686,6 +723,7 @@ int wl_proxy_add_listener(struct proxy *p, void (**listener)(void),
   }
   struct object *o = track(p);
   o->protocol_name = p->interface->name;
+  o->protocol_interface = p->interface;
   o->listener = listener;
   o->listener_data = data;
   int result;
@@ -726,7 +764,8 @@ static struct proxy *bridge_marshal(
   const char *cls = p->interface->name;
   const char *method = p->interface->methods[op].name;
   struct object *o = find(p);
-  if (o) o->protocol_name = cls;
+  if (o) {o->protocol_name = cls;o->protocol_interface = p->interface;}
+  if(!strcmp(cls,"wl_pointer")&&!strcmp(method,"set_cursor"))csd_cursor_request(o,a);
   int skip = 0;
   if ((!strcmp(cls, "xdg_toplevel") || !strcmp(cls, "wl_surface")) && !strcmp(method, "destroy"))
     csd_destroy(o);
@@ -901,7 +940,7 @@ static struct proxy *bridge_marshal(
        * 256-byte-aligned — radeonsi rejects the import and kills the whole
        * Wayland display on the first failure. Drop the frame; the next
        * (snap-resized) buffer passes. */
-      if (o->app && o->xdg && o->attached && o->buffer_stride &&
+      if (resize_uses_nvidia() && o->app && o->xdg && o->attached && o->buffer_stride &&
           (o->buffer_stride & 255) != 0) {
         __android_log_print(4, "AnvilDroid",
                             "commit DROP unaligned stride=%u app_id=%s",
@@ -929,7 +968,7 @@ static struct proxy *bridge_marshal(
        * multiple. Rewrite the stride from the fd's real size so the
        * compositor import uses the actual row pitch. */
       uint32_t real_stride = 0;
-      if (o && o->height > 0 && a[1].u == 0 && a[2].u == 0) {
+      if (resize_uses_nvidia() && o && o->height > 0 && a[1].u == 0 && a[2].u == 0) {
         /* freestanding: raw lseek(fd, 0, SEEK_END/SEEK_SET) on the dmabuf */
         long size;
         long back;
@@ -980,6 +1019,7 @@ static struct proxy *bridge_marshal(
     if (!strcmp(interface->name, "wp_viewporter")) scale_has_viewporter = 1;
     struct object *n = track(result);
     n->protocol_name = interface->name;
+    n->protocol_interface = interface;
     n->display = o ? o->display : 0;
     if(!strcmp(interface->name,"wl_buffer")) {
       if(!strcmp(cls,"wl_shm_pool"))n->buffer_transport=1;
@@ -1053,6 +1093,7 @@ static void forget_proxy(struct proxy *p) {
     at = &(*at)->next;
   if (*at) {
     struct object *old = *at;
+    csd_cursor_destroy(old);
     keymap_overlay_destroy(old);
     keymap_hints_destroy(old);
     game_fit_destroy(old);
@@ -1195,13 +1236,17 @@ static void *task_worker(void *unused) {
       }
       fclose(f);
     }
+    for (int i = 0; i < count; i++) resize_mode_load(snapshot[i].package);
+    resize_mode_poll();
     pthread_mutex_lock(mutex);
+    int snapshot_changed=count!=task_count;
     for (int i = 0; i < count; i++) {
       int changed = logged_scale != hwc_scale_120 || i >= task_count ||
           tasks[i].id != snapshot[i].id || tasks[i].x != snapshot[i].x ||
           tasks[i].y != snapshot[i].y || tasks[i].width != snapshot[i].width ||
           tasks[i].height != snapshot[i].height ||
           strcmp(tasks[i].package, snapshot[i].package);
+      snapshot_changed|=changed;
       tasks[i] = snapshot[i];
       if (changed)
         __android_log_print(4, "AnvilDroid",
@@ -1212,12 +1257,15 @@ static void *task_worker(void *unused) {
     }
     task_count = count;
     logged_scale = hwc_scale_120;
+    if(snapshot_changed)for(struct object *s=objects;s;s=s->next)
+      if(s->full_ui&&(s->hints||s->overlay))keymap_wake();
     pthread_mutex_unlock(mutex);
     /* First sight of a task: shrink Android's default freeform (~512x824)
      * to a desktop-friendly open size. One shot per task id; user resizes
      * afterwards are never re-clamped. */
     static int opened_ids[8], opened_count = 0;
     for (int i = 0; i < count && !presentation_is_full(); i++) {
+      if (resize_mode_worker_fixed(tasks[i].package)) continue;
       if (tasks[i].width <= 448 && tasks[i].height <= 704)
         continue;
       int seen = 0;
@@ -1254,17 +1302,22 @@ static void *task_worker(void *unused) {
          * queued; the open-size request owns the initial bounds. */
         pthread_mutex_lock(mutex);
         for (struct object *o = objects; o; o = o->next)
-          if (o->app && o->app_id && !strcmp(o->app_id, tasks[i].package))
+          if (o->app && o->app_id && !strcmp(o->app_id, tasks[i].package)) {
             o->resize.width = o->resize.height = 0;
+            o->fit_w = o->fit_delivered_w = task_to_logical(448, 1);
+            o->fit_h = o->fit_delivered_h = task_to_logical(704, 1);
+            o->preview_width = o->preview_height = 0;
+          }
         pthread_mutex_unlock(mutex);
       }
     }
     /* Hybrid NVIDIA: snap app window widths to 64-pixel multiples so the
      * surface pitch is 256-byte-aligned (radeonsi's LINEAR dmabuf import
      * requirement). The companion applies the resize; the next task
-     * snapshot then reports the snapped width and the xdg window follows. */
+     * snapshot reports the aligned source inside the unchanged host frame. */
     static int last_snap_task = -1, last_snap_width = 0;
-    for (int i = 0; i < count && !presentation_is_full(); i++) {
+    for (int i = 0; resize_uses_nvidia() && i < count && !presentation_is_full(); i++) {
+      if (resize_mode_worker_fixed(tasks[i].package)) continue;
       if (tasks[i].width < 64 || (tasks[i].width & 63) == 0)
         continue;
       if (tasks[i].id == last_snap_task && tasks[i].width == last_snap_width)
@@ -1274,16 +1327,18 @@ static void *task_worker(void *unused) {
       for (int j = 0; j < opened_count; j++)
         if (opened_ids[j] == tasks[i].id) { opened = 1; break; }
       if (opened) continue;
-      /* A maximized window must keep its exact width: the snap would round
-       * it up past the workarea and break the maximized state. */
-      int maximized = 0;
+      /* Do not relayout the compatibility game or overwrite a user resize.
+       * With viewporter, aligned content fits inside the exact host frame. */
+      int protected = 0;
       pthread_mutex_lock(mutex);
       for (struct object *o = objects; o; o = o->next)
         if (o->app && o->app_id && !strcmp(o->app_id, tasks[i].package) &&
-            o->csd && o->csd->maximized) maximized = 1;
+            (game_fit_enabled(o) || o->resize.dragging || o->resize.width ||
+             o->resize.cooldown || (!window_fit_enabled(o) && o->csd && o->csd->maximized)))
+          protected = 1;
       pthread_mutex_unlock(mutex);
-      if (maximized) continue;
-      int snapped = resize_task_width(tasks[i].width);
+      if (protected) continue;
+      int snapped = resize_task_width(tasks[i].width, 1);
       if (submit_resize_request(tasks[i].id, snapped, tasks[i].height)) {
         __android_log_print(4, "AnvilDroid",
                             "snap resize task %d %dx%d -> %dx%d (pitch)",
@@ -1298,7 +1353,7 @@ static void *task_worker(void *unused) {
     profile_state_poll();
     close_poll();
     keymap_io_poll();
-    int id = -1, width = 0, height = 0;
+    int id = -1, width = 0, height = 0, resize_noop = 0;
     char persist_package[256] = "";
     int persist_w = 0, persist_h = 0;
     pthread_mutex_lock(mutex);
@@ -1311,22 +1366,24 @@ static void *task_worker(void *unused) {
       if (s->csd && s->csd->maximize_pending>0) --s->csd->maximize_pending;
       if (!resize_due(&s->resize) || id >= 0)
         continue;
-      int matches = 0;
+      int matches = 0, task_width = 0, task_height = 0;
       for (int i = 0; i < count; i++) {
         if (!strcmp(s->app_id, tasks[i].package)) {
           id = tasks[i].id;
+          task_width = tasks[i].width; task_height = tasks[i].height;
           matches++;
         }
       }
       if (matches == 1) {
         width = logical_to_task(s->resize.width);
-        /* A maximized window must land exactly on the workarea; the
-         * 64-pixel pitch snap would round the width up and overshoot the
-         * compositor's maximized size, breaking the state. */
-        if (!s->resize.maximized)
-          width = resize_task_width(width);
+        /* NVIDIA aligns down; letterboxing keeps maximize and normal host
+         * frames exact while the Android task remains importable. */
+        width = resize_task_width(width, resize_uses_nvidia());
         height = logical_to_task(s->resize.height);
-        profile_note_resize(s->app_id, id);
+        resize_noop = width == task_width && height == task_height;
+        /* Changes within one aligned-width bucket only adjust the side bars;
+         * recreating an Android activity would do no useful work. */
+        if (!resize_noop) profile_note_resize(s->app_id, id);
         snprintf(persist_package, sizeof(persist_package), "%s", s->app_id);
         if (!s->resize.maximized) {
           persist_w = s->resize.width;
@@ -1335,20 +1392,28 @@ static void *task_worker(void *unused) {
       } else {
         id = -1;
       }
-      if (matches == 1) resize_submitted(&s->resize);
+      if (matches == 1) {
+        if (window_fit_enabled(s)) {
+          s->fit_delivered_w = s->resize.width;
+          s->fit_delivered_h = s->resize.height;
+        }
+        if (resize_noop) s->resize.width = s->resize.height = 0;
+        else resize_submitted(&s->resize);
+      }
       else s->resize.width = s->resize.height = 0;
     }
     pthread_mutex_unlock(mutex);
     if (id >= 0 && width >= 64 && height >= 64 && width <= 8192 &&
         height <= 8192) {
-      if (submit_resize_request(id, width, height)) {
+      int submitted = resize_noop || submit_resize_request(id, width, height);
+      if (submitted && !resize_noop) {
         __android_log_print(4, "AnvilDroid",
                             "resize task %d physical=%dx%d scale=%d/120 after quiet interval",
                             id, width, height, hwc_scale_120);
       }
       /* Persist the size right away: the user may relaunch before the
        * settle-based profile poll has confirmed the new content. */
-      if (persist_package[0] && persist_w >= 64 && persist_h >= 64) {
+      if (submitted && persist_package[0] && persist_w >= 64 && persist_h >= 64) {
         const char *rid = getenv("ANVILDROID_RUNTIME_ID");
         if (!rid || !*rid) rid = "existing";
         int dir = open(PROFILE_ROOT, PROFILE_DIRECTORY | PROFILE_NOFOLLOW | PROFILE_CLOEXEC);
