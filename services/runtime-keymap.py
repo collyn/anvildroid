@@ -1,5 +1,7 @@
 """Shared, generation-scoped bridge keymap protocol for all runtimes."""
 import importlib.util
+import os
+import stat
 from pathlib import Path
 import re
 import time
@@ -19,6 +21,50 @@ def keymap_profiles(lxc_path, container, identifier):
     return parse_keymaps(output, identifier)
 
 
+def keymap_profiles_at(data_fd, identifier):
+    """Read a frozen guest through its verified data directory, without waking it."""
+    directory = os.dup(data_fd)
+    blocks = []
+    invalid = 0
+    try:
+        for part in ('waydroid_tmp', 'anvildroid', 'keymaps'):
+            try:
+                child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=directory)
+            except FileNotFoundError:
+                return {'runtime_id': identifier, 'profiles': [], 'invalid_count': 0}
+            os.close(directory)
+            directory = child
+        with os.scandir(directory) as entries:
+            for index, entry in enumerate(entries):
+                require(index < 512, 'Keymap directory exceeds limit')
+                if entry.name.startswith('.'): continue  # Atomic save temporaries.
+                require(len(blocks) + invalid < 128, 'Keymap inventory exceeds limit')
+                info = entry.stat(follow_symlinks=False)
+                if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > 4096:
+                    invalid += 1
+                    continue
+                fd = os.open(entry.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=directory)
+                try:
+                    current = os.fstat(fd)
+                    require(stat.S_ISREG(current.st_mode) and current.st_nlink == 1 and
+                            (current.st_dev, current.st_ino) == (info.st_dev, info.st_ino), 'Keymap file changed')
+                    raw = os.read(fd, 4097)
+                finally:
+                    os.close(fd)
+                try:
+                    require(len(raw) <= 4096, 'Keymap profile exceeds limit')
+                    text = raw.decode('utf-8')
+                    require(text.endswith('\n'), 'Incomplete keymap profile')
+                    blocks.append('BEGIN\n' + text + 'END\n')
+                except (UnicodeError, RuntimeError):
+                    invalid += 1
+        result = parse_keymaps(''.join(blocks), identifier)
+        result['invalid_count'] += invalid
+        return result
+    finally:
+        os.close(directory)
+
+
 def parse_keymaps(output, identifier):
     require(len(output.encode()) <= 512*1024, 'Keymap inventory exceeds limit')
     profiles=[]; errors=0
@@ -34,7 +80,7 @@ def parse_keymaps(output, identifier):
                 key,x,y,hold=map(int,line.split())
                 require(2<=key<=767 and key not in keys and 0<=x<=65535 and 0<=y<=65535 and hold in (0,1), 'Invalid binding')
                 keys.add(key);bindings.append({'id':f'point-{index}','evdev':key,'nx':x,'ny':y,'kind':'hold' if hold else 'tap'})
-            if count: profiles.append({'runtime':identifier,'package':package,'bindings':bindings,'source':'runtime','active':False})
+            profiles.append({'runtime':identifier,'package':package,'bindings':bindings,'source':'runtime','active':False})
         except (ValueError,RuntimeError,IndexError): errors+=1
     return {'runtime_id':identifier,'profiles':profiles,'invalid_count':errors}
 

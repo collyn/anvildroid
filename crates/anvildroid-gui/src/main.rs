@@ -958,7 +958,7 @@ async fn install_touch_probe(runtime_id: String, guard: State<'_, OpGuard>) -> R
     Ok(blocking(move || {
         let Ok(_operation)=guard.try_lock() else { return busy_result(); };
         if !library::valid_managed_runtime(&runtime_id) {
-            return op_result_err(AnvilError::InvalidArgument("Select a managed runtime".into()));
+            if let Err(error) = scope::ensure_legacy(&runtime_id) { return op_result_err(error); }
         }
         let result=(|| -> Result<(), AnvilError> {
             use std::io::Write;
@@ -971,14 +971,18 @@ async fn install_touch_probe(runtime_id: String, guard: State<'_, OpGuard>) -> R
                 file.write_all(include_bytes!(concat!(env!("OUT_DIR"),"/touch-probe.apk")))
                     .map_err(|e| AnvilError::Io(e.to_string()))?;
                 file.sync_all().map_err(|e| AnvilError::Io(e.to_string()))?;
-                anvildroid_core::managed::install(&runtime_id,&path)
+                if runtime_id == "default" {
+                    apps::install(&path).map(|_| ())
+                } else {
+                    anvildroid_core::managed::install(&runtime_id,&path)
+                }
             })();
             drop(file);
             let _=std::fs::remove_file(&path);
             outcome
         })();
         match result {
-            Ok(())=>op_result_ok("Touch Probe installed. Open it from this runtime's app library. Touch playback is not enabled by installation."),
+            Ok(())=>op_result_ok("Touch Probe installed."),
             Err(e)=>op_result_err(e),
         }
     }).await)

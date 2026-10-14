@@ -163,23 +163,40 @@
 #page-settings details > summary { color: #c0d8f7; }
 #page-settings details[open] > summary { margin-bottom: 14px; }
 
-#page-controls > h1 { margin-bottom: 6px; }
-#page-controls > .hint { display: block; max-width: 900px; margin-bottom: 16px; color: #9aafc7; }
-#page-controls > .card {
-  max-width: 900px;
-  margin-top: 18px;
-  padding: 22px;
-  border: 1px solid var(--mg-border-strong);
-  border-radius: 14px;
-  background: linear-gradient(145deg, rgba(22, 41, 64, .88), rgba(15, 28, 45, .88));
-  box-shadow: 0 12px 28px rgba(0, 0, 0, .15);
+#page-controls .controls-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 14px; }
+#page-controls .controls-header h1 { margin: 0; }
+.controls-toolbar, .controls-diagnostics { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+#page-controls select { max-width: 300px; min-width: 180px; padding: 8px 10px; border-radius: 7px; }
+#page-controls .btn { padding: 7px 12px; font-size: 12px; }
+#page-controls .controls-table-scroll { margin: 0; border-color: var(--mg-border); }
+#page-controls .controls-table { table-layout: fixed; }
+#page-controls .controls-table th { background: var(--bg-surface); }
+#page-controls .controls-table th:first-child { width: 35%; }
+#page-controls .controls-table th:nth-child(2) { width: 24%; }
+#page-controls .controls-table th:nth-child(3) { width: auto; }
+#page-controls .controls-table th:last-child { width: 70px; text-align: right; }
+#page-controls .controls-table td { padding: 12px 16px; border-color: var(--mg-border); }
+#page-controls .controls-table td:last-child { text-align: right; }
+#page-controls .runtime-action-icon { display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px; min-width: 34px; padding: 0; border-radius: 8px; }
+#page-controls .runtime-action-icon svg { width: 17px; height: 17px; pointer-events: none; }
+.controls-package { overflow-wrap: anywhere; }
+.controls-runtime-name, .controls-runtime-state { display: block; overflow-wrap: anywhere; }
+.controls-runtime-state { color: var(--text-secondary); font-size: 11px; margin-top: 4px; }
+.controls-key-chips { display: flex; gap: 5px; flex-wrap: wrap; }
+#page-controls kbd { padding: 3px 6px; border: 1px solid var(--mg-border-strong); border-radius: 5px; background: var(--bg-surface); font: inherit; font-size: 12px; }
+.controls-empty { padding: 32px 16px; text-align: center; border: 1px solid var(--mg-border); border-radius: 10px; }
+.controls-empty p { margin: 0 0 8px; }
+.controls-empty .hint { display: block; margin-top: 6px; }
+.controls-details { margin-top: 12px; padding: 12px 14px; border: 1px solid var(--mg-border); border-radius: 8px; }
+.controls-details summary { cursor: pointer; color: var(--text-secondary); font-size: 13px; }
+.controls-details[open] summary { margin-bottom: 12px; }
+.controls-details p { overflow-wrap: anywhere; font-size: 12px; }
+.controls-shortcuts { display: flex; flex-wrap: wrap; gap: 16px; font-size: 12px; }
+#probe-status:empty { display: none; }
+@media (max-width: 700px) {
+  #page-controls .controls-header { align-items: flex-start; flex-direction: column; }
+  #page-controls .controls-table { min-width: 600px; }
 }
-#page-controls > .card h2 { color: #ebf4ff; font-size: 17px; margin-bottom: 7px; }
-#page-controls > .card label { display: block; margin: 17px 0 6px; color: #aec5df; font-size: 12px; font-weight: 650; }
-#page-controls > .card select { width: min(100%, 380px); }
-#page-controls > .card #probe-status { margin-top: 12px; color: #9eb5ce; }
-#keymap-saved-list { max-width: 900px; margin-top: 18px; }
-#keymap-saved-list > * { border: 1px solid var(--mg-border); border-radius: 12px; background: rgba(20, 37, 57, .8); padding: 14px 16px; margin-top: 10px; }
 
 #runtime-storage-dialog,
 #runtime-rename-dialog,

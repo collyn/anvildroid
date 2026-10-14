@@ -442,19 +442,19 @@ document.getElementById('probe-open-waydroid').addEventListener('click',()=>open
 document.getElementById('install-touch-probe').addEventListener('click',async()=>{
   if(probeInstallBusy||pendingAppAction||pendingLaunch)return;
   const select=document.getElementById('probe-runtime'),id=select.value;
-  const record=managedLibrary.find(r=>r.id===id),status=document.getElementById('probe-status');
-  if(!record||record.state!=='Running'){status.textContent='Select a running managed runtime.';return;}
+  const record=window.AnvilKeymapLibrary?.record(id)||managedLibrary.find(r=>r.id===id),status=document.getElementById('probe-status');
+  if(!record||!['Running','Frozen'].includes(record.state)||record.error){status.textContent='Select a running runtime.';return;}
   probeInstallBusy=true;select.disabled=true;
   const button=document.getElementById('install-touch-probe');button.disabled=true;
   try {
-    if(!await AppDialog.confirm(`Install Touch Probe into ${record.name}?\nRuntime: ${id}\n\nThis diagnostic app observes touch events only in its own window. It requests no permissions. Android verification remains enabled; review any Android prompt yourself. Installation does not enable game touch mapping.`,{title:'Install Touch Probe',kind:'info',okLabel:'Install',cancelLabel:'Cancel'}))return;
-    status.textContent='Installing in '+record.name+'… Review any Android verification window on your desktop. Do not retry while installation is pending. If verification fails, open Waydroid to inspect Android.';
+    if(!await AppDialog.confirm(`Install Touch Probe in ${record.name}?`,{title:'Touch diagnostics',kind:'info',okLabel:'Install',cancelLabel:'Cancel'}))return;
+    status.textContent='Installing…';
     const result=await tauriInvoke('install_touch_probe',{runtimeId:id});
     status.textContent=result.message;
-    if(!result.success)status.textContent+=' Open Waydroid to inspect Android verification. No automatic retry was made.';
+    if(!result.success)showAppToast(result.message||'Touch Probe installation failed.','error');
     await refreshManagedLibrary();
-  }catch(e){status.textContent=`Installation not confirmed: ${e.message||e}. Check Android before retrying.`;}
-  finally{probeInstallBusy=false;select.disabled=false;button.disabled=false;}
+  }catch(e){status.textContent='Installation failed.';showAppToast(`Touch Probe: ${e.message||e}`,'error');}
+  finally{probeInstallBusy=false;select.disabled=false;button.disabled=false;window.AnvilKeymapLibrary?.updateDiagnostics();}
 });
 
 function iconUrl(pkg) {
@@ -572,12 +572,6 @@ function renderApps(apps) {
   if (selected !== 'all' && !libraryRuntimeRunning(selected)) {
     renderLibraryEmpty(selected);
     return;
-  }
-  const probeSelect=document.getElementById('probe-runtime');
-  if(probeSelect&&!probeInstallBusy){
-    const previous=probeSelect.value;
-    probeSelect.innerHTML='<option value="">Select runtime</option>'+managedLibrary.map(r=>`<option value="${escapeHtml(r.id)}">${escapeHtml(r.name)} · ${escapeHtml(r.state)}</option>`).join('');
-    probeSelect.value=previous;
   }
   const unique = new Map();
   apps.forEach(app => { const key = `${app.runtime_id || 'default'}\u0000${app.package}`; if (!unique.has(key)) unique.set(key, app); });
@@ -1022,7 +1016,7 @@ function removeContextMenu() {
 }
 async function openKeymapOverlay(runtimeId,pkg){
   if(pendingAppAction||pendingLaunch)return;
-  if(runtimeId!=='default'&&!/^r-[0-9a-f]{32}$/.test(runtimeId)){showAppToast('Overlay editing requires a managed desktop runtime.','info');return;}
+  if(runtimeId!=='default'&&!/^r-[0-9a-f]{32}$/.test(runtimeId)){showAppToast('Select a desktop runtime to edit keymaps.','info');return;}
   pendingAppAction=true;
   try{
     showAppToast('Opening keymap overlay on the running app…','info');

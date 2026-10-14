@@ -632,7 +632,17 @@ class ExistingRuntime:
                 raise RuntimeError('Unsupported Default app action')
             return self.edit_keymap(request.get('package'))
         if op == 'keymaps':
-            if self.state() != 'RUNNING':
+            state = self.state()
+            if state == 'FROZEN':
+                path = session.get('waydroid_data')
+                if not path: raise RuntimeError('Frozen Default runtime data is unavailable')
+                fd = storage.open_directory(path)
+                try:
+                    self.verify_live_data(os.fstat(fd))
+                    return keymap.keymap_profiles_at(fd, 'default')
+                finally:
+                    os.close(fd)
+            if state != 'RUNNING':
                 return {'runtime_id': 'default', 'profiles': [], 'invalid_count': 0}
             return keymap.keymap_profiles(self.work/'lxc', 'waydroid', 'default')
         if op == 'resources_info': return self.resource_info()

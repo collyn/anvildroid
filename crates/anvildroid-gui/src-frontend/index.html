@@ -209,20 +209,28 @@
         </details>
       </section>
 
-      <!-- P6 geometry preview, deliberately not an active game mapper -->
       <section id="page-controls" class="page">
-        <h1>Game Controls</h1>
-        <p class="hint">Focus an open app window and press F2 to edit its keymap, or right-click its library card → Edit keymap. Add points and press keys on the app overlay. Save applies changes; F2 or Escape cancels. F3 toggles keymap input; F4 shows or hides the key markers without disabling input. These controls apply immediately for the current app window. F2, F3 and F4 are reserved shortcuts.</p>
-        <button id="keymap-list-refresh" class="btn" type="button">Refresh saved keymaps</button>
-        <div class="card">
-          <h2>Touch input diagnostics</h2>
-          <p class="hint">Touch Probe observes taps in its own window. It requests no permissions and does not enable gameplay mapping. Android may ask you to review installation.</p>
-          <label for="probe-runtime">Runtime</label><select id="probe-runtime"></select>
-          <button id="install-touch-probe" class="btn" type="button">Install Touch Probe…</button>
-          <button id="probe-open-waydroid" class="btn" type="button">Open Waydroid</button>
-          <p id="probe-status" role="status" aria-live="polite"></p>
+        <div class="page-header controls-header">
+          <h1>Game Controls</h1>
+          <div class="controls-toolbar">
+            <select id="keymap-runtime-filter" aria-label="Filter keymaps by runtime"><option value="all">All runtimes</option><option value="default">Default runtime</option></select>
+            <button id="keymap-list-refresh" class="btn" type="button">Refresh</button>
+          </div>
         </div>
         <div id="keymap-saved-list" aria-live="polite"></div>
+        <details class="controls-details">
+          <summary>Shortcuts</summary>
+          <div class="controls-shortcuts"><span><kbd>F2</kbd> Edit keymap</span><span><kbd>F3</kbd> Toggle input</span><span><kbd>F4</kbd> Toggle markers</span><span><kbd>Esc</kbd> Cancel edit</span></div>
+        </details>
+        <details class="controls-details">
+          <summary>Touch diagnostics</summary>
+          <div class="controls-diagnostics">
+            <select id="probe-runtime" aria-label="Diagnostics runtime"><option value="">Select runtime</option></select>
+            <button id="install-touch-probe" class="btn" type="button" disabled>Install Touch Probe</button>
+            <button id="probe-open-waydroid" class="btn" type="button" disabled>Open Waydroid</button>
+          </div>
+          <p id="probe-status" role="status" aria-live="polite"></p>
+        </details>
       </section>
     </main>
     <footer class="app-footer"><span>AnvilDroid</span><span>Right-click an app for actions</span></footer>

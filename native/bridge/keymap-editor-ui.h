@@ -17,8 +17,8 @@ static void keymap_hints_paint(uint32_t *p,int w,int h,
         (active?0xff8de8ff:0x70355c70):(active?0xb018628a:0x1806080c);
     }
     char key[20];const char *label=keymap_label(q->key,key,sizeof(key));
-    int scale=strlen(label)>4?1:2;
-    keymap_text_scaled(p,w,h,cx-(int)strlen(label)*3*scale,cy-7,
+    int scale=keymap_text_width(label,2)>44?1:2;
+    keymap_text_scaled(p,w,h,cx-keymap_text_width(label,scale)/2,cy-7,
                        label,active?0xfff2fbff:0x90909090,scale);
   }
 }
@@ -107,10 +107,12 @@ static void keymap_ui_button(uint32_t *p, int w, int h, struct keymap_rect r,
   if (r.w <= 0)
     return;
   keymap_box(p, w, h, r, 6, active ? 0xff167cbb : 0xff293748);
-  int scale = r.w >= 100 && (int)strlen(label)*12+12<=r.w ? 2 : 1;
-  keymap_text_scaled(p, w, h, r.x + (r.w - (int)strlen(label) * 6 * scale) / 2,
-                     r.y + (r.h - 7 * scale) / 2, label,
-                     enabled ? 0xffedf6ff : 0xff8191a4, scale);
+  int scale=keymap_text_width(label,2)+12<=r.w?2:1;
+  int size=keymap_text_size(scale);
+  keymap_text_scaled_clipped(p,w,h,r.x+r.w-6,
+                     r.x+(r.w-keymap_text_width(label,scale))/2,
+                     r.y+(r.h-(size==11?8:11))/2,label,
+                     enabled?0xffedf6ff:0xff8191a4,scale);
 }
 static int keymap_point_hit(const struct keymap_model *m, int w, int h, int x,
                             int y) {
@@ -154,74 +156,71 @@ static void keymap_editor_paint(uint32_t *p, int w, int h,
       }
     char key[20];
     const char *label = keymap_label(q->key, key, sizeof(key));
-    int scale = strlen(label) > 4 ? 1 : 2;
-    keymap_text_scaled(p, w, h, cx - (int)strlen(label) * 3 * scale, cy - 7,
+    int scale = keymap_text_width(label,2)>44?1:2;
+    keymap_text_scaled(p, w, h, cx-keymap_text_width(label,scale)/2, cy - 7,
                        label, 0xfff3faff, scale);
     if (q->hold)
-      keymap_text_scaled(p, w, h, cx - 12, cy + 12, "HOLD", 0xff8cdbff, 1);
+      keymap_text_scaled(p, w, h, cx-keymap_text_width("Hold",1)/2, cy + 12, "Hold", 0xff8cdbff, 1);
     keymap_box(p, w, h, (struct keymap_rect){cx + 17, cy - 33, 18, 18}, 4,
                0xff243b50);
-    keymap_text_scaled(p, w, h, cx + 23, cy - 28, "X", 0xff8bd8ff, 1);
+    keymap_text_scaled(p, w, h, cx+26-keymap_text_width("X",1)/2, cy-28, "X", 0xff8bd8ff, 1);
   }
-  const char *hint = f->save_pending ? "SAVING"
-                     : m->error == 1 ? "KEY ALREADY USED"
-                     : m->error == 2 ? "ASSIGN EVERY KEY"
-                     : m->error == 3 ? "SAVE FAILED"
-                     : m->placing    ? "CLICK TO PLACE A KEY"
-                     : selected      ? "PRESS A KEY OR DRAG"
-                                     : "SELECT OR ADD A KEY";
+  const char *hint = f->save_pending ? "Saving..."
+                     : m->error == 1 ? "Key already used"
+                     : m->error == 2 ? "Assign every key"
+                     : m->error == 3 ? "Save failed"
+                     : m->placing    ? "Click to place a key"
+                     : selected      ? "Press a key or drag"
+                                     : "Select or add a key";
   if (!f->panel_hidden) {
     keymap_box(p, w, h,
                (struct keymap_rect){12, 12, w < 360 ? w - 88 : 236, 48}, 8,
                0xee172331);
-    keymap_text_scaled(p, w, h, 24, 22, "KEYBOARD MAPPING", 0xffecf6ff, 1);
+    keymap_text_scaled(p, w, h, 24, 22, "Keyboard mapping", 0xffecf6ff, 1);
     keymap_text_scaled(p, w, h, 24, 40, hint,
                        m->error ? 0xffffad99 : 0xff89d5ff, 1);
   }
   if (!f->panel_hidden) {
-    keymap_ui_button(p,w,h,l.playback,f->disabled?"F3: KEYMAP OFF":"F3: KEYMAP ON",!f->disabled,1);
-    keymap_ui_button(p,w,h,l.visibility,f->hints_hidden?"F4: HINTS HIDDEN":"F4: HINTS SHOWN",!f->hints_hidden,1);
+    keymap_ui_button(p,w,h,l.playback,f->disabled?"F3: Keymap off":"F3: Keymap on",!f->disabled,1);
+    keymap_ui_button(p,w,h,l.visibility,f->hints_hidden?"F4: Markers off":"F4: Markers on",!f->hints_hidden,1);
     keymap_box(p, w, h, l.panel, 10, 0xfa19232f);
     if (!l.compact) {
       int x = l.panel.x;
-      keymap_text(p, w, h, x + 16, 28, "CONTROLS", 0xffedf6ff);
-      keymap_text_scaled(p, w, h, x + 16, 62, "APP PROFILE", 0xff8194aa, 1);
+      keymap_text(p, w, h, x + 16, 28, "Controls", 0xffedf6ff);
+      keymap_text_scaled(p, w, h, x + 16, 62, "App profile", 0xff8194aa, 1);
       char pkg[34];
       snprintf(pkg, sizeof(pkg), "%.32s", f->package);
-      for (int i = 0; pkg[i]; ++i)
-        if (pkg[i] >= 'a' && pkg[i] <= 'z')
-          pkg[i] -= 'a' - 'A';
-      keymap_text_scaled(p, w, h, x + 16, 80, pkg, 0xffbecddd, 1);
-      keymap_text_scaled(p, w, h, x + 16, 105, "PLACE ON THE APP", 0xff8194aa,
+      keymap_text_scaled_clipped(p, w, h, x+224, x + 16, 80, pkg, 0xffbecddd, 1);
+      keymap_text_scaled(p, w, h, x + 16, 105, "Place on the app", 0xff8194aa,
                          1);
-      keymap_text_scaled(p, w, h, x + 16, 190, "PRESS BEHAVIOR", 0xff8194aa, 1);
+      keymap_text_scaled(p, w, h, x + 16, 190, "Press behavior", 0xff8194aa, 1);
       if (h >= 470) {
-        keymap_text_scaled(p, w, h, x + 16, 322, "DRAG TO REPOSITION",
+        keymap_text_scaled(p, w, h, x + 16, 322, "Drag to reposition",
                            0xff9cadc0, 1);
-        keymap_text_scaled(p, w, h, x + 16, 339, "F2 / ESC CANCELS CHANGES",
+        keymap_text_scaled(p, w, h, x + 16, 339, "F2 / Esc cancels changes",
                            0xff9cadc0, 1);
       }
       if (h >= 490) {
-        keymap_text_scaled(p, w, h, x + 16, h - 124, "F3 / F4 APPLY NOW", 0xff8194aa,
+        keymap_text_scaled(p, w, h, x + 16, h - 124, "F3 / F4 apply now", 0xff8194aa,
                            1);
         keymap_text_scaled(p, w, h, x + 16, h - 108,
-                           "FOR THIS APP WINDOW", 0xff8194aa, 1);
+                           "For this app window", 0xff8194aa, 1);
       }
       char count[28];
-      snprintf(count, sizeof(count), "%d OF 64 CONTROLS", m->count);
+      snprintf(count, sizeof(count), "%d of 64 controls", m->count);
       keymap_text_scaled(p, w, h, x + 16, h - 88, count, 0xff9cadc0, 1);
     }
     int hold = selected ? m->points[m->selected].hold : f->placement_hold;
-    keymap_ui_button(p, w, h, l.add, l.compact ? "ADD" : "ADD KEY", m->placing,
+    keymap_ui_button(p, w, h, l.add, l.compact ? "Add" : "Add key", m->placing,
                      m->count < 64);
     keymap_ui_button(p, w, h, l.tap,
-                     l.compact ? (hold ? "HOLD" : "TAP") : "TAP", !hold, 1);
-    keymap_ui_button(p, w, h, l.hold, "HOLD", hold, 1);
-    keymap_ui_button(p, w, h, l.remove, l.compact ? "DEL" : "DELETE KEY", 0,
+                     l.compact ? (hold ? "Hold" : "Tap") : "Tap", !hold, 1);
+    keymap_ui_button(p, w, h, l.hold, "Hold", hold, 1);
+    keymap_ui_button(p, w, h, l.remove, l.compact ? "Del" : "Delete key", 0,
                      selected);
-    keymap_ui_button(p, w, h, l.save, f->save_pending ? "WAIT" : "SAVE", 1,
+    keymap_ui_button(p, w, h, l.save, f->save_pending ? "Wait" : "Save", 1,
                      !f->save_pending);
-    keymap_ui_button(p, w, h, l.cancel, l.compact ? "EXIT" : "X", 0, 1);
+    keymap_ui_button(p, w, h, l.cancel, l.compact ? "Exit" : "X", 0, 1);
   }
-  keymap_ui_button(p, w, h, l.toggle, f->panel_hidden ? "SHOW" : "HIDE", 0, 1);
+  keymap_ui_button(p, w, h, l.toggle, f->panel_hidden ? "Show" : "Hide", 0, 1);
 }
