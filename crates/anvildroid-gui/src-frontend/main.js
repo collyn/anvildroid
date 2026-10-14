@@ -933,6 +933,16 @@ async function waitForAndroidUninstall(pkg) {
 async function appMenuAction(action, pkg, label, blockReason, runtimeId = 'default') {
   if(probeInstallBusy)return;
   if(action==='keymap')return openKeymapOverlay(runtimeId,pkg);
+  if (action === 'remove-shortcut') {
+    if (pendingLaunch || pendingAppAction) return;
+    pendingAppAction = true;
+    try {
+      const result = await tauriInvoke('remove_app_shortcut', {runtimeId, package:pkg});
+      showAppToast(result.success ? result.message : `Failed: ${result.message}`, result.success ? 'success' : 'error');
+    } catch (error) { showAppToast(`Cannot remove shortcut: ${error.message || error}`, 'error'); }
+    finally { pendingAppAction = false; }
+    return;
+  }
   if (runtimeId !== 'default') {
     if (action === 'details' || action === 'info') {
       showAppToast(action === 'info' ? 'Android App Info is available for the Default runtime.' : 'Detailed Android info is available for the Default runtime.', 'info');
@@ -1015,7 +1025,6 @@ function showContextMenu(e, pkg, label, runtimeId = 'default') {
   menu.setAttribute('role', 'menu');
   const options = pkg === 'org.anvildroid.desktop' ? [['launch', 'Open Waydroid'], ['details', 'Runtime details'], ['favorite', library.favorites.includes(pkg) ? 'Remove favorite' : 'Add favorite']] : [
     ['launch', 'Open app'],
-    ['keymap', 'Edit keymap (F2 in app window)'],
     ['details', 'App details'],
     ['favorite', library.favorites.includes(pkg) ? 'Remove favorite' : 'Add favorite'],
     ['info', 'Android App Info'],
@@ -1030,7 +1039,6 @@ function showContextMenu(e, pkg, label, runtimeId = 'default') {
     item.textContent = title;
     item.setAttribute('role', 'menuitem');
     item.disabled = !!(((action==='details'||action==='info')&&runtimeId!=='default') || pendingLaunch || pendingAppAction || preferenceBusy || (action === 'favorite' && runtimeId !== 'default' && !managedPreferences.has(runtimeId)) || ((action === 'uninstall' || action === 'force-stop') && blockReason));
-    if(action==='keymap')item.title='Open one window of this app, then edit controls on its overlay';
     if ((action === 'uninstall' || action === 'force-stop') && blockReason) item.title = blockReason;
     item.addEventListener('click', () => {
       removeContextMenu();
@@ -1044,6 +1052,26 @@ function showContextMenu(e, pkg, label, runtimeId = 'default') {
   menu.style.left = `${Math.max(4, Math.min(e.clientX, window.innerWidth - rect.width - 4))}px`;
   menu.style.top = `${Math.max(4, Math.min(e.clientY, window.innerHeight - rect.height - 4))}px`;
   menu.querySelector('button:not(:disabled)')?.focus();
+  if (pkg !== 'org.anvildroid.desktop') {
+    tauriInvoke('has_app_shortcut', {runtimeId, package:pkg}).then(exists => {
+      // A late reply must never add an action to a different app's menu.
+      if (exists !== true || activeMenu !== menu) return;
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = 'ctx-item';
+      item.textContent = 'Remove menu shortcut';
+      item.setAttribute('role', 'menuitem');
+      item.disabled = !!(pendingLaunch || pendingAppAction || probeInstallBusy);
+      item.addEventListener('click', () => {
+        removeContextMenu();
+        appMenuAction('remove-shortcut', pkg, label, blockReason, runtimeId);
+      });
+      const create = [...menu.children].find(button => button.textContent === 'Create/update menu shortcut');
+      create?.insertAdjacentElement('afterend', item);
+      const rect = menu.getBoundingClientRect();
+      menu.style.top = `${Math.max(4, Math.min(e.clientY, window.innerHeight - rect.height - 4))}px`;
+    }).catch(error => console.debug('Cannot check menu shortcut', error));
+  }
 }
 
 function removeContextMenu() {
@@ -1380,6 +1408,7 @@ async function refreshSettings() {
   const button = document.getElementById('btn-refresh-settings');
   const panel = document.getElementById('settings-runtime');
   button.disabled = true;
+  refreshShortcutPreferences();
   try {
     const report = await invoke('get_runtime_catalog');
     const selected = report.registry.runtimes.find(r => r.id === report.registry.default_runtime_id);
@@ -1397,6 +1426,31 @@ async function refreshSettings() {
   finally { button.disabled = false; }
 }
 document.getElementById('btn-refresh-settings').addEventListener('click', refreshSettings);
+
+async function refreshShortcutPreferences() {
+  const checkbox = document.getElementById('automatic-shortcuts');
+  if (shortcutPreferenceSaving) return;
+  checkbox.disabled = true;
+  try {
+    checkbox.checked = await tauriInvoke('get_shortcut_preferences');
+    checkbox.disabled = false;
+  } catch (error) { showAppToast(`Cannot load shortcut preferences: ${error.message || error}`, 'error'); }
+}
+let shortcutPreferenceSaving = false;
+document.getElementById('automatic-shortcuts').addEventListener('change', async event => {
+  if (shortcutPreferenceSaving) return;
+  const checkbox = event.target;
+  const enabled = checkbox.checked;
+  shortcutPreferenceSaving = true;
+  checkbox.disabled = true;
+  try {
+    await tauriInvoke('set_automatic_shortcuts', {enabled});
+    showAppToast('Shortcut preference saved.', 'success');
+  } catch (error) {
+    checkbox.checked = !enabled;
+    showAppToast(`Cannot save shortcut preference: ${error.message || error}`, 'error');
+  } finally { shortcutPreferenceSaving = false; checkbox.disabled = false; }
+});
 
 // Controller requests bypass the legacy default-runtime wrapper deliberately.
 let controllerRecords = [];

@@ -3,6 +3,7 @@ pub mod backend;
 pub mod config;
 pub mod controller;
 pub mod desktop;
+pub mod shortcut_preferences;
 pub mod error;
 pub mod launch;
 pub mod library;

@@ -807,6 +807,46 @@ async fn create_app_shortcut(
 }
 
 #[tauri::command]
+async fn has_app_shortcut(runtime_id: String, package: String) -> Result<bool, String> {
+    blocking(move || desktop::has_runtime_shortcut(&runtime_id, &package).map_err(|e| e.to_string())).await
+}
+
+#[tauri::command]
+async fn get_shortcut_preferences() -> Result<bool, String> {
+    blocking(|| anvildroid_core::shortcut_preferences::automatic().map_err(|e| e.to_string())).await
+}
+
+#[tauri::command]
+async fn set_automatic_shortcuts(enabled: bool) -> Result<(), String> {
+    blocking(move || {
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        anvildroid_core::shortcut_preferences::ensure_service(&exe).map_err(|e| e.to_string())?;
+        anvildroid_core::shortcut_preferences::set_automatic(enabled).map_err(|e| e.to_string())
+    }).await
+}
+
+#[tauri::command]
+async fn remove_app_shortcut(
+    runtime_id: String,
+    package: String,
+    guard: State<'_, OpGuard>,
+) -> Result<OperationResult, ()> {
+    let guard = guard.0.clone();
+    Ok(blocking(move || {
+        let Ok(_operation) = guard.try_lock() else { return busy_result(); };
+        if runtime_id == "default" {
+            let result = std::env::current_exe().map_err(AnvilError::from)
+                .and_then(|exe| anvildroid_core::shortcut_preferences::ensure_service(&exe));
+            if let Err(e) = result { return op_result_err(e); }
+        }
+        match desktop::remove_runtime_shortcut(&runtime_id, &package) {
+            Ok(()) => op_result_ok(format!("Menu shortcut for {package} removed.")),
+            Err(e) => op_result_err(e),
+        }
+    }).await)
+}
+
+#[tauri::command]
 async fn install_apk(
     runtime_id: String,
     path: String,
@@ -1123,6 +1163,13 @@ fn main() {
     // Desktop entries reuse the same boot-aware backend without opening a GUI.
     // Parse before Tauri/GTK initialization so shortcuts do not need a webview.
     let raw_args: Vec<_> = std::env::args_os().skip(1).collect();
+    if raw_args.len() == 1 && raw_args[0] == "--shortcut-monitor" {
+        if let Err(e) = anvildroid_core::shortcut_preferences::monitor() {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+        return;
+    }
     let open_settings = raw_args.len() == 1 && raw_args[0] == "--settings";
     let open_controls = raw_args.len() == 1 && raw_args[0] == "--controls";
     if !raw_args.is_empty() && !open_settings && !open_controls {
@@ -1276,6 +1323,10 @@ fn main() {
             launch_app,
             open_app_info,
             create_app_shortcut,
+            has_app_shortcut,
+            remove_app_shortcut,
+            get_shortcut_preferences,
+            set_automatic_shortcuts,
             install_apk,
             import_runtime_image,
             import_runtime_image_folder,
