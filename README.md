@@ -20,6 +20,7 @@ GPU settings and desktop windows.
 - ARM translation selection: libndk_translation and libhoudini catalogs.
 - GPU diagnostics and per-runtime RAM/CPU/GPU settings.
 - Google Play device registration help and GSF Android ID copy.
+- ADB connections for Default and managed runtimes, compatible with Android Studio.
 
 ## Requirements
 
@@ -97,3 +98,15 @@ Waydroid, Android/LineageOS images, Google services, ARM translation packages,
 native libraries and installed applications remain under their own licenses.
 
 See [Waydroid documentation](https://docs.waydro.id/) for Android runtime setup.
+
+## ADB
+
+Start a runtime, open the **ADB** tab, and click **Connect**. Approve USB
+debugging in Android if the connection shows **Unauthorized**. Android Studio
+and other tools using the same ADB server can then select the runtime.
+
+Each runtime has its own localhost endpoint. **Copy** copies its `adb connect`
+command; use `adb -s 127.0.0.1:PORT shell` to target one runtime. The Android SDK
+section accepts an absolute `platform-tools/adb` path if automatic detection
+finds a different SDK. **Disconnect** closes the endpoint and turns off TCP ADB.
+Connections are session-scoped and keep the runtime awake while enabled.

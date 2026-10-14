@@ -47,6 +47,9 @@ spec.loader.exec_module(storage_module)
 spec = importlib.util.spec_from_file_location('runtime_worker', Path(__file__).with_name('runtime-worker.py'))
 worker_module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(worker_module)
+spec = importlib.util.spec_from_file_location('runtime_adb', Path(__file__).with_name('runtime-adb.py'))
+adb_module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(adb_module)
 MAX_REQUEST = 16384
 spec = importlib.util.spec_from_file_location('runtime_catalog', Path(__file__).with_name('runtime-catalog.py'))
 catalog_module = importlib.util.module_from_spec(spec)
@@ -106,6 +109,7 @@ class Store:
         self.mutex = threading.RLock()
         self.catalog = catalog_module.Catalog()
         self.active_jobs = set()
+        self.adb_relays = {}
         secure_directory(root, True)
         self.root = root
         self.existing = existing_module.ExistingRuntime(root)
@@ -273,6 +277,11 @@ class Store:
         self.data = data
 
     def close(self):
+        for uid, identifier in list(self.adb_relays):
+            try: self.adb_request({'op':'adb_set', 'id':identifier, 'enabled':False}, uid)
+            except (OSError, RuntimeError, RequestError):
+                relay = self.adb_relays.pop((uid, identifier), None)
+                if relay: relay.close()
         self.downloads.close()
         self.pool.shutdown(wait=True)
         os.close(self.lock)
@@ -541,6 +550,82 @@ class Store:
                 self.app_jobs[identifier] = finished
                 storage_module.atomic(self.app_jobs_path, self.app_jobs)
             finally: self.active_jobs.discard(identifier)
+
+    def adb_request(self, request, uid):
+        try:
+            return self._adb_request(request, uid)
+        except (RuntimeError, OSError, ValueError, RequestError):
+            if request['op'] == 'adb_set' and request['enabled']:
+                # A missing IP or failed bind must not strand a debug-enabled
+                # guest without a controllable host endpoint.
+                try: self._adb_request({'op':'adb_set', 'id':request['id'], 'enabled':False}, uid)
+                except (RuntimeError, OSError, ValueError, RequestError): pass
+            raise
+
+    def _adb_request(self, request, uid):
+        identifier = request['id']
+        key = (uid, identifier)
+        relay = self.adb_relays.get(key)
+        if request['op'] == 'adb_set':
+            enabled = request['enabled']
+            if enabled and relay and relay.report()['enabled']:
+                return dict(relay.report(), runtime_id=identifier)
+            if relay:
+                relay.close()
+                del self.adb_relays[key]
+            if identifier == 'default':
+                if self.existing.state() == 'FROZEN':
+                    worker_module.linux.run_bounded('gdbus', 'call', '--system', '--dest', 'id.waydro.Container',
+                        '--object-path', '/ContainerManager', '--method', 'id.waydro.ContainerManager.Unfreeze',
+                        timeout=3, operation='Resume Default runtime for ADB')
+                if self.existing.state() == 'RUNNING':
+                    adb_module.configure(self.existing.android, enabled)
+                elif enabled:
+                    raise RuntimeError('Start Default runtime before enabling ADB')
+                lease = self.root / 'adb-default.lease'
+                if not enabled: lease.unlink(missing_ok=True)
+                if enabled:
+                    address = adb_module.guest_address(worker_module.linux.run_bounded('lxc-info', '-P',
+                        self.existing.work / 'lxc', '-n', 'waydroid', '-iH', timeout=2, full_output=True,
+                        operation='Default ADB address'))
+                    def init_pid():
+                        return worker_module.linux.run_bounded('lxc-info', '-P', self.existing.work / 'lxc',
+                            '-n', 'waydroid', '-pH', timeout=2, full_output=True, operation='Default ADB identity').strip()
+                    generation = init_pid()
+                    lease.touch(mode=0o600)
+                    def alive():
+                        valid = self.existing.state() == 'RUNNING' and init_pid() == generation
+                        if valid: os.utime(lease, None)
+                        else: lease.unlink(missing_ok=True)
+                        return valid
+                    relay = adb_module.Relay(lambda: adb_module.tcp_target(address), alive=alive)
+            else:
+                status = self.android.status(identifier)
+                if status['state'] not in ('Running', 'Frozen'):
+                    if enabled: raise RuntimeError('Start the runtime before enabling ADB')
+                else:
+                    if 'adb' not in status.get('capabilities', []):
+                        raise RuntimeError('Restart this runtime once to enable ADB after updating')
+                    reply = self.android.status(identifier, 'adb_set',
+                        {'op': 'adb_set', 'enabled': enabled, 'generation': status['generation']})
+                    if reply.get('app_error'): raise RuntimeError(reply['app_error'])
+                    if enabled:
+                        instance = self.android.instance(identifier)
+                        generation = status['generation']
+                        def alive():
+                            try:
+                                valid = (instance / 'adb.sock').exists() and read_file(instance / 'worker-identity.json')['generation'] == generation
+                                if valid: os.utime(instance / 'adb.lease', None)
+                                return valid
+                            except (OSError, ValueError, KeyError, RequestError): return False
+                        relay = adb_module.Relay(lambda: adb_module.unix_target(instance / 'adb.sock'), alive=alive)
+            if enabled: self.adb_relays[key] = relay
+            else: relay = None
+        if relay and not relay.report()['enabled']:
+            relay.close()
+            self.adb_relays.pop(key, None)
+            relay = None
+        return dict(relay.report() if relay else {'enabled': False, 'endpoint': None, 'connections': 0, 'error': ''}, runtime_id=identifier)
 
     def requirements(self, uid=None):
         images = self.backend.source_status()
@@ -815,6 +900,8 @@ class Store:
             return self.catalog.request(request['refresh'])
         fields = {'resources_info': {'op', 'id'}, 'resources_set': {'op', 'id', 'memory_mib', 'cpu_count'}, 'start_on_boot': {'op', 'id', 'enabled'}, 'gpu_info': {'op', 'id'}, 'gpu_set': {'op', 'id', 'node'}, 'arm_info': {'op', 'id'}, 'arm_set': {'op', 'id', 'enabled'}, 'google_services': {'op', 'id'}, 'delete': {'op', 'id', 'confirmed_name'}, 'install': {'op', 'id'}, 'display_info': {'op', 'id'}, 'display_set': {'op', 'id', 'mode'}, 'app_action': {'op', 'id', 'action', 'package'}, 'app_job': {'op', 'id'}, 'apps': {'op', 'id'}, 'health': {'op', 'id'}, 'storage_info': {'op', 'id'}, 'move': {'op', 'id', 'destination'}, 'discard_previous': {'op', 'id', 'confirmed_name'}, 'requirements': {'op'}, 'list': {'op'}, 'create': {'op', 'name'}, 'inspect': {'op', 'id'},
                   'rename': {'op', 'id', 'name'}, 'prepare': {'op', 'id'}, 'reinstall': {'op', 'id', 'flavor'}, 'start': {'op', 'id'}, 'stop': {'op', 'id'}, 'refresh': {'op', 'id'}}
+        fields['adb_info'] = {'op', 'id'}
+        fields['adb_set'] = {'op', 'id', 'enabled'}
         fields['keymaps']={'op','id'}
         fields['app_states']={'op','id'}
         fields['existing_claim'] = {'op', 'id'}
@@ -829,6 +916,8 @@ class Store:
             token = request['activation_token']
             require(request.get('action') == 'full_ui' and isinstance(token, str) and 0 < len(token) <= 512 and all(32 < ord(c) < 127 for c in token), 'INVALID_REQUEST', 'Invalid activation token')
         require(apk_fd is None or operation == 'install', 'INVALID_REQUEST', 'Unexpected file descriptor')
+        if operation == 'adb_set':
+            require(type(request['enabled']) is bool, 'INVALID_REQUEST', 'Expected a boolean enabled')
         if request.get('id') == 'default':
             require(apk_fd is None, 'INVALID_REQUEST', 'Use the existing APK installation command for system Waydroid')
             require(operation not in ('resources_set', 'gpu_set', 'arm_set', 'existing_claim', 'system_integration') or
@@ -836,6 +925,9 @@ class Store:
                     'BUSY', 'Wait for Default runtime import to finish')
             if operation == 'reinstall':
                 return self.reinstall_existing(request, uid)
+            if operation in ('adb_info', 'adb_set'):
+                self.existing.authorize(uid)
+                return self.adb_request(request, uid)
             return self.existing.dispatch(request, uid)
         require(operation != 'existing_claim', 'INVALID_REQUEST', 'Only Default runtime can be registered for system management')
         require(operation != 'system_integration', 'INVALID_REQUEST', 'System integration applies only to Default runtime')
@@ -860,6 +952,9 @@ class Store:
         record = next((r for r in self.data['runtimes'] if r['id'] == request['id'] and r['owner_uid'] == uid), None)
         require(record is not None, 'NOT_FOUND', 'Runtime not found for this user')
         require(record['id'] not in self.deletions or operation in ('delete', 'inspect', 'refresh', 'app_job', 'storage_info'), 'BUSY', 'Deletion is incomplete. Retry Delete to finish; other operations are blocked.')
+        if operation in ('adb_info', 'adb_set'):
+            require(record['id'] not in self.active_jobs, 'BUSY', 'Wait for the runtime operation to finish')
+            return self.adb_request(request, uid)
         if operation == 'reinstall':
             require(request['confirmed_name'] == record['name'], 'INVALID_REQUEST', 'Runtime name changed; review reinstall again')
             self.storage.ensure(record['id'])

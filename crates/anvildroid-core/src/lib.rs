@@ -16,3 +16,5 @@ pub mod registry;
 pub mod scope;
 
 pub mod managed;
+
+pub mod adb;

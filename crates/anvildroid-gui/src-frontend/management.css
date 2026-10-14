@@ -1,5 +1,5 @@
 /* Management workspace skin: navy surfaces, cobalt focus and compact controls. */
-:is(#page-runtime, #page-runtime-settings, #page-images), #page-settings, #page-controls {
+:is(#page-runtime, #page-runtime-settings, #page-images, #page-adb), #page-settings, #page-controls {
   --mg-panel: #131f30;
   --mg-panel-raised: #182638;
   --mg-panel-soft: #1b2b40;
@@ -11,9 +11,9 @@
 }
 
 /* Keep native form controls on the same navy palette as management panels. */
-:is(#page-runtime, #page-runtime-settings, #page-images) select,
-:is(#page-runtime, #page-runtime-settings, #page-images) input,
-:is(#page-runtime, #page-runtime-settings, #page-images) textarea,
+:is(#page-runtime, #page-runtime-settings, #page-images, #page-adb) select,
+:is(#page-runtime, #page-runtime-settings, #page-images, #page-adb) input,
+:is(#page-runtime, #page-runtime-settings, #page-images, #page-adb) textarea,
 #page-settings select,
 #page-settings input,
 #page-settings textarea,
@@ -25,8 +25,8 @@
   border-color: var(--mg-border-strong);
   color-scheme: dark;
 }
-:is(#page-runtime, #page-runtime-settings, #page-images) select option,
-:is(#page-runtime, #page-runtime-settings, #page-images) select optgroup,
+:is(#page-runtime, #page-runtime-settings, #page-images, #page-adb) select option,
+:is(#page-runtime, #page-runtime-settings, #page-images, #page-adb) select optgroup,
 #page-settings select option,
 #page-settings select optgroup,
 #page-controls select option,
@@ -34,8 +34,8 @@
   color: #edf5ff;
   background: var(--mg-panel-raised);
 }
-:is(#page-runtime, #page-runtime-settings, #page-images) select:disabled,
-:is(#page-runtime, #page-runtime-settings, #page-images) input:disabled,
+:is(#page-runtime, #page-runtime-settings, #page-images, #page-adb) select:disabled,
+:is(#page-runtime, #page-runtime-settings, #page-images, #page-adb) input:disabled,
 #page-settings select:disabled,
 #page-settings input:disabled,
 #page-controls select:disabled,
@@ -44,7 +44,7 @@
   background: #142131;
 }
 
-:is(#page-runtime, #page-runtime-settings, #page-images) .page-header,
+:is(#page-runtime, #page-runtime-settings, #page-images, #page-adb) .page-header,
 #page-settings .page-header {
   padding: 18px 20px;
   margin: -4px 0 18px;
@@ -53,17 +53,17 @@
   background: linear-gradient(115deg, rgba(27, 48, 76, .8), rgba(18, 30, 47, .72));
   box-shadow: 0 12px 28px rgba(0, 0, 0, .16);
 }
-:is(#page-runtime, #page-runtime-settings, #page-images) .page-header h1,
+:is(#page-runtime, #page-runtime-settings, #page-images, #page-adb) .page-header h1,
 #page-settings .page-header h1,
 #page-controls > h1 { letter-spacing: -.4px; }
-:is(#page-runtime, #page-runtime-settings, #page-images) .page-header .hint,
+:is(#page-runtime, #page-runtime-settings, #page-images, #page-adb) .page-header .hint,
 #page-settings .page-header .hint { color: #9eb1ca; }
 
-:is(#page-runtime, #page-runtime-settings, #page-images) .controller-heading { margin: 20px 2px 12px; }
-:is(#page-runtime, #page-runtime-settings, #page-images) .controller-heading h2 { color: #e9f2ff; font-size: 17px; }
-:is(#page-runtime, #page-runtime-settings, #page-images) .status-badge { background: var(--mg-blue-soft); border-color: var(--mg-border-strong); color: #acd2ff; }
-:is(#page-runtime, #page-runtime-settings, #page-images) .status-badge.connected { color: #73e3a4; background: rgba(53, 208, 127, .12); border-color: rgba(53, 208, 127, .36); }
-:is(#page-runtime, #page-runtime-settings, #page-images) .status-badge.disconnected { color: #ff9db7; background: rgba(243, 139, 168, .1); }
+:is(#page-runtime, #page-runtime-settings, #page-images, #page-adb) .controller-heading { margin: 20px 2px 12px; }
+:is(#page-runtime, #page-runtime-settings, #page-images, #page-adb) .controller-heading h2 { color: #e9f2ff; font-size: 17px; }
+:is(#page-runtime, #page-runtime-settings, #page-images, #page-adb) .status-badge { background: var(--mg-blue-soft); border-color: var(--mg-border-strong); color: #acd2ff; }
+:is(#page-runtime, #page-runtime-settings, #page-images, #page-adb) .status-badge.connected { color: #73e3a4; background: rgba(53, 208, 127, .12); border-color: rgba(53, 208, 127, .36); }
+:is(#page-runtime, #page-runtime-settings, #page-images, #page-adb) .status-badge.disconnected { color: #ff9db7; background: rgba(243, 139, 168, .1); }
 
 #controller-setup-help,
 #runtime-create-panel {
@@ -96,45 +96,45 @@
 #available-runtime-images td details { margin-top: 8px; }
 #available-runtime-images .image-not-cached td:not(:last-child) { opacity: .68; }
 .image-library-import[hidden] { display: none; }
-:is(#page-runtime, #page-runtime-settings, #page-images) .image-catalog-table { min-width: 600px; table-layout: auto; }
-:is(#page-runtime, #page-runtime-settings, #page-images) .image-catalog-table th { width: auto; }
+:is(#page-runtime, #page-runtime-settings, #page-images, #page-adb) .image-catalog-table { min-width: 600px; table-layout: auto; }
+:is(#page-runtime, #page-runtime-settings, #page-images, #page-adb) .image-catalog-table th { width: auto; }
 @media (max-width: 560px) {
-  :is(#page-runtime, #page-runtime-settings, #page-images) .image-catalog-table th:nth-child(2),
-  :is(#page-runtime, #page-runtime-settings, #page-images) .image-catalog-table td:nth-child(2) { display: table-cell; }
+  :is(#page-runtime, #page-runtime-settings, #page-images, #page-adb) .image-catalog-table th:nth-child(2),
+  :is(#page-runtime, #page-runtime-settings, #page-images, #page-adb) .image-catalog-table td:nth-child(2) { display: table-cell; }
 }
 #controller-message:not(:empty) { border: 1px solid var(--mg-border-strong); background: rgba(45, 87, 136, .2); color: #c9e0ff; }
 
-:is(#page-runtime, #page-runtime-settings, #page-images, #page-settings) .runtime-table-scroll {
+:is(#page-runtime, #page-runtime-settings, #page-images, #page-adb, #page-settings) .runtime-table-scroll {
   border: 1px solid var(--mg-border-strong);
   border-radius: 14px;
   background: rgba(15, 26, 41, .7);
   box-shadow: 0 16px 36px rgba(0, 0, 0, .14);
 }
-:is(#page-runtime, #page-runtime-settings, #page-images, #page-settings) .runtime-table { border-collapse: separate; border-spacing: 0; }
-:is(#page-runtime, #page-runtime-settings, #page-images, #page-settings) .runtime-table th {
+:is(#page-runtime, #page-runtime-settings, #page-images, #page-adb, #page-settings) .runtime-table { border-collapse: separate; border-spacing: 0; }
+:is(#page-runtime, #page-runtime-settings, #page-images, #page-adb, #page-settings) .runtime-table th {
   padding: 13px 16px;
   background: #17283d;
   color: #a9c1de;
   border-bottom: 1px solid var(--mg-border-strong);
 }
-:is(#page-runtime, #page-runtime-settings, #page-images, #page-settings) .runtime-table td { padding: 14px 16px; border-top-color: var(--mg-border); }
-:is(#page-runtime, #page-runtime-settings, #page-images, #page-settings) .runtime-table tbody tr.runtime-summary { transition: background .15s, box-shadow .15s; }
-:is(#page-runtime, #page-runtime-settings, #page-images, #page-settings) .runtime-table tbody tr.runtime-summary:hover,
-:is(#page-runtime, #page-runtime-settings, #page-images, #page-settings) .runtime-table tbody tr.runtime-summary.selected { background: rgba(76, 167, 255, .1); box-shadow: inset 3px 0 var(--mg-blue); }
-:is(#page-runtime, #page-runtime-settings, #page-images) .runtime-select { color: #edf5ff; }
-:is(#page-runtime, #page-runtime-settings, #page-images) .runtime-select .hint { color: #879db8; }
-:is(#page-runtime, #page-runtime-settings, #page-images) .runtime-status { border: 1px solid var(--mg-border); background: #1b2b40; }
-:is(#page-runtime, #page-runtime-settings, #page-images) .runtime-status.success { color: #6ee5a0; background: rgba(53, 208, 127, .12); border-color: rgba(53, 208, 127, .28); }
-:is(#page-runtime, #page-runtime-settings, #page-images) .runtime-status.error { color: #ff9db7; background: rgba(243, 139, 168, .12); }
-:is(#page-runtime, #page-runtime-settings, #page-images) .runtime-detail-row > td { background: #112033; }
-:is(#page-runtime, #page-runtime-settings, #page-images) .runtime-config-grid > div,
-:is(#page-runtime, #page-runtime-settings, #page-images) .runtime-card { background: #14253a; border-color: var(--mg-border); }
-:is(#page-runtime, #page-runtime-settings, #page-images) .managed-runtime { border-color: var(--mg-border-strong); background: linear-gradient(140deg, rgba(24, 42, 64, .78), rgba(16, 29, 46, .86)); }
-:is(#page-runtime, #page-runtime-settings, #page-images) .runtime-feedback { background: rgba(53, 103, 158, .19); border-color: var(--mg-blue); }
-:is(#page-runtime, #page-runtime-settings, #page-images) .runtime-feedback.success { background: rgba(53, 208, 127, .1); border-color: var(--mg-green); }
-:is(#page-runtime, #page-runtime-settings, #page-images) .runtime-feedback.error { background: rgba(243, 139, 168, .1); border-color: #f38ba8; }
-:is(#page-runtime, #page-runtime-settings, #page-images) .runtime-blocked { color: #ffc78f; }
-:is(#page-runtime, #page-runtime-settings, #page-images) .runtime-details { border-top-color: var(--mg-border); }
+:is(#page-runtime, #page-runtime-settings, #page-images, #page-adb, #page-settings) .runtime-table td { padding: 14px 16px; border-top-color: var(--mg-border); }
+:is(#page-runtime, #page-runtime-settings, #page-images, #page-adb, #page-settings) .runtime-table tbody tr.runtime-summary { transition: background .15s, box-shadow .15s; }
+:is(#page-runtime, #page-runtime-settings, #page-images, #page-adb, #page-settings) .runtime-table tbody tr.runtime-summary:hover,
+:is(#page-runtime, #page-runtime-settings, #page-images, #page-adb, #page-settings) .runtime-table tbody tr.runtime-summary.selected { background: rgba(76, 167, 255, .1); box-shadow: inset 3px 0 var(--mg-blue); }
+:is(#page-runtime, #page-runtime-settings, #page-images, #page-adb) .runtime-select { color: #edf5ff; }
+:is(#page-runtime, #page-runtime-settings, #page-images, #page-adb) .runtime-select .hint { color: #879db8; }
+:is(#page-runtime, #page-runtime-settings, #page-images, #page-adb) .runtime-status { border: 1px solid var(--mg-border); background: #1b2b40; }
+:is(#page-runtime, #page-runtime-settings, #page-images, #page-adb) .runtime-status.success { color: #6ee5a0; background: rgba(53, 208, 127, .12); border-color: rgba(53, 208, 127, .28); }
+:is(#page-runtime, #page-runtime-settings, #page-images, #page-adb) .runtime-status.error { color: #ff9db7; background: rgba(243, 139, 168, .12); }
+:is(#page-runtime, #page-runtime-settings, #page-images, #page-adb) .runtime-detail-row > td { background: #112033; }
+:is(#page-runtime, #page-runtime-settings, #page-images, #page-adb) .runtime-config-grid > div,
+:is(#page-runtime, #page-runtime-settings, #page-images, #page-adb) .runtime-card { background: #14253a; border-color: var(--mg-border); }
+:is(#page-runtime, #page-runtime-settings, #page-images, #page-adb) .managed-runtime { border-color: var(--mg-border-strong); background: linear-gradient(140deg, rgba(24, 42, 64, .78), rgba(16, 29, 46, .86)); }
+:is(#page-runtime, #page-runtime-settings, #page-images, #page-adb) .runtime-feedback { background: rgba(53, 103, 158, .19); border-color: var(--mg-blue); }
+:is(#page-runtime, #page-runtime-settings, #page-images, #page-adb) .runtime-feedback.success { background: rgba(53, 208, 127, .1); border-color: var(--mg-green); }
+:is(#page-runtime, #page-runtime-settings, #page-images, #page-adb) .runtime-feedback.error { background: rgba(243, 139, 168, .1); border-color: #f38ba8; }
+:is(#page-runtime, #page-runtime-settings, #page-images, #page-adb) .runtime-blocked { color: #ffc78f; }
+:is(#page-runtime, #page-runtime-settings, #page-images, #page-adb) .runtime-details { border-top-color: var(--mg-border); }
 
 #page-settings .settings-section {
   margin-top: 14px;
@@ -225,13 +225,13 @@
 #runtime-rename-error { color: #ff9db7; }
 
 @media (max-width: 780px) {
-  :is(#page-runtime, #page-runtime-settings, #page-images) .page-header, #page-settings .page-header { padding: 16px; }
-  :is(#page-runtime, #page-runtime-settings, #page-images) .runtime-table th, :is(#page-runtime, #page-runtime-settings, #page-images) .runtime-table td { padding: 11px 10px; }
-  :is(#page-runtime, #page-runtime-settings, #page-images) .runtime-table th:nth-child(2) { width: auto; }
+  :is(#page-runtime, #page-runtime-settings, #page-images, #page-adb) .page-header, #page-settings .page-header { padding: 16px; }
+  :is(#page-runtime, #page-runtime-settings, #page-images, #page-adb) .runtime-table th, :is(#page-runtime, #page-runtime-settings, #page-images, #page-adb) .runtime-table td { padding: 11px 10px; }
+  :is(#page-runtime, #page-runtime-settings, #page-images, #page-adb) .runtime-table th:nth-child(2) { width: auto; }
 }
 @media (max-width: 560px) {
-  :is(#page-runtime, #page-runtime-settings, #page-images) .runtime-table th:nth-child(2), :is(#page-runtime, #page-runtime-settings, #page-images) .runtime-table td:nth-child(2) { display: none; }
-  :is(#page-runtime, #page-runtime-settings, #page-images) .runtime-summary .runtime-actions { justify-content: flex-start; }
+  :is(#page-runtime, #page-runtime-settings, #page-images, #page-adb) .runtime-table th:nth-child(2), :is(#page-runtime, #page-runtime-settings, #page-images, #page-adb) .runtime-table td:nth-child(2) { display: none; }
+  :is(#page-runtime, #page-runtime-settings, #page-images, #page-adb) .runtime-summary .runtime-actions { justify-content: flex-start; }
   #page-settings .settings-section, #page-controls > .card { padding: 16px; }
 }
 /* Keep runtime tuning collapsed until needed. */
@@ -423,7 +423,7 @@
 #page-runtime-settings #legacy-runtime-detail > .runtime-settings-group { margin-top: 12px; }
 
 /* Avoid GTK's native grey select surface in the WebView. */
-:is(#page-runtime, #page-runtime-settings, #page-images, #page-settings, #page-controls) select {
+:is(#page-runtime, #page-runtime-settings, #page-images, #page-adb, #page-settings, #page-controls) select {
   -webkit-appearance: none;
   appearance: none;
   color: #edf5ff;
@@ -434,8 +434,8 @@
   padding-right: 36px;
   border-color: var(--mg-border-strong);
 }
-:is(#page-runtime, #page-runtime-settings, #page-images, #page-settings, #page-controls) select:hover:not(:disabled) { border-color: var(--mg-blue); }
-:is(#page-runtime, #page-runtime-settings, #page-images, #page-settings, #page-controls) select:disabled { color: #91a2b8; background-color: #142131; }
+:is(#page-runtime, #page-runtime-settings, #page-images, #page-adb, #page-settings, #page-controls) select:hover:not(:disabled) { border-color: var(--mg-blue); }
+:is(#page-runtime, #page-runtime-settings, #page-images, #page-adb, #page-settings, #page-controls) select:disabled { color: #91a2b8; background-color: #142131; }
 
 /* Section headings stay flat on hover; keyboard focus remains explicit. */
 #page-runtime-settings .runtime-settings-group > summary,
@@ -453,23 +453,33 @@
 #runtime-table input[type="checkbox"]:disabled { opacity: .5; cursor: default; }
 
 /* Compact image library, with controls matching the Refresh button. */
-#page-images .btn { min-height: 32px; padding: 5px 10px; font-size: 12px; border-radius: 8px; }
-#page-images .page-header { padding: 14px 18px; margin-bottom: 14px; }
-#page-images .runtime-images-section { padding: 16px 18px; }
-#page-images .section-heading { margin-bottom: 12px; gap: 12px; }
-#page-images .section-heading h2 { font-size: 16px; }
-#page-images .runtime-actions { gap: 6px; margin: 0; }
-#page-images .image-catalog-table th { padding: 10px 14px; }
-#page-images .image-catalog-table td { padding: 10px 14px; vertical-align: middle; }
-#page-images .image-catalog-table th:last-child { width: 144px; text-align: right; }
-#page-images .image-catalog-table td:nth-child(3) { white-space: nowrap; }
-#page-images .image-catalog-table details { margin-top: 3px; }
-#page-images .image-catalog-table summary { font-size: 12px; min-height: 20px; padding: 0; color: #9aafc7; }
-#page-images .image-catalog-table summary::after { display: none; }
-#page-images .image-library-official { margin-top: 12px; padding-top: 10px; }
-#page-images :is(#image-library-message, #custom-image-status):empty { display: none; }
+:is(#page-images, #page-adb) .btn { min-height: 32px; padding: 5px 10px; font-size: 12px; border-radius: 8px; }
+:is(#page-images, #page-adb) .page-header { padding: 14px 18px; margin-bottom: 14px; }
+:is(#page-images, #page-adb) .runtime-images-section { padding: 16px 18px; }
+:is(#page-images, #page-adb) .section-heading { margin-bottom: 12px; gap: 12px; }
+:is(#page-images, #page-adb) .section-heading h2 { font-size: 16px; }
+:is(#page-images, #page-adb) .runtime-actions { gap: 6px; margin: 0; }
+:is(#page-images, #page-adb) .image-catalog-table th { padding: 10px 14px; }
+:is(#page-images, #page-adb) .image-catalog-table td { padding: 10px 14px; vertical-align: middle; }
+:is(#page-images, #page-adb) .image-catalog-table th:last-child { width: 144px; text-align: right; }
+:is(#page-images, #page-adb) .image-catalog-table td:nth-child(3) { white-space: nowrap; }
+:is(#page-images, #page-adb) .image-catalog-table details { margin-top: 3px; }
+:is(#page-images, #page-adb) .image-catalog-table summary { font-size: 12px; min-height: 20px; padding: 0; color: #9aafc7; }
+:is(#page-images, #page-adb) .image-catalog-table summary::after { display: none; }
+:is(#page-images, #page-adb) .image-library-official { margin-top: 12px; padding-top: 10px; }
+:is(#page-images, #page-adb) :is(#image-library-message, #custom-image-status):empty { display: none; }
 
-#page-images .image-catalog-table td:last-child { text-align: right; }
-#page-images .image-catalog-table .runtime-actions { justify-content: flex-end; flex-wrap: nowrap; }
-#page-images .runtime-action-icon { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 32px; width: 32px; height: 32px; min-width: 32px; padding: 0; }
-#page-images .runtime-action-icon svg { width: 17px; height: 17px; pointer-events: none; }
+:is(#page-images, #page-adb) .image-catalog-table td:last-child { text-align: right; }
+:is(#page-images, #page-adb) .image-catalog-table .runtime-actions { justify-content: flex-end; flex-wrap: nowrap; }
+:is(#page-images, #page-adb) .runtime-action-icon { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 32px; width: 32px; height: 32px; min-width: 32px; padding: 0; }
+:is(#page-images, #page-adb) .runtime-action-icon svg { width: 17px; height: 17px; pointer-events: none; }
+
+#page-adb .adb-runtime-table { width: 100%; min-width: 660px; }
+#page-adb .adb-runtime-table small { display: block; color: var(--text-secondary); font-size: 11px; margin-top: 5px; max-width: 300px; overflow-wrap: anywhere; }
+#page-adb .adb-runtime-table .adb-error { color: #ff9db7; }
+#page-adb .adb-runtime-table .adb-auth-hint { color: #ffc78f; line-height: 1.5; }
+#page-adb .runtime-actions { flex-wrap: nowrap; gap: 6px; }
+#page-adb .adb-sdk { margin-top: 18px; }
+#page-adb .adb-sdk label { display: block; margin: 12px 0 6px; }
+#page-adb #adb-path { width: min(100%, 620px); }
+#page-adb #adb-status { overflow-wrap: anywhere; }

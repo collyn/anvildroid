@@ -66,6 +66,11 @@ network = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(network)
 
 
+spec = importlib.util.spec_from_file_location('runtime_adb', Path(__file__).with_name('runtime-adb.py'))
+adb = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(adb)
+
+
 def atomic(path, value):
     temp = path.with_suffix('.tmp')
     fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
@@ -139,6 +144,9 @@ class IdleSuspend:
 
     def tick(self):
         now = time.monotonic()
+        if self.state.get('adb_enabled'):
+            self.idle_since = None
+            return
         if self.state['state'] != 'Running' or self.stopping.is_set() or now < self.next_check:
             return
         self.next_check = now + self.interval
@@ -1219,6 +1227,7 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
                 arm_keys = set(arm.PROPERTIES) | {'ro.enable.native.bridge.exec', 'ro.vendor.enable.native.bridge.exec', 'ro.vendor.enable.native.bridge.exec64'}
                 props = [p for p in props if p.split('=', 1)[0] not in arm_keys]
                 props += [key + '=' + value for key, value in arm_props.items()]
+            props = [p for p in props if not p.startswith('ro.adb.secure=')] + ['ro.adb.secure=1']
             props = managed_session_properties(props)
             init = fs / 'system/etc/init/init.waydroid.rc'
             # Regenerate from prepared support, not the previous boot's upper
@@ -1642,7 +1651,7 @@ def main(instance, identifier, generation, original_mnt, original_net, desktop=N
     endpoint = instance / 'worker.sock'
     endpoint.unlink(missing_ok=True)
     state = dict(runtime_id=identifier, generation=generation, state='Starting', error=None, display_mode='desktop' if desktop else 'headless', capabilities=['graphics', 'apps', 'app_actions', 'uninstall_app', 'install_apk', 'google_services'])
-    state['capabilities'].append('app_states')
+    state['capabilities'].extend(['app_states', 'adb'])
     if desktop: state['capabilities'].extend(['keymap_editor', 'full_ui', 'window_activation'])
     atomic(instance / 'worker-identity.json', dict(runtime_id=identifier, generation=generation))
     (instance / 'worker-result.json').unlink(missing_ok=True)
@@ -1656,8 +1665,20 @@ def main(instance, identifier, generation, original_mnt, original_net, desktop=N
     thread = threading.Thread(target=boot, args=(instance, identifier, generation, state, stopping, done, desktop, host_net_fd))
     thread.start()
     idle = IdleSuspend(instance, identifier, state, stopping)
+    adb_relay = None
     try:
         while not done.is_set():
+            if adb_relay and state.get('adb_enabled'):
+                try: lease_alive = time.time() - (instance / 'adb.lease').stat().st_mtime < 12
+                except OSError: lease_alive = False
+                if not lease_alive:
+                    adb_relay.close()
+                    adb_relay = None
+                    state['adb_enabled'] = False
+                    try:
+                        adb.configure(lambda *args: linux.run_bounded('lxc-attach', '-P', instance / 'android',
+                            '-n', identifier, '--', *args, timeout=2, operation='ADB lease cleanup'), False)
+                    except (RuntimeError, OSError): pass
             idle.tick()
             try: connection, _ = server.accept()
             except socket.timeout: continue
@@ -1679,6 +1700,38 @@ def main(instance, identifier, generation, original_mnt, original_net, desktop=N
                         except (RuntimeError, OSError, subprocess.TimeoutExpired) as error:
                             response['app_error'] = str(error)[-1024:]
                         connection.sendall(json.dumps(dict(response, state=state['state'])).encode() + b'\n')
+                        continue
+                    elif isinstance(request, dict) and request.get('op') == 'adb_set':
+                        response = dict(state)
+                        try:
+                            require(set(request) == {'op', 'enabled', 'generation'} and type(request['enabled']) is bool,
+                                    'Invalid ADB request')
+                            require(request['generation'] == generation, 'Runtime generation changed')
+                            idle.resume()
+                            enabled = request['enabled']
+                            if adb_relay:
+                                adb_relay.close()
+                                adb_relay = None
+                            state['adb_enabled'] = False
+                            def android_run(*args):
+                                return linux.run_bounded('lxc-attach', '-P', instance / 'android', '-n', identifier,
+                                    '--', *args, timeout=2, full_output=True, operation='ADB configuration')
+                            adb.configure(android_run, enabled)
+                            if enabled:
+                                address = adb.guest_address(linux.run_bounded('lxc-info', '-P', instance / 'android',
+                                    '-n', identifier, '-iH', timeout=2, full_output=True, operation='ADB address'))
+                                (instance / 'adb.lease').touch(mode=0o600)
+                                adb_path = instance / 'adb.sock'
+                                adb_path.unlink(missing_ok=True)
+                                adb_relay = adb.Relay(lambda: adb.tcp_target(address), path=adb_path,
+                                    alive=lambda: not stopping.is_set() and state['state'] == 'Running')
+                                state['adb_enabled'] = True
+                        except (RuntimeError, OSError, ValueError, subprocess.TimeoutExpired) as error:
+                            if not state.get('adb_enabled'):
+                                try: adb.configure(android_run, False)
+                                except (RuntimeError, OSError, NameError, subprocess.TimeoutExpired): pass
+                            response['app_error'] = str(error)[-1024:]
+                        connection.sendall(json.dumps(dict(response, state=state['state'], adb_enabled=state.get('adb_enabled', False))).encode() + b'\n')
                         continue
                     elif request == {'op': 'graphics'}:
                         response = dict(state)
@@ -1764,6 +1817,7 @@ def main(instance, identifier, generation, original_mnt, original_net, desktop=N
                     if apk_fd is not None: os.close(apk_fd)
     finally:
         stopping.set()
+        if adb_relay: adb_relay.close()
         thread.join()
         server.close()
         endpoint.unlink(missing_ok=True)

@@ -276,6 +276,16 @@ async fn runtime_controller(
     }).await
 }
 
+#[tauri::command]
+async fn adb_host_status(adb_path: Option<String>) -> Result<anvildroid_core::adb::HostReport, String> {
+    blocking(move || anvildroid_core::adb::status(adb_path.as_deref()).map_err(|e| e.to_string())).await
+}
+
+#[tauri::command]
+async fn adb_host_action(action: String, endpoint: String, adb_path: Option<String>) -> Result<String, String> {
+    blocking(move || anvildroid_core::adb::action(&action, &endpoint, adb_path.as_deref()).map_err(|e| e.to_string())).await
+}
+
 // --- Bundled controller launcher (pkexec; no systemd service) ---
 
 #[derive(serde::Serialize)]
@@ -1303,6 +1313,8 @@ fn main() {
             get_library,
             get_runtime_catalog,
             runtime_controller,
+            adb_host_status,
+            adb_host_action,
             start_runtime_controller,
             restart_runtime_controller,
             setup_waydroid,

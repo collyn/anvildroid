@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import stat
 import sys
+import time
 
 
 BASE = Path(__file__).resolve().parent
@@ -45,12 +46,14 @@ class Integration:
         self.nvidia = False
         self.snapshots_disabled = False
         self.original_start = tools.actions.container_manager.do_start
+        self.original_freeze = tools.actions.container_manager.freeze
         self.original_stop = tools.actions.container_manager.stop
         self.original_mount = tools.helpers.images.mount_rootfs
         self.original_props = tools.helpers.images.make_prop
 
     def install(self):
         self.tools.actions.container_manager.do_start = self.start
+        self.tools.actions.container_manager.freeze = self.freeze
         self.tools.actions.container_manager.stop = self.stop
         self.tools.helpers.images.mount_rootfs = self.mount
         self.tools.helpers.images.make_prop = self.props
@@ -144,6 +147,15 @@ class Integration:
             # above are fatal; a boot probe is retried without restarting GPU.
             pass
         return True
+
+    def freeze(self, args):
+        # An explicit debug session must survive Waydroid's window-idle freeze.
+        try:
+            lease = Path('/var/lib/anvildroid-controller/adb-default.lease').lstat()
+            if stat.S_ISREG(lease.st_mode) and lease.st_uid == 0 and not lease.st_mode & 0o077 and time.time() - lease.st_mtime < 12:
+                return
+        except (OSError, RuntimeError): pass
+        return self.original_freeze(args)
 
     def stop(self, args, quit_session=True):
         try: return self.original_stop(args, quit_session)

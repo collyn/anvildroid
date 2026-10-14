@@ -11,7 +11,7 @@
     document.head.appendChild(script);
   })) {
     const pending = new Map();
-    const features = {controls:['keymap-drafts.js', 'keymap-library.js'], runtime:['runtime-settings.js']};
+    const features = {adb:['adb.js'], controls:['keymap-drafts.js', 'keymap-library.js'], runtime:['runtime-settings.js']};
     function script(src) {
       if (!pending.has(src)) {
         const work = Promise.resolve().then(() => load(src)).catch(error => {

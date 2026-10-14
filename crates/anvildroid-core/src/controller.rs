@@ -10,6 +10,10 @@ use std::time::Duration;
 #[serde(tag = "op", rename_all = "lowercase", deny_unknown_fields)]
 pub enum Request {
     List {},
+    #[serde(rename = "adb_info")]
+    AdbInfo { id: String },
+    #[serde(rename = "adb_set")]
+    AdbSet { id: String, enabled: bool },
     #[serde(rename = "existing_claim")]
     ExistingClaim {
         id: String,
@@ -508,6 +512,16 @@ mod tests {
         ] {
             assert!(serde_json::from_str::<Request>(request).is_err());
         }
+    }
+    #[test]
+    fn adb_requests_are_scoped_and_cannot_choose_bind_addresses() {
+        let request: Request = serde_json::from_str(r#"{"op":"adb_set","id":"default","enabled":true}"#).unwrap();
+        assert!(matches!(request, Request::AdbSet { ref id, enabled: true } if id == "default"));
+        for value in [
+            r#"{"op":"adb_set","id":"default","enabled":"true"}"#,
+            r#"{"op":"adb_set","id":"default","enabled":true,"host":"0.0.0.0"}"#,
+            r#"{"op":"adb_info","id":"default","uid":0}"#,
+        ] { assert!(serde_json::from_str::<Request>(value).is_err()); }
     }
     #[test]
     fn app_states_is_typed_and_scoped() {

@@ -23,11 +23,13 @@ const navItems = document.querySelectorAll('.nav-item:not(.disabled)');
 const pages = document.querySelectorAll('.page');
 const pageLoads = AnvilPageLoads.create();
 const lazyFeatures = AnvilLazyFeatures.create();
+let adbPage = null;
 let currentPage = openSettingsOnLaunch || openControlsOnLaunch ? null : 'apps';
 
 function navigatePage(target, refresh = true) {
-  if (!['apps', 'runtime', 'runtime-settings', 'images', 'settings', 'controls'].includes(target)) return;
-  if (currentPage === target && (target !== 'controls' || window.AnvilKeymapLibrary)) return;
+  if (!['apps', 'runtime', 'runtime-settings', 'images', 'settings', 'controls', 'adb'].includes(target)) return;
+  if (currentPage === target && (target !== 'controls' || window.AnvilKeymapLibrary) && (target !== 'adb' || adbPage)) return;
+  if (target !== 'adb') adbPage?.stop();
   currentPage = target;
   libraryPage = target === 'apps';
   clearTimeout(appStatesTimer);
@@ -48,6 +50,15 @@ function navigatePage(target, refresh = true) {
     if (target === 'runtime') await refreshRuntimePage({light:true});
     if (target === 'images') await refreshImagesPage({online:false});
     if (target === 'settings') await refreshSettings();
+    if (target === 'adb') {
+      try { await lazyFeatures.ensure('adb'); }
+      catch (error) { document.getElementById('adb-status').textContent = String(error); showAppToast(String(error), 'error'); throw error; }
+      if (currentPage !== target) return;
+      if (!adbPage) adbPage = window.AnvilAdb.create({request:controllerRequest, invoke:tauriInvoke,
+        escape:escapeHtml, toast:showAppToast, copy:copyTextToClipboard,
+        active:() => currentPage === 'adb', document, storage:window.localStorage});
+      await adbPage.refresh();
+    }
     if (target === 'controls') {
       try {
         await lazyFeatures.ensure('controls');
@@ -75,6 +86,7 @@ navItems.forEach(item => {
 });
 document.getElementById('btn-refresh-runtimes').addEventListener('click', refreshRuntimePage);
 document.getElementById('btn-refresh-images').addEventListener('click', refreshImagesPage);
+document.getElementById('btn-refresh-adb').addEventListener('click', () => { if (!adbPage) navigatePage('adb'); });
 document.getElementById('btn-start-controller').addEventListener('click', startRuntimeController);
 async function startRuntimeController() {
   const button = document.getElementById('btn-start-controller');
