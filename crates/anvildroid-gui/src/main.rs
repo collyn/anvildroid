@@ -20,6 +20,13 @@ struct CustomImageJob {
 }
 
 static CUSTOM_IMAGE_JOB: OnceLock<Arc<Mutex<Option<CustomImageJob>>>> = OnceLock::new();
+static STARTUP_TRACE: OnceLock<Option<std::time::Instant>> = OnceLock::new();
+
+fn startup_mark(stage: &str) {
+    if let Some(Some(started)) = STARTUP_TRACE.get() {
+        eprintln!("AnvilDroid startup: {} ms · {stage}", started.elapsed().as_millis());
+    }
+}
 
 fn custom_image_job() -> &'static Arc<Mutex<Option<CustomImageJob>>> {
     CUSTOM_IMAGE_JOB.get_or_init(|| Arc::new(Mutex::new(None)))
@@ -27,7 +34,20 @@ fn custom_image_job() -> &'static Arc<Mutex<Option<CustomImageJob>>> {
 
 #[tauri::command]
 fn get_app_version() -> &'static str {
+    startup_mark("frontend-script");
     env!("CARGO_PKG_VERSION")
+}
+
+#[tauri::command]
+fn startup_ready(resources: Option<serde_json::Value>) {
+    if let Some(resources) = resources {
+        startup_mark("dom-ready");
+        if matches!(STARTUP_TRACE.get(), Some(Some(_))) {
+            eprintln!("AnvilDroid startup resources: {resources}");
+        }
+    } else {
+        startup_mark("frontend-first-frame");
+    }
 }
 
 /// Guard to prevent concurrent backend mutations (start/stop/recover/install).
@@ -1097,6 +1117,9 @@ async fn check_uninstall(
 }
 
 fn main() {
+    let _ = STARTUP_TRACE.set(std::env::var_os("ANVILDROID_STARTUP_TRACE")
+        .filter(|value| value == "1").map(|_| std::time::Instant::now()));
+    startup_mark("main");
     // Desktop entries reuse the same boot-aware backend without opening a GUI.
     // Parse before Tauri/GTK initialization so shortcuts do not need a webview.
     let raw_args: Vec<_> = std::env::args_os().skip(1).collect();
@@ -1171,6 +1194,7 @@ fn main() {
         }
     }
     let mut context = tauri::generate_context!();
+    startup_mark("assets-ready");
     if open_settings {
         context.config_mut().app.windows[0].url =
             tauri::WebviewUrl::App("index.html?view=settings".into());
@@ -1181,11 +1205,22 @@ fn main() {
             tauri::WebviewUrl::App("index.html?view=controls".into());
     }
     tauri::Builder::default()
+        .append_invoke_initialization_script(if matches!(STARTUP_TRACE.get(), Some(Some(_))) {
+            "document.addEventListener('DOMContentLoaded', () => { window.__TAURI__.core.invoke('startup_ready', {resources:performance.getEntriesByType('resource').slice(0,30).map(r=>({name:r.name.split('/').pop().slice(0,240),start:Math.round(r.startTime),duration:Math.round(r.duration)}))}); requestAnimationFrame(() => requestAnimationFrame(() => window.__TAURI__.core.invoke('startup_ready'))); }, {once:true});"
+        } else { "" })
+        .on_page_load(|_, payload| {
+            startup_mark(match payload.event() {
+                tauri::webview::PageLoadEvent::Started => "page-started",
+                tauri::webview::PageLoadEvent::Finished => "page-loaded",
+            });
+        })
         .setup(|app| {
+            startup_mark("native-window-ready");
             #[cfg(target_os = "linux")]
             titlebar::install(app)?;
             if let Some(window) = app.get_webview_window("main") {
                 window.show()?;
+                startup_mark("window-show-requested");
             }
             Ok(())
         })
@@ -1217,6 +1252,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             get_app_version,
+            startup_ready,
             get_health_report,
             get_apps,
             get_app_details,

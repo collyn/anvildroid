@@ -21,9 +21,14 @@ function invoke(command, args = {}) {
 // --- Navigation ---
 const navItems = document.querySelectorAll('.nav-item:not(.disabled)');
 const pages = document.querySelectorAll('.page');
+const pageLoads = AnvilPageLoads.create();
+const lazyFeatures = AnvilLazyFeatures.create();
+let currentPage = openSettingsOnLaunch || openControlsOnLaunch ? null : 'apps';
 
 function navigatePage(target, refresh = true) {
   if (!['apps', 'runtime', 'runtime-settings', 'images', 'settings', 'controls'].includes(target)) return;
+  if (currentPage === target && (target !== 'controls' || window.AnvilKeymapLibrary)) return;
+  currentPage = target;
   libraryPage = target === 'apps';
   clearTimeout(appStatesTimer);
   navItems.forEach(n => {
@@ -34,11 +39,26 @@ function navigatePage(target, refresh = true) {
   });
   pages.forEach(p => p.classList.remove('active'));
   document.getElementById(`page-${target}`).classList.add('active');
-  if (target === 'apps') { initializeAppLibrary(); refreshAppStates(); }
-  if (target === 'runtime' && refresh) refreshRuntimePage();
-  if (target === 'images' && refresh) refreshImagesPage();
-  if (target === 'settings') refreshSettings();
-  if (target === 'controls') window.AnvilKeymapLibrary?.refresh();
+  if (refresh) pageLoads.schedule(target, () => currentPage === target, async () => {
+    if (target === 'apps') {
+      if (!appLibraryStarted) await initializeAppLibrary();
+      else if (!refreshingApps) await refreshAppStates();
+    }
+    if (target === 'runtime' || target === 'runtime-settings') await lazyFeatures.ensure('runtime');
+    if (target === 'runtime') await refreshRuntimePage({light:true});
+    if (target === 'images') await refreshImagesPage({online:false});
+    if (target === 'settings') await refreshSettings();
+    if (target === 'controls') {
+      try {
+        await lazyFeatures.ensure('controls');
+        if (currentPage === target) await window.AnvilKeymapLibrary.refresh();
+      } catch (error) {
+        showAppToast(String(error), 'error');
+        throw error;
+      }
+    }
+  });
+  if (target === 'apps' && appLibraryStarted) appStatesTimer = setTimeout(refreshAppStates, 5000);
   scheduleRuntimeUsage();
 }
 navItems.forEach(item => {
@@ -130,22 +150,25 @@ async function restartRuntimeController() {
     button.disabled = controllerRestartBlocked();
   }
 }
-async function refreshRuntimePage() {
+async function refreshRuntimePage({light = false} = {}) {
   const button = document.getElementById('btn-refresh-runtimes');
   button.disabled = true;
-  try { await Promise.all([refreshStatus(), refreshController(), refreshImageDownload()]); if (!imageCatalogState || imageCatalogState.status === 'Idle') checkOfficialImages(true); }
+  try {
+    await Promise.all([refreshController({light}), refreshImageDownload(), ...(light ? [] : [refreshStatus()])]);
+    pageLoads.mark('runtime');
+  }
   finally {
     button.disabled = false;
     resumeWaydroidInitCheck();
   }
 }
 
-async function refreshImagesPage() {
+async function refreshImagesPage({online = true} = {}) {
   const button = document.getElementById('btn-refresh-images');
   button.disabled = true;
   try {
-    await Promise.all([refreshController(), refreshImageDownload()]);
-    await checkOfficialImages(true);
+    await Promise.all([refreshImageDownload(), checkOfficialImages(online)]);
+    pageLoads.mark('images');
   } finally { button.disabled = false; }
 }
 
@@ -344,10 +367,14 @@ const runtimeFilter = document.getElementById('filter-runtime');
 const LIBRARY_VIEW_KEY = 'anvildroid.library-view';
 const libraryViewButtons = [...document.querySelectorAll('.view-button[data-view]')];
 let libraryView = 'grid';
-try {
-  const savedView = localStorage.getItem(LIBRARY_VIEW_KEY);
-  if (savedView === 'grid' || savedView === 'list') libraryView = savedView;
-} catch (_) { /* private mode or disabled storage: use the default */ }
+function restoreLibraryPreferences() {
+  try {
+    const savedView = localStorage.getItem(LIBRARY_VIEW_KEY);
+    if (savedView === 'grid' || savedView === 'list') applyLibraryView(savedView, false);
+  } catch (_) { /* private mode or disabled storage: use the default */ }
+  loadAppTags();
+  renderTagFilters();
+}
 
 function applyLibraryView(view, persist = true) {
   if (view !== 'grid' && view !== 'list') return;
@@ -392,7 +419,6 @@ function renderTagFilters() {
   tagFilter.value = currentCategory;
 }
 
-loadAppTags();
 let preferenceBusy = false;
 let refreshingApps = false;
 let detailPackage = null;
@@ -603,7 +629,7 @@ function renderApps(apps) {
         ${pendingWaydroidRuntime === (app.runtime_id || 'default') && app.desktop_entry
           ? '<span class="app-processing" role="status" aria-label="Processing">Processing…</span>'
           : libraryIconUrl(app)
-            ? `<img src="${libraryIconUrl(app)}" alt="" onerror="this.parentElement.innerHTML='App'">`
+            ? `<img src="${libraryIconUrl(app)}" alt="" loading="lazy" decoding="async" onerror="this.parentElement.innerHTML='App'">`
             : 'App'}
       </div>
       <div class="app-name">${pendingWaydroidRuntime === (app.runtime_id || 'default') && app.desktop_entry ? 'Processing…' : escapeHtml(app.label || app.package.split('.').pop())}</div>
@@ -694,7 +720,7 @@ async function refreshApps() {
   }
   const managedRefresh = refreshManagedLibrary();
   try {
-    await refreshLibraryDefaultState();
+    await refreshLibraryDefaultState({loadInventory:false});
     if (!libraryRuntimeRunning('default') || (libraryDefaultState === 'Frozen' && allApps.length > 0)) return;
     const apps = await invoke('get_apps');
     if (!Array.isArray(apps)) throw new Error('Invalid app inventory');
@@ -726,12 +752,21 @@ function libraryRuntimeRunning(id) {
   return ['Running', 'Frozen'].includes(record?.state) && !record.error;
 }
 
-async function refreshLibraryDefaultState() {
+async function refreshLibraryDefaultState({loadInventory = true} = {}) {
   const previous = libraryDefaultState;
   try {
-    const report = await invoke('get_health_report');
-    libraryDefaultState = typeof report?.status?.state === 'string' ? report.status.state : report?.status?.state?.type || 'Unknown';
-    if ((libraryDefaultState === 'Running' && !['Running', 'Frozen'].includes(previous)) || (libraryDefaultState === 'Frozen' && allApps.length === 0)) {
+    try {
+      const record = await controllerRequest({op:'refresh', id:'default'});
+      if (record?.id !== 'default' || typeof record.state !== 'string') throw new Error('Invalid Default runtime state');
+      libraryDefaultState = record.state;
+    } catch (_) {
+      const report = await invoke('get_health_report');
+      libraryDefaultState = typeof report?.status?.state === 'string' ? report.status.state : report?.status?.state?.type || 'Unknown';
+    }
+    // Publish live availability immediately so saved apps can appear while the
+    // slower Android inventory is being read. Cached state never enables actions.
+    if (!appStatesLoading) { renderManagedLibraryStatus(); renderApps(allApps); }
+    if (loadInventory && ((libraryDefaultState === 'Running' && !['Running', 'Frozen'].includes(previous)) || (libraryDefaultState === 'Frozen' && allApps.length === 0))) {
       const apps = await invoke('get_apps');
       if (!Array.isArray(apps)) throw new Error('Invalid app inventory');
       allApps = apps;
@@ -1145,8 +1180,6 @@ async function syncLibrary() {
 }
 // Inventory refresh is explicit or follows an app mutation; focus is not a refresh.
 
-loadLibrary();
-
 // --- Install APK ---
 let apkInstallBusy = false;
 function apkTargetAvailable(record) {
@@ -1334,14 +1367,16 @@ let appLibraryStarted = false;
 function initializeAppLibrary() {
   if (appLibraryStarted) return;
   appLibraryStarted = true;
+  loadLibrary();
+  // WebKit may synchronously open its storage database on the first read.
+  // Restore preferences only after the navigation shell has painted.
+  restoreLibraryPreferences();
   loadCachedApps();
-  refreshApps();
+  return refreshApps();
 }
 
 // P5.3.0: configured file values are deliberately distinct from live readings.
 async function refreshSettings() {
-  refreshController();
-  refreshImageDownload();
   const button = document.getElementById('btn-refresh-settings');
   const panel = document.getElementById('settings-runtime');
   button.disabled = true;
@@ -1482,13 +1517,19 @@ let existingRuntime = null, existingRuntimeError = '', existingRuntimeLoading = 
 function runtimeRecord(id) {
   return id === 'default' ? existingRuntime : controllerRecords.find(record => record.id === id);
 }
-async function refreshExistingRuntime() {
+async function refreshExistingRuntime({light = false} = {}) {
   if (existingRuntimeLoading) return;
   existingRuntimeLoading = true;
   try {
     const record = await controllerRequest({op:'refresh', id:'default'});
     if (record?.id !== 'default') throw new Error('Invalid Default runtime response');
+    const previous = existingRuntime;
+    if (currentPage === 'runtime' && !previous) {
+      existingRuntime = {...record, detailsLoading:true};
+      renderController();
+    }
     await Promise.all(['resources','gpu','arm','storage'].map(async kind => {
+      if (light && ['gpu', 'arm'].includes(kind) && previous?.[kind] && previous.state === record.state && !previous.unavailable) { record[kind] = previous[kind]; return; }
       try { record[kind] = await controllerRequest({op:kind + '_info', id:'default'}); if (kind === 'resources') RuntimeUsage.sample(record); }
       catch (error) { record[kind + 'Error'] = String(error); }
     }));
@@ -1519,10 +1560,10 @@ function renderExistingRuntime() {
   document.getElementById('existing-runtime-usage').innerHTML = renderRuntimeUsage(record.unavailable ? {id:record.id} : record);
   updateDefaultRuntimeBadge(record.unavailable ? 'Unavailable' : record.state, existingRuntimeError);
   [btnStart, btnStop, btnRecover].forEach(button => {
-    button.disabled = Boolean(controllerMutation || runtimeTransition || runtimeBatchBusy || pendingLaunch || pendingAppAction || record.unavailable);
+    button.disabled = Boolean(controllerMutation || runtimeTransition || runtimeBatchBusy || pendingLaunch || pendingAppAction || record.unavailable || record.detailsLoading);
   });
   document.querySelectorAll('#legacy-runtime-row .runtime-action-icon').forEach(button => button.setAttribute('aria-label', button.title + ' · ' + record.name));
-  const busy = controllerMutation || apkInstallBusy || runtimeTransition || !record.managed || record.unavailable;
+  const busy = controllerMutation || apkInstallBusy || runtimeTransition || !record.managed || record.unavailable || record.detailsLoading;
   const button = (op,label,disabled=false) => `<button class="btn btn-quiet" data-controller-op="${op}" data-controller-id="default" ${disabled ? 'disabled' : ''}>${label}</button>`;
   const markup = `${existingRuntimeError ? `<p class="runtime-blocked">${escapeHtml(existingRuntimeError)}</p>` : ''}<div class="runtime-actions runtime-settings-actions">${!record.managed ? `<p class="hint">Start Default runtime, then enable management once to keep its settings available after stopping. App data stays in place.</p>${button('existing_claim','Enable management',controllerMutation || record.unavailable || record.state !== 'Running')}` : `${button('rename','Rename…',controllerMutation || record.unavailable)}${button('reinstall','Reinstall runtime…',busy || !['Stopped','Running','Frozen'].includes(record.state))}`}</div>
     <details class="runtime-settings-group" data-settings-key="${escapeHtml(record.id)}:gpu" ${runtimeSettingsOpen.has(record.id + ':gpu') ? 'open' : ''}><summary>Graphics</summary><div class="runtime-gpu-panel runtime-primary-setting" id="runtime-gpu-default">${renderGpuControls(record,busy)}<div class="runtime-actions">${button('gpu_check','Check GPU',controllerMutation)}</div>${renderRuntimeGraphics('default')}</div></details>
@@ -2218,7 +2259,7 @@ function renderController() {
     const appWorking = record.appJob?.status === 'Running';
     const desktopMode = (record.display?.effective_mode || record.display?.mode) === 'desktop';
     const active = appWorking || storageMoving || ['Provisioning', 'Starting', 'Stopping'].includes(record.state) || record.job?.status === 'Running';
-    const busy = controllerMutation || apkInstallBusy || active;
+    const busy = controllerMutation || apkInstallBusy || active || record.detailsLoading;
     const failed = record.state === 'Error';
     const needsImages = record.state === 'Allocated' || (failed && record.job?.operation === 'prepare');
     const canDelete = record.deletion_pending || ['Allocated', 'Prepared', 'Stopped'].includes(record.state) || (failed && record.job?.operation === 'prepare');
@@ -2372,20 +2413,34 @@ document.addEventListener('visibilitychange', () => {
   scheduleRuntimeUsage();
   if (!document.hidden && (controllerHasActiveWork() || document.getElementById('page-runtime').classList.contains('active') || document.getElementById('page-images').classList.contains('active') || document.getElementById('page-runtime-settings').classList.contains('active'))) refreshController();
 });
-async function refreshController() {
+async function refreshController({light = false} = {}) {
   if (controllerLoading || controllerMutation) return;
   clearTimeout(controllerTimer);
   controllerLoading = true;
   controllerRefreshDone = new Promise(resolve => { finishControllerRefresh = resolve; });
   const message = document.getElementById('controller-message');
   const create = document.getElementById('controller-create-button');
+  let defaultRefresh = null;
   try {
     const records = await controllerRequest({ op: 'list' });
     if (!Array.isArray(records)) throw new Error('Invalid runtime list');
     const deleted = controllerRecords.filter(record => record.deletion_pending && !records.some(current => current.id === record.id));
     if (deleted.length) controllerNotice = `Deleted runtime: ${deleted.map(record => record.name).join(', ')}.`;
+    const previousRecords = controllerRecords;
+    const states = await Promise.all(records.map(async record => {
+      try {
+        const current = await controllerRequest({op:'refresh', id:record.id});
+        if (current?.id !== record.id) throw new Error('Runtime response does not match the requested ID');
+        return current;
+      } catch (error) { return {...record, refreshError:String(error)}; }
+    }));
+    if (!previousRecords.length) {
+      controllerRecords = states.map(record => record.refreshError ? record : {...record, detailsLoading:true});
+      renderController();
+    }
+    defaultRefresh = refreshExistingRuntime({light});
     try {
-      const setup = await controllerRequest({ op: 'requirements' });
+      const setup = light && controllerRequirements ? controllerRequirements : await controllerRequest({ op: 'requirements' });
       if (!setup || typeof setup.can_prepare !== 'boolean' || typeof setup.can_start !== 'boolean' || !Array.isArray(setup.checks)) throw new Error('Controller setup check unavailable');
       controllerRequirements = setup;
       controllerSetupError = '';
@@ -2395,32 +2450,31 @@ async function refreshController() {
     }
     renderControllerSetup();
     try {
-      const sources = await controllerRequest({op:'arm_sources'});
+      const sources = light && armSourceState.sources?.length ? armSourceState.sources : await controllerRequest({op:'arm_sources'});
       if (!Array.isArray(sources)) throw new Error('Invalid ARM source list');
       armSourceState.sources = sources;
     }
     catch (error) { armSourceState.error = `Cannot load ARM sources: ${error}`; }
     renderArmSources();
     // Refresh queries the authenticated worker; list alone is persisted metadata.
-    controllerRecords = await Promise.all(records.map(async r => {
-      let record;
-      try {
-        record = await controllerRequest({ op: 'refresh', id: r.id });
-        if (record?.id !== r.id) throw new Error('Runtime response does not match the requested ID');
-      } catch (error) { return {...r, refreshError: String(error)}; }
+    controllerRecords = await Promise.all(states.map(async record => {
+      if (record.refreshError) return record;
+      const r = record;
       try { record.storage = await controllerRequest({ op: 'storage_info', id: r.id }); }
       catch (error) { record.storageLoadError = `Cannot load storage: ${error}`; }
-      try { record.display = await controllerRequest({op: 'display_info', id: r.id}); }
+      const previous = previousRecords.find(item => item.id === r.id);
+      const cached = kind => light && previous?.[kind] && previous.state === record.state && !previous.refreshError;
+      try { record.display = cached('display') ? previous.display : await controllerRequest({op: 'display_info', id: r.id}); }
       catch (error) { record.displayError = `Cannot read display mode: ${error}`; }
       try { record.resources = await controllerRequest({op:'resources_info', id:r.id}); RuntimeUsage.sample(record); }
       catch (error) { record.resourcesError = `Cannot read resource limits: ${error}`; }
-      try { record.gpu = await controllerRequest({op: 'gpu_info', id: r.id}); }
+      try { record.gpu = cached('gpu') ? previous.gpu : await controllerRequest({op: 'gpu_info', id: r.id}); }
       catch (error) { record.gpuError = `Cannot read GPU configuration: ${error}`; }
-      try { record.arm = await controllerRequest({op: 'arm_info', id: r.id}); }
+      try { record.arm = cached('arm') ? previous.arm : await controllerRequest({op: 'arm_info', id: r.id}); }
       catch (error) { record.armError = `Cannot read ARM configuration: ${error}`; }
       try { record.appJob = await controllerRequest({ op: 'app_job', id: r.id }); }
-      catch (error) { record.appJob = controllerRecords.find(previous => previous.id === r.id)?.appJob; }
-      invalidateRuntimeGraphics(controllerRecords.find(previous => previous.id === r.id), record);
+      catch (error) { record.appJob = previousRecords.find(previous => previous.id === r.id)?.appJob; }
+      invalidateRuntimeGraphics(previousRecords.find(previous => previous.id === r.id), record);
       return record;
     }));
     RuntimeUsage.retain(new Set(['default', ...controllerRecords.map(record => record.id)]));
@@ -2447,7 +2501,7 @@ async function refreshController() {
     renderController();
     message.textContent = `Cannot reach runtime controller: ${error}. Start the controller below, or install/start anvildroid-controller.service, then refresh Runtime.`;
   } finally {
-    await refreshExistingRuntime();
+    await (defaultRefresh || refreshExistingRuntime({light}));
     renderController();
     controllerLoading = false;
     renderRuntimeBatchSelection();
@@ -2491,6 +2545,7 @@ async function mutateController(request) {
   let failure = null;
   try {
     await controllerRefreshDone;
+    await lazyFeatures.ensure('runtime');
     if (['prepare', 'stop'].includes(request.op)) { controllerPending.phase = 'confirm'; renderController(); }
     if (request.op === 'prepare' && !await AppDialog.confirm(
       runtimeRecord(request.id)?.image_selection
@@ -2660,6 +2715,9 @@ function openRuntimeSettings(id) {
   selectedRuntimeId = id;
   renderController();
   navigatePage('runtime-settings', false);
+  controllerRefreshDone.then(() => {
+    if (currentPage === 'runtime-settings' && runtimeSettingsId === id) return refreshController();
+  });
   document.getElementById('runtime-settings-title').focus();
 }
 document.getElementById('runtime-settings-back').addEventListener('click', () => {
@@ -3167,7 +3225,7 @@ async function refreshManagedLibrary({poll = false} = {}) {
             if (Array.isArray(saved) && saved.every(app => typeof app.package === 'string' && app.launchable === true)) managedSnapshots.set(record.id, saved);
           } catch (_) { /* A corrupt cache is not an app inventory. */ }
         }
-        if (['Running', 'Frozen'].includes(current.state) && !pendingAppAction && !pendingLaunch && (!poll || !managedSnapshots.has(record.id) || Date.now() - (managedInventoryChecked.get(record.id) || 0) >= 60000 || managedLibrary.find(r => r.id === record.id)?.state !== 'Running')) {
+        if (['Running', 'Frozen'].includes(current.state) && !pendingAppAction && !pendingLaunch && (!poll || !managedSnapshots.has(record.id) || Date.now() - (managedInventoryChecked.get(record.id) || 0) >= 60000 || managedLibrary.find(r => r.id === record.id)?.state !== current.state)) {
           const report = await controllerRequest({op:'apps', id:record.id});
           if (report?.runtime_id !== record.id || !Array.isArray(report.apps)) throw new Error('Invalid app inventory');
           if (!report.apps.every(app => typeof app.package === 'string' && app.launchable === true)) throw new Error('Stop and start on the Runtime page to update launcher filtering.');
@@ -3194,7 +3252,7 @@ async function refreshManagedLibrary({poll = false} = {}) {
   } finally {
     managedLibraryLoading = false;
     if (!appStatesLoading) { renderManagedLibraryStatus(); renderApps(allApps); }
-    if(libraryPage&&!document.hidden&&!appStatesLoading) appStatesTimer=setTimeout(refreshAppStates,0);
+    if(libraryPage&&!document.hidden&&!appStatesLoading) { clearTimeout(appStatesTimer); appStatesTimer=setTimeout(refreshAppStates,5000); }
   }
 }
 let managedLaunchTail = null;
@@ -3345,7 +3403,7 @@ document.addEventListener('change', event => {
 });
 
 // Start only after all runtime request helpers have been initialized.
-if (!openSettingsOnLaunch && !openControlsOnLaunch) initializeAppLibrary();
+if (!openSettingsOnLaunch && !openControlsOnLaunch) pageLoads.schedule('apps', () => libraryPage, initializeAppLibrary);
 
 // The search shortcut is scoped to the app window and leaves modal dialogs alone.
 document.addEventListener('keydown', event => {
@@ -3458,6 +3516,7 @@ async function refreshBatchRecord(id, operation) {
   return record;
 }
 async function executeBatchOperation(record, op, imageRequest, activationToken) {
+  await lazyFeatures.ensure('runtime');
   const id = record.id;
   if (op === 'open') return launchRuntimeWaydroidWindow(record, activationToken);
   if (id === 'default' && ['start', 'stop'].includes(op)) {

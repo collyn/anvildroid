@@ -14,7 +14,7 @@
     <nav class="sidebar" aria-label="Main navigation">
       <div class="sidebar-scroll">
       <div class="sidebar-brand">
-        <img src="brand.png" alt="" class="brand-mark">
+        <img src="brand.png" alt="" class="brand-mark" width="50" height="50" decoding="async">
         <div><h2>Anvil<span>Droid</span></h2><p>Waydroid Manager for Linux</p></div>
       </div>
       <ul class="nav-list">
@@ -325,13 +325,12 @@
       <div class="dialog-actions"><button id="app-dialog-cancel" class="btn" type="button">Cancel</button><button id="app-dialog-submit" class="btn btn-primary" type="submit">Continue</button></div>
     </form>
   </dialog>
-  <script src="app-dialog.js"></script>
-  <script src="runtime-settings.js"></script>
-  <script src="runtime-batch.js"></script>
-  <script src="runtime-window.js"></script>
-  <script src="runtime-usage.js"></script>
-  <script src="main.js"></script>
-  <script src="keymap-drafts.js"></script>
-  <script src="keymap-library.js"></script>
+  <script src="app-dialog.js" defer></script>
+  <script src="runtime-batch.js" defer></script>
+  <script src="runtime-window.js" defer></script>
+  <script src="runtime-usage.js" defer></script>
+  <script src="page-loads.js" defer></script>
+  <script src="lazy-features.js" defer></script>
+  <script src="main.js" defer></script>
 </body>
 </html>

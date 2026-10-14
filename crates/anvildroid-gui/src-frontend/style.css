@@ -29,10 +29,11 @@
   margin: 0;
   padding: 0;
   box-sizing: border-box;
+  font-family: inherit;
 }
 
 body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Noto Sans', sans-serif;
+  font-family: 'Noto Sans', sans-serif;
   background: var(--bg-primary);
   color: var(--text-primary);
   min-height: 100vh;
@@ -699,3 +700,6 @@ details[open] > summary::after { content: 'Hide'; }
 @keyframes anvildroid-processing-pulse {
   50% { opacity: .45; }
 }
+
+/* Keep diagnostic/code output monospace while controls inherit the UI font. */
+code, pre { font-family: monospace; }

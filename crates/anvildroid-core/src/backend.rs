@@ -306,12 +306,32 @@ pub fn waydroid_icon_dir() -> Option<std::path::PathBuf> {
 /// Library refresh never starts a stopped session. A frozen inventory read
 /// uses Waydroid's temporary unfreeze/refreeze; GUI polling serves its cache.
 pub fn list_apps_if_running() -> Result<Vec<AppInfo>, AnvilError> {
-    if !matches!(crate::runtime::runtime_status().state, crate::models::RuntimeState::Running | crate::models::RuntimeState::Frozen) {
+    // The controller already reads container/boot state directly. Avoid three
+    // Waydroid Python startups for every library inventory read. Preserve the
+    // desktop session check and the legacy path when no controller is available.
+    let running = crate::controller::request(crate::controller::Request::Refresh {
+        id: "default".into(),
+    })
+    .ok()
+    .and_then(|record| inventory_available(&record))
+    .map(|running| running && crate::runtime::session_owner().unwrap_or(false))
+    .unwrap_or_else(|| matches!(crate::runtime::runtime_status().state,
+        crate::models::RuntimeState::Running | crate::models::RuntimeState::Frozen));
+    if !running {
         return Err(AnvilError::BackendFailed(
             "Runtime is not running. Keeping the saved app list; use Start or open an app when needed.".into(),
         ));
     }
     list_apps()
+}
+
+fn inventory_available(record: &serde_json::Value) -> Option<bool> {
+    if record.get("id")?.as_str()? != "default" { return None; }
+    match record.get("state")?.as_str()? {
+        "Running" | "Frozen" => Some(true),
+        "Stopped" | "Starting" | "Stopping" | "Error" => Some(false),
+        _ => None,
+    }
 }
 
 /// Run `waydroid app list` and return structured results with icon paths.
@@ -472,6 +492,21 @@ pub fn doctor() -> Result<u8, AnvilError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inventory_requires_verified_default_runtime_state() {
+        for state in ["Running", "Frozen"] {
+            assert_eq!(inventory_available(&serde_json::json!({"id":"default","state":state})), Some(true));
+        }
+        for state in ["Stopped", "Starting", "Stopping", "Error"] {
+            assert_eq!(inventory_available(&serde_json::json!({"id":"default","state":state})), Some(false));
+        }
+        for record in [serde_json::json!({"id":"r-other","state":"Running"}),
+            serde_json::json!({"id":"default","state":"Unknown"}),
+            serde_json::json!({"id":"default","state":true}), serde_json::json!({})] {
+            assert_eq!(inventory_available(&record), None);
+        }
+    }
 
     #[test]
     fn apply_vulkan_line_replaces_and_appends() {

@@ -148,5 +148,4 @@
   document.getElementById('probe-runtime')?.addEventListener('change',updateDiagnostics);
   window.addEventListener('storage',event=>{if(!event.key||event.key.includes('anvildroid-keymap-v1'))refresh();});
   window.AnvilKeymapLibrary={refresh,record:id=>records.get(id),updateDiagnostics};
-  if(window.location?.search==='?view=controls')refresh();
 })();

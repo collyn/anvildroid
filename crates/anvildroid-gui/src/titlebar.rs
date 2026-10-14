@@ -8,6 +8,10 @@ pub fn install(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     };
     let native = window.gtk_window()?;
+    native.connect_map_event(|_, _| {
+        crate::startup_mark("window-mapped");
+        gtk::glib::Propagation::Proceed
+    });
     native.style_context().add_class("anvildroid-main");
     let webview = window.clone();
     native.connect_window_state_event(move |_, event| {
