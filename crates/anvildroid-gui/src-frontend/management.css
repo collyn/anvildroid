@@ -104,23 +104,23 @@
 }
 #controller-message:not(:empty) { border: 1px solid var(--mg-border-strong); background: rgba(45, 87, 136, .2); color: #c9e0ff; }
 
-:is(#page-runtime, #page-runtime-settings, #page-images) .runtime-table-scroll {
+:is(#page-runtime, #page-runtime-settings, #page-images, #page-settings) .runtime-table-scroll {
   border: 1px solid var(--mg-border-strong);
   border-radius: 14px;
   background: rgba(15, 26, 41, .7);
   box-shadow: 0 16px 36px rgba(0, 0, 0, .14);
 }
-:is(#page-runtime, #page-runtime-settings, #page-images) .runtime-table { border-collapse: separate; border-spacing: 0; }
-:is(#page-runtime, #page-runtime-settings, #page-images) .runtime-table th {
+:is(#page-runtime, #page-runtime-settings, #page-images, #page-settings) .runtime-table { border-collapse: separate; border-spacing: 0; }
+:is(#page-runtime, #page-runtime-settings, #page-images, #page-settings) .runtime-table th {
   padding: 13px 16px;
   background: #17283d;
   color: #a9c1de;
   border-bottom: 1px solid var(--mg-border-strong);
 }
-:is(#page-runtime, #page-runtime-settings, #page-images) .runtime-table td { padding: 14px 16px; border-top-color: var(--mg-border); }
-:is(#page-runtime, #page-runtime-settings, #page-images) .runtime-table tbody tr.runtime-summary { transition: background .15s, box-shadow .15s; }
-:is(#page-runtime, #page-runtime-settings, #page-images) .runtime-table tbody tr.runtime-summary:hover,
-:is(#page-runtime, #page-runtime-settings, #page-images) .runtime-table tbody tr.runtime-summary.selected { background: rgba(76, 167, 255, .1); box-shadow: inset 3px 0 var(--mg-blue); }
+:is(#page-runtime, #page-runtime-settings, #page-images, #page-settings) .runtime-table td { padding: 14px 16px; border-top-color: var(--mg-border); }
+:is(#page-runtime, #page-runtime-settings, #page-images, #page-settings) .runtime-table tbody tr.runtime-summary { transition: background .15s, box-shadow .15s; }
+:is(#page-runtime, #page-runtime-settings, #page-images, #page-settings) .runtime-table tbody tr.runtime-summary:hover,
+:is(#page-runtime, #page-runtime-settings, #page-images, #page-settings) .runtime-table tbody tr.runtime-summary.selected { background: rgba(76, 167, 255, .1); box-shadow: inset 3px 0 var(--mg-blue); }
 :is(#page-runtime, #page-runtime-settings, #page-images) .runtime-select { color: #edf5ff; }
 :is(#page-runtime, #page-runtime-settings, #page-images) .runtime-select .hint { color: #879db8; }
 :is(#page-runtime, #page-runtime-settings, #page-images) .runtime-status { border: 1px solid var(--mg-border); background: #1b2b40; }

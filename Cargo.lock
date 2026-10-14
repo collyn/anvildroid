@@ -67,6 +67,7 @@ dependencies = [
  "anvildroid-core",
  "cc",
  "gtk",
+ "libloading",
  "serde",
  "serde_json",
  "tauri",

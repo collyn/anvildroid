@@ -704,6 +704,6 @@ details[open] > summary::after { content: 'Hide'; }
 /* Keep diagnostic/code output monospace while controls inherit the UI font. */
 code, pre { font-family: monospace; }
 .shortcut-preference { display: flex; align-items: center; gap: 10px; }
-.shortcut-preference input { appearance: none; -webkit-appearance: none; width: 16px; height: 16px; min-width: 16px; margin: 0; padding: 0; border: 1px solid #637d99; border-radius: 4px; background: #102033; cursor: pointer; }
-.shortcut-preference input:checked { border-color: #4ca7ff; background: #4ca7ff url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='m3.5 8 3 3 6-6' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / 14px 14px no-repeat; }
-.shortcut-preference input:disabled { opacity: .5; cursor: default; }
+#page-settings .shortcut-preference input { appearance: none; -webkit-appearance: none; width: 16px; height: 16px; min-width: 16px; margin: 0; padding: 0; border: 1px solid #637d99; border-radius: 4px; background: #102033; cursor: pointer; }
+#page-settings .shortcut-preference input:checked { border-color: #4ca7ff; background: #4ca7ff url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='m3.5 8 3 3 6-6' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / 14px 14px no-repeat; }
+#page-settings .shortcut-preference input:disabled { opacity: .5; cursor: default; }

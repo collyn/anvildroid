@@ -8,6 +8,7 @@ use tauri::{Manager, State};
 
 #[cfg(target_os = "linux")]
 mod titlebar;
+mod preferences;
 
 #[derive(Clone)]
 struct CustomImageJob {
@@ -819,8 +820,6 @@ async fn get_shortcut_preferences() -> Result<bool, String> {
 #[tauri::command]
 async fn set_automatic_shortcuts(enabled: bool) -> Result<(), String> {
     blocking(move || {
-        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-        anvildroid_core::shortcut_preferences::ensure_service(&exe).map_err(|e| e.to_string())?;
         anvildroid_core::shortcut_preferences::set_automatic(enabled).map_err(|e| e.to_string())
     }).await
 }
@@ -834,11 +833,6 @@ async fn remove_app_shortcut(
     let guard = guard.0.clone();
     Ok(blocking(move || {
         let Ok(_operation) = guard.try_lock() else { return busy_result(); };
-        if runtime_id == "default" {
-            let result = std::env::current_exe().map_err(AnvilError::from)
-                .and_then(|exe| anvildroid_core::shortcut_preferences::ensure_service(&exe));
-            if let Err(e) = result { return op_result_err(e); }
-        }
         match desktop::remove_runtime_shortcut(&runtime_id, &package) {
             Ok(()) => op_result_ok(format!("Menu shortcut for {package} removed.")),
             Err(e) => op_result_err(e),
@@ -1164,15 +1158,15 @@ fn main() {
     // Parse before Tauri/GTK initialization so shortcuts do not need a webview.
     let raw_args: Vec<_> = std::env::args_os().skip(1).collect();
     if raw_args.len() == 1 && raw_args[0] == "--shortcut-monitor" {
-        if let Err(e) = anvildroid_core::shortcut_preferences::monitor() {
-            eprintln!("{e}");
-            std::process::exit(1);
-        }
+        // Old login entries can survive an upgrade until the next GUI launch.
+        // Exit successfully so Restart=on-failure does not resurrect the service.
+        eprintln!("Shortcut monitoring now runs inside the AnvilDroid GUI.");
         return;
     }
     let open_settings = raw_args.len() == 1 && raw_args[0] == "--settings";
     let open_controls = raw_args.len() == 1 && raw_args[0] == "--controls";
-    if !raw_args.is_empty() && !open_settings && !open_controls {
+    let autostart = raw_args.len() == 1 && raw_args[0] == "--autostart";
+    if !raw_args.is_empty() && !open_settings && !open_controls && !autostart {
         let result = (|| -> Result<String, AnvilError> {
             let (runtime_id, args) = scope::parse_selector(&raw_args)?;
             let args: Vec<String> = args
@@ -1261,17 +1255,18 @@ fn main() {
                 tauri::webview::PageLoadEvent::Finished => "page-loaded",
             });
         })
-        .setup(|app| {
+        .setup(move |app| {
             startup_mark("native-window-ready");
+            preferences::install(app)?;
+            app.manage(anvildroid_core::shortcut_preferences::ShortcutMonitor::start()?);
             #[cfg(target_os = "linux")]
             titlebar::install(app)?;
-            if let Some(window) = app.get_webview_window("main") {
-                window.show()?;
-                startup_mark("window-show-requested");
-            }
+            preferences::show_at_startup(app.handle(), open_settings || open_controls)?;
+            startup_mark("window-visibility-configured");
             Ok(())
         })
         .plugin(tauri_plugin_dialog::init())
+        .on_window_event(preferences::handle_close)
         .manage(OpGuard(Arc::new(Mutex::new(()))))
         .register_asynchronous_uri_scheme_protocol("appicon", |_ctx, request, responder| {
             let path = percent_decode(request.uri().path());
@@ -1300,6 +1295,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             get_app_version,
             startup_ready,
+            preferences::get_application_preferences,
+            preferences::set_application_preference,
             get_health_report,
             get_apps,
             get_app_details,
@@ -1339,8 +1336,13 @@ fn main() {
             uninstall_app,
             check_uninstall,
         ])
-        .run(context)
-        .expect("error while running AnvilDroid GUI");
+        .build(context)
+        .expect("error while building AnvilDroid GUI")
+        .run(|app, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                app.state::<anvildroid_core::shortcut_preferences::ShortcutMonitor>().stop();
+            }
+        });
 }
 
 fn icon_package(path: &str) -> Option<&str> {

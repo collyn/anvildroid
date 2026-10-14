@@ -1442,9 +1442,13 @@ async function refreshSettings() {
   const panel = document.getElementById('settings-runtime');
   button.disabled = true;
   refreshShortcutPreferences();
+  refreshApplicationPreferences();
+  refreshRuntimeStartupPreferences();
+  const armRefresh = refreshArmSources();
   try {
     const report = await invoke('get_runtime_catalog');
     const selected = report.registry.runtimes.find(r => r.id === report.registry.default_runtime_id);
+    if (selected?.id === 'default') { runtimeStartupDefaultName = selected.name || 'Default runtime'; renderRuntimeStartupPreferences(); }
     const settings = report.configured.settings;
     const rows = [['Runtime', selected.name], ['Runtime ID', selected.id],
       ['Image type (configured)', settings.image_kind], ['Renderer (configured)', settings.renderer],
@@ -1456,7 +1460,7 @@ async function refreshSettings() {
     panel.innerHTML = rows.map(([k,v]) => `<div class="status-row"><span class="status-label">${escapeHtml(k)}</span><span class="status-value">${escapeHtml(v)}</span></div>`).join('') +
       `<p class="hint">${escapeHtml(report.management_note)}</p><p class="hint">Configured GPU/renderer values do not verify hardware acceleration.</p>`;
   } catch (e) { panel.textContent = `Cannot load runtime configuration: ${e}`; }
-  finally { button.disabled = false; }
+  finally { await armRefresh; button.disabled = false; }
 }
 document.getElementById('btn-refresh-settings').addEventListener('click', refreshSettings);
 
@@ -1468,6 +1472,42 @@ async function refreshShortcutPreferences() {
     checkbox.checked = await tauriInvoke('get_shortcut_preferences');
     checkbox.disabled = false;
   } catch (error) { showAppToast(`Cannot load shortcut preferences: ${error.message || error}`, 'error'); }
+}
+const applicationPreferenceFields = {'minimize-to-panel': 'minimize_to_panel', 'auto-startup': 'auto_startup', 'startup-minimize': 'startup_minimize'};
+let applicationPreferenceSaving = false;
+async function refreshApplicationPreferences() {
+  if (applicationPreferenceSaving) return;
+  const controls = Object.keys(applicationPreferenceFields).map(id => document.getElementById(id));
+  controls.forEach(control => { control.disabled = true; });
+  try {
+    const prefs = await tauriInvoke('get_application_preferences');
+    controls.forEach(control => {
+      control.checked = !!prefs[applicationPreferenceFields[control.id]];
+      control.disabled = false;
+    });
+  } catch (error) { showAppToast(`Cannot load application preferences: ${error.message || error}`, 'error'); }
+}
+for (const [id, preference] of Object.entries(applicationPreferenceFields)) {
+  document.getElementById(id).addEventListener('change', async event => {
+    if (applicationPreferenceSaving) return;
+    const checkbox = event.target;
+    const enabled = checkbox.checked;
+    applicationPreferenceSaving = true;
+    Object.keys(applicationPreferenceFields).forEach(id => { document.getElementById(id).disabled = true; });
+    try {
+      const prefs = await tauriInvoke('set_application_preference', {preference, enabled});
+      for (const [id, key] of Object.entries(applicationPreferenceFields)) {
+        document.getElementById(id).checked = !!prefs[key];
+      }
+      showAppToast('Preference saved.', 'success');
+    } catch (error) {
+      checkbox.checked = !enabled;
+      showAppToast(`Cannot save application preference: ${error.message || error}`, 'error');
+    } finally {
+      applicationPreferenceSaving = false;
+      Object.keys(applicationPreferenceFields).forEach(id => { document.getElementById(id).disabled = false; });
+    }
+  });
 }
 let shortcutPreferenceSaving = false;
 document.getElementById('automatic-shortcuts').addEventListener('change', async event => {
@@ -1484,6 +1524,61 @@ document.getElementById('automatic-shortcuts').addEventListener('change', async 
     showAppToast(`Cannot save shortcut preference: ${error.message || error}`, 'error');
   } finally { shortcutPreferenceSaving = false; checkbox.disabled = false; }
 });
+
+// Boot preferences use the lightweight inventory; opening Settings does not
+// load GPU/ARM/storage details or start an Android runtime.
+let runtimeStartupRecords = [], runtimeStartupLoading = false, runtimeStartupError = '';
+let runtimeStartupDefaultName = 'Default runtime';
+const runtimeStartupSaving = new Set();
+function renderRuntimeStartupPreferences() {
+  const panel = document.getElementById('runtime-startup-list');
+  const update = markup => { if (panel._startupMarkup !== markup) { panel.innerHTML = markup; panel._startupMarkup = markup; } };
+  // Default is the system Waydroid adapter, not a controller registry entry.
+  // Show its separate startup mechanism without pretending a managed-runtime
+  // flag can control the system service or start an Android login session.
+  const defaultRow = `<tr class="runtime-summary"><td><span class="runtime-startup-name">${escapeHtml(runtimeStartupDefaultName)}</span></td><td><span class="runtime-startup-system" title="Default runtime uses waydroid-container.service. Android starts when you launch it from your desktop.">Waydroid service</span></td></tr>`;
+  const rows = runtimeStartupRecords.map(record => {
+    const busy = runtimeStartupLoading || runtimeStartupSaving.size > 0 || record.deletion_pending || ['Provisioning', 'Starting', 'Stopping'].includes(record.state) || record.job?.status === 'Running';
+    return `<tr class="runtime-summary"><td><span class="runtime-startup-name">${escapeHtml(record.name)}</span></td><td><label class="shortcut-preference"><input type="checkbox" data-runtime-startup="${escapeHtml(record.id)}" aria-label="Start ${escapeHtml(record.name)} on boot" ${record.start_on_boot ? 'checked' : ''} ${busy ? 'disabled' : ''}></label></td></tr>`;
+  }).join('');
+  const message = runtimeStartupError || (runtimeStartupLoading && !runtimeStartupRecords.length ? 'Loading runtimes…' : '');
+  const markup = `<div class="runtime-table-scroll"><table class="runtime-table runtime-startup-table"><thead><tr><th>Runtime</th><th>Start on boot</th></tr></thead><tbody>${defaultRow}${rows}</tbody></table></div>${message ? `<p class="hint" role="status">${escapeHtml(message)}</p>` : ''}`;
+  update(markup);
+}
+async function refreshRuntimeStartupPreferences() {
+  if (runtimeStartupLoading || runtimeStartupSaving.size) return;
+  runtimeStartupLoading = true; runtimeStartupError = '';
+  renderRuntimeStartupPreferences();
+  try {
+    const records = await controllerRequest({op:'list'});
+    if (!Array.isArray(records) || records.some(record => !/^r-[a-f0-9]{32}$/.test(record.id) || typeof record.start_on_boot !== 'boolean')) throw new Error('Invalid runtime startup inventory');
+    runtimeStartupRecords = records;
+  } catch (error) { runtimeStartupRecords = []; runtimeStartupError = `Cannot load runtimes: ${error.message || error}`; }
+  finally { runtimeStartupLoading = false; renderRuntimeStartupPreferences(); }
+}
+async function changeRuntimeStartupPreference(event) {
+  const input = event.target;
+  const id = input.dataset?.runtimeStartup;
+  if (!id || runtimeStartupLoading || runtimeStartupSaving.size) return;
+  const record = runtimeStartupRecords.find(record => record.id === id);
+  if (!record) return;
+  const enabled = input.checked, previous = record.start_on_boot;
+  runtimeStartupSaving.add(id);
+  record.start_on_boot = enabled;
+  renderRuntimeStartupPreferences();
+  try {
+    const result = await controllerRequest({op:'start_on_boot', id, enabled});
+    if (result?.id !== id || result.start_on_boot !== enabled) throw new Error('Invalid runtime startup response');
+    Object.assign(record, result);
+    const cached = runtimeRecord(id);
+    if (cached) cached.start_on_boot = enabled;
+    showAppToast('Startup preference saved.', 'success');
+  } catch (error) {
+    record.start_on_boot = previous;
+    showAppToast(`Cannot save startup preference: ${error.message || error}`, 'error');
+  } finally { runtimeStartupSaving.delete(id); renderRuntimeStartupPreferences(); }
+}
+document.getElementById('runtime-startup-list').addEventListener('change', changeRuntimeStartupPreference);
 
 // Controller requests bypass the legacy default-runtime wrapper deliberately.
 let controllerRecords = [];
@@ -1674,6 +1769,27 @@ let imageDownloadTimer = null;
 let imageDownloadEpoch = 0;
 let selectedImageLibraryId = '';
 let armSourceState = {sources: [], busy: false, error: '', url:'', sha256:'', notice:'', engine:'libndk', version:''};
+let armSourcesRefresh = null;
+function refreshArmSources({light = false} = {}) {
+  if (armSourcesRefresh) return armSourcesRefresh;
+  if (light && armSourceState.sources?.length && !armSourceState.error) {
+    renderArmSources();
+    return Promise.resolve();
+  }
+  armSourcesRefresh = (async () => {
+    try {
+      const sources = await controllerRequest({op:'arm_sources'});
+      if (!Array.isArray(sources)) throw new Error('Invalid ARM source list');
+      armSourceState.sources = sources;
+      armSourceState.error = '';
+    } catch (error) {
+      armSourceState.error = `Cannot load ARM sources: ${error}`;
+    } finally {
+      renderArmSources();
+    }
+  })().finally(() => { armSourcesRefresh = null; });
+  return armSourcesRefresh;
+}
 let customUrlState = null;
 let customUrlTimer = null;
 const imageDownloadActive = () => ['Connecting', 'Downloading'].includes(customUrlState?.status) || ['Downloading', 'Verifying', 'Cancelling'].includes(imageDownloadState?.status);
@@ -2444,7 +2560,6 @@ function renderController() {
       <details class="runtime-settings-group" data-settings-key="${escapeHtml(record.id)}:arm" ${runtimeSettingsOpen.has(record.id + ':arm') ? 'open' : ''}><summary>ARM translation</summary><div class="runtime-arm-panel">${renderRuntimeArm(record, busy)}</div></details>
       <div class="runtime-settings-list runtime-settings-visible">
       <details class="runtime-setting-row" data-settings-key="${escapeHtml(record.id)}:google" ${runtimeSettingsOpen.has(record.id + ':google') ? 'open' : ''}><summary><span><strong>Google Play</strong></span></summary><div class="runtime-setting-body"><div class="runtime-google-panel">${renderRuntimeGoogle(record)}</div></div></details>
-<details class="runtime-setting-row" data-settings-key="${escapeHtml(record.id)}:boot" ${runtimeSettingsOpen.has(record.id + ':boot') ? 'open' : ''}><summary><span><strong>Startup</strong><small>Automatic launch</small></span></summary><div class="runtime-setting-body"><div class="runtime-boot-panel"><p class="hint">Start with AnvilDroid.</p><div class="runtime-actions"><button class="btn btn-quiet" data-controller-op="start_on_boot" data-controller-id="${escapeHtml(record.id)}" data-start-on-boot="${record.start_on_boot ? "false" : "true"}" ${busy ? "disabled" : ""}>${record.start_on_boot ? "Disable start on boot" : "Enable start on boot"}</button></div></div></div></details>
       <details class="runtime-setting-row" data-settings-key="${escapeHtml(record.id)}:display" ${runtimeSettingsOpen.has(record.id + ':display') ? 'open' : ''}><summary><span><strong>Display</strong><small>Desktop windows or headless</small></span></summary><div class="runtime-setting-body"><div class="runtime-display-panel"><strong>Display mode: ${record.display?.mode === 'desktop' ? 'Desktop (preview)' : 'Headless'}</strong>
       <p class="hint">${record.display?.mode === 'desktop' ? 'Desktop app windows.' : 'Background mode; no app windows.'}</p>
       <div class="runtime-actions"><button class="btn btn-quiet" data-controller-op="display_set" data-controller-id="${escapeHtml(record.id)}" data-display-mode="${record.display?.mode === 'desktop' ? 'headless' : 'desktop'}" ${busy || (!canMoveState && !['Running', 'Frozen'].includes(record.state)) || !record.display ? 'disabled' : ''}>${record.display?.mode === 'desktop' ? 'Use Headless' : 'Use Desktop'}${['Running', 'Frozen'].includes(record.state) ? ' & restart' : ''}</button></div>
@@ -2534,13 +2649,7 @@ async function refreshController({light = false} = {}) {
       controllerSetupError = `Cannot verify setup: ${error}. Update/start the controller, then refresh.`;
     }
     renderControllerSetup();
-    try {
-      const sources = light && armSourceState.sources?.length ? armSourceState.sources : await controllerRequest({op:'arm_sources'});
-      if (!Array.isArray(sources)) throw new Error('Invalid ARM source list');
-      armSourceState.sources = sources;
-    }
-    catch (error) { armSourceState.error = `Cannot load ARM sources: ${error}`; }
-    renderArmSources();
+    await refreshArmSources({light});
     // Refresh queries the authenticated worker; list alone is persisted metadata.
     controllerRecords = await Promise.all(states.map(async record => {
       if (record.refreshError) return record;
@@ -2843,7 +2952,6 @@ function handleRuntimeAction(event) {
   }
   else if (button.dataset.controllerOp === 'app_action') mutateController({op:'app_action',id:button.dataset.controllerId,action:button.dataset.appAction,package:button.dataset.package});
   else if (button.dataset.controllerOp === 'display_set') mutateController({op:'display_set',id:button.dataset.controllerId,mode:button.dataset.displayMode});
-  else if (button.dataset.controllerOp === 'start_on_boot') mutateController({op:'start_on_boot',id:button.dataset.controllerId,enabled:button.dataset.startOnBoot === 'true'});
   else if (button.dataset.controllerOp === 'arm_set') installRuntimeArm(button.dataset.controllerId);
   else if (button.dataset.controllerOp === 'arm_sources') {
     navigatePage('settings');

@@ -55,7 +55,7 @@ Architecture: amd64
 Maintainer: AnvilDroid
 Description: AnvilDroid Android runtime controller
  GPU accelerated Waydroid runtime controller with BinderFS and Wayland support.
-Depends: libc6 (>= 2.39), libepoxy0, libdrm2, libgbm1, libx11-6, libexpat1, libvulkan1, util-linux, python3, systemd, patchelf (>= 0.18), libwebkit2gtk-4.1-0, libgtk-3-0, libglib2.0-0, libjavascriptcoregtk-4.1-0, libsoup-3.0-0, libpango-1.0-0, libcairo2, libgdk-pixbuf-2.0-0
+Depends: libc6 (>= 2.39), libepoxy0, libdrm2, libgbm1, libx11-6, libexpat1, libvulkan1, util-linux, python3, systemd, patchelf (>= 0.18), libwebkit2gtk-4.1-0, libgtk-3-0, libglib2.0-0, libjavascriptcoregtk-4.1-0, libsoup-3.0-0, libpango-1.0-0, libcairo2, libgdk-pixbuf-2.0-0, libayatana-appindicator3-1 | libappindicator3-1
 EOF
 cat > "$PKG/DEBIAN/postinst" <<'EOF'
 #!/bin/sh

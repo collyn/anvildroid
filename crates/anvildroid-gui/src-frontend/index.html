@@ -199,7 +199,16 @@
       <section id="page-settings" class="page">
         <div class="page-header"><div><h1>Settings</h1><p class="hint">Application preferences and ARM packages</p></div><button id="btn-refresh-settings" class="btn">Refresh</button></div>
         <div class="settings-section">
+          <div class="application-preferences">
+          <label class="shortcut-preference"><input id="minimize-to-panel" type="checkbox" disabled> Minimize to panel</label>
+          <label class="shortcut-preference"><input id="auto-startup" type="checkbox" disabled> Auto startup</label>
+          <label class="shortcut-preference"><input id="startup-minimize" type="checkbox" disabled> Startup minimize</label>
           <label class="shortcut-preference"><input id="automatic-shortcuts" type="checkbox" checked disabled> Automatically create menu shortcuts for new apps</label>
+          </div>
+        </div>
+        <div class="settings-section">
+          <div class="section-heading"><h2>Start on boot</h2></div>
+          <div id="runtime-startup-list"><p class="hint">Loading runtimes…</p></div>
         </div>
         <div class="settings-section image-settings">
           <div class="section-heading"><h2>ARM packages</h2></div>

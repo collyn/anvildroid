@@ -15,6 +15,11 @@ pub fn install(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     native.style_context().add_class("anvildroid-main");
     let webview = window.clone();
     native.connect_window_state_event(move |_, event| {
+        if event.new_window_state().contains(gdk::WindowState::ICONIFIED)
+            && crate::preferences::minimize_to_panel(webview.app_handle())
+        {
+            let _ = webview.hide();
+        }
         let square = event
             .new_window_state()
             .intersects(gdk::WindowState::MAXIMIZED | gdk::WindowState::FULLSCREEN);
@@ -23,11 +28,11 @@ pub fn install(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         ));
         gtk::glib::Propagation::Proceed
     });
-    install_native(&native);
+    install_native(&native, app.handle().clone());
     Ok(())
 }
 
-fn install_native(native: &gtk::ApplicationWindow) {
+fn install_native(native: &gtk::ApplicationWindow, app: tauri::AppHandle) {
     let bar = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     bar.style_context().add_class("anvildroid-titlebar");
     let drag = gtk::EventBox::new();
@@ -143,11 +148,13 @@ fn install_native(native: &gtk::ApplicationWindow) {
         }
         button.add(&icon);
         let window = native.downgrade();
+        let app = app.clone();
         button.connect_clicked(move |_| {
             let Some(window) = window.upgrade() else {
                 return;
             };
             match action {
+                0 if crate::preferences::minimize_to_panel(&app) => window.hide(),
                 0 => window.iconify(),
                 1 => {
                     if window.is_maximized() {
