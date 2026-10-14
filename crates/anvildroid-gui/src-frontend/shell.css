@@ -366,3 +366,22 @@ html, body { background: transparent; }
 }
 .window-square .layout { border-radius: 0; }
 #page-apps.active .apps-grid { scrollbar-gutter: stable; }
+.library-runtime-filter { position:relative; }
+#page-apps .unified-filters #filter-runtime { height:auto !important; }
+#page-apps .unified-filters .library-runtime-filter > summary { display:block; position:relative; height:38px; min-height:38px; line-height:36px; padding:0 30px 0 10px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; cursor:pointer; list-style:none; }
+.library-runtime-filter > summary::-webkit-details-marker { display:none; }
+.library-runtime-filter > summary::after { display:none; }
+.library-runtime-filter[open] > summary { border-color:var(--accent); }
+.library-runtime-filter > summary:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.runtime-filter-options { position:absolute; top:calc(100% + 8px); left:0; z-index:20; width:260px; max-width:calc(100vw - 80px); max-height:320px; overflow:auto; padding:6px; background:#142538; border:1px solid #304862; border-radius:10px; box-shadow:0 12px 32px #0006; }
+.runtime-filter-option { display:flex; align-items:center; gap:10px; padding:9px 10px; margin:0; border-radius:6px; cursor:pointer; font-size:12px; color:var(--text-primary); }
+.runtime-filter-option:hover { background:var(--bg-hover); }
+.runtime-filter-option > span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.runtime-filter-all { border-bottom:1px solid #304862; border-radius:0; margin-bottom:4px; }
+.runtime-filter-option input[type=checkbox] { -webkit-appearance:none; appearance:none; flex:none; width:16px; height:16px; margin:0; border:1px solid #637d99; border-radius:4px; background:#102033; cursor:pointer; }
+.runtime-filter-option input[type=checkbox]:checked { border-color:#4ca7ff; background:#4ca7ff url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='m3.5 8 3 3 6-6' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / 14px 14px no-repeat; }
+.runtime-filter-option input[type=checkbox]:indeterminate { border-color:#4ca7ff; background:#4ca7ff url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4 8h8' fill='none' stroke='white' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E") center / 14px 14px no-repeat; }
+.runtime-filter-option input[type=checkbox]:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.app-caption { width:100%; min-width:0; }
+.app-runtime-name { margin-top:3px; color:var(--text-muted); font-size:11px; line-height:16px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.apps-grid.list-view .app-caption { flex:1; width:auto; }

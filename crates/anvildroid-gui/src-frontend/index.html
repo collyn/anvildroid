@@ -51,7 +51,7 @@
           </div>
         </div>
         <div class="library-filters unified-filters">
-          <div class="runtime-filter-group"><select id="filter-runtime" class="select-control library-runtime-select" aria-label="Filter by runtime"><option value="all">All runtimes</option><option value="default">Default runtime</option></select></div>
+          <div class="runtime-filter-group"><details id="filter-runtime" class="library-runtime-filter"><summary id="runtime-filter-label" class="select-control" aria-label="Filter by runtimes">All runtimes</summary><div id="runtime-filter-options" class="runtime-filter-options" role="group" aria-label="Runtimes"><label class="runtime-filter-option runtime-filter-all"><input type="checkbox" data-library-runtime="all" checked>All runtimes</label><label class="runtime-filter-option"><input type="checkbox" data-library-runtime="default" checked>Default runtime</label></div></details></div>
           <select id="sort-apps" hidden><option value="name-asc">Name A–Z</option><option value="name-desc">Name Z–A</option><option value="package">Package</option><option value="recent">Recently opened</option><option value="favorites">Favorites first</option></select>
           <div class="category-filters"><select id="filter-tag" class="select-control" aria-label="Filter apps by tag"><option value="all">All tags</option></select></div>
           <button id="btn-manage-tags" class="btn btn-quiet" type="button" aria-label="Manage tags" title="Manage tags">+</button>

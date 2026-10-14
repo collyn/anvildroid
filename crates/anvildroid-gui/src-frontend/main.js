@@ -222,7 +222,7 @@ function updateRuntimeButtons(state) {
   const type_ = typeof state === 'string' ? state : (state ? state.type : null);
   btnStart.style.display = (type_ === 'Stopped' || type_ === 'NotInstalled') ? '' : 'none';
   btnStop.style.display = (type_ === 'Running' || type_ === 'Frozen' || type_ === 'Starting') ? '' : 'none';
-  const detail = typeof state === 'object' ? String(state.detail || '') : '';
+  const detail = typeof state === 'object' ? String(state?.detail || '') : '';
   const staleSession = type_ === 'Error' && detail.includes('session=RUNNING, container=STOPPED');
   btnRecover.style.display = (type_ === 'SessionLost' || staleSession) ? '' : 'none';
   btnRecover.title = staleSession ? 'Recover stale session' : 'Recover';
@@ -348,6 +348,58 @@ const managedPreferences = new Map();
 const managedPreferenceErrors = new Map();
 const managedPreferenceVersions = new Map();
 const runtimeFilter = document.getElementById('filter-runtime');
+// null selects all runtimes, including runtimes discovered by later refreshes.
+// An empty set intentionally selects none; removing a runtime must not broaden it.
+let libraryRuntimeSelection = null;
+function libraryRuntimeSelected(id) {
+  return libraryRuntimeSelection === null || libraryRuntimeSelection.has(id);
+}
+function setLibraryRuntimeFilter(ids) {
+  libraryRuntimeSelection = ids === null ? null : new Set(ids);
+  renderRuntimeFilter();
+  removeContextMenu();
+  renderManagedLibraryStatus();
+  renderApps(allApps);
+}
+function renderRuntimeFilter() {
+  const records = [{id:'default', name:'Default runtime'}, ...managedLibrary];
+  const label = document.getElementById('runtime-filter-label');
+  const selected = records.filter(record => libraryRuntimeSelected(record.id));
+  label.textContent = libraryRuntimeSelection === null ? 'All runtimes'
+    : selected.length === 1 ? selected[0].name : `${selected.length} runtimes`;
+  label.title = libraryRuntimeSelection === null ? 'All runtimes' : selected.map(record => record.name).join(', ') || 'No runtimes selected';
+  const panel = document.getElementById('runtime-filter-options');
+  const structure = JSON.stringify(records.map(record => [record.id, record.name]));
+  if (panel._runtimeStructure !== structure) {
+    panel.innerHTML = `<label class="runtime-filter-option runtime-filter-all"><input type="checkbox" data-library-runtime="all">All runtimes</label>` + records.map(record => `<label class="runtime-filter-option"><input type="checkbox" data-library-runtime="${escapeHtml(record.id)}"><span title="${escapeHtml(record.name)}">${escapeHtml(record.name)}</span></label>`).join('');
+    panel._runtimeStructure = structure;
+  }
+  panel.querySelectorAll('input[data-library-runtime]').forEach(input => {
+    const all = input.dataset.libraryRuntime === 'all';
+    input.checked = all ? libraryRuntimeSelection === null : libraryRuntimeSelected(input.dataset.libraryRuntime);
+    input.indeterminate = all && libraryRuntimeSelection !== null && selected.length > 0;
+  });
+}
+runtimeFilter.addEventListener('change', event => {
+  const input = event.target;
+  const id = input.dataset.libraryRuntime;
+  if (!id) return;
+  if (id === 'all') setLibraryRuntimeFilter(input.checked ? null : []);
+  else {
+    const ids = libraryRuntimeSelection === null ? new Set(['default', ...managedLibrary.map(record => record.id)]) : new Set(libraryRuntimeSelection);
+    if (input.checked) ids.add(id); else ids.delete(id);
+    setLibraryRuntimeFilter([...ids]);
+  }
+});
+document.addEventListener('click', event => {
+  if (runtimeFilter.open && !runtimeFilter.contains(event.target)) runtimeFilter.open = false;
+});
+runtimeFilter.addEventListener('keydown', event => {
+  if (event.key === 'Escape') {
+    runtimeFilter.open = false;
+    document.getElementById('runtime-filter-label').focus();
+  }
+});
 // The library view is a presentation preference only. Keep it local to this
 // window so a corrupt/blocked storage implementation can never prevent the
 // app catalogue from rendering.
@@ -577,24 +629,23 @@ function renderApps(apps) {
   const localQuery = librarySearch?.value || '';
   const query = (localQuery || globalQuery).trim().toLocaleLowerCase();
   const favoritesOnly = document.getElementById('favorites-only')?.checked || false;
-  const selected = runtimeFilter.value || 'all';
   const running = managedLibrary.filter(record => libraryRuntimeRunning(record.id));
   apps = [...(libraryRuntimeRunning('default') ? apps || [] : []), ...running.flatMap(record => (managedSnapshots.get(record.id) || []).map(app => ({...app, runtime_id:record.id, runtime_name:record.name, runtime_state:record.state, available:true})))];
   if (libraryRuntimeRunning('default')) apps.push({package:'org.anvildroid.desktop',label:'Waydroid',runtime_id:'default',desktop_entry:true});
   for(const record of running)if(!(managedSnapshots.get(record.id)||[]).some(app=>app.package==='org.anvildroid.desktop'))apps.push({package:'org.anvildroid.desktop',label:'Waydroid',runtime_id:record.id,runtime_name:record.name,runtime_state:record.state,available:true,desktop_entry:true});
-  if (selected !== 'all' && !libraryRuntimeRunning(selected)) {
-    renderLibraryEmpty(selected);
+  if (libraryRuntimeSelection !== null && ![...libraryRuntimeSelection].some(libraryRuntimeRunning)) {
+    renderLibraryEmpty();
     return;
   }
   const unique = new Map();
   apps.forEach(app => { const key = `${app.runtime_id || 'default'}\u0000${app.package}`; if (!unique.has(key)) unique.set(key, app); });
   apps = [...unique.values()];
-  apps = apps.filter(app => (selected === 'all' || (app.runtime_id || 'default') === selected) && (!favoritesOnly || app.desktop_entry || isFavorite(app)) &&
+  apps = apps.filter(app => libraryRuntimeSelected(app.runtime_id || 'default') && (!favoritesOnly || app.desktop_entry || isFavorite(app)) &&
     (currentCategory === 'all' || (currentCategory.startsWith('tag:') ? tagsForApp(app.package).includes(currentCategory.slice(4)) : appCategory(app) === currentCategory)) &&
     `${app.label || ''} ${app.package} ${app.runtime_name || 'Default runtime'}`.toLocaleLowerCase().includes(query));
   if (!apps || apps.length === 0) {
-    if (selected === 'all' && !running.length && !libraryRuntimeRunning('default')) {
-      renderLibraryEmpty('all');
+    if (!running.some(record => libraryRuntimeSelected(record.id)) && !(libraryRuntimeSelected('default') && libraryRuntimeRunning('default'))) {
+      renderLibraryEmpty();
       return;
     }
     appsGrid._appMarkup = null;
@@ -619,7 +670,7 @@ function renderApps(apps) {
             ? `<img src="${libraryIconUrl(app)}" alt="" loading="lazy" decoding="async" onerror="this.parentElement.innerHTML='App'">`
             : 'App'}
       </div>
-      <div class="app-name">${pendingWaydroidRuntime === (app.runtime_id || 'default') && app.desktop_entry ? 'Processing…' : escapeHtml(app.label || app.package.split('.').pop())}</div>
+      <div class="app-caption"><div class="app-name">${pendingWaydroidRuntime === (app.runtime_id || 'default') && app.desktop_entry ? 'Processing…' : escapeHtml(app.label || app.package.split('.').pop())}</div><div class="app-runtime-name" title="${escapeHtml(app.runtime_name || 'Default runtime')}">${escapeHtml(app.runtime_name || 'Default runtime')}</div></div>
       <span class="app-status-dot ${appExecutionLabel(app) === 'Foreground' || appExecutionLabel(app) === 'Background process' ? 'running' : ''}" aria-label="${escapeHtml(appExecutionLabel(app))}"></span>
     </div>
   `).join('');
@@ -763,9 +814,9 @@ async function refreshLibraryDefaultState({loadInventory = true} = {}) {
   if (!appStatesLoading) { renderManagedLibraryStatus(); renderApps(allApps); }
 }
 
-function renderLibraryEmpty(selected) {
+function renderLibraryEmpty() {
   const records = [{id:'default', name:'Default runtime', state:libraryDefaultState}, ...managedLibrary]
-    .filter(record => selected === 'all' || record.id === selected);
+    .filter(record => libraryRuntimeSelected(record.id));
   const panels = records.map(record => {
     const busy = libraryStarts.has(record.id) || ['Starting', 'Stopping', 'Provisioning'].includes(record.state);
     const canStart = !record.error && ['Stopped', 'Ready', 'Frozen'].includes(record.state) && record.import_status !== 'pending';
@@ -773,7 +824,7 @@ function renderLibraryEmpty(selected) {
     const note = error || (busy ? 'Please wait. Apps will appear automatically when this runtime is running.' : canStart ? 'Start this runtime to see and open its apps.' : 'Open runtime settings to check its status and finish setup.');
     return `<section class="library-runtime-empty"><h3>${escapeHtml(record.name || record.id)}</h3><span class="hint">${escapeHtml(busy ? 'Starting / updating' : record.state)}</span><p ${error ? 'role="alert"' : ''}>${escapeHtml(note)}</p><div class="runtime-actions">${canStart || busy ? `<button class="btn btn-primary" data-library-start="${escapeHtml(record.id)}" ${busy ? 'disabled' : ''}>${busy ? 'Please wait...' : 'Start runtime'}</button>` : ''}<button class="btn btn-quiet" data-library-manage="${escapeHtml(record.id)}">Runtime settings</button><button class="btn btn-quiet" data-library-refresh>Refresh</button></div></section>`;
   }).join('');
-  const markup = `<div class="library-empty-panel" role="status"><h2>${selected === 'all' ? 'Start a runtime to view apps' : 'Runtime is not running'}</h2><p class="hint">Only apps from running runtimes appear here.</p>${panels || '<p>Runtime unavailable. Refresh or open Runtime settings.</p>'}</div>`;
+  const markup = `<div class="library-empty-panel" role="status"><h2>${libraryRuntimeSelection?.size === 0 ? 'Select runtimes to view apps' : 'Start a runtime to view apps'}</h2><p class="hint">Only apps from running runtimes appear here.</p>${panels || '<p>Choose runtimes in the filter above.</p>'}</div>`;
   appsGrid.setAttribute('aria-busy', String(libraryStarts.size > 0));
   if (appsGrid._appMarkup === markup) return;
   appsGrid._appMarkup = markup;
@@ -1225,8 +1276,8 @@ function chooseApkTargets(records) {
   const pick = document.getElementById('apk-install-pick');
   const error = document.getElementById('apk-install-error');
   let path = '', picking = false, finished = false;
-  const preferred = runtimeFilter.value;
-  targets.innerHTML = `<table class="apk-runtime-table"><thead><tr><th scope="col"><input id="apk-install-all" type="checkbox" aria-label="Select all available runtimes" title="Select all"></th><th scope="col">Runtime</th><th scope="col">Image</th></tr></thead><tbody>${records.map(record => `<tr><td><input id="apk-target-${escapeHtml(record.id)}" type="checkbox" aria-label="Select ${escapeHtml(record.name)}" value="${escapeHtml(record.id)}" ${!apkTargetAvailable(record) ? 'disabled' : record.id === preferred || records.filter(apkTargetAvailable).length === 1 ? 'checked' : ''}></td><td><label for="apk-target-${escapeHtml(record.id)}">${escapeHtml(record.name)}</label><small id="apk-target-state-${escapeHtml(record.id)}" class="apk-target-state ${record.state === 'Running' ? 'running' : 'idle'}">${escapeHtml(record.state || 'Unavailable')}</small></td><td>${escapeHtml(apkRuntimeImageLabel(record))}</td></tr>`).join('') || '<tr><td colspan="3" class="hint">No runtimes available.</td></tr>'}</tbody></table>`;
+  const preferred = libraryRuntimeSelection;
+  targets.innerHTML = `<table class="apk-runtime-table"><thead><tr><th scope="col"><input id="apk-install-all" type="checkbox" aria-label="Select all available runtimes" title="Select all"></th><th scope="col">Runtime</th><th scope="col">Image</th></tr></thead><tbody>${records.map(record => `<tr><td><input id="apk-target-${escapeHtml(record.id)}" type="checkbox" aria-label="Select ${escapeHtml(record.name)}" value="${escapeHtml(record.id)}" ${!apkTargetAvailable(record) ? 'disabled' : preferred?.has(record.id) || records.filter(apkTargetAvailable).length === 1 ? 'checked' : ''}></td><td><label for="apk-target-${escapeHtml(record.id)}">${escapeHtml(record.name)}</label><small id="apk-target-state-${escapeHtml(record.id)}" class="apk-target-state ${record.state === 'Running' ? 'running' : 'idle'}">${escapeHtml(record.state || 'Unavailable')}</small></td><td>${escapeHtml(apkRuntimeImageLabel(record))}</td></tr>`).join('') || '<tr><td colspan="3" class="hint">No runtimes available.</td></tr>'}</tbody></table>`;
   error.textContent = records.some(apkTargetAvailable) ? '' : 'Start a runtime to install an APK.';
   const selected = () => Array.from(targets.querySelectorAll('tbody input:checked')).filter(input => !input.disabled).map(input => input.value);
   const selectAll = document.getElementById('apk-install-all');
@@ -1498,10 +1549,9 @@ function googleRegistrationRecord(id) {
 }
 
 function renderGoogleNotices() {
-  const selected = runtimeFilter.value || 'all';
   const records = [{id:'default', name:'Default runtime'}, ...managedLibrary];
   const markup = records.filter(record => {
-    if ((selected !== 'all' && selected !== record.id) || !libraryRuntimeRunning(record.id) || googlePlayWorks(record.id)) return false;
+    if (!libraryRuntimeSelected(record.id) || !libraryRuntimeRunning(record.id) || googlePlayWorks(record.id)) return false;
     const apps = record.id === 'default' ? allApps : managedSnapshots.get(record.id) || [];
     return record.image_selection?.flavor === 'GAPPS' || apps.some(app => app.package === 'com.android.vending') ||
       runtimeGoogle.get(record.id)?.report?.packages?.['com.google.android.gsf'];
@@ -2786,7 +2836,7 @@ function handleRuntimeAction(event) {
     const record = runtimeRecord(button.dataset.controllerId);
     if (record) showRuntimeBatchDialog('restart', [record], 'Restart');
   }
-  else if (button.dataset.controllerOp === 'existing_apps') { runtimeFilter.value = 'default'; navigatePage('apps'); renderApps(allApps); }
+  else if (button.dataset.controllerOp === 'existing_apps') { setLibraryRuntimeFilter(['default']); navigatePage('apps'); }
   else if (button.dataset.controllerOp === 'existing_import') mutateController({op:'existing_import',id:'default',name:(existingRuntime?.name || 'Default runtime') + ' (managed copy)'});
   else if (button.dataset.controllerOp === 'reinstall') {
     beginReinstall(button.dataset.controllerId);
@@ -3189,16 +3239,10 @@ async function checkRuntimeHealth(id) {
 }
 
 
-runtimeFilter.addEventListener('change', () => {
-  removeContextMenu();
-  renderManagedLibraryStatus();
-  renderApps(allApps);
-});
 function renderManagedLibraryStatus() {
-  const selected = runtimeFilter.value || 'all';
   btnInstallApk.disabled = pendingAppAction || pendingLaunch || runtimeTransition || controllerMutation || runtimeBatchBusy || Boolean(probeInstallBusy);
   btnInstallApk.title = 'Choose APK and runtimes';
-  const records = managedLibrary.filter(record => selected === 'all' || selected === record.id);
+  const records = managedLibrary.filter(record => libraryRuntimeSelected(record.id));
   const markup =
     (managedLibraryError ? `<p>${escapeHtml(managedLibraryError)}</p>` : '') + records.map(record => {
       const count = managedSnapshots.get(record.id)?.length;
@@ -3251,10 +3295,8 @@ async function refreshManagedLibrary({poll = false} = {}) {
     }));
     managedLibrary = results;
     managedLibraryError = '';
-    const selected = runtimeFilter.value || 'all';
-    const options = '<option value="all">All runtimes</option><option value="default">Default runtime</option>' + results.map(record => `<option value="${escapeHtml(record.id)}">${escapeHtml(record.name)}</option>`).join('');
-    if (runtimeFilter.innerHTML !== options) runtimeFilter.innerHTML = options;
-    runtimeFilter.value = selected === 'all' || selected === 'default' || results.some(r => r.id === selected) ? selected : 'all';
+    if (libraryRuntimeSelection !== null) libraryRuntimeSelection = new Set([...libraryRuntimeSelection].filter(id => id === 'default' || results.some(record => record.id === id)));
+    renderRuntimeFilter();
   } catch (error) {
     managedLibraryError = `Cannot load managed runtimes: ${error}. Refresh to retry.`;
     managedLibrary = managedLibrary.map(record => ({...record,error:managedLibraryError}));
