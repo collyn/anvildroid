@@ -216,9 +216,14 @@ fn forward_to_backend(args: &[OsString]) -> Result<u8, String> {
             "Starting Waydroid user session. Wait for Android ready; use another terminal for app commands."
         );
     }
-    let status = Command::new("waydroid")
-        .args(&forwarded)
-        .status()
+    let mut backend_command = if command == "start" {
+        anvildroid_core::launch::session_start_command()
+    } else {
+        let mut backend = Command::new("waydroid");
+        backend.args(&forwarded);
+        backend
+    };
+    let status = backend_command.status()
         .map_err(|e| format!("Cannot execute Waydroid: {e}. See README.md for setup."))?;
     if status.success() && command == "multi-window" {
         println!(

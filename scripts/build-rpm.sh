@@ -25,7 +25,7 @@ Summary: AnvilDroid GUI, CLI and Android runtime controller
 License: MIT AND BSD-3-Clause AND Apache-2.0
 URL: https://github.com/collyn/anvildroid
 BuildArch: x86_64
-Requires: python3, systemd, patchelf >= 0.18
+Requires: python3, weston, iproute, nftables, slirp4netns, lxc, kmod, curl, systemd, patchelf >= 0.18
 Requires: java-headless >= 1:17
 Requires: glibc >= 2.39, libepoxy, libdrm, mesa-libgbm, libX11, expat, vulkan-loader, util-linux
 Requires: webkit2gtk4.1, gtk3, glib2, javascriptcoregtk4.1, libsoup3, pango, cairo, gdk-pixbuf2

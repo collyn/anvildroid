@@ -108,7 +108,7 @@ async function startRuntimeController() {
 }
 document.getElementById('btn-restart-controller').addEventListener('click', restartRuntimeController);
 function controllerRestartBlocked() {
-  return controllerLoading || controllerMutation || runtimeBatchBusy || runtimeTransition ||
+  return runtimeOperations.size > 0 || controllerLoading || controllerMutation || runtimeBatchBusy || runtimeTransition ||
     pendingLaunch || pendingAppAction || probeInstallBusy || imageDownloadBusy ||
     imageDownloadActive() || controllerHasActiveWork();
 }
@@ -219,7 +219,7 @@ function runtimeBadgeKind(state) {
 
 function updateDefaultRuntimeBadge(state, error = '') {
   const pending = controllerPending?.id === 'default' ? controllerPending : null;
-  const restarting = runtimeBatchRestarting.has('default') ||
+  const restarting = runtimeOperations.get('default') === 'restart' || runtimeBatchRestarting.has('default') ||
     (pending && pending.op !== 'reinstall' && ['stopping', 'starting'].includes(pending.phase));
   const label = restarting ? 'Restarting' : pending?.op === 'reinstall' && pending.phase === 'applying' ? 'Reinstalling'
     : defaultRuntimeOperation === 'stop_runtime' || pending?.phase === 'stopping' ? 'Stopping'
@@ -285,7 +285,7 @@ async function runtimeAction(action, btn) {
     showAppToast('Keep Default runtime stopped until its managed copy is verified.', 'info');
     return;
   }
-  if (runtimeTransition || pendingLaunch || pendingAppAction || controllerMutation) {
+  if (runtimeOperationBusy('default')) {
     showAppToast('Wait for the current operation to complete.', 'info');
     return;
   }
@@ -1752,10 +1752,10 @@ function renderExistingRuntime() {
   document.getElementById('existing-runtime-usage').innerHTML = renderRuntimeUsage(record.unavailable ? {id:record.id} : record);
   updateDefaultRuntimeBadge(record.unavailable ? 'Unavailable' : record.state, existingRuntimeError);
   [btnStart, btnStop, btnRecover].forEach(button => {
-    button.disabled = Boolean(controllerMutation || runtimeTransition || runtimeBatchBusy || pendingLaunch || pendingAppAction || record.unavailable || record.detailsLoading);
+    button.disabled = Boolean(runtimeOperationBusy('default') || record.unavailable || record.detailsLoading);
   });
   document.querySelectorAll('#legacy-runtime-row .runtime-action-icon').forEach(button => button.setAttribute('aria-label', button.title + ' · ' + record.name));
-  const busy = controllerMutation || apkInstallBusy || runtimeTransition || !record.managed || record.unavailable || record.detailsLoading;
+  const busy = runtimeOperationBusy('default') || apkInstallBusy || !record.managed || record.unavailable || record.detailsLoading;
   const button = (op,label,disabled=false) => `<button class="btn btn-quiet" data-controller-op="${op}" data-controller-id="default" ${disabled ? 'disabled' : ''}>${label}</button>`;
   const markup = `${existingRuntimeError ? `<p class="runtime-blocked">${escapeHtml(existingRuntimeError)}</p>` : ''}<div class="runtime-actions runtime-settings-actions">${!record.managed ? `<p class="hint">Start Default runtime, then enable management once to keep its settings available after stopping. App data stays in place.</p>${button('existing_claim','Enable management',controllerMutation || record.unavailable || record.state !== 'Running')}` : `${button('rename','Rename…',controllerMutation || record.unavailable)}${button('reinstall','Reinstall runtime…',busy || !['Stopped','Running','Frozen'].includes(record.state))}`}</div>
     <details class="runtime-settings-group" data-settings-key="${escapeHtml(record.id)}:gpu" ${runtimeSettingsOpen.has(record.id + ':gpu') ? 'open' : ''}><summary>Graphics</summary><div class="runtime-gpu-panel runtime-primary-setting" id="runtime-gpu-default">${renderGpuControls(record,busy)}<div class="runtime-actions">${button('gpu_check','Check GPU',controllerMutation)}</div>${renderRuntimeGraphics('default')}</div></details>
@@ -2472,7 +2472,7 @@ function renderController() {
     const appWorking = record.appJob?.status === 'Running';
     const desktopMode = (record.display?.effective_mode || record.display?.mode) === 'desktop';
     const active = appWorking || storageMoving || ['Provisioning', 'Starting', 'Stopping'].includes(record.state) || record.job?.status === 'Running';
-    const busy = controllerMutation || apkInstallBusy || active || record.detailsLoading;
+    const busy = runtimeOperationBusy(record.id) || apkInstallBusy || active || record.detailsLoading;
     const failed = record.state === 'Error';
     const needsImages = record.state === 'Allocated' || (failed && record.job?.operation === 'prepare');
     const canDelete = record.deletion_pending || ['Allocated', 'Prepared', 'Stopped'].includes(record.state) || (failed && record.job?.operation === 'prepare');
@@ -2495,7 +2495,7 @@ function renderController() {
     const waiting = ({stopping:'Stopping Android to apply settings…', applying:'Applying settings…', starting:'Restarting Android…'})[phase] || (phase === 'confirm' ? 'Waiting for confirmation…' : phase === 'send' ? 'Sending request…' : 'Waiting for current refresh…');
     const storagePhase = ({copy: 'Copying runtime data…', verify: 'Verifying the copied data…', switch: 'Activating the new location…', cleanup: 'Removing the retained copy…'})[record.storage?.job?.phase];
     const title = runtimeBatchRestarting.has(record.id) ? 'Restarting…' : RuntimeWindow.isPending(record.id) ? 'Opening Waydroid…' : pending ? waiting : appWorking ? (record.appJob.action === 'delete' ? 'Deleting runtime…' : record.appJob.action === 'install' ? 'Installing APK…' : record.appJob.action === 'full_ui' ? 'Opening Waydroid…' : record.appJob.action === 'launch' ? (desktopMode ? 'Launching desktop app…' : 'Launching app in headless Android…') : 'Force-stopping app…') : storageMoving ? storagePhase || 'Moving runtime data…' : record.deletion_pending ? 'Deletion incomplete' : labels[record.state] || record.state;
-    const status = pending?.op === 'reinstall' && phase === 'stopping' ? 'Stopping' : pending?.op === 'reinstall' && phase === 'applying' ? 'Reinstalling' : runtimeBatchRestarting.has(record.id) || pending && pending.op !== 'reinstall' && ['stopping', 'starting'].includes(phase) ? 'Restarting' : labels[record.state] || record.state;
+    const status = runtimeOperations.get(record.id) === 'restart' ? 'Restarting' : pending?.op === 'reinstall' && phase === 'stopping' ? 'Stopping' : pending?.op === 'reinstall' && phase === 'applying' ? 'Reinstalling' : runtimeBatchRestarting.has(record.id) || pending && pending.op !== 'reinstall' && ['stopping', 'starting'].includes(phase) ? 'Restarting' : labels[record.state] || record.state;
     const button = (op, label, allowed, style = '') => `<button class="btn ${style}" data-controller-op="${op}" data-controller-id="${escapeHtml(record.id)}" ${busy || !allowed || (record.deletion_pending && op !== 'delete') ? 'disabled' : ''} ${op === 'delete' && !canDelete ? 'title="Stop this runtime before deleting it"' : ''}>${label}</button>`;
     const actionIcons = {
       start: '<path d="m8 5 11 7-11 7z"/>',
@@ -2536,7 +2536,7 @@ function renderController() {
     const kind = runtimeBatchRestarting.has(record.id) ? 'info' : failed || record.appJob?.status === 'Failed' ? 'error' : record.state === 'Stopped' && record.shutdown_warning ? 'warning' : runtimeBadgeKind(record.state);
     const showDetailFeedback = Boolean(pending || active || failed || record.shutdown_warning || storageMoving || record.appJob?.status === 'Failed');
     const detailFeedback = showDetailFeedback ? `<div class="runtime-feedback ${kind}" role="status">${pending || active ? '<span class="runtime-spinner" aria-hidden="true"></span>' : ''}<strong>${escapeHtml(title)}</strong><p>${escapeHtml(appWorking ? (record.appJob.action === 'delete' ? 'Removing runtime data. This may take a few minutes.' : record.appJob.action === 'install' ? 'Waiting for Android to finish verification and app optimization. A confirmation dialog is not always required.' : record.appJob.package) : storageMoving ? (record.storage?.job?.phase === 'cleanup' ? 'Removing only the retained copy. The active runtime data is kept.' : 'Keep both disks connected. The original data remains available until the copy is verified.') : descriptions[record.state] || '')}</p></div>` : '';
-    const summary = `<tr class="runtime-summary ${selected ? 'selected' : ''}" data-runtime-select="${escapeHtml(record.id)}" aria-busy="${Boolean(runtimeBatchRestarting.has(record.id) || pending || active)}"><td class="runtime-checkbox-cell"><input type="checkbox" data-runtime-check="${escapeHtml(record.id)}" aria-label="Select ${escapeHtml(record.name)}" ${runtimeBatchSelection.has(record.id) ? 'checked' : ''} ${runtimeBatchBusy ? 'disabled' : ''}></td><td>${nameCell}</td><td><span class="runtime-status ${kind}" role="status">${escapeHtml(status)}</span></td><td class="runtime-usage-cell" data-runtime-usage="${escapeHtml(record.id)}">${renderRuntimeUsage(record)}</td><td><div class="runtime-actions">${actions}${record.deletion_pending ? deleteAction : ''}</div></td></tr>`;
+    const summary = `<tr class="runtime-summary ${selected ? 'selected' : ''}" data-runtime-select="${escapeHtml(record.id)}" aria-busy="${Boolean(runtimeOperations.has(record.id) || runtimeBatchRestarting.has(record.id) || pending || active)}"><td class="runtime-checkbox-cell"><input type="checkbox" data-runtime-check="${escapeHtml(record.id)}" aria-label="Select ${escapeHtml(record.name)}" ${runtimeBatchSelection.has(record.id) ? 'checked' : ''} ${runtimeBatchBusy ? 'disabled' : ''}></td><td>${nameCell}</td><td><span class="runtime-status ${kind}" role="status">${escapeHtml(status)}</span></td><td class="runtime-usage-cell" data-runtime-usage="${escapeHtml(record.id)}">${renderRuntimeUsage(record)}</td><td><div class="runtime-actions">${actions}${record.deletion_pending ? deleteAction : ''}</div></td></tr>`;
     const detail = `<article class="runtime-card managed-runtime">
       <div class="runtime-actions">${button('rename', 'Rename…', true, 'btn-quiet')}${!record.deletion_pending ? button('reinstall', 'Reinstall…', canReinstall, 'btn-warning') + deleteAction : ''}</div>
       ${detailFeedback}
@@ -2626,7 +2626,7 @@ document.addEventListener('visibilitychange', () => {
   if (!document.hidden && (controllerHasActiveWork() || document.getElementById('page-runtime').classList.contains('active') || document.getElementById('page-images').classList.contains('active') || document.getElementById('page-runtime-settings').classList.contains('active'))) refreshController();
 });
 async function refreshController({light = false} = {}) {
-  if (controllerLoading || controllerMutation) return;
+  if (controllerLoading || controllerMutation || runtimeOperations.size) return;
   clearTimeout(controllerTimer);
   controllerLoading = true;
   controllerRefreshDone = new Promise(resolve => { finishControllerRefresh = resolve; });
@@ -2736,7 +2736,15 @@ async function activateRequestImage(request) {
   }
 }
 async function mutateController(request) {
-  if (controllerMutation || apkInstallBusy || (request.id === 'default' && (runtimeTransition || pendingLaunch || pendingAppAction))) return;
+  if (['start', 'stop'].includes(request.op)) {
+    const record = runtimeRecord(request.id);
+    if (!record || runtimeOperationBusy(request.id)) return;
+    const targets = [{id:record.id, name:record.name}];
+    if (request.op === 'stop') showRuntimeBatchDialog('stop', [record], 'Stop');
+    else return runRuntimeBatchPlan({op:'start', targets, skipped:0});
+    return;
+  }
+  if (runtimeOperations.size || controllerMutation || apkInstallBusy || (request.id === 'default' && (runtimeTransition || pendingLaunch || pendingAppAction))) return;
   controllerMutation = true;
   document.getElementById('runtime-rename-save').disabled = true;
   document.getElementById('runtime-rename-cancel').disabled = true;
@@ -3290,7 +3298,7 @@ function renderGpuControls(record, busy) {
     ${selected !== 'auto' && !(selected === 'software' && record.gpu.software_supported) && !devices.some(d => d.node === selected) ? `<option selected disabled value="${escapeHtml(selected)}">${escapeHtml(selected)} · unavailable</option>` : ''}
     ${devices.map(d => `<option value="${escapeHtml(d.node)}" ${d.node === selected ? 'selected' : ''} ${d.selectable ? '' : 'disabled'}>${escapeHtml(d.driver || 'Unknown driver')}${d.experimental ? ' · Experimental' : ''} · ${escapeHtml(d.node)} · ${escapeHtml(d.vendor_id || '?')}:${escapeHtml(d.device_id || '?')}${d.selectable ? '' : ' · ' + escapeHtml(d.reason || 'unsupported / unavailable')}</option>`).join('')}
   </select></label><button class="btn btn-quiet" data-controller-op="gpu_set" data-controller-id="${escapeHtml(record.id)}" ${busy || !canConfigure ? 'disabled' : ''}>${['Running', 'Frozen'].includes(record.state) ? 'Save & restart' : 'Save graphics'}</button></div>
-  ${record.gpu.software_supported ? `<p class="hint">Selects compatible hardware automatically.</p>` : ''}
+  ${record.gpu.software_supported ? `<p class="hint">${escapeHtml('Selects compatible hardware automatically.')}</p>` : ''}
   ${record.gpu.nvidia ? `<details class="runtime-graphics"><summary>NVIDIA compatibility</summary><p class="hint">${escapeHtml(record.gpu.nvidia.detail)}</p><ul>${record.gpu.nvidia.checks.map(c => `<li>${escapeHtml(c.status)}: ${escapeHtml(c.detail)}</li>`).join('')}</ul></details>` : ''}
   <p class="hint">${['Running', 'Frozen'].includes(record.state) ? 'Saving restarts Android.' : stopped ? 'Applies on next start.' : 'Prepare runtime to change GPU.'}</p>`;;
 }
@@ -3587,6 +3595,19 @@ document.addEventListener('keydown', event => {
 
 // Runtime table selection is independent of the expanded configuration row.
 const runtimeBatchRestarting = new Set();
+// Lifecycle operations own only their target runtimes; global mutations still
+// serialize shared image/controller changes.
+const runtimeOperations = new Map();
+function runtimeOperationBusy(id) {
+  return Boolean(controllerMutation || runtimeBatchBusy || runtimeOperations.has(id) ||
+    (id === 'default' && (runtimeTransition || pendingLaunch || pendingAppAction || probeInstallBusy)));
+}
+function runtimePlanBlocked(op, targets) {
+  const lifecycle = ['start', 'stop', 'restart'].includes(op);
+  return controllerMutation || runtimeBatchBusy ||
+    (!lifecycle && (runtimeOperations.size || runtimeTransition || pendingLaunch || pendingAppAction || probeInstallBusy)) ||
+    targets.some(record => runtimeOperationBusy(record.id));
+}
 function runtimeBatchRecords() {
   return [...controllerRecords, ...(existingRuntime ? [existingRuntime] : [])];
 }
@@ -3611,13 +3632,13 @@ function renderRuntimeBatchSelection() {
     input.closest?.('tr')?.classList.toggle('batch-selected', input.checked);
   });
   document.querySelectorAll('[data-controller-op="restart"]').forEach(button => {
-    button.disabled = runtimeBatchBusy || controllerMutation || controllerLoading || runtimeTransition || pendingLaunch || pendingAppAction || probeInstallBusy || imageDownloadBusy || imageDownloadActive() || !RuntimeBatch.eligible(runtimeRecord(button.dataset.controllerId), 'restart', controllerRequirements || {});
+    button.disabled = runtimeOperationBusy(button.dataset.controllerId) || controllerLoading || imageDownloadBusy || imageDownloadActive() || !RuntimeBatch.eligible(runtimeRecord(button.dataset.controllerId), 'restart', controllerRequirements || {});
   });
   document.querySelectorAll('[data-runtime-batch]').forEach(button => {
     const op = button.dataset.runtimeBatch;
-    const count = selected.filter(record => RuntimeBatch.eligible(record, op, controllerRequirements || {})).length;
+    const count = selected.filter(record => !runtimeOperationBusy(record.id) && RuntimeBatch.eligible(record, op, controllerRequirements || {})).length;
     button.textContent = `${op === 'open' ? 'Open Waydroid windows' : op[0].toUpperCase() + op.slice(1)} (${count})`;
-    button.disabled = runtimeBatchBusy || controllerMutation || controllerLoading || runtimeTransition || pendingLaunch || pendingAppAction || probeInstallBusy || imageDownloadBusy || imageDownloadActive() || !count;
+    button.disabled = runtimePlanBlocked(op, selected) || controllerLoading || imageDownloadBusy || imageDownloadActive() || !count;
     button.title = `${count} of ${selected.length} selected runtimes can ${op}`;
   });
   document.getElementById('runtime-batch-clear').disabled = runtimeBatchBusy;
@@ -3646,7 +3667,7 @@ document.getElementById('runtime-batch-toolbar').addEventListener('click', event
   showRuntimeBatchDialog(op, selected, button.textContent.replace(/ \(\d+\)$/, ''));
 });
 function showRuntimeBatchDialog(op, selected, label) {
-  if (controllerMutation || runtimeBatchBusy || controllerLoading || runtimeTransition || pendingLaunch || pendingAppAction || probeInstallBusy || imageDownloadBusy || imageDownloadActive()) return;
+  if (runtimePlanBlocked(op, selected) || controllerLoading || imageDownloadBusy || imageDownloadActive()) return;
   const targets = selected.filter(record => RuntimeBatch.eligible(record, op, controllerRequirements || {}));
   if (!targets.length) return;
   runtimeBatchPlan = {op, targets: targets.map(({id, name}) => ({id, name})), skipped: selected.length - targets.length};
@@ -3730,6 +3751,8 @@ async function executeBatchOperation(record, op, imageRequest, activationToken) 
     if (result?.id !== id || result.state !== 'Stopped') throw new Error('Could not verify Default runtime reinstall.');
   } else {
     if (result?.id !== id || !result.job?.id) throw new Error('Invalid runtime operation response.');
+    Object.assign(runtimeRecord(id), result);
+    renderController();
     const updated = await RuntimeSettings.wait(controllerRequest, id, result.job.id, op === 'start' ? 'Running' : op === 'stop' ? 'Stopped' : 'Prepared');
     Object.assign(runtimeRecord(id), updated);
     return updated;
@@ -3737,7 +3760,7 @@ async function executeBatchOperation(record, op, imageRequest, activationToken) 
 }
 document.getElementById('runtime-batch-form').addEventListener('submit', async event => {
   event.preventDefault();
-  if (!runtimeBatchPlan || runtimeBatchBusy || controllerMutation || controllerLoading || imageDownloadBusy || imageDownloadActive() || runtimeTransition || pendingLaunch || pendingAppAction) return;
+  if (!runtimeBatchPlan || runtimePlanBlocked(runtimeBatchPlan.op, runtimeBatchPlan.targets) || controllerLoading || imageDownloadBusy || imageDownloadActive()) return;
   const plan = runtimeBatchPlan;
   const error = document.getElementById('runtime-batch-dialog-error');
   if (['delete', 'reinstall'].includes(plan.op) && document.getElementById('runtime-batch-confirm').value !== plan.op.toUpperCase()) {
@@ -3754,9 +3777,10 @@ document.getElementById('runtime-batch-form').addEventListener('submit', async e
   await runRuntimeBatchPlan(plan, imageRequest);
 });
 async function runRuntimeBatchPlan(plan, imageRequest) {
-  if (runtimeBatchBusy || controllerMutation || runtimeTransition || pendingLaunch || pendingAppAction || probeInstallBusy) return;
-  runtimeBatchBusy = true;
-  controllerMutation = true;
+  if (runtimePlanBlocked(plan.op, plan.targets)) return;
+  const lifecycle = ['start', 'stop', 'restart'].includes(plan.op);
+  if (lifecycle) plan.targets.forEach(record => runtimeOperations.set(record.id, plan.op));
+  else { runtimeBatchBusy = true; controllerMutation = true; }
   clearTimeout(controllerTimer);
   document.getElementById('runtime-batch-dialog').close();
   renderController();
@@ -3782,9 +3806,10 @@ async function runRuntimeBatchPlan(plan, imageRequest) {
     for (const result of results) if (result.status === 'succeeded' && plan.op !== 'open') runtimeBatchSelection.delete(result.id);
   } catch (error) { output.textContent = `Batch failed: ${error}`; }
   finally {
-    controllerMutation = false;
-    runtimeBatchBusy = false;
-    runtimeBatchRestarting.clear();
+    if (lifecycle) plan.targets.forEach(record => runtimeOperations.delete(record.id));
+    else { controllerMutation = false; runtimeBatchBusy = false; }
+    plan.targets.forEach(record => runtimeBatchRestarting.delete(record.id));
+    renderController();
     await Promise.all([refreshController(), refreshStatus()]);
     renderRuntimeBatchSelection();
     renderAvailableImages();

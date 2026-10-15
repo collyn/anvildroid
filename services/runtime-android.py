@@ -334,8 +334,8 @@ class AndroidBackend:
             subprocess.run(['mount', '-o', 'loop,ro,noload', instance / 'prepared/system.img', str(system_mount)], check=True, capture_output=True)
             mounts.append(system_mount)
             provision.build_overlay(staging / 'overlay', system_mount, require_caption=False)
-            for name, source in [('waydroid.prop', '/var/lib/waydroid/waydroid.prop'),
-                                 ('config', '/var/lib/waydroid/lxc/waydroid/config'),
+            (staging / 'waydroid.prop').write_text('\n'.join(provision.host_properties()) + '\n')
+            for name, source in [('config', '/var/lib/waydroid/lxc/waydroid/config'),
                                  ('waydroid.seccomp', '/var/lib/waydroid/lxc/waydroid/waydroid.seccomp')]:
                 shutil.copyfile(source, staging / name)
             (staging / 'images.json').write_text(json.dumps(manifest['images']))

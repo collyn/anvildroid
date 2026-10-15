@@ -642,8 +642,10 @@ class Store:
         waydroid = shutil.which('waydroid') is not None
         missing = host_module.missing_commands()
         support = all(Path(path).exists() for path in (
-            '/var/lib/waydroid/overlay', '/var/lib/waydroid/waydroid.prop',
-            '/var/lib/waydroid/lxc/waydroid/config', '/var/lib/waydroid/lxc/waydroid/waydroid.seccomp'))
+            '/var/lib/waydroid/overlay',
+            '/var/lib/waydroid/lxc/waydroid/config', '/var/lib/waydroid/lxc/waydroid/waydroid.seccomp')) and any(
+                Path('/var/lib/waydroid', name).is_file()
+                for name in ('waydroid.prop', 'waydroid_base.prop'))
         desktop_info = desktop_module.capabilities(uid)
         checks = [
             {'id': 'waydroid', 'label': 'Waydroid', 'available': waydroid,

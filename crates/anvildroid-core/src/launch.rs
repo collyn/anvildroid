@@ -74,6 +74,40 @@ fn waydroid(args: &[&str], timeout: Duration) -> Result<Output, AnvilError> {
     )
 }
 
+pub(crate) fn native_wayland_available() -> bool {
+    use std::os::unix::fs::FileTypeExt;
+    let display = std::env::var_os("WAYLAND_DISPLAY")
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "wayland-0".into());
+    let path = std::path::PathBuf::from(display);
+    let socket = if path.is_absolute() {
+        Some(path)
+    } else {
+        std::env::var_os("XDG_RUNTIME_DIR").map(|dir| std::path::PathBuf::from(dir).join(path))
+    };
+    socket.is_some_and(|path| path.metadata().is_ok_and(|info| info.file_type().is_socket()))
+}
+
+pub(crate) fn needs_nested_weston() -> bool {
+    !native_wayland_available()
+        && std::env::var("DISPLAY").ok()
+            .is_some_and(|display| crate::controller::x11_display(&display).is_some())
+}
+
+/// Default Waydroid still needs a Wayland compositor when the host uses X11.
+/// Keep this command shared by GUI startup and explicit session recovery.
+pub fn session_start_command() -> Command {
+    if needs_nested_weston() {
+        let mut command = Command::new("python3");
+        command.args(["-u", "-c", include_str!("../../../services/waydroid-session.py")]);
+        command
+    } else {
+        let mut command = Command::new("waydroid");
+        command.args(["session", "start"]);
+        command
+    }
+}
+
 pub(crate) fn check_output(output: Output) -> Result<String, AnvilError> {
     let text = format!(
         "{}{}",
@@ -153,8 +187,7 @@ pub fn ensure_ready(timeout: Duration) -> Result<(), AnvilError> {
                 .create(true)
                 .append(true)
                 .open(state_dir.join("session.log"))?;
-            let mut child = Command::new("waydroid")
-                .args(["session", "start"])
+            let mut child = session_start_command()
                 .stdin(Stdio::null())
                 .stdout(log.try_clone()?)
                 .stderr(log)

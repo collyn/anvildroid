@@ -18,6 +18,15 @@ buffers; no CPU frame readback is needed on this supported path. Unsupported
 formats or hosts retain the existing wl_shm fallback.
 The payload version is `fork-window-transition-5c5d35d`.
 
+Managed and Default runtimes can also use Venus on X11. Startup uses a nested
+Weston X11 compositor for guest presentation; the private Venus server still uses the
+NVIDIA Vulkan ICD for Android rendering. Weston tries GL, then pixman if GL
+cannot start. HWC uses its wl_shm fallback when DMA-BUF import is unavailable;
+this can add presentation overhead without changing the Android GPU selection.
+The same payload, driver, DRM modeset and udmabuf checks apply on both desktops.
+Nested Weston startup/protocols are tested with Xvfb; NVIDIA presentation on a
+physical X11 desktop still needs live hardware verification.
+
 `services/runtime-nvidia.py` pins the base source commit, the renderer, HWC and ANGLE recipe/upstream commits, six artifact
 IDs and SHA-256 digests, the upstream SurfaceFlinger base archive, and all three
 assembled archive hashes. No floating branch or latest-release lookup is used.

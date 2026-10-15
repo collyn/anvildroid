@@ -36,6 +36,53 @@ close_one_task() {
 }
 if [ "${1:-}" = '--close-one' ]; then close_one_task "${2:-}" "${3:-}"; exit $?; fi
 
+# Only this shell-UID service changes Android's logical display. The adapter
+# crops the acknowledged physical projection, retaining HWC's physical mode.
+display_full=0
+[ -f display-restore ] && display_full=1
+rm -f display-size display-size.processing
+full_ui_active() {
+    [ -n "$(getprop waydroid.anvil_full_ui)" ] || [ "$(getprop waydroid.active_apps)" = Waydroid ]
+}
+publish_display_state() {
+    dumpsys display > display-dump.tmp || return 1
+    viewport=$(sed -n '/mViewports=/{p;q;}' display-dump.tmp)
+    values=$(printf '%s\n' "$viewport" | sed -n 's/.*orientation=0, logicalFrame=Rect(0, 0 - \([0-9]*\), \([0-9]*\)), physicalFrame=Rect(\([0-9]*\), \([0-9]*\) - \([0-9]*\), \([0-9]*\)), deviceWidth=\([0-9]*\), deviceHeight=\([0-9]*\).*/\1 \2 \3 \4 \5 \6 \7 \8/p')
+    [ -n "$values" ] || return 1
+    requested_w=$1 requested_h=$2
+    set -- $values
+    [ "$#" -eq 8 ] || return 1
+    lw=$1 lh=$2 px=$3 py=$4 right=$5 bottom=$6 pw=$7 ph=$8
+    [ "$lw" = "$requested_w" ] && [ "$lh" = "$requested_h" ] || return 1
+    printf '%s %s %s %s %s %s %s %s\n' "$lw" "$lh" "$pw" "$ph" "$px" "$py" "$((right-px))" "$((bottom-py))" > display-state.tmp && mv display-state.tmp display-state
+}
+resize_display() {
+    case "$1:$2" in *[!0-9:]*|:*|*:) return 2;; esac
+    [ "$1" -ge 160 ] && [ "$2" -ge 160 ] && [ "$1" -le 8192 ] && [ "$2" -le 8192 ] || return 2
+    case "$3" in full) full_ui_active || return 2;; canvas) ;; *) return 2;; esac
+    if [ "$3" = full ] && [ ! -f display-restore ]; then
+        original_size=$(wm size | sed -n 's/^Override size: //p')
+        [ -n "$original_size" ] || original_size=reset
+        printf '%s %s %s %s %s\n' "$original_size" "$(settings get system accelerometer_rotation)" "$(settings get system user_rotation)" "$(wm fixed-to-user-rotation)" "$(dumpsys window displays | sed -n '/init=.* noscale/{s/.*/1/p;q;}')" > display-restore.tmp && mv display-restore.tmp display-restore || return 1
+    fi
+    [ "$3" = full ] && display_full=1
+    # Request pixel-for-pixel output where Android supports it. Some Android 15
+    # builds drop FLAG_SCALING_DISABLED between WM and DMS: acknowledge their
+    # actual projection too, rather than silently ignoring valid size requests.
+    # The reserved canvas avoids downsampling the largest portrait preset.
+    physical=$(wm size | sed -n 's/^Physical size: //p')
+    physical_w=${physical%x*} physical_h=${physical#*x}
+    case "$physical_w:$physical_h" in *[!0-9:]*|:*|*:) return 1;; esac
+    [ "$1" -le "$physical_w" ] && [ "$2" -le "$physical_h" ] || return 3
+    wm fixed-to-user-rotation enabled && wm user-rotation lock 0 && wm size "$1"x"$2" && wm scaling off || return 1
+    tries=0
+    while [ "$tries" -lt 20 ]; do
+        if publish_display_state "$1" "$2"; then return 0; fi
+        tries=$((tries+1)); sleep 0.05
+    done
+    return 1
+}
+
 # Fresh capability token on each helper/framework lifetime. Old requests must
 # not close a recycled task ID after Android restarts.
 close_epoch= close_server=
@@ -51,6 +98,8 @@ refresh_close_epoch() {
     fi
 }
 refresh_close_epoch
+display_bootstrap=1
+[ "$(getprop waydroid.anvil_single_display)" = true ] && display_bootstrap=0
 snapshot_ticks=0
 while true; do
     if [ -f close ] && [ ! -L close ]; then
@@ -89,6 +138,30 @@ while true; do
                 ;;
         esac
         rm -f resize.processing
+    fi
+    if [ "$display_bootstrap" -eq 0 ] && [ "$(getprop sys.boot_completed)" = 1 ]; then
+        display_bootstrap=1
+        if [ ! -f display-state ] && [ ! -f display-size ]; then resize_display 1280 720 canvas; fi
+    fi
+    if [ -f display-size ] && [ ! -L display-size ]; then
+        mv display-size display-size.processing
+        read -r width height mode extra < display-size.processing
+        if [ -z "$extra" ] && resize_display "$width" "$height" "$mode"; then
+            [ "$mode" = full ] && display_full=1
+        fi
+        rm -f display-size.processing
+    fi
+    # Full UI and separate app windows share a display. Restore its reserved
+    # capacity before returning to app-window mode.
+    if [ "$snapshot_ticks" -eq 0 ] && [ "$display_full" -eq 1 ] && ! full_ui_active; then
+        read -r original_size original_auto original_rotation original_fixed original_scaling < display-restore
+        case "$original_size" in reset|*[!0-9x]*|'') wm size reset;; *) wm size "$original_size";; esac
+        case "$original_rotation" in 0|1|2|3) ;; *) original_rotation=0;; esac
+        if [ "$original_auto" = 1 ]; then wm user-rotation free; else wm user-rotation lock "$original_rotation"; fi
+        case "$original_fixed" in enabled|disabled|default) wm fixed-to-user-rotation "$original_fixed";; *) wm fixed-to-user-rotation default;; esac
+        if [ "$original_scaling" = 1 ]; then wm scaling off; else wm scaling auto; fi
+        rm -f display-state display-restore
+        display_full=0
     fi
     # Check resize requests at 50 ms, but keep the heavier ActivityManager
     # snapshot at about 250 ms when idle. Refresh immediately after a resize.

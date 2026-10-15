@@ -77,8 +77,9 @@ class Integration:
             if self.nvidia:
                 gpu.choose(node)
                 gpu.nvidia.trusted_payload()
-                if not session['wayland_display'].startswith('wayland'):
-                    raise RuntimeError('Default NVIDIA requires a native Wayland desktop')
+                # Waydroid validates the session's Wayland endpoint. Nested
+                # Weston on X11 is equally valid and uses a different name;
+                # Venus itself only needs the user's NVIDIA Vulkan device.
                 uid = int(session['user_id'])
                 self.log = LOG.open('ab')
                 self.renderer = gpu.nvidia.Renderer(directory=STATE / 'venus', private_host_endpoint=True)

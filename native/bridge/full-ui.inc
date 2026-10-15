@@ -12,19 +12,21 @@ static struct object *full_ui_owner(struct object *s) {
  * the black bars appear only on the sides; the box stays centered. */
 static void full_ui_box(struct object *s,int *fw,int *fh,int *ox,int *oy) {
   int w=s->full_w,h=s->full_h;
+  int cw=display_projection.w?display_projection.w:s->full_canvas_w;
+  int ch=display_projection.h?display_projection.h:s->full_canvas_h;
   if(w<1||h<1){w=1;h=1;}
   if(s->full_canvas_w>0&&s->full_canvas_h>0) {
-    w=(int)((int64_t)h*s->full_canvas_w/s->full_canvas_h);
+    w=(int)((int64_t)h*cw/ch);
     if(w>s->full_w) {
       w=s->full_w;
-      h=(int)((int64_t)w*s->full_canvas_h/s->full_canvas_w);
+      h=(int)((int64_t)w*ch/cw);
     }
   }
   *fw=w>0?w:1;*fh=h>0?h:1;
   *ox=(s->full_w-*fw)/2;*oy=(s->full_h-*fh)/2;
 }
 static int full_ui_scaled(struct object *s,int value,int axis,int ceil) {
-  int src=axis?s->full_canvas_h:s->full_canvas_w;
+  int src=display_projection.w?(axis?display_projection.h:display_projection.w):(axis?s->full_canvas_h:s->full_canvas_w);
   int fw,fh,ox,oy;full_ui_box(s,&fw,&fh,&ox,&oy);
   int dst=axis?fh:fw;
   if(src<=0||dst<=0)return value;
@@ -37,11 +39,13 @@ static void full_ui_fit(struct object *s,int w,int h,int maximized) {
      ((w<1&&h<1)||(w==s->full_w&&h==s->full_h)))return;
   if(w<1||h<1){w=s->full_w?s->full_w:1000;h=s->full_h?s->full_h:700;}
   if(w>8192||h>8192)return;
+  int cw=display_projection.w?display_projection.w:s->full_canvas_w;
+  int ch=display_projection.h?display_projection.h:s->full_canvas_h;
   if(!maximized) {
     /* Windowed: the window hugs the aspect-correct content, no bars. */
-    if((int64_t)w*s->full_canvas_h>(int64_t)h*s->full_canvas_w)
-      w=(int)((int64_t)h*s->full_canvas_w/s->full_canvas_h);
-    else h=(int)((int64_t)w*s->full_canvas_h/s->full_canvas_w);
+    if((int64_t)w*ch>(int64_t)h*cw)
+      w=(int)((int64_t)h*cw/ch);
+    else h=(int)((int64_t)w*ch/cw);
   }
   s->full_w=w>0?w:1;s->full_h=h>0?h:1;
 }
@@ -57,19 +61,46 @@ static void full_ui_geometry(struct object *s, union argument *a) {
   a[2].i=s->full_w+(chrome?2*CSD_BORDER:0);
   a[3].i=s->full_h+(chrome?CSD_HEADER+CSD_BORDER:0);
 }
+static void full_ui_clip(struct object *layer) {
+  struct object *s=full_ui_owner(layer),*vp=layer?layer->viewport:0,*sub=0;
+  if(!s||layer==s||!vp||!display_projection.w)return;
+  for(struct object *o=objects;o;o=o->next)
+    if(o->surface==layer&&o->parent==s&&!strcmp(o->p->interface->name,"wl_subsurface")){sub=o;break;}
+  if(!sub)return;
+  struct display_crop c;
+  int result=display_crop_layer(sub->x,sub->y,vp->width,vp->height,vp->source_x,vp->source_y,vp->source_width,vp->source_height,&c);
+  if(result<0) {
+    union argument empty[3]={{.o=0},{.i=0},{.i=0}};wayland_send(layer->p,1,empty);layer->clip_hidden=1;return;
+  }
+  if(!result)return;
+  if(layer->clip_hidden&&layer->attached_buffer) {
+    union argument attach[3]={{.o=layer->attached_buffer},{.i=layer->attach_x},{.i=layer->attach_y}};
+    wayland_send(layer->p,1,attach);layer->clip_hidden=0;
+  }
+  int fw,fh,ox,oy;full_ui_box(s,&fw,&fh,&ox,&oy);
+  union argument source[4]={{.i=c.sx},{.i=c.sy},{.i=c.sw},{.i=c.sh}};
+  union argument dest[2]={{.i=full_ui_scaled(s,c.w,0,1)},{.i=full_ui_scaled(s,c.h,1,1)}};
+  union argument position[2]={{.i=ox+full_ui_scaled(s,sub->x+c.left-display_projection.x,0,0)},
+    {.i=oy+full_ui_scaled(s,sub->y+c.top-display_projection.y,1,0)}};
+  wayland_send(vp->p,1,source);wayland_send(vp->p,2,dest);wayland_send(sub->p,1,position);
+  layer->full_clip_x=c.left;layer->full_clip_y=c.top;
+}
 static void full_ui_apply(struct object *s) {
   int fw,fh,ox,oy;full_ui_box(s,&fw,&fh,&ox,&oy);
   for(struct object *o=objects;o;o=o->next) {
     if(o->surface&&full_ui_owner(o->surface)==s&&!strcmp(o->p->interface->name,"wp_viewport")&&o->width>0&&o->height>0) {
       union argument a[2]={{.i=full_ui_scaled(s,o->width,0,1)},{.i=full_ui_scaled(s,o->height,1,1)}};
+      if(o->surface==s){a[0].i=s->full_w;a[1].i=s->full_h;}
       wayland_send(o->p,2,a);
       wayland_send(o->surface->p,6,0);
     }
     if(o->parent==s&&!strcmp(o->p->interface->name,"wl_subsurface")) {
-      union argument a[2]={{.i=full_ui_scaled(s,o->x,0,0)+ox},{.i=full_ui_scaled(s,o->y,1,0)+oy}};
+      union argument a[2]={{.i=full_ui_scaled(s,o->x-display_projection.x,0,0)+ox},{.i=full_ui_scaled(s,o->y-display_projection.y,1,0)+oy}};
       wayland_send(o->p,1,a);
     }
   }
+  if(display_projection.w)for(struct object *o=objects;o;o=o->next)
+    if(full_ui_owner(o)==s&&o!=s){full_ui_clip(o);wayland_send(o->p,6,0);}
   if(s->xdg) {
     union argument a[4];full_ui_geometry(s,a);
     wayland_send(s->xdg->p,3,a);
@@ -88,12 +119,25 @@ static void full_ui_request(struct object *o,const char *cls,const char *method,
   if(!o)return;
   struct object *s=full_ui_owner(!strcmp(cls,"wl_surface")?o:o->surface);
   if(!s)return;
+  if(!strcmp(cls,"wl_surface")&&!strcmp(method,"commit")) {
+    if(o==s&&display_projection.w) {
+      /* Stock HWC commits a child before sending its final set_position.
+       * Reconcile crops using that final position before the parent latches
+       * synchronized child state. Otherwise set_position undoes the crop. */
+      for(struct object *layer=objects;layer;layer=layer->next)
+        if(layer!=s&&full_ui_owner(layer)==s) {
+          full_ui_clip(layer);wayland_send(layer->p,6,0);
+        }
+    } else full_ui_clip(o);
+  }
   if(!strcmp(cls,"wp_viewport")&&!strcmp(method,"set_destination")&&a[0].i>0&&a[1].i>0) {
-    a[0].i=full_ui_scaled(s,a[0].i,0,1);a[1].i=full_ui_scaled(s,a[1].i,1,1);
+    if(o->surface==s){a[0].i=s->full_w;a[1].i=s->full_h;}
+    else {a[0].i=full_ui_scaled(s,a[0].i,0,1);a[1].i=full_ui_scaled(s,a[1].i,1,1);}
   }
   if(!strcmp(cls,"wl_subsurface")&&!strcmp(method,"set_position")) {
     int fw,fh,ox,oy;full_ui_box(s,&fw,&fh,&ox,&oy);
-    a[0].i=full_ui_scaled(s,a[0].i,0,0)+ox;a[1].i=full_ui_scaled(s,a[1].i,1,0)+oy;
+    a[0].i=full_ui_scaled(s,a[0].i+(o->surface?o->surface->full_clip_x:0)-display_projection.x,0,0)+ox;
+    a[1].i=full_ui_scaled(s,a[1].i+(o->surface?o->surface->full_clip_y:0)-display_projection.y,1,0)+oy;
   }
   if(!strcmp(cls,"xdg_surface")&&!strcmp(method,"set_window_geometry")) {
     full_ui_geometry(s,a);
@@ -116,8 +160,10 @@ static int32_t full_ui_input(struct proxy *surface,int32_t value,int axis) {
   struct object *s=full_ui_owner(find(surface));
   if(!s)return value;
   int fw,fh,ox,oy;full_ui_box(s,&fw,&fh,&ox,&oy);
-  int src=axis?s->full_canvas_h:s->full_canvas_w,dst=axis?fh:fw;
+  int src=display_projection.w?(axis?display_projection.h:display_projection.w):(axis?s->full_canvas_h:s->full_canvas_w),dst=axis?fh:fw;
   if(src<=0||dst<=0)return value;
   int64_t n=(int64_t)(value-(axis?oy:ox))*src/dst;
+  struct object *layer=find(surface);
+  n+=256LL*(layer==s?(axis?display_projection.y:display_projection.x):(axis?layer->full_clip_y:layer->full_clip_x));
   return n>INT32_MAX?INT32_MAX:n<INT32_MIN?INT32_MIN:(int32_t)n;
 }

@@ -753,6 +753,18 @@ def android_overlay_options(lower, upper, work):
     return f'lowerdir={lower},upperdir={upper},workdir={work},xino=off'
 
 
+def desktop_gpu(instance, desktop):
+    node = gpu.resolve(instance)
+    if gpu.is_nvidia(node):
+        # Venus uses Vulkan independently of the display server. On X11 the
+        # guest HWC presents to our nested Weston, including its wl_shm path
+        # when the compositor cannot import NVIDIA DMA-BUFs. Android rendering
+        # stays on Venus even if Weston needs its pixman renderer.
+        require(desktop, 'NVIDIA Venus experimental requires a Wayland or X11 desktop')
+        gpu.nvidia.trusted_payload()
+    return node
+
+
 def nested_weston(xdg, width, height, display, authority):
     """argv + env for a nested Weston inside the user's X session; socket lands in xdg."""
     args = ['weston', '--backend=x11', '--renderer=gl', '--socket=wayland-probe',
@@ -801,6 +813,23 @@ def managed_session_properties(props):
     }
     return [p for p in props if p.split('=', 1)[0].strip() not in values] + [
         key + '=' + value for key, value in values.items()]
+
+
+def single_display_properties(props):
+    # Reserve both orientations of every Size preset at boot. This is HWC
+    # allocation capacity; the shell companion sets the initial 1280x720 UI.
+    values = dict(line.split('=', 1) for line in props if '=' in line)
+    sizes = {}
+    for axis in ('width', 'height'):
+        key = 'persist.waydroid.' + axis
+        raw = values.get(key, '1280')
+        require(raw.isdecimal() and 1 <= int(raw) <= 8192, 'Invalid single-display canvas ' + axis)
+        sizes[key] = max(1280, int(raw))
+    require(sizes['persist.waydroid.width'] * sizes['persist.waydroid.height'] <= 16777216,
+            'Single-display canvas exceeds allocation budget')
+    keys = set(sizes) | {'waydroid.anvil_single_display'}
+    return [line for line in props if line.split('=', 1)[0] not in keys] + [
+        key + '=' + str(value) for key, value in sizes.items()] + ['waydroid.anvil_single_display=true']
 
 
 def configure_host_desktop(instance, shell, desktop):
@@ -1036,12 +1065,8 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
                 'Android device provisioning could not be completed')
     try:
         state['resource_limits'] = resources.verify(identifier, generation, resources.load(instance))
-        gpu_node = gpu.resolve(instance)
+        gpu_node = desktop_gpu(instance, desktop)
         nvidia_rendering = gpu.is_nvidia(gpu_node)
-        if nvidia_rendering:
-            require(desktop and not desktop[0].startswith(desktop_module.X11_TOKEN_PREFIX),
-                    'NVIDIA Venus experimental requires a native Wayland desktop')
-            gpu.nvidia.trusted_payload()
         state['gpu_node'] = gpu_node
         run('mount', '--make-rprivate', '/')
         run('ip', 'link', 'add', 'anvilandroid', 'type', 'bridge')
@@ -1298,6 +1323,8 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
                 props += [('persist.waydroid.multi_windows=false' if (single_display or software_compatibility)
                            else 'persist.waydroid.multi_windows=true'),
                           f'waydroid.host.uid={desktop[1]}']
+                if single_display:
+                    props = single_display_properties(props)
                 props += workarea_props
                 state['workarea'] = workarea_info
                 marker = '    setenv LD_PRELOAD /vendor/lib64/libanvildroid-window.so'

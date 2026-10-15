@@ -1,5 +1,6 @@
 /* Single-display window controls through the public Wayland decoration ABI. */
 #include <stdint.h>
+#include "custom-size.h"
 #include <stddef.h>
 struct wl_proxy;
 struct wl_interface;
@@ -20,6 +21,7 @@ extern int __android_log_print(int, const char *, const char *, ...);
 typedef struct wl_proxy *(*marshal_fn)(struct wl_proxy *, uint32_t,
     const struct wl_interface *, uint32_t, uint32_t, union wl_argument *);
 static marshal_fn marshal;
+static void *window_library;
 static int (*listen)(struct wl_proxy *, void (**)(void), void *);
 static const char *(*get_class)(struct wl_proxy *);
 static uint32_t (*get_version)(struct wl_proxy *);
@@ -38,6 +40,7 @@ static void resolve(void) {
   if (marshal) return;
   void *library = dlopen("/vendor/lib64/hw/hwcomposer.waydroid.so", 2 | 4);
   if (!library) return;
+  window_library=library;
   listen = (void *)dlsym(library, "wl_proxy_add_listener");
   get_class = (void *)dlsym(library, "wl_proxy_get_class");
   get_version = (void *)dlsym(library, "wl_proxy_get_version");
@@ -56,14 +59,29 @@ struct wl_array { size_t size, alloc; void *data; };
 struct tracked {
   struct wl_proxy *proxy, *surface, *parent;
   int kind, x, y, width, height;
+  int sx,sy,sw,sh,clip_x,clip_y;
   struct tracked *next;
 };
 enum { SURFACE=1, XDG, VIEWPORT, SUBSURFACE };
 static struct tracked *objects;
 static struct wl_proxy *root_surface, *xdg;
+static struct custom_size canvas_custom_size;
 static int host_w=1280, host_h=720, fit_w=1280, fit_h=720, pad_x, pad_y;
-static const int canvas_w=1280, canvas_h=720;
-static int fullscreen, focused, configured;
+static int canvas_w=1280, canvas_h=720;
+static void canvas_dimensions(void) {
+  int (*get)(const char *,char *)=dlsym((void *)0,"__system_property_get");
+  if(!get)return;
+  char value[92];int n=0;
+  if(get("waydroid.display_width",value)>0) {for(int i=0;value[i]>='0'&&value[i]<='9'&&n<=32768;++i)n=n*10+value[i]-'0';if(n>=64&&n<=32768)canvas_w=n;}
+  n=0;
+  if(get("waydroid.display_height",value)>0) {for(int i=0;value[i]>='0'&&value[i]<='9'&&n<=32768;++i)n=n*10+value[i]-'0';if(n>=64&&n<=32768)canvas_h=n;}
+}
+#if !defined(__ANDROID__)
+#include <stdio.h>
+#define ANVIL_NATIVE_STDIO 1
+#endif
+#include "display-size.inc"
+static int fullscreen, focused, configured,display_initial_checked;
 static int root_has_buffer;
 static int fullscreen_requested=-1;
 static int restore_w=1280, restore_h=720;
@@ -87,6 +105,10 @@ static int owned(struct wl_proxy *p) {
   return 0;
 }
 #include "android-ime.inc"
+static void canvas_menu_paint(uint32_t *,int,int);
+static void canvas_menu_sync(void);
+static void canvas_menu_destroy(void);
+static void canvas_menu_toggle(void);
 #include "android-csd.inc"
 
 static void remember(struct wl_proxy *p,int kind,struct wl_proxy *s,struct wl_proxy *parent) {
@@ -95,15 +117,17 @@ static void remember(struct wl_proxy *p,int kind,struct wl_proxy *s,struct wl_pr
   o->proxy=p;o->kind=kind;o->surface=s;o->parent=parent;o->next=objects;objects=o;
 }
 static int scaled(int n,int axis) {
-  return (int)((int64_t)n*(axis?fit_h:fit_w)/(axis?canvas_h:canvas_w));
+  return (int)((int64_t)n*(axis?fit_h:fit_w)/(display_projection.w?(axis?display_projection.h:display_projection.w):(axis?canvas_h:canvas_w)));
 }
 static void fit(int w,int h) {
   if(w>0 && w<=32768)host_w=w;
   if(h>0 && h<=32768)host_h=h;
+  int cw=display_projection.w?display_projection.w:canvas_w;
+  int ch=display_projection.h?display_projection.h:canvas_h;
   fit_w=host_w;fit_h=host_h;
-  if((int64_t)host_w*canvas_h>(int64_t)host_h*canvas_w)
-    fit_w=(int)((int64_t)host_h*canvas_w/canvas_h);
-  else fit_h=(int)((int64_t)host_w*canvas_h/canvas_w);
+  if((int64_t)host_w*ch>(int64_t)host_h*cw)
+    fit_w=(int)((int64_t)host_h*cw/ch);
+  else fit_h=(int)((int64_t)host_w*ch/cw);
   if(fit_w<1)fit_w=1;
   if(fit_h<1)fit_h=1;
   pad_x=(host_w-fit_w)/2;pad_y=(host_h-fit_h)/2;
@@ -114,15 +138,42 @@ static void destination(struct tracked *o, union wl_argument *a) {
   if(a[0].i<1)a[0].i=1;
   if(a[1].i<1)a[1].i=1;
 }
+static int clip_viewport(struct tracked *vp) {
+  if(!display_projection.w||vp->surface==root_surface)return 0;
+  struct tracked *sub=NULL;
+  for(struct tracked *o=objects;o;o=o->next)
+    if(o->kind==SUBSURFACE&&o->surface==vp->surface&&o->parent==root_surface){sub=o;break;}
+  if(!sub)return 0;
+  struct display_crop c;
+  int result=display_crop_layer(sub->x,sub->y,vp->width,vp->height,vp->sx,vp->sy,vp->sw,vp->sh,&c);
+  if(result<0) {
+    union wl_argument empty[3]={{.o=NULL},{.i=0},{.i=0}};
+    marshal(vp->surface,1,NULL,1,0,empty);return 1;
+  }
+  if(!result)return 0;
+  union wl_argument source[4]={{.i=c.sx},{.i=c.sy},{.i=c.sw},{.i=c.sh}};
+  union wl_argument dest[2]={{.i=scaled(c.w,0)},{.i=scaled(c.h,1)}};
+  if(dest[0].i<1)dest[0].i=1;
+  if(dest[1].i<1)dest[1].i=1;
+  union wl_argument position[2]={{.i=pad_x+scaled(sub->x+c.left-display_projection.x,0)},
+    {.i=pad_y+scaled(sub->y+c.top-display_projection.y,1)}};
+  marshal(vp->proxy,1,NULL,1,0,source);marshal(vp->proxy,2,NULL,1,0,dest);
+  marshal(sub->proxy,1,NULL,1,0,position);
+  struct tracked *surface=find(vp->surface);
+  if(surface){surface->clip_x=c.left;surface->clip_y=c.top;}
+  return 1;
+}
 static void apply_size(void) {
   if(!root_surface || !configured || !root_has_buffer)return;
   for(struct tracked *o=objects;o;o=o->next) {
     if(o->kind==VIEWPORT && owned(o->surface) && o->width>0 && o->height>0) {
+      if(clip_viewport(o)){marshal(o->surface,6,NULL,get_version(o->surface),0,NULL);continue;}
       union wl_argument a[2];destination(o,a);
       marshal(o->proxy,2,NULL,1,0,a);
       marshal(o->surface,6,NULL,get_version(o->surface),0,NULL);
     } else if(o->kind==SUBSURFACE && o->parent==root_surface) {
-      union wl_argument a[2]={{.i=pad_x+scaled(o->x,0)},{.i=pad_y+scaled(o->y,1)}};
+      struct tracked *layer=find(o->surface);
+      union wl_argument a[2]={{.i=pad_x+scaled(o->x+(layer?layer->clip_x:0)-display_projection.x,0)},{.i=pad_y+scaled(o->y+(layer?layer->clip_y:0)-display_projection.y,1)}};
       marshal(o->proxy,1,NULL,1,0,a);
     }
   }
@@ -131,6 +182,40 @@ static void apply_size(void) {
   if(xdg)marshal(xdg,3,NULL,get_version(xdg),0,g);
   marshal(root_surface,6,NULL,get_version(root_surface),0,NULL);
 }
+/* A frame callback keeps acknowledgement polling on the Wayland event thread,
+ * even when Android's launcher stops drawing immediately after wm size. */
+static int display_frame_waiting,display_frame_ticks;
+static void display_frame_schedule(void);
+static void display_frame_done(void *data,struct wl_proxy *callback,uint32_t time) {
+  (void)data;(void)time;
+  void *lib=window_library;
+  void (*destroy)(struct wl_proxy *)=lib?dlsym(lib,"wl_proxy_destroy"):NULL;
+  if(destroy)destroy(callback);
+  display_frame_waiting=0;
+  if(!root_surface)return;
+  int w,h;
+  if(custom_size_due(&canvas_custom_size,canvas_w,canvas_h,&w,&h)&&
+     (w!=display_projection.lw||h!=display_projection.lh))display_size_request(w,h,0);
+  if(display_size_refresh()){
+    if(!canvas_custom_size.enabled){restore_w=display_projection.lw;restore_h=display_projection.lh;fit(restore_w,restore_h);}
+    else fit(host_w,host_h);
+    apply_size();
+  }
+  if((display_pending_w||canvas_custom_size.w)&&++display_frame_ticks<240)display_frame_schedule();
+}
+static void (*display_frame_listener[])(void)={(void(*)(void))display_frame_done};
+static void display_frame_schedule(void) {
+  if(display_frame_waiting||!root_surface||!configured||!root_has_buffer)return;
+  void *lib=window_library;
+  const struct wl_interface *i=lib?dlsym(lib,"wl_callback_interface"):NULL;
+  if(!i)return;
+  union wl_argument id={.o=NULL};
+  struct wl_proxy *callback=marshal(root_surface,3,i,1,0,&id);
+  if(!callback)return;
+  display_frame_waiting=1;listen(callback,display_frame_listener,NULL);
+  marshal(root_surface,6,NULL,get_version(root_surface),0,NULL);
+}
+#include "android-menu.inc"
 static void top_configure(void *data,struct wl_proxy *p,int32_t w,int32_t h,struct wl_array *states) {
   decoration_mode=decoration_pending;
   fullscreen_requested=-1;
@@ -141,6 +226,12 @@ static void top_configure(void *data,struct wl_proxy *p,int32_t w,int32_t h,stru
   if(states)for(size_t i=0;i<states->size/sizeof(uint32_t);i++)
     { if(((uint32_t*)states->data)[i]==2)fullscreen=1;
       if(((uint32_t*)states->data)[i]==1)maximized=1; }
+  if(canvas_size_pending) {
+    if(maximized&&!fullscreen){maximized=0;return;}
+    w=restore_w;h=restore_h;
+    if(csd_visible()){w+=2*CSD_BORDER;h+=CSD_HEADER+CSD_BORDER;}
+    canvas_size_pending=0;
+  }
   if(was_maximized!=maximized)csd_pieces[0].width=0;
   if(csd_visible()) {
     if(w>0)w=w>2*CSD_BORDER?w-2*CSD_BORDER:1;
@@ -150,7 +241,13 @@ static void top_configure(void *data,struct wl_proxy *p,int32_t w,int32_t h,stru
     if(!w)w=restore_w;
     if(!h)h=restore_h;
   }
-  fit(w,h);
+  canvas_dimensions();fit(w,h);
+  if(canvas_custom_size.enabled) {
+    int resizing=0;
+    if(states)for(size_t i=0;i<states->size/sizeof(uint32_t);++i)if(states->data&&((uint32_t*)states->data)[i]==3)resizing=1;
+    custom_size_queue(&canvas_custom_size,host_w,host_h,resizing);
+    display_frame_ticks=0;display_frame_schedule();
+  }
   ((void(*)(void*,struct wl_proxy*,int32_t,int32_t,struct wl_array*))top_original[0])(data,p,canvas_w,canvas_h,states);
 }
 static void surface_configure(void *data,struct wl_proxy *p,uint32_t serial) {
@@ -167,6 +264,7 @@ static void keyboard_leave(void *d,struct wl_proxy *p,uint32_t serial,struct wl_
   ((void(*)(void*,struct wl_proxy*,uint32_t,struct wl_proxy*))key_original[2])(d,p,serial,s);
 }
 static void keyboard_key(void *d,struct wl_proxy *p,uint32_t serial,uint32_t time,uint32_t key,uint32_t state) {
+  if(canvas_menu_key(key,state))return;
   if(focused && top && key==87) { /* Linux KEY_F11, not an XKB keycode. */
     if(state==1) {
       fullscreen_requested=!(fullscreen_requested<0?fullscreen:fullscreen_requested);
@@ -181,7 +279,9 @@ static int32_t input(struct wl_proxy *s,int32_t n,int axis) {
   if(!owned(s))return n;
   int64_t v=n;
   if(s==root_surface)v-=(axis?pad_y:pad_x)*256LL;
-  v=v*(axis?canvas_h:canvas_w)/(axis?fit_h:fit_w);
+  v=v*(display_projection.w?(axis?display_projection.h:display_projection.w):(axis?canvas_h:canvas_w))/(axis?fit_h:fit_w);
+  if(s==root_surface)v+=(axis?display_projection.y:display_projection.x)*256LL;
+  else {struct tracked *o=find(s);if(o)v+=(axis?o->clip_y:o->clip_x)*256LL;}
   if(v>INT32_MAX)v=INT32_MAX;
   if(v<INT32_MIN)v=INT32_MIN;
   return (int32_t)v;
@@ -190,29 +290,37 @@ static int inside(struct wl_proxy *s,int32_t x,int32_t y) {
   return s!=root_surface || (x>=pad_x*256 && y>=pad_y*256 && x<(pad_x+fit_w)*256 && y<(pad_y+fit_h)*256);
 }
 static void pointer_enter(void *d,struct wl_proxy *p,uint32_t serial,struct wl_proxy *s,int32_t x,int32_t y) {
-  csd_part=csd_surface_part(s);csd_suppress=csd_part>=0;csd_pressed=0;
+  canvas_custom_size.dragging=0;
+  if(canvas_custom_size.enabled&&canvas_custom_size.w){display_frame_ticks=0;display_frame_schedule();}
+  canvas_menu_focus=s&&s==canvas_menu.surface;
+  csd_part=csd_surface_part(s);csd_suppress=csd_part>=0||canvas_menu_focus;csd_pressed=0;
   csd_x=x/256;csd_y=y/256;
   pointer_surface=s;pointer_inside=inside(s,x,y);
+  if(canvas_menu_focus)canvas_menu_motion();
   if(csd_suppress)return;
   ((void(*)(void*,struct wl_proxy*,uint32_t,struct wl_proxy*,int32_t,int32_t))pointer_original[0])(d,p,serial,s,input(s,x,0),input(s,y,1));
 }
 static void pointer_motion(void *d,struct wl_proxy *p,uint32_t time,int32_t x,int32_t y) {
   csd_x=x/256;csd_y=y/256;
+  if(canvas_menu_focus){canvas_menu_motion();return;}
   if(csd_suppress)return;
   pointer_inside=inside(pointer_surface,x,y);
   if(!pointer_inside)return;
   ((void(*)(void*,struct wl_proxy*,uint32_t,int32_t,int32_t))pointer_original[2])(d,p,time,input(pointer_surface,x,0),input(pointer_surface,y,1));
 }
 static void pointer_button(void *d,struct wl_proxy *p,uint32_t serial,uint32_t time,uint32_t button,uint32_t state) {
+  if(canvas_menu_focus){canvas_menu_button(button,state);return;}
   if(csd_suppress){csd_button(serial,button,state);return;}
   if(!pointer_inside && state)return;
   ((void(*)(void*,struct wl_proxy*,uint32_t,uint32_t,uint32_t,uint32_t))pointer_original[3])(d,p,serial,time,button,state);
 }
 static void pointer_leave(void *d,struct wl_proxy *p,uint32_t serial,struct wl_proxy *s) {
   pointer_surface=NULL;csd_part=-1;csd_pressed=0;
+  canvas_menu_focus=0;
   if(!csd_suppress)((void(*)(void*,struct wl_proxy*,uint32_t,struct wl_proxy*))pointer_original[1])(d,p,serial,s);
 }
 static void pointer_axis(void *d,struct wl_proxy *p,uint32_t time,uint32_t axis,int32_t value) {
+  if(canvas_menu_focus&&axis==0&&value){canvas_menu_scroll(value>0?1:-1);return;}
   if(!csd_suppress)((void(*)(void*,struct wl_proxy*,uint32_t,uint32_t,int32_t))pointer_original[4])(d,p,time,axis,value);
 }
 static void pointer_frame(void *d,struct wl_proxy *p) {
@@ -354,17 +462,26 @@ struct wl_proxy *wl_proxy_marshal_array_flags(struct wl_proxy *proxy, uint32_t o
     if(decoration)marshal(decoration,0,NULL,1,1,NULL);
     pthread_mutex_lock(mutex);ime_surface=NULL;ime_sync();pthread_mutex_unlock(mutex);
     decoration=NULL;top=NULL;root_surface=NULL;xdg=NULL;configured=0;focused=0;fullscreen=0;
-    root_has_buffer=0;
+    root_has_buffer=0;display_initial_checked=0;canvas_custom_size=(struct custom_size){0};
     fullscreen_requested=-1;
     restore_w=1280;restore_h=720;fit(1280,720);
   }
+  if(root_surface)canvas_dimensions();
+  if(root_surface&&(display_pending_w||!display_initial_checked)) {
+    display_initial_checked=1;
+    if(display_size_refresh()) {
+      restore_w=display_projection.lw;restore_h=display_projection.lh;
+      if(!canvas_custom_size.enabled)fit(restore_w,restore_h);else fit(host_w,host_h);apply_size();
+    }
+  }
   if(o && args) {
     if(o->kind==SURFACE && proxy==root_surface && opcode==1)root_has_buffer=args[0].o!=NULL;
+    if(o->kind==VIEWPORT && opcode==1){o->sx=args[0].i;o->sy=args[1].i;o->sw=args[2].i;o->sh=args[3].i;}
     if(o->kind==VIEWPORT && opcode==2 && owned(o->surface) && args[0].i>0 && args[1].i>0) {
       o->width=args[0].i;o->height=args[1].i;destination(o,adjusted);args=adjusted;
     } else if(o->kind==SUBSURFACE && opcode==1 && o->parent==root_surface) {
       o->x=args[0].i;o->y=args[1].i;
-      adjusted[0].i=pad_x+scaled(o->x,0);adjusted[1].i=pad_y+scaled(o->y,1);args=adjusted;
+      adjusted[0].i=pad_x+scaled(o->x-display_projection.x,0);adjusted[1].i=pad_y+scaled(o->y-display_projection.y,1);args=adjusted;
     } else if(o->kind==XDG && opcode==3 && proxy==xdg) {
       csd_geometry(adjusted);args=adjusted;
     } else if(o->kind==SURFACE && (opcode==4 || opcode==5) && owned(proxy)) {
@@ -377,6 +494,8 @@ struct wl_proxy *wl_proxy_marshal_array_flags(struct wl_proxy *proxy, uint32_t o
     apply_size();
     return NULL;
   }
+  if(o&&o->kind==SURFACE&&opcode==6&&owned(proxy))
+    for(struct tracked *v=objects;v;v=v->next)if(v->kind==VIEWPORT&&v->surface==proxy)clip_viewport(v);
   struct wl_proxy *result = marshal(proxy, opcode, interface, version, flags, args);
   if(result && interface) {
     csd_track(result,interface);

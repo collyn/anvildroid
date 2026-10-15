@@ -3,20 +3,25 @@
  * repaint it. Edit keymap uses the same task-scoped request as F2. */
 #include "csd-menu-model.h"
 #include "menu-font.h"
+#include "csd-size-model.h"
 static int csd_menu_row(struct csd_frame *f,int x,int y,int w,int h) {
-  int row=csd_menu_row_at(x,y,w,h,f->menu_submenu);
-  return f->top->surface->full_ui&&row!=0?-1:row;
+  int row=csd_menu_row_at_offset(x,y,w,h,f->menu_submenu,f->menu_scroll);
+  return row;
 }
 static int csd_menu_enabled(struct csd_frame *f,int row) {
   struct object *s=f->top->surface;
   if(!s||s->overlay||s->resize.dragging)return 0;
-  if(row>=2&&!f->menu_submenu)return 0;
-  if(row>=1&&row<=3)return s->app&&s->app_id&&s->viewport&&scale_has_viewporter;
+  if(row==2||row==3) {if(f->menu_submenu!=1)return 0;}
+  if(row>=CSD_MENU_PRESET_FIRST&&f->menu_submenu!=2)return 0;
+  if(row>=1&&row<=CSD_MENU_CUSTOM) {
+    if(s->full_ui)return row>=CSD_MENU_SIZE&&scale_has_viewporter;
+    return s->app&&s->app_id&&s->viewport&&scale_has_viewporter;
+  }
   return row==0&&ANVIL_KEYMAP_EDITOR&&keymap_connection_ready()&&
     getenv("ANVILDROID_RUNTIME_GENERATION")&&keymap_task_owner(s);
 }
 static void csd_menu_panel(uint32_t *pixels,int w,int h,struct csd_frame *f,
-                           int px,int py,int width,int first,int rows) {
+                           int px,int py,int width,int submenu,int rows) {
   if(px+width>w)width=w-px;
   int bottom=py+2*CSD_MENU_PAD+rows*CSD_MENU_ROW;
   for(int y=py;y<h&&y<bottom;++y)for(int x=px;x<px+width;++x) {
@@ -27,31 +32,56 @@ static void csd_menu_panel(uint32_t *pixels,int w,int h,struct csd_frame *f,
     pixels[(size_t)y*w+x]=color;
   }
   for(int n=0;n<rows;++n) {
-    int action=first+n,baseline=py+CSD_MENU_PAD+20+n*CSD_MENU_ROW;
+    int compact=submenu&&csd_menu_inline(w,h,submenu);
+    int action=csd_menu_action(submenu,n,compact,f->menu_scroll);
+    int baseline=py+CSD_MENU_PAD+20+n*CSD_MENU_ROW;
     uint32_t ink=csd_menu_enabled(f,action)?0xffdedede:0xff777777;
     int text_x=px+12;
     const char *label=action==0?"Edit keymap":action==1?"Resize":
-      action==2?"Resize app layout":"Keep resolution";
-    if(action>=2) {
+      action==2?"Resize app layout":action==3?"Keep resolution":action==4?"Size":
+      action<=CSD_MENU_PRESET_LAST?csd_menu_sizes[action-CSD_MENU_PRESET_FIRST].label:
+      action==CSD_MENU_CUSTOM?"Custom":action==CSD_MENU_LANDSCAPE?"Landscape":"Portrait";
+    if(action==2||action==3) {
       int selected=resize_mode_fixed(f->top->surface->app_id)==(action==3);
       menu_text(pixels,w,h,px+width-8,px+12,baseline,selected?"*":"",ink,14);
       text_x=px+30;
-    } else if(action==1&&f->menu_submenu&&csd_menu_inline(w,h)) {
+    } else if(action>=CSD_MENU_PRESET_FIRST) {
+      struct object *s=f->top->surface;
+      int cw=s->fit_w?s->fit_w:s->content_width,ch=s->fit_h?s->fit_h:s->content_height;
+      if(s->full_ui){cw=display_projection.lw?display_projection.lw:s->full_w;ch=display_projection.lh?display_projection.lh:s->full_h;}
+      int selected=action==CSD_MENU_CUSTOM?s->custom_size.enabled:action<=CSD_MENU_PRESET_LAST?
+        !s->custom_size.enabled&&cw==csd_menu_sizes[action-CSD_MENU_PRESET_FIRST].width&&ch==csd_menu_sizes[action-CSD_MENU_PRESET_FIRST].height:
+        action==CSD_MENU_LANDSCAPE?cw>ch:ch>cw;
+      menu_text(pixels,w,h,px+width-8,px+12,baseline,selected?"*":"",ink,14);
+      text_x=px+30;
+    } else if(submenu&&action==csd_menu_parent(submenu)&&compact) {
       menu_text(pixels,w,h,px+width-8,px+12,baseline,"<",ink,14);text_x=px+30;
     }
     menu_text(pixels,w,h,px+width-8,text_x,baseline,label,ink,14);
-    if(action==0||action==1)menu_text(pixels,w,h,px+width-8,px+width-28,baseline,
-      action==0?"F2":f->menu_submenu&&csd_menu_inline(w,h)?"":">",ink,14);
+    if(action==0||action==1||action==4)menu_text(pixels,w,h,px+width-8,px+width-28,baseline,
+      action==0?"F2":compact?"":">",ink,14);
+    if(submenu&&action>=csd_menu_first(submenu)) {
+      int first_row=compact?1:0;
+      const char *hint=n==first_row&&f->menu_scroll>0?"^":
+        n==rows-1&&f->menu_scroll+csd_menu_visible(w,h,submenu)<csd_menu_count(submenu)?"v":"";
+      menu_text(pixels,w,h,px+width-8,px+width-24,baseline,hint,ink,14);
+    }
   }
 }
 static void csd_menu_paint(uint32_t *pixels,int w,int h) {
   struct csd_frame *f=csd_menu_paint_context;if(!f)return;
-  if(f->menu_submenu&&csd_menu_inline(w,h))
-    csd_menu_panel(pixels,w,h,f,0,0,CSD_SUBMENU_WIDTH,1,3);
+  if(f->menu_submenu) {
+    int limit=csd_menu_count(f->menu_submenu)-csd_menu_visible(w,h,f->menu_submenu);
+    if(f->menu_scroll>limit)f->menu_scroll=limit;
+  }
+  if(f->menu_submenu&&csd_menu_inline(w,h,f->menu_submenu))
+    csd_menu_panel(pixels,w,h,f,0,0,CSD_SUBMENU_WIDTH,f->menu_submenu,
+      1+csd_menu_visible(w,h,f->menu_submenu));
   else {
-    csd_menu_panel(pixels,w,h,f,0,0,CSD_MENU_WIDTH,0,f->top->surface->full_ui?1:2);
+    csd_menu_panel(pixels,w,h,f,0,0,CSD_MENU_WIDTH,0,CSD_MENU_ROWS);
     if(f->menu_submenu)
-      csd_menu_panel(pixels,w,h,f,CSD_MENU_WIDTH,CSD_MENU_ROW,CSD_SUBMENU_WIDTH,2,2);
+      csd_menu_panel(pixels,w,h,f,CSD_MENU_WIDTH,(f->menu_submenu==2?2:1)*CSD_MENU_ROW,
+        CSD_SUBMENU_WIDTH,f->menu_submenu,csd_menu_visible(w,h,f->menu_submenu));
   }
 }
 static void csd_menu_sync(struct csd_frame *f,int x,int y,int w,int h) {
@@ -119,14 +149,14 @@ static void csd_menu_refresh(struct csd_frame *f) {
   csd_menu_sync(f,s->full_ui?0:s->bx,s->full_ui?0:s->by,w,h);wayland_send(s->p,6,0);
 }
 static void csd_menu_close(struct csd_frame *f) {
-  f->menu_open=0;f->menu_submenu=0;csd_menu_sync(f,0,0,0,0);
+  f->menu_open=0;f->menu_submenu=0;f->menu_scroll=0;csd_menu_sync(f,0,0,0,0);
   if(f->top->surface)wayland_send(f->top->surface->p,6,0);
 }
 static void csd_menu_toggle(struct csd_frame *f) {
   if(f->menu_open){csd_menu_close(f);return;}
   if((!f->top->surface->app&&!f->top->surface->full_ui)||f->fullscreen)return;
   for(struct object *o=objects;o;o=o->next)if(o->csd&&o->csd!=f&&o->csd->menu_open)csd_menu_close(o->csd);
-  f->menu_open=1;f->menu_submenu=0;f->menu_hover=-1;f->menu_pressed=-2;
+  f->menu_open=1;f->menu_submenu=0;f->menu_scroll=0;f->menu_hover=-1;f->menu_pressed=-2;
   csd_menu_refresh(f);
 }
 static void csd_menu_destroy(struct csd_frame *f) {
@@ -145,18 +175,87 @@ static void csd_menu_motion(struct object *o) {
   int row=csd_menu_row(f,o->csd_x,o->csd_y,f->menu.width,f->menu.height);
   if(row!=f->menu_hover){f->menu_hover=row;csd_menu_refresh(f);}
 }
+static void csd_menu_scroll(struct object *o,int step) {
+  struct csd_frame *f=o->menu_focus;
+  if(!f||!f->menu_open||!f->menu_submenu)return;
+  int limit=csd_menu_count(f->menu_submenu)-csd_menu_visible(f->menu.width,f->menu.height,f->menu_submenu);
+  int scroll=f->menu_scroll+step;
+  if(scroll<0)scroll=0;
+  if(scroll>limit)scroll=limit;
+  if(scroll==f->menu_scroll)return;
+  f->menu_scroll=scroll;f->menu_pressed=-2;
+  f->menu_hover=csd_menu_row(f,o->csd_x,o->csd_y,f->menu.width,f->menu.height);
+  csd_menu_refresh(f);
+}
+static void csd_menu_size(struct csd_frame *f,int width,int height) {
+  struct object *s=f->top->surface;
+  if(width<160||height<64||width>8192||height>8192)return;
+  s->custom_size=(struct custom_size){0};
+  if(s->full_ui) {
+    if(!display_size_request(width,height,1))return;
+    f->restore_width=width;f->restore_height=height;
+    if(f->maximized)wayland_send(f->top->p,10,0);
+    csd_menu_close(f);return;
+  }
+  width=window_layout_width(s,width);
+  s->profile_loaded=1;s->profile_restoring=0;s->profile_recreated=0;
+  s->profile_dirty=1;s->profile_ticks=0;
+  s->profile_state_dirty=1;
+  f->restore_width=width;f->restore_height=height;
+  f->maximize_pending=f->maximize_retry=0;
+  if(f->maximized) {
+    f->size_pending=1;
+    wayland_send(f->top->p,10,0); /* unset_maximized; configure uses this size */
+  }
+  f->maximized=0;s->resize.maximized=0;
+  s->fit_w=width;s->fit_h=height;
+  s->fit_width_snapped=resize_uses_nvidia()&&!game_fit_enabled(s);
+  s->preview_width=s->preview_height=0;
+  if(!game_fit_enabled(s)) {
+    s->resize.ready=1;
+    resize_configure(&s->resize,width,height,s->fit_delivered_w?s->fit_delivered_w:s->content_width,
+      s->fit_delivered_h?s->fit_delivered_h:s->content_height,0,0);
+  } else {
+    s->resize.width=s->resize.height=s->resize.dirty=s->resize.quiet_ticks=0;
+  }
+  csd_menu_close(f);geometry(s);wayland_send(s->p,6,0);
+}
 static void csd_menu_activate(struct csd_frame *f,int row) {
   if(row<0){csd_menu_close(f);return;}
   if(!csd_menu_enabled(f,row))return;
   struct object *s=f->top->surface;
-  if(row==1) {
-    f->menu_submenu=!f->menu_submenu;
-    f->menu_hover=f->menu_submenu?2:1;
+  if(row==CSD_MENU_RESIZE||row==CSD_MENU_SIZE) {
+    int submenu=row==CSD_MENU_SIZE?2:1;
+    f->menu_submenu=f->menu_submenu==submenu?0:submenu;
+    f->menu_scroll=0;
+    f->menu_hover=f->menu_submenu?csd_menu_first(submenu):row;
     f->menu_pressed=-2;
     csd_menu_refresh(f);
     return;
   }
+  if(row==CSD_MENU_CUSTOM) {
+    s->custom_size.enabled=1;
+    if(s->full_ui)custom_size_queue(&s->custom_size,s->full_w,s->full_h,0);
+    else {
+      resize_mode_set(s->app_id,0);
+      csd_menu_size(f,s->fit_w?s->fit_w:s->content_width,s->fit_h?s->fit_h:s->content_height);
+      s->custom_size.enabled=1;
+    }
+    csd_menu_close(f);return;
+  }
+  if(row>=CSD_MENU_PRESET_FIRST&&row<=CSD_MENU_PRESET_LAST) {
+    int index=row-CSD_MENU_PRESET_FIRST;
+    csd_menu_size(f,csd_menu_sizes[index].width,csd_menu_sizes[index].height);
+    return;
+  }
+  if(row==CSD_MENU_LANDSCAPE||row==CSD_MENU_PORTRAIT) {
+    int w=s->fit_w?s->fit_w:s->content_width,h=s->fit_h?s->fit_h:s->content_height;
+    if(s->full_ui){w=display_projection.lw?display_projection.lw:s->full_w;h=display_projection.lh?display_projection.lh:s->full_h;}
+    if((row==CSD_MENU_LANDSCAPE&&w<h)||(row==CSD_MENU_PORTRAIT&&w>h)) {int swap=w;w=h;h=swap;}
+    csd_menu_size(f,w,h);return;
+  }
   if(row==2||row==3) {
+    s->custom_size=(struct custom_size){0};
     resize_mode_set(s->app_id,row==3);
     csd_menu_close(f);
     geometry(s);
@@ -181,16 +280,23 @@ static int csd_menu_key(struct object *o,uint32_t key,uint32_t state) {
   else o->keymap_blocked_keys[key/32]&=~(1u<<(key%32));
   if(!state)return 1;
   if(key==1||key==105) {
-    if(f->menu_submenu){f->menu_submenu=0;f->menu_hover=1;csd_menu_refresh(f);}
+    if(f->menu_submenu){f->menu_hover=csd_menu_parent(f->menu_submenu);f->menu_submenu=0;f->menu_scroll=0;csd_menu_refresh(f);}
     else if(key==1)csd_menu_close(f);
   }
-  else if(key==106&&f->menu_hover==1&&!f->menu_submenu)csd_menu_activate(f,1);
+  else if(key==106&&(f->menu_hover==1||f->menu_hover==CSD_MENU_SIZE)&&!f->menu_submenu)csd_menu_activate(f,f->menu_hover);
   else if(key==28&&f->menu_hover>=0)csd_menu_activate(f,f->menu_hover);
   else if(key==103||key==108) {
-    int first=f->menu_submenu?2:0;
-    if(s->full_ui){f->menu_hover=0;csd_menu_refresh(f);return 1;}
-    if(f->menu_hover<first||f->menu_hover>=first+2)f->menu_hover=first+(key==103);
-    else f->menu_hover=first+(f->menu_hover-first+1)%2;
+    int first=f->menu_submenu?csd_menu_first(f->menu_submenu):0;
+    int count=f->menu_submenu?csd_menu_count(f->menu_submenu):CSD_MENU_ROWS;
+    int at=!f->menu_submenu&&f->menu_hover==CSD_MENU_SIZE?2:f->menu_hover-first;
+    if(at<0||at>=count)at=key==103?count-1:0;
+    else at=(at+(key==103?count-1:1))%count;
+    f->menu_hover=csd_menu_action(f->menu_submenu,at,0,0);
+    if(f->menu_submenu) {
+      int visible=csd_menu_visible(f->menu.width,f->menu.height,f->menu_submenu);
+      if(at<f->menu_scroll)f->menu_scroll=at;
+      if(at>=f->menu_scroll+visible)f->menu_scroll=at-visible+1;
+    }
     csd_menu_refresh(f);
   }
   return 1;

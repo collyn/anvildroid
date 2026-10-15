@@ -47,7 +47,7 @@ int main(void) {
   assert(csd_menu_row_at(10,5,800,600,0)==0);
   assert(csd_menu_row_at(500,5,800,600,0)==-1);
   assert(csd_menu_row_at(10,36,160,64,0)==1);
-  assert(csd_menu_row_at(10,68,300,300,0)==-1);
+  assert(csd_menu_row_at(10,68,300,300,0)==CSD_MENU_SIZE);
   assert(csd_menu_row_at(10,100,300,300,0)==-1);
   assert(csd_menu_row_at(210,40,800,600,1)==2);
   assert(csd_menu_row_at(210,72,800,600,1)==3);
@@ -141,6 +141,80 @@ int main(void) {
   assert(csd_menu_key(&keyboard,108,1)&&f.menu_hover==3);
   assert(csd_menu_key(&keyboard,105,1)&&!f.menu_submenu&&f.menu_hover==1);
   assert(csd_menu_key(&keyboard,1,1)&&!f.menu_open);
+  /* Size opens independently of the resize policy and changes both the host
+   * frame and the deferred Android task size in layout mode. */
+  f.menu.width=800;f.menu.height=600;f.menu_open=1;
+  csd_menu_activate(&f,CSD_MENU_SIZE);
+  assert(f.menu_submenu==2&&f.menu_hover==CSD_MENU_PRESET_FIRST);
+  assert(csd_menu_row_at(210,68,800,600,2)==CSD_MENU_PRESET_FIRST);
+  assert(csd_menu_row_at(210,228,800,600,2)==CSD_MENU_PORTRAIT);
+  csd_menu_activate(&f,CSD_MENU_PRESET_FIRST);
+  assert(!f.menu_open&&s.fit_w==480&&s.fit_h==800);
+  assert(s.resize.width==480&&s.resize.height==800&&s.resize.dirty);
+  assert(s.profile_loaded&&s.profile_dirty&&s.profile_state_dirty);
+  assert(f.restore_width==480&&f.restore_height==800);
+  f.menu_open=1;f.menu_submenu=2;
+  csd_menu_activate(&f,CSD_MENU_LANDSCAPE);
+  assert(s.fit_w==800&&s.fit_h==480&&s.resize.width==800&&s.resize.height==480);
+  f.menu_open=1;f.menu_submenu=2;
+  csd_menu_activate(&f,CSD_MENU_PORTRAIT);
+  assert(s.fit_w==480&&s.fit_h==800&&s.resize.width==480&&s.resize.height==800);
+  /* Keep resolution must never queue Android relayout from Size/Rotate. */
+  resize_mode_set(s.app_id,1);
+  f.menu_open=1;f.menu_submenu=2;
+  csd_menu_activate(&f,CSD_MENU_PRESET_LAST);
+  assert(resize_mode_fixed(s.app_id)&&s.fit_w==1280&&s.fit_h==720&&!s.resize.width);
+  f.menu_open=1;f.menu_submenu=2;csd_menu_activate(&f,CSD_MENU_PORTRAIT);
+  assert(s.fit_w==720&&s.fit_h==1280&&!s.resize.width);
+  resize_mode_set(s.app_id,0);
+  /* Reject invalid bounds and disabled entries without touching the task. */
+  csd_menu_size(&f,0,800);assert(s.fit_w==720&&s.fit_h==1280);
+  s.resize.dragging=1;f.menu_open=1;f.menu_submenu=2;
+  csd_menu_activate(&f,CSD_MENU_PRESET_FIRST);assert(s.fit_w==720&&f.menu_open);
+  s.resize.dragging=0;
+  /* Small menus scroll by wheel and keyboard; back/Escape return to Size. */
+  f.menu.width=160;f.menu.height=100;f.menu_scroll=0;
+  struct object scroller={.menu_focus=&f,.csd_x=10,.csd_y=40};
+  csd_menu_scroll(&scroller,1);assert(f.menu_scroll==1);
+  assert(csd_menu_row_at_offset(10,40,160,100,2,f.menu_scroll)==CSD_MENU_PRESET_FIRST+1);
+  f.menu_hover=CSD_MENU_PRESET_FIRST;f.menu_scroll=0;
+  assert(csd_menu_key(&keyboard,103,1)&&f.menu_hover==CSD_MENU_CUSTOM&&f.menu_scroll==6);
+  assert(csd_menu_key(&keyboard,1,1)&&!f.menu_submenu&&f.menu_hover==CSD_MENU_SIZE);
+  assert(csd_menu_key(&keyboard,106,1)&&f.menu_submenu==2&&f.menu_scroll==0);
+  assert(csd_menu_key(&keyboard,105,1)&&!f.menu_submenu&&f.menu_hover==CSD_MENU_SIZE);
+  /* Paint a clipped, scrolled submenu with its true surface stride. */
+  uint32_t small_size[160*100]={0};f.menu_submenu=2;f.menu_scroll=5;
+  csd_menu_paint(small_size,160,100);
+  assert(small_size[40*160+10]!=0&&small_size[99*160+159]==0);
+  f.menu_scroll=0;f.menu_submenu=0;
+  /* Unmaximize must not replace the chosen preset with old normal bounds. */
+  f.maximized=1;f.menu_open=1;f.menu_submenu=2;f.menu.width=800;f.menu.height=600;
+  csd_menu_activate(&f,CSD_MENU_PRESET_FIRST);
+  assert(f.size_pending&&!f.maximized&&f.restore_width==480);
+  uint32_t max_state=1;
+  struct {size_t size,alloc;uint32_t *data;} states={.size=sizeof(max_state),.data=&max_state};
+  configure(&top,0,1920,1080,&states);
+  assert(f.size_pending&&s.fit_w==480&&f.restore_width==480);
+  states.size=0;configure(&top,0,800,600,&states);
+  assert(!f.size_pending&&s.resize.width==480&&s.resize.height==800);
+  assert(f.restore_width==480&&f.restore_height==800);
+  f.menu_submenu=0;
+  /* Every panel clips to the actual surface, including tiny restored frames
+   * and a submenu that becomes larger after it was scrolled. */
+  const int widths[]={1,64,160,300,430,500},heights[]={1,64,100,232,264,300};
+  for(unsigned wi=0;wi<sizeof(widths)/sizeof(widths[0]);++wi)
+    for(unsigned hi=0;hi<sizeof(heights)/sizeof(heights[0]);++hi)
+      for(int submenu=0;submenu<3;++submenu) {
+        int w=widths[wi],h=heights[hi];
+        uint32_t *guarded=calloc((size_t)w*h+2,sizeof(*guarded));assert(guarded);
+        guarded[0]=guarded[w*h+1]=0x12345678;
+        f.menu_submenu=submenu;f.menu_scroll=submenu==2?5:0;
+        csd_menu_paint(guarded+1,w,h);
+        assert(guarded[0]==0x12345678&&guarded[w*h+1]==0x12345678);
+        if(submenu)assert(f.menu_scroll+csd_menu_visible(w,h,submenu)<=csd_menu_count(submenu));
+        free(guarded);
+      }
+  f.menu_submenu=f.menu_scroll=0;
   struct object pointer={.menu_focus=&f};
   /* Outside click dismisses, a drag from outside into a row never activates. */
   f.menu_open=1;f.menu.width=800;f.menu.height=600;
@@ -168,5 +242,17 @@ int main(void) {
   assert(stack_position(3)>stack_position(5));
   csd_menu_sync(&f,0,0,800,600);assert(stack_position(5)==5);
   stack_enabled=0;
+  /* Default Full Android UI exposes Size even without a package/task viewport. */
+  s.full_ui=1;s.app=0;s.viewport=0;s.full_w=1280;s.full_h=720;
+  f.menu_submenu=0;f.menu_scroll=0;f.menu.width=800;f.menu.height=600;
+  assert(csd_menu_row(&f,10,68,800,600)==CSD_MENU_SIZE);
+  assert(csd_menu_enabled(&f,CSD_MENU_SIZE)&&!csd_menu_enabled(&f,CSD_MENU_RESIZE));
+  f.menu_open=1;csd_menu_activate(&f,CSD_MENU_SIZE);
+  assert(f.menu_submenu==2&&csd_menu_enabled(&f,CSD_MENU_PRESET_FIRST));
+  assert(csd_menu_row(&f,210,68,800,600)==CSD_MENU_PRESET_FIRST);
+  f.menu_open=1;f.menu_submenu=2;
+  assert(csd_menu_enabled(&f,CSD_MENU_CUSTOM));
+  csd_menu_activate(&f,CSD_MENU_CUSTOM);
+  assert(s.custom_size.enabled&&s.custom_size.w==1280&&s.custom_size.h==720&&!f.menu_open);
   return 0;
 }

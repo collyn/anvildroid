@@ -31,6 +31,13 @@ depend = libx11
 depend = expat
 depend = vulkan-icd-loader
 depend = util-linux
+depend = iproute2
+depend = nftables
+depend = slirp4netns
+depend = lxc
+depend = kmod
+depend = curl
+depend = weston
 depend = python3
 depend = java-runtime-headless>=17
 depend = systemd

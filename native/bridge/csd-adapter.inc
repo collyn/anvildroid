@@ -43,7 +43,8 @@ struct csd_frame {
   int restore_width, restore_height;
   int max_width, max_height;  /* The compositor's maximized workarea. */
   struct csd_piece menu;
-  int menu_open, menu_hover, menu_pressed, menu_submenu;
+  int menu_open, menu_hover, menu_pressed, menu_submenu, menu_scroll;
+  int size_pending; /* Preserve a Size selection through unset_maximized. */
   int menu_x, menu_y;
   int hover, pressed;
   uint32_t header_click_time;
@@ -55,6 +56,7 @@ static void csd_menu_toggle(struct csd_frame *);
 static void csd_menu_destroy(struct csd_frame *);
 static int csd_menu_enter(struct object *,struct proxy *);
 static void csd_menu_motion(struct object *);
+static void csd_menu_scroll(struct object *,int);
 static void csd_menu_button(struct object *,uint32_t,uint32_t);
 static int csd_menu_key(struct object *,uint32_t,uint32_t);
 static void csd_menu_paint(uint32_t *,int,int);
@@ -404,6 +406,7 @@ static void csd_resize_finished(struct object *pointer) {
   if (!frame || !frame->top || !frame->top->surface) return;
   struct object *surface=frame->top->surface;
   resize_release(&surface->resize);
+  surface->custom_size.dragging=0;
   __android_log_print(4,"AnvilDroidCsd","resize grab ended %dx%d",
                       surface->resize.width,surface->resize.height);
 }
@@ -433,6 +436,7 @@ static void csd_pointer_enter(void *data, struct proxy *p, uint32_t serial,
   if(keymap_overlay_enter(o,surface))o->csd_suppress=1;
   if(csd_menu_enter(o,surface))o->csd_suppress=1;
   x=content_clip_input(surface,x,0);y=content_clip_input(surface,y,1);
+  x=full_ui_input(surface,x,0);y=full_ui_input(surface,y,1);
   x=game_fit_input(surface,x,0);y=game_fit_input(surface,y,1);
   pthread_mutex_unlock(mutex);
   /* Upstream enter only updates focus/cursor, never injects Android input. */
@@ -550,6 +554,11 @@ static void csd_pointer_button(void *data, struct proxy *p, uint32_t serial, uin
 /* HWC binds wl_seat v5: keep the complete nine-event pointer ABI. */
 static void csd_pointer_axis(void *d,struct proxy *p,uint32_t t,uint32_t axis,int32_t value) {
   struct object *o=d;
+  if(o->menu_focus&&axis==0&&value) {
+    pthread_mutex_lock(mutex);
+    csd_menu_scroll(o,value>0?1:-1);
+    pthread_mutex_unlock(mutex);
+  }
   if (!o->csd_suppress) ((void (*)(void *,struct proxy *,uint32_t,uint32_t,int32_t))o->listener[4])(o->listener_data,p,t,axis,value);
 }
 static void csd_pointer_frame(void *d,struct proxy *p) {

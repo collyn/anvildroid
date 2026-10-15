@@ -1,5 +1,6 @@
 #!/usr/bin/python3
 """Build pinned support for newly extracted official images in a private namespace."""
+import configparser
 import importlib.util
 import json
 import os
@@ -16,6 +17,7 @@ _format_spec.loader.exec_module(image_format)
 
 
 ASSETS = Path('/usr/local/lib/anvildroid-controller')
+WAYDROID_ROOT = Path('/var/lib/waydroid')
 spec = importlib.util.spec_from_file_location('images', Path(__file__).with_name('runtime-images.py'))
 images = importlib.util.module_from_spec(spec); spec.loader.exec_module(images)
 
@@ -23,6 +25,42 @@ def run(*args):
     result = subprocess.run(list(map(str,args)), capture_output=True, text=True, timeout=90)
     if result.returncode: raise RuntimeError(str(args[0]) + ': ' + result.stderr[-1200:])
     return result.stdout.strip()
+
+
+def host_properties():
+    """Read generated properties or reconstruct them before the first session.
+
+    Waydroid 1.6+ can finish initialization with only waydroid_base.prop.
+    Build the private support copy without starting or modifying the host.
+    """
+    try:
+        return (WAYDROID_ROOT / 'waydroid.prop').read_text().splitlines()
+    except FileNotFoundError:
+        pass
+    try:
+        props = (WAYDROID_ROOT / 'waydroid_base.prop').read_text().splitlines()
+    except FileNotFoundError as error:
+        raise RuntimeError('Waydroid properties are missing. Complete Waydroid initialization, then retry Prepare.') from error
+    cfg = configparser.ConfigParser(interpolation=None)
+    cfg.read(WAYDROID_ROOT / 'waydroid.cfg')
+    for key, option in (('waydroid.host.user', 'user_name'),
+                        ('waydroid.host.uid', 'user_id'),
+                        ('waydroid.host.gid', 'group_id'),
+                        ('waydroid.host_data_path', 'waydroid_data'),
+                        ('waydroid.background_start', 'background_start')):
+        value = cfg.get('waydroid', option, fallback='')
+        if value and value != 'None':
+            props.append(key + '=' + value.replace('/mnt/', '/mnt_extra/'))
+    props += ['waydroid.xdg_runtime_dir=/run/xdg',
+              'waydroid.pulse_runtime_path=/run/xdg/pulse',
+              'waydroid.wayland_display=wayland-0']
+    if shutil.which('waydroid-sensord') is None:
+        props.append('waydroid.stub_sensors_hal=1')
+    for section in ('properties', 'waydroid'):
+        density = cfg.get(section, 'lcd_density', fallback='')
+        if density and density != '0':
+            props.append('ro.sf.lcd_density=' + density)
+    return props
 
 
 def caption_compatibility(framework, layout):
@@ -185,7 +223,7 @@ def build(instance, flavor):
         overlay = support / 'overlay'
         build_overlay(overlay, lower, vendor_root=vendor,
                       safe_codec_fallback=(flavor == 'CUSTOM'), flavor=flavor)
-        props = Path('/var/lib/waydroid/waydroid.prop').read_text().splitlines()
+        props = host_properties()
         # No ARM properties without the matching native translation libraries.
         drop = ('ro.product.cpu.', 'ro.dalvik.vm.', 'ro.enable.native.bridge.', 'ro.vendor.enable.native.bridge.', 'ro.ndk_translation.', 'waydroid.system_ota=')
         props = [p for p in props if not p.startswith(drop)]
@@ -193,7 +231,7 @@ def build(instance, flavor):
             props += ['waydroid.system_ota=https://ota.waydro.id/system/lineage/waydroid_x86_64/' + flavor + '.json']
         (support / 'waydroid.prop').write_text('\n'.join(props) + '\n')
         for name in ('config', 'waydroid.seccomp'):
-            shutil.copyfile(Path('/var/lib/waydroid/lxc/waydroid') / name, support / name)
+            shutil.copyfile(WAYDROID_ROOT / 'lxc/waydroid' / name, support / name)
         (support / 'images.json').write_text(json.dumps(manifest['images']))
         for mount in reversed(mounts): run('umount', mount)
         mounts.clear()

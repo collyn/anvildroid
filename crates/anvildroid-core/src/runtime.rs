@@ -1,10 +1,10 @@
 use std::process::Command;
-use std::{env, os::unix::fs::FileTypeExt, path::PathBuf, thread, time::Duration};
+use std::{thread, time::Duration};
 
 use crate::error::AnvilError;
 use crate::models::{GpuMode, HealthReport, RuntimeState, RuntimeStatus};
 
-pub const RECOVERY: &str = "Open a terminal in the same Wayland desktop, without sudo. Run anvildroid stop, then anvildroid start; wait for Android ready and keep that terminal open. Stopping interrupts Android windows but retains app data.";
+pub const RECOVERY: &str = "Open a terminal in the same desktop session, without sudo. Run anvildroid stop, then anvildroid start; wait for Android ready and keep that terminal open. Stopping interrupts Android windows but retains app data.";
 
 /// Check whether id.waydro.Session owns a name on the desktop session D-Bus.
 pub fn session_owner() -> Result<bool, AnvilError> {
@@ -270,25 +270,9 @@ pub fn recover() -> Result<u8, AnvilError> {
         return health();
     }
     // Validate the target desktop before stopping an orphaned container session.
-    let display = env::var_os("WAYLAND_DISPLAY")
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| {
-            AnvilError::SessionProbe(
-                "WAYLAND_DISPLAY is missing; run recover from your desktop terminal".into(),
-            )
-        })?;
-    let display = PathBuf::from(display);
-    let socket = if display.is_absolute() {
-        display
-    } else {
-        PathBuf::from(env::var_os("XDG_RUNTIME_DIR").ok_or_else(|| {
-            AnvilError::SessionProbe("XDG_RUNTIME_DIR is missing; run recover without sudo".into())
-        })?)
-        .join(display)
-    };
-    if !socket.metadata().is_ok_and(|m| m.file_type().is_socket()) {
+    if !crate::launch::native_wayland_available() && !crate::launch::needs_nested_weston() {
         return Err(AnvilError::SessionProbe(
-            "Wayland display socket is unavailable; no session was stopped".into(),
+            "No Wayland socket or X11 display is available; no session was stopped".into(),
         ));
     }
     // Recheck immediately before mutation in case another launcher just started.
@@ -329,8 +313,7 @@ pub fn recover() -> Result<u8, AnvilError> {
         });
         if stopped {
             println!("Starting foreground session. Keep this terminal open; wait for Android ready, then run anvildroid health in another terminal.");
-            let status = Command::new("waydroid")
-                .args(["session", "start"])
+            let status = crate::launch::session_start_command()
                 .status()
                 .map_err(|e| AnvilError::BackendFailed(format!("Cannot start Waydroid: {e}")))?;
             return Ok(status

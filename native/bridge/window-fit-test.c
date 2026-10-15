@@ -149,7 +149,7 @@ int main(void) {
   /* A decoration manager can negotiate client chrome. Its presence must not
    * remove the header/border from xdg geometry on KWin. */
   struct proxy header={&si},header_sub={&subi};
-  struct csd_frame frame={.restore_width=465,.restore_height=701};
+  struct csd_frame frame={.top=&top,.restore_width=465,.restore_height=701};
   frame.pieces[0]=(struct csd_piece){.surface=&header,.subsurface=&header_sub,
     .width=465+2*CSD_BORDER,.height=CSD_HEADER};
   root.csd=&frame;hwc_scale_120=120;
@@ -176,6 +176,27 @@ int main(void) {
   state=0;configure(&top,0,465+2*CSD_BORDER,701+CSD_HEADER+CSD_BORDER,&states);
   assert(root.fit_w==465&&!root.resize.width&&!root.resize.dragging);
   assert(!source_requests&&!content_attaches&&painted_buffers>0);
+  /* Size-menu changes use the same presentation and input transform as a
+   * compositor resize, while the old Android snapshot is still visible. */
+  backend_socket="";resize_nvidia_backend=-1;
+  resize_mode_set(root.app_id,0);
+  resize_mode_set(root.app_id,1);
+  frame.menu_open=1;frame.menu_submenu=2;
+  csd_menu_activate(&frame,CSD_MENU_CUSTOM);
+  assert(root.custom_size.enabled&&!resize_mode_fixed(root.app_id));
+  csd_menu_size(&frame,480,800);
+  assert(!root.custom_size.enabled);
+  assert(root.fit_w==480&&root.fit_h==800&&root.resize.width==480);
+  assert(window_w==480+2*CSD_BORDER&&window_h==800+CSD_HEADER+CSD_BORDER);
+  frame.menu_open=1;frame.menu_submenu=2;
+  csd_menu_activate(&frame,CSD_MENU_LANDSCAPE);
+  assert(root.fit_w==800&&root.fit_h==480&&root.resize.width==800&&root.resize.height==480);
+  assert(window_w==800+2*CSD_BORDER&&window_h==480+CSD_HEADER+CSD_BORDER);
+  struct game_fit_rect area=game_fit_area(&root);
+  int32_t center=area.width*128;
+  assert(game_fit_input(&child,center,0)==(int32_t)((int64_t)center*root.fit_sw/area.width));
+  assert(game_fit_input(&parent,center+area.x*256,0)==game_fit_input(&child,center,0));
+  assert(!source_requests&&!content_attaches); /* Real Android buffers stay untouched. */
   while(csd_buffers)csd_release(csd_buffers,csd_buffers->proxy);
   objects=0;
   return 0;

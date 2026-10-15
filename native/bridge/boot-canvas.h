@@ -10,6 +10,9 @@ static int boot_canvas_size(int w, int h, int scale, int *width, int *height) {
   int reserve_scale = scale < 240 ? 240 : scale;
   int64_t pw = ((int64_t)w * reserve_scale + 119) / 120 + 64;
   int64_t ph = ((int64_t)h * reserve_scale + 119) / 120 + 128;
+  /* Full UI Size presets include both 1280x720 and 720x1280. */
+  if(pw<1280)pw=1280;
+  if(ph<1280)ph=1280;
   int64_t lw = (pw * 120 + scale - 1) / scale;
   int64_t lh = (ph * 120 + scale - 1) / scale;
   pw = lw * scale / 120;
@@ -29,6 +32,9 @@ static int boot_canvas_capacity(int cap_w, int cap_h, int scale, int *width, int
     return 0;
   int64_t pw = (int64_t)cap_w + 64;
   int64_t ph = (int64_t)cap_h + 128;
+  /* Full UI Size presets include both 1280x720 and 720x1280. */
+  if(pw<1280)pw=1280;
+  if(ph<1280)ph=1280;
   int64_t lw = (pw * 120 + scale - 1) / scale;
   int64_t lh = (ph * 120 + scale - 1) / scale;
   pw = lw * scale / 120;

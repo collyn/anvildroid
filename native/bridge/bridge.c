@@ -3,6 +3,7 @@
  * Loaded only in vendor.hwcomposer-2-1, never in Android apps.
  */
 #include "resize-policy.h"
+#include "custom-size.h"
 #include "resize-request.h"
 #include "open-size-policy.h"
 #include <stddef.h>
@@ -93,7 +94,9 @@ struct object {
   const struct interface *protocol_interface;
   struct wl_display *display;
   struct proxy *pointer_surface;
+  struct custom_size custom_size;
   int full_ui, full_w, full_h, full_canvas_w, full_canvas_h;
+  int full_clip_x,full_clip_y;
   int window_configured, window_content, window_activated;
   int fit_w, fit_h, fit_x, fit_y, fit_sw, fit_sh, fit_bar_focus;
   int fit_delivered_w, fit_delivered_h, fit_width_snapped;
@@ -325,6 +328,7 @@ static void decoration_destroy(struct object *top) {
 #include "keymap-overlay.inc"
 #include "scrcpy-mapping.inc"
 #include "display-probe.inc"
+#include "display-size.inc"
 #include "full-ui.inc"
 #include "game-fit.inc"
 #include "content-clip.inc"
@@ -513,10 +517,11 @@ static void configure(void *data, struct proxy *p, int32_t w, int32_t h,
   if(o->surface&&o->surface->full_ui) {
     pthread_mutex_lock(mutex);
     struct array { size_t size, alloc; uint32_t *data; } *a = states;
-    int maximized = 0, fullscreen = 0;
+    int maximized = 0, fullscreen = 0, resizing = 0;
     for (size_t i = 0; a && i < a->size / sizeof(uint32_t); ++i) {
       if (a->data[i] == 1 || a->data[i] == 2) maximized = 1;
       if (a->data[i] == 2) fullscreen = 1;
+      if (a->data[i] == 3) resizing = 1;
     }
     struct csd_frame *f = o->surface->csd;
     if (f) {
@@ -533,7 +538,10 @@ static void configure(void *data, struct proxy *p, int32_t w, int32_t h,
       if (w>0) w=w>2*CSD_BORDER?w-2*CSD_BORDER:1;
       if (h>0) h=h>CSD_HEADER+CSD_BORDER?h-CSD_HEADER-CSD_BORDER:1;
     }
-    full_ui_fit(o->surface, w, h, maximized);
+    if(o->surface->custom_size.enabled) {
+      if(w>0&&h>0){o->surface->full_w=w;o->surface->full_h=h;}
+      custom_size_queue(&o->surface->custom_size,w,h,resizing);
+    } else full_ui_fit(o->surface, w, h, maximized);
     pthread_mutex_unlock(mutex);
     return; /* Never hotplug Android's display for a host-window resize. */
   }
@@ -565,6 +573,7 @@ static void configure(void *data, struct proxy *p, int32_t w, int32_t h,
       if (a->data[i] == 1 || a->data[i] == 2)
         maximized = 1;
       if (a->data[i] == 2) fullscreen = 1;
+      if (a->data[i] == 3) resizing = 1;
     }
     /* The initial content-only geometry predates our CSD frame. Wait for the
      * durable profile before letting normal configures relayout Android;
@@ -575,6 +584,16 @@ static void configure(void *data, struct proxy *p, int32_t w, int32_t h,
       return;
     }
     if (s->csd) {
+      /* A Size-menu selection restores a maximized window to the requested
+       * content dimensions, rather than the compositor's previous normal size. */
+      if(s->csd->size_pending) {
+        if(maximized&&!resizing) {pthread_mutex_unlock(mutex);return;}
+        if(!resizing) {
+          w=s->csd->restore_width;h=s->csd->restore_height;
+          if(s->csd->pieces[0].surface){w+=2*CSD_BORDER;h+=CSD_HEADER+CSD_BORDER;}
+        }
+        s->csd->size_pending=0;
+      }
       /* A recreated toplevel can have a content-only configure queued before
        * its CSD geometry is committed. It must not eat the header twice. */
       if (s->csd->normal_pending && !resizing && !maximized &&
@@ -1116,6 +1135,7 @@ static void forget_proxy(struct proxy *p) {
     at = &(*at)->next;
   if (*at) {
     struct object *old = *at;
+    if(old->full_ui){display_projection=(struct display_projection){0};display_pending_w=display_pending_h=0;}
     csd_cursor_destroy(old);
     keymap_overlay_destroy(old);
     keymap_hints_destroy(old);
@@ -1290,6 +1310,20 @@ static void *task_worker(void *unused) {
     }
     task_count = count;
     logged_scale = hwc_scale_120;
+    for(struct object *s=objects;s;s=s->next)if(s->full_ui&&s->custom_size.enabled) {
+      int w,h,pw=display_projection.pw?display_projection.pw:logical_to_task(s->full_canvas_w);
+      int ph=display_projection.ph?display_projection.ph:logical_to_task(s->full_canvas_h);
+      if(custom_size_due(&s->custom_size,pw,ph,&w,&h)&&
+         (w!=display_projection.lw||h!=display_projection.lh))display_size_request(w,h,1);
+    }
+    int full_present=0;for(struct object *s=objects;s;s=s->next)if(s->full_ui)full_present=1;
+    if(full_present&&display_size_refresh())for(struct object *s=objects;s;s=s->next)
+      if(s->full_ui) {
+        if(!s->custom_size.enabled){s->full_w=display_projection.lw;s->full_h=display_projection.lh;}full_ui_apply(s);
+        if(real_display_flush&&s->display)real_display_flush(s->display);
+        __android_log_print(4,"AnvilDroidCsd","Size applied %dx%d projection=%d,%d %dx%d",
+          display_projection.lw,display_projection.lh,display_projection.x,display_projection.y,display_projection.w,display_projection.h);
+      }
     if(snapshot_changed)for(struct object *s=objects;s;s=s->next)
       if(s->full_ui&&(s->hints||s->overlay))keymap_wake();
     pthread_mutex_unlock(mutex);

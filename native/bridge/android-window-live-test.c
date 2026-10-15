@@ -3,7 +3,17 @@
 #include <assert.h>
 #include <stdlib.h>
 #include <stdio.h>
+static char display_test_dir[]="/tmp/anvil-display-test-XXXXXX";
+#define ANVIL_DISPLAY_DIRECTORY display_test_dir
 #include "android-window.c"
+static void acknowledge(int w,int h) {
+  char path[512];snprintf(path,sizeof(path),"%s/display-state",display_test_dir);
+  int pw=1280,ph=720,cw=pw,ch=ph;
+  if((int64_t)pw*h>(int64_t)ph*w)cw=ph*w/h;else ch=pw*h/w;
+  FILE *f=fopen(path,"w");assert(f);
+  fprintf(f,"%d %d %d %d %d %d %d %d\n",w,h,pw,ph,(pw-cw)/2,(ph-ch)/2,cw,ch);fclose(f);
+  display_size_refresh();fit(w,h);apply_size();
+}
 extern const struct wl_interface xdg_wm_base_interface,xdg_surface_interface,xdg_toplevel_interface;
 extern const struct wl_interface wp_viewporter_interface,wp_viewport_interface;
 static void *library;
@@ -44,8 +54,9 @@ static void configured_cb(void *d,struct wl_proxy *p,uint32_t serial){(void)d;un
 static void top_cb(void *d,struct wl_proxy *p,int32_t w,int32_t h,struct wl_array *s){(void)d;(void)p;(void)s;assert(w==1280&&h==720);}
 static void closed_cb(void *d,struct wl_proxy *p){(void)d;(void)p;}
 int main(void) {
+ assert(mkdtemp(display_test_dir));
  setenv("ANVILDROID_ANDROID_WINDOW","1",1);
- library=dlopen("libwayland-client.so.0",2);assert(library);
+ library=dlopen("libwayland-client.so.0",2);assert(library);window_library=library;
  marshal=dlsym(library,"wl_proxy_marshal_array_flags");listen=dlsym(library,"wl_proxy_add_listener");
  get_class=dlsym(library,"wl_proxy_get_class");get_version=dlsym(library,"wl_proxy_get_version");
  struct wl_proxy *(*connect_display)(const char *)=dlsym(library,"wl_display_connect");
@@ -72,12 +83,33 @@ int main(void) {
    union wl_argument size[2]={{.i=1280},{.i=720}};request(vp,2,NULL,size);
    union wl_argument attach[3]={{.o=buffer},{.i=0},{.i=0}};request(s,1,NULL,attach);
    request(s,6,NULL,NULL);assert(roundtrip(display)>=0);
+   struct wl_proxy *layer=request(csd_compositor,0,csd_surface_i,&id);
+   union wl_argument la[2]={{.o=NULL},{.o=layer}};
+   struct wl_proxy *layer_vp=request(viewporter,1,&wp_viewport_interface,la);
+   union wl_argument subargs[3]={{.o=NULL},{.o=layer},{.o=s}};
+   struct wl_proxy *layer_sub=request(csd_subcompositor,1,csd_subsurface_i,subargs);
+   struct wl_proxy *layer_buffer=csd_paint(1,1280,720,0);assert(layer_buffer);
+   union wl_argument source[4]={{.i=0},{.i=0},{.i=1280*256},{.i=720*256}};
+   request(layer_vp,1,NULL,source);request(layer_vp,2,NULL,size);
+   union wl_argument layer_attach[3]={{.o=layer_buffer},{.i=0},{.i=0}};
+   request(layer,1,NULL,layer_attach);request(layer,6,NULL,NULL);request(s,6,NULL,NULL);
+   assert(roundtrip(display)>=0);
    if(!manager)assert(csd_pieces[0].surface && csd_visible());
+   canvas_menu_toggle();assert(roundtrip(display)>=0&&canvas_menu_open&&canvas_menu.surface);
+   canvas_menu_activate(0);assert(roundtrip(display)>=0&&canvas_menu_submenu);
+   canvas_menu_activate(1);acknowledge(480,800);assert(roundtrip(display)>=0&&host_w==480&&host_h==800);
+   canvas_menu_toggle();canvas_menu_activate(0);canvas_menu_activate(5);acknowledge(800,480);
+   assert(roundtrip(display)>=0&&host_w==800&&host_h==480&&!canvas_menu.attached);
+   canvas_menu_toggle();canvas_menu_activate(0);canvas_menu_activate(3);acknowledge(720,1280);
+   assert(roundtrip(display)>=0&&host_w==720&&host_h==1280&&fit_w==720&&fit_h==1280);
    request(t,9,NULL,NULL);await_state(display,1,0);
    union wl_argument output={.o=NULL};request(t,11,NULL,&output);
    await_state(display,1,1);assert(!csd_visible());
    request(t,12,NULL,NULL);request(t,10,NULL,NULL);
    await_state(display,0,0);
+   wl_proxy_marshal_array_flags(layer_sub,0,NULL,1,1,NULL);
+   wl_proxy_marshal_array_flags(layer_vp,0,NULL,1,1,NULL);
+   wl_proxy_marshal_array_flags(layer,0,NULL,1,1,NULL);
    wl_proxy_marshal_array_flags(t,0,NULL,1,1,NULL);
    wl_proxy_marshal_array_flags(vp,0,NULL,1,1,NULL);
    wl_proxy_marshal_array_flags(x,0,NULL,1,1,NULL);

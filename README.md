@@ -37,6 +37,16 @@ compatibility across custom images, desktops and games is still being developed.
   favorites, recently opened apps and configurable desktop/menu shortcuts.
 - Desktop and headless modes, full Android UI, window profiles, resize controls,
   host IME, clipboard and key mapping support.
+  App windows and Full Android UI offer **Menu → Size** presets and
+  **Landscape / Portrait**. **Custom** follows the user’s window size and
+  updates Android after a resize finishes; Full UI fits within the physical
+  canvas reserved at startup. Selecting a preset leaves Custom mode. Full UI updates Android’s logical display and fits
+  its acknowledged content area to the host window. The boot canvas reserves
+  both preset orientations to avoid downsampling the largest presets. Android
+  scaling is disabled where supported; images that ignore this setting can
+  still soften smaller presets when fitting their physical display.
+  **Resize app layout** updates Android task bounds; **Keep resolution** changes
+  the host window while preserving the Android rendering resolution.
 - ARM translation selection: libndk_translation and libhoudini catalogs.
 - GPU diagnostics and per-runtime RAM/CPU/GPU settings.
 - Experimental NVIDIA rendering through ANGLE/Venus, including hybrid display
@@ -67,7 +77,10 @@ compatibility across custom images, desktops and games is still being developed.
 
 ## Requirements
 
-- Linux x86_64 with a Wayland desktop for native Android windows.
+- Linux x86_64 with a Wayland desktop for native Android windows. On X11,
+  runtimes start Weston automatically and display Android inside its nested
+  window; the `weston` package is required. NVIDIA/Venus rendering also uses
+  this path, subject to the experimental requirements above.
 - Waydroid, LXC, Binder/BinderFS, Linux namespaces and cgroups.
 - Mesa-compatible Intel or AMD GPU, or an NVIDIA setup meeting the experimental
   backend requirements above.
@@ -92,7 +105,18 @@ The optional panel icon also needs an AppIndicator runtime library, such as
 Install the build dependencies and Android SDK APIs 23 and 35, plus build-tools
 35.0.0, first. The GUI/helper build expects API 23's `android.jar` at
 `/usr/lib/android-sdk/platforms/android-23/android.jar`. Set `ANDROID_HOME` to
-the SDK containing API 35 and build-tools 35.0.0 for the scrcpy server build.
+the SDK containing API 35 and build-tools 35.0.0 for both the scrcpy server build
+and package staging. The distro's `aapt`/`apksigner` packages alone do not provide
+the private AOSP tools bundled in release packages. If these tools are missing:
+
+```bash
+sdkmanager --sdk_root="/path/to/android-sdk" "build-tools;35.0.0"
+ANDROID_HOME="/path/to/android-sdk" ./scripts/build-deb.sh
+```
+
+Use your actual SDK path. Package staging also detects the standard
+`~/Android/Sdk` location and the project-local `target/tools/android-sdk` cache
+when neither `ANDROID_HOME` nor `ANDROID_SDK_ROOT` is set.
 Prepare the pinned R8 jar, Android framework inputs and patched scrcpy server,
 then download the pinned NVIDIA archives (requires authenticated GitHub CLI access):
 

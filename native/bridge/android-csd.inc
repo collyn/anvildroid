@@ -38,11 +38,12 @@ static struct wl_proxy *csd_paint(int part, int w, int h, int maximized) {
   if (pixels == (void *)-1) { close(fd); return 0; }
   for (int y = 0; y < h; y++) for (int x = 0; x < w; x++) {
     uint32_t color = part == 0
-      ? csd_header_pixel(x, y, w, h, csd_style_state(maximized, 0, 0))
+      ? csd_header_pixel(x, y, w, h, csd_style_state(maximized, 0, 0)|2)
       : 0;
     pixels[(size_t)y*w+x] = color;
   }
-  if(part==0 && w>260)keymap_text(pixels,w,h,12,(h-7)/2,"ANDROID",0xffc5c5c5);
+  if(part==0 && w>260)keymap_text(pixels,w,h,CSD_BUTTON+12,(h-7)/2,"ANDROID",0xffc5c5c5);
+  if(part==4)canvas_menu_paint(pixels,w,h);
 
   union wl_argument pool_a[3] = {{.o=0}, {.i=fd}, {.i=(int)size}};
   struct wl_proxy *pool = marshal(csd_shm, 0, csd_pool_i, 1, 0, pool_a);
@@ -101,12 +102,14 @@ static void csd_sync(void) {
     }
     marshal(csd_pieces[i].surface,6,NULL,1,0,NULL);
   }
+  canvas_menu_sync();
 }
 static int csd_surface_part(struct wl_proxy *s) {
   for(int i=0;i<4;i++)if(s && s==csd_pieces[i].surface)return i;
   return -1;
 }
 static void csd_destroy(void) {
+  canvas_menu_destroy();
   for(int i=0;i<4;i++) {
     if(csd_pieces[i].subsurface)marshal(csd_pieces[i].subsurface,0,NULL,1,1,NULL);
     if(csd_pieces[i].surface)marshal(csd_pieces[i].surface,0,NULL,1,1,NULL);
@@ -118,6 +121,7 @@ static void csd_destroy(void) {
 static void csd_button(uint32_t serial,uint32_t button,uint32_t state) {
   if(csd_part<0 || !top || button!=0x110)return;
   int action=csd_hit(csd_part,csd_x,csd_y,csd_pieces[csd_part].width,csd_pieces[csd_part].height);
+  if(csd_part==0&&csd_y>=CSD_GRIP&&csd_x>=CSD_BORDER&&csd_x<CSD_BORDER+CSD_BUTTON)action=CSD_MENU;
   if(state) {
     csd_pressed=action;
     if(ime_seat && (action==CSD_MOVE || (action>0 && action<16 && !maximized))) {
@@ -129,6 +133,7 @@ static void csd_button(uint32_t serial,uint32_t button,uint32_t state) {
     if(!activate)return;
     if(action==CSD_MINIMIZE)marshal(top,13,NULL,get_version(top),0,NULL);
     if(action==CSD_MAXIMIZE)marshal(top,maximized?10:9,NULL,get_version(top),0,NULL);
+    if(action==CSD_MENU)canvas_menu_toggle();
     if(action==CSD_CLOSE && top_original[1])((void(*)(void*,struct wl_proxy*))top_original[1])(top_data,top);
   }
 }

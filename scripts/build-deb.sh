@@ -28,6 +28,7 @@ for tool in cargo rustc python3 clang ld.lld javac java jar keytool aapt apksign
         exit 1
     }
 done
+sh scripts/stage-image-tools.sh --check
 dpkg --validate-version "$VERSION"
 if [ "$(uname -s)" != Linux ] || [ "$(uname -m)" != x86_64 ]; then
     echo "This package build requires an x86_64 Linux host." >&2
