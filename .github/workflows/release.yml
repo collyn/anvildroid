@@ -3,6 +3,7 @@ name: Build and release Linux packages
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -27,11 +28,16 @@ jobs:
         env:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          version=$(python3 scripts/release-version.py --tag "$RELEASE_TAG")
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "debian=$(python3 scripts/release-version.py --debian)" >> "$GITHUB_OUTPUT"
-          echo "rpm=$(python3 scripts/release-version.py --rpm)" >> "$GITHUB_OUTPUT"
-          case "$version" in *-*) echo 'prerelease=true' >> "$GITHUB_OUTPUT";; *) echo 'prerelease=false' >> "$GITHUB_OUTPUT";; esac
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            python3 scripts/release-version.py --tag "$RELEASE_TAG" >/dev/null
+          fi
+          version=$(python3 scripts/release-version.py)
+          {
+            echo "version=$version"
+            echo "debian=$(python3 scripts/release-version.py --debian)"
+            echo "rpm=$(python3 scripts/release-version.py --rpm)"
+            case "$version" in *-*) echo 'prerelease=true';; *) echo 'prerelease=false';; esac
+          } >> "$GITHUB_OUTPUT"
       - uses: actions/setup-java@v4
         with: {distribution: temurin, java-version: '17'}
       - uses: android-actions/setup-android@v3
@@ -39,13 +45,14 @@ jobs:
       - name: Prepare shared CI inputs
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends e2fsprogs unzip curl
+          sudo apt-get install -y --no-install-recommends e2fsprogs unzip curl patch
           command -v sdkmanager >/dev/null
           yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager 'platforms;android-23'
+          sdkmanager 'platforms;android-23' 'platforms;android-35' 'build-tools;35.0.0'
           sudo mkdir -p /usr/lib/android-sdk/platforms/android-23
           sudo ln -sf "$ANDROID_HOME/platforms/android-23/android.jar" /usr/lib/android-sdk/platforms/android-23/android.jar
           sh scripts/prepare-ci-inputs.sh
+          sh scripts/prepare-scrcpy.sh
       - name: Prepare pinned NVIDIA archives
         env:
           GH_TOKEN: ${{ secrets.NVIDIA_ARTIFACT_TOKEN || github.token }}
@@ -58,6 +65,9 @@ jobs:
             target/native/init.waydroid.rc
             target/native/framework-res.apk
             target/tools/nvidia/*.tar.gz
+            target/input-diagnostic/scrcpy-server-cancel.jar
+            target/input-diagnostic/scrcpy-LICENSE
+            target/input-diagnostic/scrcpy-build.json
           if-no-files-found: error
 
   build:
@@ -74,7 +84,7 @@ jobs:
         with: {name: shared-ci-inputs, path: .}
       - name: Restore shared input paths
         run: |
-          mkdir -p target/tools target/native
+          mkdir -p target/tools target/native target/input-diagnostic
           test -s tools/r8-8.3.37.jar
           test -s native/init.waydroid.rc
           test -s native/framework-res.apk
@@ -83,23 +93,26 @@ jobs:
           cp native/framework-res.apk target/native/framework-res.apk
           test -d tools/nvidia
           cp -a tools/nvidia target/tools/nvidia
+          cp input-diagnostic/scrcpy-server-cancel.jar input-diagnostic/scrcpy-LICENSE input-diagnostic/scrcpy-build.json target/input-diagnostic/
       - name: Install build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends build-essential pkg-config \
-            libgtk-3-dev libwebkit2gtk-4.1-dev librsvg2-dev libssl-dev \
-            clang lld aapt apksigner patchelf rpm zstd
+            libgtk-3-dev libwebkit2gtk-4.1-dev librsvg2-dev libssl-dev libwayland-dev \
+            clang lld aapt apksigner patchelf rpm zstd cpio
           rustup toolchain install stable --profile minimal
           rustup default stable
       - uses: actions/setup-java@v4
         with: {distribution: temurin, java-version: '17'}
       - uses: android-actions/setup-android@v3
         with: {packages: 'platform-tools'}
-      - name: Install Android API 23
+      - name: Install Android APIs and image tools
         run: |
-          sdkmanager 'platforms;android-23'
+          sdkmanager 'platforms;android-23' 'build-tools;35.0.0'
           sudo mkdir -p /usr/lib/android-sdk/platforms/android-23
           sudo ln -sf "$ANDROID_HOME/platforms/android-23/android.jar" /usr/lib/android-sdk/platforms/android-23/android.jar
+      - name: Run Rust tests
+        run: cargo test --workspace --locked
       - name: Build selected package
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
@@ -114,8 +127,7 @@ jobs:
             *) exit 2;;
           esac
           test -s "$file"
-          missing=$(ldd target/release/anvildroid-gui | sed -n '/not found/p')
-          test -z "$missing" || { echo "$missing" >&2; exit 1; }
+          python3 scripts/verify-package.py "$file"
           printf '%s\n' "$file" > package-path.txt
       - uses: actions/upload-artifact@v4
         with:
@@ -126,8 +138,45 @@ jobs:
             target/releases/*.pkg.tar.zst
           if-no-files-found: error
 
-  release:
+  smoke:
     needs: [prepare, build]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {package: deb, image: 'ubuntu:24.04'}
+          - {package: rpm, image: 'fedora:43'}
+          - {package: pkg, image: 'archlinux:base'}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-package-${{ matrix.package }}
+          path: target/releases
+      - name: Install, run GUI/CLI and remove package
+        env:
+          PACKAGE: ${{ matrix.package }}
+          IMAGE: ${{ matrix.image }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          case "$PACKAGE" in
+            deb) file="anvildroid-controller_$(python3 scripts/release-version.py --debian)_amd64.deb";;
+            rpm) file="anvildroid-controller-$(python3 scripts/release-version.py --rpm)-1.x86_64.rpm";;
+            pkg) file="anvildroid-controller-${VERSION}-1-x86_64.pkg.tar.zst";;
+            *) exit 2;;
+          esac
+          docker run --rm \
+            -v "$PWD/scripts/verify-package.py:/work/scripts/verify-package.py:ro" \
+            -v "$PWD/scripts/verify-package-install.sh:/work/scripts/verify-package-install.sh:ro" \
+            -v "$PWD/target/releases/$file:/packages/$file:ro" "$IMAGE" \
+            sh /work/scripts/verify-package-install.sh "$PACKAGE" "/packages/$file" "$VERSION"
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [prepare, build, smoke]
     runs-on: ubuntu-24.04
     permissions: {contents: write}
     steps:

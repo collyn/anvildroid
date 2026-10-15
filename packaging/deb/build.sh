@@ -10,42 +10,8 @@ dpkg --validate-version "$VER"
 OUT="$ROOT/target/releases"
 PKG="$OUT/anvildroid-$VER"
 rm -rf "$PKG" "$OUT/anvildroid-controller_${VER}_amd64.deb"
-mkdir -p "$PKG/DEBIAN" "$PKG/usr/local/lib/anvildroid-controller/provision/vendor/lib64" \
-  "$PKG/usr/local/lib/anvildroid-controller/provision/vendor/bin" "$PKG/usr/local/lib/anvildroid-controller/provision/system/etc/init" \
-  "$PKG/usr/local/lib/anvildroid-controller/provision/system/etc" "$PKG/usr/local/lib/anvildroid-controller/provision"
-mkdir -p "$PKG/usr/bin" "$PKG/usr/share/applications"
-mkdir -p "$PKG/usr/local/lib/anvildroid-controller/scripts" "$PKG/usr/local/lib/anvildroid-controller/services"
-install -m 0755 "$ROOT/target/release/anvildroid-gui" "$PKG/usr/bin/anvildroid-gui"
-for size in 32 48 64 128 256; do mkdir -p "$PKG/usr/share/icons/hicolor/${size}x${size}/apps"; install -m 0644 "$ROOT/crates/anvildroid-gui/icons/icon-${size}.png" "$PKG/usr/share/icons/hicolor/${size}x${size}/apps/org.anvildroid.gui.png"; done
-install -m 0644 "$ROOT/packaging/appimage/org.anvildroid.gui.desktop" "$PKG/usr/share/applications/org.anvildroid.gui.desktop"
-for f in runtime-system.py runtime-controller.py runtime-existing.py runtime-keymap.py runtime-host.py runtime-images.py runtime-android.py runtime-worker.py runtime-linux.py runtime-image-format.py runtime-adb.py runtime-network.py runtime-storage.py runtime-labels.py runtime-transfer.py runtime-catalog.py runtime-download.py runtime-extract.py runtime-provision.py runtime-arm.py runtime-arm-source.py runtime-gpu.py runtime-nvidia.py runtime-resources.py runtime-desktop.py runtime-workarea.py; do
-  install -m 0644 "$ROOT/services/$f" "$PKG/usr/local/lib/anvildroid-controller/$f"
-done
-install -m 0755 "$ROOT/scripts/setup-waydroid.py" "$PKG/usr/local/lib/anvildroid-controller/scripts/setup-waydroid.py"
-install -m 0755 "$ROOT/scripts/patch-waydroid.py" "$PKG/usr/local/lib/anvildroid-controller/scripts/patch-waydroid.py"
-install -m 0755 "$ROOT/scripts/install-nvidia-payload.py" "$PKG/usr/local/lib/anvildroid-controller/scripts/install-nvidia-payload.py"
-install -m 0755 "$ROOT/scripts/prepare-nvidia-fork.py" "$PKG/usr/local/lib/anvildroid-controller/scripts/prepare-nvidia-fork.py"
-install -m 0755 "$ROOT/scripts/install-runtime-apparmor.py" "$PKG/usr/local/lib/anvildroid-controller/scripts/install-runtime-apparmor.py"
-python3 "$ROOT/scripts/build-nvidia-payload.py" --stage-parent "$PKG/usr/local/lib/anvildroid-controller"
-for f in runtime-host.py runtime-arm.py runtime-arm-source.py runtime-extract.py runtime-download.py runtime-image-format.py runtime-existing.py runtime-keymap.py runtime-resources.py runtime-gpu.py runtime-nvidia.py runtime-linux.py runtime-storage.py; do install -m 0644 "$ROOT/services/$f" "$PKG/usr/local/lib/anvildroid-controller/services/$f"; done
-mkdir -p "$PKG/usr/share/doc/anvildroid-controller"
-install -m 0644 "$ROOT/native/menu-font-OFL.txt" "$PKG/usr/share/doc/anvildroid-controller/menu-font-OFL.txt"
-install -m 0755 "$ROOT/target/native/libanvildroid-runtime-window.so" "$PKG/usr/local/lib/anvildroid-controller/libanvildroid-window.so"
-install -m 0644 "$ROOT/target/native/libanvildroid-hwc-shim.so" "$PKG/usr/local/lib/anvildroid-controller/libanvildroid-hwc-shim.so"
-install -m 0644 "$ROOT/target/native/libanvildroid-android-window.so" "$PKG/usr/local/lib/anvildroid-controller/libanvildroid-android-window.so"
-install -m 0644 "$ROOT/services/runtime-path-guard.py" "$PKG/usr/local/lib/anvildroid-controller/runtime-path-guard.py"
-install -m 0644 "$ROOT/target/native/libanvildroid-path-guard.so" "$PKG/usr/local/lib/anvildroid-controller/libanvildroid-path-guard.so"
-install -m 0644 "$ROOT/target/ime/AnvilDroidIme.apk" "$PKG/usr/local/lib/anvildroid-controller/AnvilDroidIme.apk"
-install -m 0644 "$ROOT/target/shutdown/anvildroid-shutdown.jar" "$PKG/usr/local/lib/anvildroid-controller/anvildroid-shutdown.jar"
-install -m 0644 "$ROOT/target/input-diagnostic/scrcpy-server-cancel.jar" "$PKG/usr/local/lib/anvildroid-controller/scrcpy-server-cancel.jar"
-cp -a "$ROOT/native/overlay" "$PKG/usr/local/lib/anvildroid-controller/provision/"
-for f in anvildroid-apps.rc anvildroid-tasks.rc anvildroid-apps.sh anvildroid-tasks.sh anvildroid-keymap.rc anvildroid-keymap.sh; do install -m 0755 "$ROOT/native/$f" "$PKG/usr/local/lib/anvildroid-controller/provision/$f"; done
-install -m 0644 "$ROOT/target/native/overlay-key.p12" "$PKG/usr/local/lib/anvildroid-controller/provision/overlay-key.p12"
-install -D -m 0644 "$ROOT/target/native/init.waydroid.rc" "$PKG/usr/local/lib/anvildroid-controller/provision/system/etc/init/init.waydroid.rc"
-install -D -m 0644 "$ROOT/target/native/AnvilDroidCaption.apk" "$PKG/usr/local/lib/anvildroid-controller/provision/vendor/overlay/AnvilDroidCaption/AnvilDroidCaption.apk"
-install -m 0644 "$ROOT/target/native/framework-res.apk.sha256" "$PKG/usr/local/lib/anvildroid-controller/provision/framework-res.apk.sha256"
-install -D -m 0644 "$ROOT/packaging/systemd/anvildroid-controller.service" "$PKG/lib/systemd/system/anvildroid-controller.service"
-install -D -m 0644 "$ROOT/packaging/systemd/50-anvildroid.conf" "$PKG/usr/lib/systemd/system/waydroid-container.service.d/50-anvildroid.conf"
+sh "$ROOT/scripts/stage-package.sh" "$PKG"
+mkdir -p "$PKG/DEBIAN"
 cat > "$PKG/DEBIAN/control" <<EOF
 Package: anvildroid-controller
 Version: $VER
@@ -54,14 +20,15 @@ Priority: optional
 Architecture: amd64
 Maintainer: AnvilDroid
 Recommends: adb
-Description: AnvilDroid Android runtime controller
+Description: AnvilDroid GUI, CLI and Android runtime controller
  GPU accelerated Waydroid runtime controller with BinderFS and Wayland support.
-Depends: libc6 (>= 2.39), libepoxy0, libdrm2, libgbm1, libx11-6, libexpat1, libvulkan1, util-linux, python3, systemd, patchelf (>= 0.18), libwebkit2gtk-4.1-0, libgtk-3-0, libglib2.0-0, libjavascriptcoregtk-4.1-0, libsoup-3.0-0, libpango-1.0-0, libcairo2, libgdk-pixbuf-2.0-0, libayatana-appindicator3-1 | libappindicator3-1
+Depends: libc6 (>= 2.39), libepoxy0, libdrm2, libgbm1, libx11-6, libexpat1, libvulkan1, util-linux, python3, default-jre-headless (>= 2:1.17), systemd, patchelf (>= 0.18), libwebkit2gtk-4.1-0, libgtk-3-0, libglib2.0-0, libjavascriptcoregtk-4.1-0, libsoup-3.0-0, libpango-1.0-0, libcairo2, libgdk-pixbuf-2.0-0, libayatana-appindicator3-1 | libappindicator3-1
 EOF
 cat > "$PKG/DEBIAN/postinst" <<'EOF'
 #!/bin/sh
 set -e
-install -d -m 0700 /var/lib/anvildroid-controller /run/anvildroid
+install -d -m 0700 /var/lib/anvildroid-controller
+install -d -m 0755 /run/anvildroid
 python3 /usr/local/lib/anvildroid-controller/scripts/install-runtime-apparmor.py
 python3 /usr/local/lib/anvildroid-controller/scripts/patch-waydroid.py || true
 # Ubuntu kernels commonly provide nftables without the legacy iptables tables
@@ -75,6 +42,7 @@ if [ -f "$net" ] && command -v iptables-nft >/dev/null 2>&1 \
   [ -e "$backup" ] || cp -p "$net" "$backup"
   sed -i 's/command -v iptables-legacy/command -v iptables-nft/g; s/command -v ip6tables-legacy/command -v ip6tables-nft/g' "$net"
 fi
+if [ -d /run/systemd/system ]; then
 systemctl daemon-reload
 # Load upgraded Waydroid hooks without interrupting a running Android session.
 if systemctl is-active --quiet waydroid-container.service \
@@ -83,6 +51,7 @@ if systemctl is-active --quiet waydroid-container.service \
 fi
 systemctl enable anvildroid-controller.service >/dev/null 2>&1 || true
 systemctl restart anvildroid-controller.service
+fi
 command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database /usr/share/applications || true
 command -v gtk-update-icon-cache >/dev/null 2>&1 && gtk-update-icon-cache -f -t /usr/share/icons/hicolor || true
 exit 0

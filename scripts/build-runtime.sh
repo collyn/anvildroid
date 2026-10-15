@@ -1,5 +1,5 @@
 #!/bin/sh
-# Build shared GUI and Android payloads consumed by package builders.
+# Build shared GUI, CLI and Android payloads consumed by package builders.
 set -eu
 ROOT=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
@@ -21,7 +21,12 @@ for file in target/native/init.waydroid.rc target/native/framework-res.apk; do
 done
 sha256sum target/native/framework-res.apk | awk '{print $1}' > target/native/framework-res.apk.sha256
 unset CARGO_BUILD_TARGET
-cargo build --release --locked -p anvildroid-gui --target-dir target
+cargo build --release --locked -p anvildroid-gui -p anvildroid-cli --target-dir target
 sh scripts/build-runtime-desktop.sh
 sh scripts/build-ime.sh
 sh scripts/build-shutdown.sh
+# A clean package build must not rely on an untracked developer-built server.
+if ! python3 native/input/build-scrcpy-diagnostic.py --verify >/dev/null 2>&1; then
+  sh scripts/prepare-scrcpy.sh
+fi
+python3 native/input/build-scrcpy-diagnostic.py --verify

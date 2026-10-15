@@ -880,7 +880,9 @@ class Store:
             require(cached.get('status') == 'Ready' and cached.get('flavor') == request['flavor']
                     and all(cached.get('images', {}).get(kind, {}).get('sha256') == request[kind + '_sha256'] for kind in ('system', 'vendor')),
                     'IMAGE_NOT_READY', 'Download and verify the selected image pair first; refresh if the cache changed.')
-            require(not any(shutil.which(tool) is None for tool in ('aapt', 'apksigner', 'unshare')), 'SETUP_REQUIRED', 'Image preparation needs aapt, apksigner and unshare installed.')
+            missing = [tool for tool in ('aapt', 'apksigner', 'unshare', 'java') if shutil.which(tool) is None]
+            require(not missing, 'SETUP_REQUIRED', 'Image preparation is missing tools in the controller PATH: '
+                    + ', '.join(missing) + '. Install or repair the AnvilDroid package and its runtime dependencies.')
             selection = {'flavor': cached['flavor'], 'custom_name': cached.get('custom_name'),
                          'library_id': cached.get('library_id'), 'images': cached['images'], 'image_bytes': cached['image_bytes'],
                          'arm_default': platform.machine() == 'x86_64'}

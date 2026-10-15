@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Build the cancel diagnostic from pinned scrcpy source, without modifying it.
+"""Build the packaged control server from pinned scrcpy source, without modifying it.
 
 python3 native/input/build-scrcpy-diagnostic.py SCRCPY_CHECKOUT PLATFORM_DIR BUILD_TOOLS_DIR
 Requires Android platform 35, build-tools 35 and a JDK. No network downloads.
-Output is experimental and is not copied into production packages.
+Use --verify to check the cached artifact against the source and patch pins.
 """
 import hashlib
+import json
 from pathlib import Path
 import shutil
 import subprocess
@@ -13,12 +14,28 @@ import sys
 import tempfile
 import zipfile
 
+REVISION = 'f01231dff8294fe2c99045a4f9a14b233a71bb86'
+
+
+def verify():
+    root = Path(__file__).resolve().parents[2]
+    destination = root / 'target/input-diagnostic'
+    manifest = json.loads((destination / 'scrcpy-build.json').read_text())
+    assert manifest['revision'] == REVISION, 'Unexpected scrcpy source revision'
+    for name, path in (
+        ('patch_sha256', root / 'native/input/scrcpy-3.3.1-cancel.patch'),
+        ('jar_sha256', destination / 'scrcpy-server-cancel.jar'),
+        ('license_sha256', destination / 'scrcpy-LICENSE'),
+    ):
+        assert hashlib.sha256(path.read_bytes()).hexdigest() == manifest[name], f'Changed scrcpy input/output: {path}'
+    print('Pinned scrcpy server verified')
+
 
 def build(checkout, platform, tools):
     checkout, platform, tools = map(lambda p: Path(p).resolve(), (checkout, platform, tools))
     root = Path(__file__).resolve().parents[2]
     revision = subprocess.check_output(['git', '-C', str(checkout), 'rev-parse', 'HEAD'], text=True).strip()
-    if revision != 'f01231dff8294fe2c99045a4f9a14b233a71bb86':
+    if revision != REVISION:
         raise ValueError('Expected scrcpy v3.3.1 source')
     destination = root / 'target/input-diagnostic'
     destination.mkdir(parents=True, exist_ok=True)
@@ -60,11 +77,20 @@ def build(checkout, platform, tools):
             for source in sorted(dex.glob('*.dex')):
                 z.writestr(zipfile.ZipInfo(source.name, (1980, 1, 1, 0, 0, 0)), source.read_bytes())
         shutil.copyfile(work / 'LICENSE', destination / 'scrcpy-LICENSE')
+        (destination / 'scrcpy-build.json').write_text(json.dumps({
+            'revision': revision,
+            'patch_sha256': hashlib.sha256((root / 'native/input/scrcpy-3.3.1-cancel.patch').read_bytes()).hexdigest(),
+            'jar_sha256': hashlib.sha256(output.read_bytes()).hexdigest(),
+            'license_sha256': hashlib.sha256((destination / 'scrcpy-LICENSE').read_bytes()).hexdigest(),
+        }, indent=2) + '\n')
         print(output)
         print(hashlib.sha256(output.read_bytes()).hexdigest())
 
 
 if __name__ == '__main__':
-    if len(sys.argv) != 4:
+    if sys.argv[1:] == ['--verify']:
+        verify()
+    elif len(sys.argv) != 4:
         raise SystemExit(__doc__)
-    build(*sys.argv[1:])
+    else:
+        build(*sys.argv[1:])

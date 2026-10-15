@@ -14,7 +14,9 @@ mkdir -p "$DEST/usr/local/lib/anvildroid-controller/provision/vendor/lib64" \
   "$DEST/usr/share/licenses/anvildroid-controller" "$DEST/usr/lib/systemd/system" \
   "$DEST/usr/local/lib/anvildroid-controller/scripts" "$DEST/usr/local/lib/anvildroid-controller/services"
 install -m 0644 "$ROOT/LICENSE-MIT" "$DEST/usr/share/licenses/anvildroid-controller/LICENSE-MIT"
+install -m 0755 "$ROOT/target/release/anvildroid" "$DEST/usr/bin/anvildroid"
 install -m 0755 "$ROOT/target/release/anvildroid-gui" "$DEST/usr/bin/anvildroid-gui"
+sh "$ROOT/scripts/stage-image-tools.sh" "$DEST/usr/local/lib/anvildroid-controller/tools"
 for size in 32 48 64 128 256; do
   mkdir -p "$DEST/usr/share/icons/hicolor/${size}x${size}/apps"
   install -m 0644 "$ROOT/crates/anvildroid-gui/icons/icon-${size}.png" \
@@ -27,6 +29,10 @@ install -m 0755 "$ROOT/scripts/prepare-nvidia-fork.py" "$DEST/usr/local/lib/anvi
 install -m 0755 "$ROOT/scripts/install-runtime-apparmor.py" "$DEST/usr/local/lib/anvildroid-controller/scripts/install-runtime-apparmor.py"
 python3 "$ROOT/scripts/build-nvidia-payload.py" --stage-parent "$DEST/usr/local/lib/anvildroid-controller"
 mkdir -p "$DEST/usr/share/doc/anvildroid-controller"
+python3 "$ROOT/native/input/build-scrcpy-diagnostic.py" --verify
+install -m 0644 "$ROOT/target/input-diagnostic/scrcpy-build.json" "$DEST/usr/local/lib/anvildroid-controller/scrcpy-build.json"
+install -m 0644 "$ROOT/target/input-diagnostic/scrcpy-LICENSE" "$DEST/usr/local/lib/anvildroid-controller/scrcpy-LICENSE"
+install -m 0644 "$ROOT/target/input-diagnostic/scrcpy-LICENSE" "$DEST/usr/share/doc/anvildroid-controller/scrcpy-LICENSE"
 install -m 0644 "$ROOT/native/menu-font-OFL.txt" "$DEST/usr/share/doc/anvildroid-controller/menu-font-OFL.txt"
 for f in runtime-host.py runtime-arm.py runtime-arm-source.py runtime-extract.py runtime-download.py runtime-image-format.py runtime-existing.py runtime-keymap.py runtime-resources.py runtime-gpu.py runtime-nvidia.py runtime-linux.py runtime-storage.py; do install -m 0644 "$ROOT/services/$f" "$DEST/usr/local/lib/anvildroid-controller/services/$f"; done
 install -m 0644 "$ROOT/packaging/appimage/org.anvildroid.gui.desktop" "$DEST/usr/share/applications/org.anvildroid.gui.desktop"
@@ -53,4 +59,6 @@ install -m 0644 "$ROOT/packaging/systemd/anvildroid-controller.service" "$DEST/u
 install -D -m 0644 "$ROOT/packaging/systemd/50-anvildroid.conf" "$DEST/usr/lib/systemd/system/waydroid-container.service.d/50-anvildroid.conf"
 # Normalize copied assets as well as newly created directories: cp -a keeps
 # group-write permissions from the source checkout.
+install -d -m 0755 "$DEST/var" "$DEST/var/lib" "$DEST/run" "$DEST/run/anvildroid"
+install -d -m 0700 "$DEST/var/lib/anvildroid-controller"
 chmod -R go-w "$DEST"

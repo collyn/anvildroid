@@ -13,7 +13,7 @@ StateDirectoryMode=0700
 RuntimeDirectory=anvildroid
 RuntimeDirectoryMode=0755
 RuntimeDirectoryPreserve=yes
-Environment=PATH=/usr/sbin:/usr/bin:/sbin:/bin
+Environment=PATH=/usr/local/lib/anvildroid-controller/tools:/usr/sbin:/usr/bin:/sbin:/bin
 Environment=PYTHONNOUSERSITE=1
 Restart=on-failure
 RestartSec=3

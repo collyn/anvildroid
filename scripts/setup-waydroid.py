@@ -38,7 +38,7 @@ BASE_PROP = Path('/var/lib/waydroid/waydroid_base.prop')
 WAYDROID_CFG = Path('/var/lib/waydroid/waydroid.cfg')
 WAYDROID_PROP = Path('/var/lib/waydroid/waydroid.prop')
 FLAVORS = ('VANILLA', 'GAPPS')
-ENV = {'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'PYTHONNOUSERSITE': '1'}
+ENV = {'PATH': '/usr/local/lib/anvildroid-controller/tools:/usr/sbin:/usr/bin:/sbin:/bin', 'PYTHONNOUSERSITE': '1'}
 INSTALL_SCRIPT_URL = 'https://repo.waydro.id'
 HOST_MODULE = Path(__file__).resolve().parent.parent / 'services/runtime-host.py'
 if not HOST_MODULE.is_file():
