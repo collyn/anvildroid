@@ -84,6 +84,26 @@ int main(void) {
   task_count=1;tasks[0]=(struct task){.id=1,.package="com.android.settings",.x=0,.y=32};
   struct object top={.surface=&root};
   uint32_t state=3;struct {size_t size,alloc;uint32_t *data;} states={4,4,&state};
+  /* Music opens at 464x824. The old snapshot must not publish a second
+   * 448x824 pitch correction over the intended compact 448x704 layout. */
+  resize_nvidia_backend=1;hwc_scale_120=120;
+  tasks[0].width=464;tasks[0].height=824;
+  child_v.width=464;child_v.height=824;
+  geometry(&root);
+  queue_open_size(&root);
+  assert(root.fit_w==448&&root.fit_h==704&&snap_resize_protected(&root));
+  state=0;configure(&top,0,448,704,&states);geometry(&root);
+  for(int tick=0;tick<RESIZE_QUIET_TICKS+2;++tick)resize_due(&root.resize);
+  assert(root.resize.width==448&&root.resize.height==704);
+  root.fit_delivered_w=root.resize.width;root.fit_delivered_h=root.resize.height;
+  resize_submitted(&root.resize);
+  for(int tick=0;tick<RESIZE_COOLDOWN_TICKS+10;++tick)resize_due(&root.resize);
+  assert(!root.resize.cooldown&&snap_resize_protected(&root));
+  tasks[0].width=448;tasks[0].height=704;
+  child_v.width=448;child_v.height=704;geometry(&root);
+  struct game_fit_rect opened=game_fit_area(&root);
+  assert(opened.x==0&&opened.y==0&&opened.width==448&&opened.height==704);
+  assert(!snap_resize_protected(&root));
   const int scales[]={120,150,180,240};
   for(int gpu=0;gpu<2;++gpu)for(unsigned n=0;n<sizeof(scales)/sizeof(scales[0]);++n) {
     resize_nvidia_backend=gpu;hwc_scale_120=scales[n];
@@ -144,7 +164,23 @@ int main(void) {
     geometry(&root);
     assert(window_w==1910&&window_h==1000&&window_fit_settled(&root));
     area=game_fit_area(&root);
-    assert(area.y==0&&area.height==1000&&area.x>=0);
+    assert(area.x==0&&area.y==0&&area.width==1910&&area.height==1000);
+    assert(child_x==0&&child_y==0&&child_w==1910&&child_h==1000);
+    /* The same independent axes must invert pointer coordinates after the
+     * GPU pitch adjustment, including at the right/bottom content edges. */
+    assert(game_fit_input(&child,1910*256,0)==root.fit_sw*256);
+    assert(game_fit_input(&child,1000*256,1)==root.fit_sh*256);
+    if(gpu) {
+      /* A 1px maximize change stays in the same pitch bucket: no Android
+       * frame will arrive, so changing only the delivered target must still
+       * repaint the fit and remove its temporary bars. */
+      configure(&top,0,1911,1000,&states);geometry(&root);
+      assert(!window_fit_settled(&root));
+      root.fit_delivered_w=1911;root.fit_delivered_h=1000;
+      root.resize.width=root.resize.height=0;
+      geometry(&root);
+      assert(window_fit_settled(&root)&&child_x==0&&child_y==0&&child_w==1911&&child_h==1000);
+    }
   }
   /* A decoration manager can negotiate client chrome. Its presence must not
    * remove the header/border from xdg geometry on KWin. */
@@ -175,6 +211,8 @@ int main(void) {
   assert(root.fit_w==465&&!root.resize.width&&root.resize.dragging);
   state=0;configure(&top,0,465+2*CSD_BORDER,701+CSD_HEADER+CSD_BORDER,&states);
   assert(root.fit_w==465&&!root.resize.width&&!root.resize.dragging);
+  struct game_fit_rect fixed=game_fit_area(&root);
+  assert(fixed.x>0&&fixed.width<root.fit_w); /* Keep resolution still contains. */
   assert(!source_requests&&!content_attaches&&painted_buffers>0);
   /* Size-menu changes use the same presentation and input transform as a
    * compositor resize, while the old Android snapshot is still visible. */

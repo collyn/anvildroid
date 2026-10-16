@@ -4,6 +4,7 @@ import configparser
 import importlib.util
 import json
 import os
+import platform
 import re
 from pathlib import Path
 import shutil
@@ -18,6 +19,9 @@ _format_spec.loader.exec_module(image_format)
 
 ASSETS = Path('/usr/local/lib/anvildroid-controller')
 WAYDROID_ROOT = Path('/var/lib/waydroid')
+APPARMOR_PROFILES = Path('/sys/kernel/security/apparmor/profiles')
+LXC_TEMPLATE_DIRS = (Path('/usr/lib/waydroid/data/configs'),
+                     Path('/usr/share/waydroid/data/configs'))
 spec = importlib.util.spec_from_file_location('images', Path(__file__).with_name('runtime-images.py'))
 images = importlib.util.module_from_spec(spec); spec.loader.exec_module(images)
 
@@ -27,11 +31,13 @@ def run(*args):
     return result.stdout.strip()
 
 
-def host_properties():
+def host_properties(managed=False):
     """Read generated properties or reconstruct them before the first session.
 
     Waydroid 1.6+ can finish initialization with only waydroid_base.prop.
     Build the private support copy without starting or modifying the host.
+    Managed runtimes can also use a desktop baseline before host initialization;
+    their worker selects GPU and session properties independently at boot.
     """
     try:
         return (WAYDROID_ROOT / 'waydroid.prop').read_text().splitlines()
@@ -40,7 +46,15 @@ def host_properties():
     try:
         props = (WAYDROID_ROOT / 'waydroid_base.prop').read_text().splitlines()
     except FileNotFoundError as error:
-        raise RuntimeError('Waydroid properties are missing. Complete Waydroid initialization, then retry Prepare.') from error
+        if not managed:
+            raise RuntimeError('Waydroid properties are missing. Complete Waydroid initialization, then retry Prepare.') from error
+        # Standalone desktop runtime: GPU and session properties are selected
+        # by the worker at boot. Do not invent host user IDs or GPU device paths.
+        props = ['ro.adb.secure=1', 'ro.debuggable=0',
+                 'debug.stagefright.ccodec=0', 'ro.opengles.version=196610',
+                 'ro.vndk.lite=true']
+        if not Path('/dev/ashmem').exists():
+            props.append('sys.use_memfd=true')
     cfg = configparser.ConfigParser(interpolation=None)
     cfg.read(WAYDROID_ROOT / 'waydroid.cfg')
     for key, option in (('waydroid.host.user', 'user_name'),
@@ -63,6 +77,50 @@ def host_properties():
     return props
 
 
+def lxc_template_directory():
+    return next((root for root in LXC_TEMPLATE_DIRS
+                 if all((root / name).is_file() for name in
+                        ('config_base', 'config_3', 'waydroid.seccomp'))), None)
+
+
+def managed_support_available():
+    host = WAYDROID_ROOT / 'lxc/waydroid'
+    initialized = (all((host / name).is_file() for name in ('config', 'waydroid.seccomp'))
+                   and any((WAYDROID_ROOT / name).is_file()
+                           for name in ('waydroid.prop', 'waydroid_base.prop')))
+    return initialized or lxc_template_directory() is not None
+
+
+def copy_lxc_support(destination):
+    host = WAYDROID_ROOT / 'lxc/waydroid'
+    if all((host / name).is_file() for name in ('config', 'waydroid.seccomp')):
+        for name in ('config', 'waydroid.seccomp'):
+            shutil.copyfile(host / name, destination / name)
+        return
+    templates = lxc_template_directory()
+    if templates is None:
+        raise RuntimeError('Waydroid LXC templates are missing. Reinstall the Waydroid package, then retry Prepare.')
+    version = re.match(r'^(\d+)\.', run('lxc-start', '--version'))
+    if not version or int(version[1]) < 3:
+        raise RuntimeError('Managed Android runtimes require LXC 3 or newer.')
+    snippets = [templates / 'config_base', templates / 'config_3']
+    if int(version[1]) >= 4 and (templates / 'config_4').is_file():
+        snippets.append(templates / 'config_4')
+    config = '\n'.join(path.read_text() for path in snippets)
+    # Match Waydroid initialization: retain its loaded confinement profile
+    # instead of the package template's placeholder 'unconfined' value.
+    try:
+        loaded = any(line.startswith('lxc-waydroid (')
+                     for line in APPARMOR_PROFILES.read_text().splitlines())
+    except (FileNotFoundError, PermissionError):
+        loaded = False
+    if loaded:
+        config = re.sub(r'(?m)^(\s*lxc\.apparmor\.profile\s*=\s*)unconfined\s*$',
+                        r'\1lxc-waydroid', config)
+    (destination / 'config').write_text(config.replace('LXCARCH', platform.machine()))
+    shutil.copyfile(templates / 'waydroid.seccomp', destination / 'waydroid.seccomp')
+
+
 def caption_compatibility(framework, layout):
     """Do not substitute IDs: DecorCaptionView expects its own framework IDs."""
     root = ET.parse(layout).getroot()
@@ -77,6 +135,55 @@ def caption_compatibility(framework, layout):
     return {'caption_mode': 'android' if missing else 'host',
             'caption_detail': ('Keeping the image\'s Android caption; framework lacks ' + ', '.join(missing))
                               if missing else 'Framework supports the AnvilDroid caption overlay'}
+
+
+def app_window_contract(system_root, vendor_root):
+    """Require both sides of Waydroid's per-task display/window ABI.
+
+    Software-rendering libraries alone say nothing about composer support.
+    Keep this separate from the legacy custom-image compatibility policy.
+    """
+    sf = system_root / 'system/bin/surfaceflinger'
+    hwc = vendor_root / 'lib64/hw/hwcomposer.waydroid.so'
+    if not sf.is_file() or not hwc.is_file():
+        return None
+    display, composer = sf.read_bytes(), hwc.read_bytes()
+    if (b'vendor.waydroid.display@1.0' in display and
+            all(token in composer for token in (
+                b'vendor.waydroid.display@1.0', b'vendor.waydroid.window@1.0',
+                b'persist.waydroid.multi_windows', b'wl_shm', b'zwp_linux_dmabuf_v1'))):
+        return 'waydroid-hidl'
+    return None
+
+
+def refresh_window_contract(instance):
+    """Migrate pinned reports without changing overlays or Wayland policy."""
+    if os.geteuid() != 0 or os.readlink('/proc/self/ns/mnt') == os.readlink('/proc/1/ns/mnt'):
+        raise RuntimeError('Private privileged mount namespace required')
+    backend = images.ImageBackend(instance.parent.parent, WAYDROID_ROOT / 'images')
+    manifest = backend.inspect(instance.name)
+    if not manifest or json.loads((instance / 'support/images.json').read_text()) != manifest['images']:
+        raise RuntimeError('Pinned Android support/image mismatch')
+    path = instance / 'support/compatibility.json'
+    report = json.loads(path.read_text())
+    with tempfile.TemporaryDirectory(prefix='.window-contract-', dir=instance) as temporary:
+        mounts = []
+        try:
+            system, vendor = Path(temporary) / 'system', Path(temporary) / 'vendor'
+            for name, target in (('system.img', system), ('vendor.img', vendor)):
+                target.mkdir()
+                source = instance / 'prepared' / name
+                run('mount', *image_format.mount_options(source), source, target)
+                mounts.append(target)
+            report['app_window_contract'] = app_window_contract(system, vendor)
+        finally:
+            for target in reversed(mounts): run('umount', target)
+        pending = Path(temporary) / 'compatibility.json'
+        pending.write_text(json.dumps(report))
+        pending.chmod(0o644)
+        with pending.open('rb') as stream: os.fsync(stream.fileno())
+        os.replace(pending, path)
+        images.ImageBackend.sync_directory(path.parent)
 
 def build_overlay(overlay, system_root, require_caption=True, vendor_root=None,
                   safe_codec_fallback=False, flavor=None):
@@ -107,6 +214,8 @@ def build_overlay(overlay, system_root, require_caption=True, vendor_root=None,
     native_metadata = (surfaceflinger.is_file() and
                        b'vendor.waydroid.display@' in surfaceflinger.read_bytes())
     compatibility['presentation_mode'] = 'app-windows' if native_metadata else 'android-display'
+    if vendor_root is not None:
+        compatibility['app_window_contract'] = app_window_contract(system_root, vendor_root)
     # WayDroidATV images use a newer HWC Wayland path which rejects the
     # AnvilDroid decoration bridge's shared-memory format negotiation.
     if 'WayDroidATV' in props or 'eng.minh' in props:
@@ -223,15 +332,14 @@ def build(instance, flavor):
         overlay = support / 'overlay'
         build_overlay(overlay, lower, vendor_root=vendor,
                       safe_codec_fallback=(flavor == 'CUSTOM'), flavor=flavor)
-        props = host_properties()
+        props = host_properties(managed=True)
         # No ARM properties without the matching native translation libraries.
         drop = ('ro.product.cpu.', 'ro.dalvik.vm.', 'ro.enable.native.bridge.', 'ro.vendor.enable.native.bridge.', 'ro.ndk_translation.', 'waydroid.system_ota=')
         props = [p for p in props if not p.startswith(drop)]
         if flavor != 'CUSTOM':
             props += ['waydroid.system_ota=https://ota.waydro.id/system/lineage/waydroid_x86_64/' + flavor + '.json']
         (support / 'waydroid.prop').write_text('\n'.join(props) + '\n')
-        for name in ('config', 'waydroid.seccomp'):
-            shutil.copyfile(WAYDROID_ROOT / 'lxc/waydroid' / name, support / name)
+        copy_lxc_support(support)
         (support / 'images.json').write_text(json.dumps(manifest['images']))
         for mount in reversed(mounts): run('umount', mount)
         mounts.clear()
@@ -247,4 +355,5 @@ def build(instance, flavor):
 
 if __name__ == '__main__':
     if len(sys.argv) != 3: raise SystemExit('Expected instance and image flavor')
-    build(Path(sys.argv[1]), sys.argv[2])
+    if sys.argv[2] == '--window-contract': refresh_window_contract(Path(sys.argv[1]))
+    else: build(Path(sys.argv[1]), sys.argv[2])

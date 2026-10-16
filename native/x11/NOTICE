@@ -1,0 +1,5 @@
+AnvilDroid native X11 surface adapter
+Copyright (c) AnvilDroid contributors. Licensed under the project MIT license.
+
+Protocol bindings are generated from wayland-protocols. Their individual
+MIT copyright notices are appended to this notice by build-host.py.

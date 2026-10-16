@@ -1,7 +1,7 @@
 // Keep boot-time settings behind the controller's stopped-worker checks.
 // The UI owns the sequence and remains busy until Android has booted again.
 const RuntimeSettings = (() => {
-  const bootOptions = new Set(['arm_set', 'gpu_set', 'resources_set', 'display_set']);
+  const bootOptions = new Set(['arm_set', 'gpu_set', 'resources_set', 'display_set', 'backend_set']);
   async function apply(request, {send, transition, progress = () => {}}) {
     if (!bootOptions.has(request.op)) return {result: await send(request), restarted: false};
     const record = await send({op:'refresh', id:request.id});

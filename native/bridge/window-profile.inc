@@ -307,7 +307,6 @@ static void profile_poll(void) {
        * frame, so alignment never waits for a later Android buffer. */
       if(window_fit_enabled(s)) {
         saved_w=window_layout_width(s,saved_w);
-        s->fit_width_snapped=resize_uses_nvidia();
       }
       s->resize.width=saved_w; s->resize.height=saved_h; s->resize.dirty=1; s->resize.quiet_ticks=0;
       if (s->csd) {s->csd->restore_width=saved_w;s->csd->restore_height=saved_h;}

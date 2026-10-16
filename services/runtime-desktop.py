@@ -128,21 +128,87 @@ def x11_reachable(value):
             return False
 
 
-def x11_authority(uid):
-    """Resolve the session's X authority file for uid, or None."""
-    candidates = []
+def _authority_bytes(candidate, uid):
+    """Open the user's cookie without following a swapped link as root."""
+    fd = os.open(candidate, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != uid or
+                info.st_mode & 0o022 or not 0 < info.st_size <= 65536):
+            raise OSError('Unsafe Xauthority file')
+        return os.read(fd, 65537)
+    finally:
+        os.close(fd)
+
+
+def x11_authority(uid, display=None):
+    """Discover GDM, traditional and KDE/SDDM session authority files."""
     try:
         user = pwd.getpwuid(uid)
     except KeyError:
         return None
-    candidates += [Path(f'/run/user/{uid}/gdm/Xauthority'), Path(user.pw_dir) / '.Xauthority']
+    candidates = [Path(f'/run/user/{uid}/gdm/Xauthority'), Path(user.pw_dir) / '.Xauthority']
+    counts = {}
+    for entry in Path('/proc').iterdir():
+        if not entry.name.isdigit(): continue
+        try:
+            if entry.stat().st_uid != uid: continue
+            with (entry / 'environ').open('rb') as stream:
+                tokens = stream.read(65536).split(b'\0')
+            env = dict(token.split(b'=', 1) for token in tokens if b'=' in token)
+            if display is not None and env.get(b'DISPLAY') != display.encode(): continue
+            raw = env.get(b'XAUTHORITY', b'').decode('utf-8')
+            if raw.startswith('/') and len(raw) <= 4096:
+                counts[raw] = counts.get(raw, 0) + 1
+        except (OSError, UnicodeError): continue
+    candidates = [Path(path) for path in sorted(counts, key=counts.get, reverse=True)] + candidates
     for candidate in candidates:
         try:
-            if candidate.stat().st_size > 0:
-                return candidate
+            if _authority_bytes(candidate, uid): return candidate
+        except OSError: continue
+    return None
+
+
+def read_x11_authority(uid, display):
+    candidate = x11_authority(uid, display)
+    if candidate is None: return None
+    return _authority_bytes(candidate, uid)
+
+
+def x11_input_environment(uid, display):
+    """Carry only locale/XIM selection from the selected desktop user's session.
+
+    The controller's service environment has neither the user's locale nor XIM
+    selection. Do not inherit executable/library paths from desktop processes.
+    XIM connects through the already authenticated X11 connection.
+    """
+    counts = {}
+    allowed = (b'LANG', b'LC_ALL', b'LC_CTYPE', b'XMODIFIERS')
+    for entry in Path('/proc').iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            if entry.stat().st_uid != uid:
+                continue
+            with (entry / 'environ').open('rb') as stream:
+                tokens = stream.read(65536).split(b'\0')
+            env = dict(token.split(b'=', 1) for token in tokens if b'=' in token)
+            if env.get(b'DISPLAY') != display.encode():
+                continue
+            for key in allowed:
+                value = env.get(key, b'')
+                if value and len(value) <= 256 and all(32 <= byte < 127 for byte in value):
+                    pair = key.decode(), value.decode('ascii')
+                    counts[pair] = counts.get(pair, 0) + 1
         except OSError:
             continue
-    return None
+    result = {'LANG': 'C.UTF-8'}
+    for key in allowed:
+        candidates = {pair: count for pair, count in counts.items() if pair[0] == key.decode()}
+        if candidates:
+            name, value = max(candidates, key=candidates.get)
+            result[name] = value
+    return result
 
 
 def session_x11_display(uid):
@@ -185,7 +251,7 @@ def capabilities(uid):
             return {'session': 'x11', 'wayland': False, 'desktop': True,
                     'display': display, 'decoration': 'wm-managed',
                     'placement': 'wm-managed',
-                    'detail': (f'X11 display {display} detected; AnvilDroid opens a nested Weston window inside this session.'
+                    'detail': (f'X11 display {display} detected; select the native X11 backend in Display for supported Android 13 NVIDIA runtimes.'
                                if reachable else
                                f'X11 display {display} found; server connectivity is verified at startup.')}
         return {'session': 'none', 'wayland': False, 'desktop': False,

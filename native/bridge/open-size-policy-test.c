@@ -7,6 +7,8 @@ int main(void) {
   /* First sight was small or restoring: becoming larger after a user resize
    * must not cause a delayed compact-open request. */
   open_size_snapshot(&history,ids,1,first);assert(!first[0]);
+  open_size_defer(&history,24);
+  open_size_snapshot(&history,ids,1,first);assert(first[0]);
   ids[1]=25;open_size_snapshot(&history,ids,2,first);assert(!first[0]&&first[1]);
   /* More than eight active apps and long sessions do not exhaust history. */
   for(int i=0;i<128;++i)ids[i]=100+i;

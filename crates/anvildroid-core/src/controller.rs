@@ -48,6 +48,12 @@ pub enum Request {
         id: String,
         mode: String,
     },
+    #[serde(rename = "backend_set")]
+    BackendSet {
+        id: String,
+        backend: String,
+        presenter: String,
+    },
     #[serde(rename = "arm_info")]
     ArmInfo {
         id: String,
@@ -392,7 +398,7 @@ fn exchange_files(
     // ARM staging fsyncs hundreds of library files before publishing a version.
     let reply_timeout = if matches!(&request, Request::ArmImport {} | Request::ArmSet { .. }) {
         180
-    } else if matches!(&request, Request::SystemIntegration { .. }) {
+    } else if matches!(&request, Request::SystemIntegration { .. } | Request::BackendSet { .. }) {
         60
     } else if matches!(&request, Request::Reinstall { id, .. } if id == "default") {
         // System Waydroid reinstalls synchronously: image extraction and the

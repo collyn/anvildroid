@@ -270,7 +270,7 @@ pub fn recover() -> Result<u8, AnvilError> {
         return health();
     }
     // Validate the target desktop before stopping an orphaned container session.
-    if !crate::launch::native_wayland_available() && !crate::launch::needs_nested_weston() {
+    if !crate::launch::native_wayland_available() && !crate::launch::needs_x11_adapter() {
         return Err(AnvilError::SessionProbe(
             "No Wayland socket or X11 display is available; no session was stopped".into(),
         ));

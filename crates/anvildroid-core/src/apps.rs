@@ -86,7 +86,11 @@ fn request(action: &str, package: &str, apk: Option<&Path>) -> Result<String, An
             fs::set_permissions(file?.path(), fs::Permissions::from_mode(0o660))?;
         }
         fs::rename(&staging, &ready)?;
-        let timeout = if action == "install" { 120 } else { 15 };
+        let timeout = match action {
+            "install" => 120,
+            "uninstall" => 30,
+            _ => 15,
+        };
         let started = Instant::now();
         loop {
             match fs::read_to_string(working.join("status")) {
@@ -145,6 +149,36 @@ pub fn force_stop(package: &str) -> Result<(), AnvilError> {
     if details(package)?.stopped != Some(true) {
         return Err(AnvilError::BackendFailed(
             "Force-stop could not be confirmed".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// The GUI has already confirmed removal. Use the shell-UID companion so
+/// Waydroid's Android 13 PendingIntent failure cannot strand an invisible UI.
+pub fn uninstall(package: &str) -> Result<(), AnvilError> {
+    if !backend::valid_package(package) {
+        return Err(AnvilError::InvalidArgument("Invalid package".into()));
+    }
+    if let Some(reason) = backend::uninstall_block_reason(package) {
+        return Err(AnvilError::InvalidArgument(reason.into()));
+    }
+    launch::ensure_ready(launch::BOOT_TIMEOUT)?;
+    if !details(package)?.installed {
+        return Err(AnvilError::InvalidArgument(
+            "App is not installed. Refresh the app list.".into(),
+        ));
+    }
+    let response = request("uninstall", package, None)?;
+    if !response.lines().any(|line| line.trim() == "Success") {
+        return Err(AnvilError::BackendFailed(format!(
+            "Android did not confirm uninstall: {}",
+            response.trim()
+        )));
+    }
+    if details(package)?.installed {
+        return Err(AnvilError::BackendFailed(
+            "Android still reports the app installed; refresh before retrying.".into(),
         ));
     }
     Ok(())

@@ -241,6 +241,20 @@ int main(void) {
   stack_request(&stack_sub[3],2,&above_menu);
   assert(stack_position(3)>stack_position(5));
   csd_menu_sync(&f,0,0,800,600);assert(stack_position(5)==5);
+  /* Full Android UI owns a separate set of letterbox surfaces on the CSD
+   * frame, with no game_fit_state. Its side bars must not cover the menu or
+   * intercept clicks, including when csd_sync restacks them on later frames. */
+  s.fit=0;s.full_ui=1;s.app=0;s.viewport=0;
+  s.full_w=800;s.full_h=600;s.full_canvas_w=720;s.full_canvas_h=1280;
+  for(int i=0;i<4;++i)f.bars[i]=fit.bars[i];
+  stack_order[0]=0;stack_order[1]=5;
+  for(int i=0;i<4;++i)stack_order[i+2]=i+1;
+  csd_menu_sync(&f,0,0,800,600);
+  assert(stack_position(5)==5);
+  for(int frame=0;frame<3;++frame) {
+    csd_sync(&s,0,0,800,600);
+    assert(f.menu_open&&stack_position(5)==5);
+  }
   stack_enabled=0;
   /* Default Full Android UI exposes Size even without a package/task viewport. */
   s.full_ui=1;s.app=0;s.viewport=0;s.full_w=1280;s.full_h=720;

@@ -314,6 +314,7 @@ async function runtimeAction(action, btn) {
     btn.removeAttribute('aria-busy');
     if (iconButton) btn.classList.remove('is-working');
     else btn.textContent = label;
+    renderController();
   }
 }
 
@@ -955,31 +956,6 @@ btnRefreshApps.addEventListener('click', refreshApps);
 
 // --- Context menu ---
 let activeMenu = null;
-let uninstallWatchCancelled = false;
-const btnStopUninstallWait = document.getElementById('btn-stop-uninstall-wait');
-btnStopUninstallWait.addEventListener('click', () => { uninstallWatchCancelled = true; });
-
-async function waitForAndroidUninstall(pkg) {
-  uninstallWatchCancelled = false;
-  btnStopUninstallWait.style.display = '';
-  const deadline = Date.now() + 120000;
-  try {
-    while (!uninstallWatchCancelled && Date.now() < deadline) {
-      const result = await invoke('check_uninstall', { package: pkg });
-      if (result) {
-        showAppToast(result.message, result.success ? 'success' : 'error');
-        await refreshApps();
-        return;
-      }
-      if (!uninstallWatchCancelled) await new Promise(resolve => setTimeout(resolve, 1000));
-    }
-    showAppToast('Uninstall has not been confirmed. If you cancelled in Android, the app remains installed. Refresh after any later confirmation.', 'info');
-    await refreshApps();
-  } finally {
-    btnStopUninstallWait.style.display = 'none';
-  }
-}
-
 async function appMenuAction(action, pkg, label, blockReason, runtimeId = 'default') {
   if(probeInstallBusy)return;
   if(action==='keymap')return openKeymapOverlay(runtimeId,pkg);
@@ -1046,16 +1022,12 @@ async function appMenuAction(action, pkg, label, blockReason, runtimeId = 'defau
       uninstall: `Uninstalling ${label || pkg}…`,
     };
     showAppToast(messages[action], 'info');
+    if (action === 'uninstall') clearTimeout(appToastTimer);
     if (runtimeTransition) {
       const startup = await runtimeTransition;
       if (startup && !startup.success) throw new Error(startup.message);
     }
     const result = await invoke(commands[action], { package: pkg });
-    if (action === 'uninstall' && result.pending_confirmation) {
-      showAppToast(result.message, 'info');
-      await waitForAndroidUninstall(pkg);
-      return;
-    }
     showAppToast(result.success ? result.message : `Failed: ${result.message}`, result.success ? 'success' : 'error');
     if (action === 'uninstall') await refreshApps();
     if (action === 'force-stop' && detailPackage === pkg) await showDetails(pkg);
@@ -1741,6 +1713,12 @@ async function refreshExistingRuntime({light = false} = {}) {
 function renderExistingRuntime() {
   const panel = document.getElementById('existing-runtime-management');
   const record = existingRuntime;
+  // Lifecycle commands have their own session checks in the backend. Loading
+  // management settings (or failing to authorize those settings) must not lock
+  // Start/Stop/Recover, including while another runtime is stopping.
+  [btnStart, btnStop, btnRecover].forEach(button => {
+    button.disabled = runtimeOperationBusy('default');
+  });
   if (!record) {
     document.getElementById('existing-runtime-usage').innerHTML = renderRuntimeUsage({id:'default'});
     panel._runtimeMarkup = null;
@@ -1751,9 +1729,7 @@ function renderExistingRuntime() {
   document.getElementById('existing-runtime-label').textContent = record.name;
   document.getElementById('existing-runtime-usage').innerHTML = renderRuntimeUsage(record.unavailable ? {id:record.id} : record);
   updateDefaultRuntimeBadge(record.unavailable ? 'Unavailable' : record.state, existingRuntimeError);
-  [btnStart, btnStop, btnRecover].forEach(button => {
-    button.disabled = Boolean(runtimeOperationBusy('default') || record.unavailable || record.detailsLoading);
-  });
+  if (!record.unavailable) updateRuntimeButtons(record.state);
   document.querySelectorAll('#legacy-runtime-row .runtime-action-icon').forEach(button => button.setAttribute('aria-label', button.title + ' · ' + record.name));
   const busy = runtimeOperationBusy('default') || apkInstallBusy || !record.managed || record.unavailable || record.detailsLoading;
   const button = (op,label,disabled=false) => `<button class="btn btn-quiet" data-controller-op="${op}" data-controller-id="default" ${disabled ? 'disabled' : ''}>${label}</button>`;
@@ -2271,7 +2247,7 @@ function renderControllerSetup() {
     setRuntimeSetupVisible(false);
     runtimeSetupAutoOpened = false;
   }
-  const sessionLabels = { wayland: 'Wayland', x11: 'X11 (nested Weston)', none: 'none', unknown: 'unknown' };
+  const sessionLabels = { wayland: 'Wayland', x11: 'X11', none: 'none', unknown: 'unknown' };
   const desktopLine = desktop?.desktop
     ? `<p class="hint">Desktop session: ${sessionLabels[desktop.session] ?? 'desktop'} · Experimental — window controls require verification · decoration ${escapeHtml(desktop.decoration || 'unverified')} · placement ${escapeHtml(desktop.placement || 'compositor-managed')}</p><p class="hint">${escapeHtml(desktop.detail || 'Socket presence does not verify window controls. Startup checks the selected compositor for SSD or CSD prerequisites.')}</p>`
     : `<p class="hint">Desktop preview unavailable: ${escapeHtml(desktop?.detail || 'No graphical session detected.')} Headless mode remains available.</p>`;
@@ -2575,6 +2551,11 @@ function renderController() {
       <details class="runtime-setting-row" data-settings-key="${escapeHtml(record.id)}:display" ${runtimeSettingsOpen.has(record.id + ':display') ? 'open' : ''}><summary><span><strong>Display</strong><small>Desktop windows or headless</small></span></summary><div class="runtime-setting-body"><div class="runtime-display-panel"><strong>Display mode: ${record.display?.mode === 'desktop' ? 'Desktop (preview)' : 'Headless'}</strong>
       <p class="hint">${record.display?.mode === 'desktop' ? 'Desktop app windows.' : 'Background mode; no app windows.'}</p>
       <div class="runtime-actions"><button class="btn btn-quiet" data-controller-op="display_set" data-controller-id="${escapeHtml(record.id)}" data-display-mode="${record.display?.mode === 'desktop' ? 'headless' : 'desktop'}" ${busy || (!canMoveState && !['Running', 'Frozen'].includes(record.state)) || !record.display ? 'disabled' : ''}>${record.display?.mode === 'desktop' ? 'Use Headless' : 'Use Desktop'}${['Running', 'Frozen'].includes(record.state) ? ' & restart' : ''}</button></div>
+      <p class="hint">Backend: ${record.display?.backend === 'native-x11' ? 'Native X11 · bridge CSD' : record.display?.backend === 'legacy' ? 'Compatibility · Wayland / Weston on X11' : 'Automatic · native X11 / Wayland'}</p>
+      <p class="hint">Native X11 requires Android 13 and NVIDIA/Venus in Graphics. Individual app windows with the shared Android composer and bridge CSD. Other Android versions and AMD/Intel guest rendering are not supported yet.</p>
+      <div class="runtime-actions">${['amd', 'intel', 'nvidia'].map(presenter => `<button class="btn btn-quiet" data-controller-op="backend_set" data-controller-id="${escapeHtml(record.id)}" data-backend="native-x11" data-presenter="${presenter}" ${busy || !record.display || !['Prepared', 'Stopped', 'Error', 'Running', 'Frozen'].includes(record.state) ? 'disabled' : ''}>Native X11 · ${presenter.toUpperCase()}</button>`).join('')}
+      <button class="btn btn-quiet" data-controller-op="backend_set" data-controller-id="${escapeHtml(record.id)}" data-backend="legacy" data-presenter="${record.display?.presenter || 'amd'}" ${busy || !record.display ? 'disabled' : ''}>Use Wayland / Weston compatibility</button>
+      <button class="btn btn-quiet" data-controller-op="backend_set" data-controller-id="${escapeHtml(record.id)}" data-backend="auto" data-presenter="${record.display?.presenter || 'amd'}" ${busy || !record.display ? 'disabled' : ''}>Use automatic backend</button></div>
       ${record.state === 'Running' ? '<p class="hint">Changing mode restarts Android.</p>' : ''}${record.displayError ? `<p class="runtime-feedback error">${escapeHtml(record.displayError)}</p>` : ''}</div></div></details>
 
       <details class="runtime-setting-row" data-settings-key="${escapeHtml(record.id)}:resources" ${runtimeSettingsOpen.has(record.id + ':resources') ? 'open' : ''}><summary><span><strong>Performance</strong><small>RAM and CPU limits</small></span></summary><div class="runtime-setting-body"><div class="runtime-resources-panel">${renderResourceControls(record, busy)}</div></div></details>
@@ -2825,7 +2806,7 @@ async function mutateController(request) {
       try { result.display = await controllerRequest({op:'display_set', id:result.id, mode:'desktop'}); }
       catch (error) { throw new Error(`Runtime ${result.name} was created, but Desktop mode could not be saved: ${error}. Select Use Desktop before starting it.`); }
     }
-    if (request.op === 'display_set') {
+    if (request.op === 'display_set' || request.op === 'backend_set') {
       const record = runtimeRecord(request.id);
       if (record) record.display = result;
     } else if (request.op === 'resources_set') {
@@ -2971,6 +2952,7 @@ function handleRuntimeAction(event) {
     beginReinstall(button.dataset.controllerId);
   }
   else if (button.dataset.controllerOp === 'app_action') mutateController({op:'app_action',id:button.dataset.controllerId,action:button.dataset.appAction,package:button.dataset.package});
+  else if (button.dataset.controllerOp === 'backend_set') mutateController({op:'backend_set',id:button.dataset.controllerId,backend:button.dataset.backend,presenter:button.dataset.presenter});
   else if (button.dataset.controllerOp === 'display_set') mutateController({op:'display_set',id:button.dataset.controllerId,mode:button.dataset.displayMode});
   else if (button.dataset.controllerOp === 'arm_set') installRuntimeArm(button.dataset.controllerId);
   else if (button.dataset.controllerOp === 'arm_sources') {
@@ -3600,11 +3582,11 @@ const runtimeBatchRestarting = new Set();
 const runtimeOperations = new Map();
 function runtimeOperationBusy(id) {
   return Boolean(controllerMutation || runtimeBatchBusy || runtimeOperations.has(id) ||
-    (id === 'default' && (runtimeTransition || pendingLaunch || pendingAppAction || probeInstallBusy)));
+    (id === 'default' && (defaultRuntimeOperation || runtimeTransition || pendingLaunch || pendingAppAction || probeInstallBusy)));
 }
 function runtimePlanBlocked(op, targets) {
   const lifecycle = ['start', 'stop', 'restart'].includes(op);
-  return controllerMutation || runtimeBatchBusy ||
+  return controllerMutation || runtimeBatchBusy || (!lifecycle && controllerLoading) ||
     (!lifecycle && (runtimeOperations.size || runtimeTransition || pendingLaunch || pendingAppAction || probeInstallBusy)) ||
     targets.some(record => runtimeOperationBusy(record.id));
 }
@@ -3632,13 +3614,13 @@ function renderRuntimeBatchSelection() {
     input.closest?.('tr')?.classList.toggle('batch-selected', input.checked);
   });
   document.querySelectorAll('[data-controller-op="restart"]').forEach(button => {
-    button.disabled = runtimeOperationBusy(button.dataset.controllerId) || controllerLoading || imageDownloadBusy || imageDownloadActive() || !RuntimeBatch.eligible(runtimeRecord(button.dataset.controllerId), 'restart', controllerRequirements || {});
+    button.disabled = runtimeOperationBusy(button.dataset.controllerId) || imageDownloadBusy || imageDownloadActive() || !RuntimeBatch.eligible(runtimeRecord(button.dataset.controllerId), 'restart', controllerRequirements || {});
   });
   document.querySelectorAll('[data-runtime-batch]').forEach(button => {
     const op = button.dataset.runtimeBatch;
     const count = selected.filter(record => !runtimeOperationBusy(record.id) && RuntimeBatch.eligible(record, op, controllerRequirements || {})).length;
     button.textContent = `${op === 'open' ? 'Open Waydroid windows' : op[0].toUpperCase() + op.slice(1)} (${count})`;
-    button.disabled = runtimePlanBlocked(op, selected) || controllerLoading || imageDownloadBusy || imageDownloadActive() || !count;
+    button.disabled = runtimePlanBlocked(op, selected) || imageDownloadBusy || imageDownloadActive() || !count;
     button.title = `${count} of ${selected.length} selected runtimes can ${op}`;
   });
   document.getElementById('runtime-batch-clear').disabled = runtimeBatchBusy;
@@ -3661,13 +3643,13 @@ document.getElementById('runtime-batch-clear').addEventListener('click', () => {
 });
 document.getElementById('runtime-batch-toolbar').addEventListener('click', event => {
   const button = event.target.closest('[data-runtime-batch]');
-  if (!button || button.disabled || controllerMutation || runtimeBatchBusy || controllerLoading || imageDownloadBusy || imageDownloadActive()) return;
+  if (!button || button.disabled || controllerMutation || runtimeBatchBusy || imageDownloadBusy || imageDownloadActive()) return;
   const op = button.dataset.runtimeBatch;
   const selected = runtimeBatchRecords().filter(record => runtimeBatchSelection.has(record.id));
   showRuntimeBatchDialog(op, selected, button.textContent.replace(/ \(\d+\)$/, ''));
 });
 function showRuntimeBatchDialog(op, selected, label) {
-  if (runtimePlanBlocked(op, selected) || controllerLoading || imageDownloadBusy || imageDownloadActive()) return;
+  if (runtimePlanBlocked(op, selected) || imageDownloadBusy || imageDownloadActive()) return;
   const targets = selected.filter(record => RuntimeBatch.eligible(record, op, controllerRequirements || {}));
   if (!targets.length) return;
   runtimeBatchPlan = {op, targets: targets.map(({id, name}) => ({id, name})), skipped: selected.length - targets.length};
@@ -3760,7 +3742,7 @@ async function executeBatchOperation(record, op, imageRequest, activationToken) 
 }
 document.getElementById('runtime-batch-form').addEventListener('submit', async event => {
   event.preventDefault();
-  if (!runtimeBatchPlan || runtimePlanBlocked(runtimeBatchPlan.op, runtimeBatchPlan.targets) || controllerLoading || imageDownloadBusy || imageDownloadActive()) return;
+  if (!runtimeBatchPlan || runtimePlanBlocked(runtimeBatchPlan.op, runtimeBatchPlan.targets) || imageDownloadBusy || imageDownloadActive()) return;
   const plan = runtimeBatchPlan;
   const error = document.getElementById('runtime-batch-dialog-error');
   if (['delete', 'reinstall'].includes(plan.op) && document.getElementById('runtime-batch-confirm').value !== plan.op.toUpperCase()) {

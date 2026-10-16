@@ -157,13 +157,17 @@ static void full_ui_request(struct object *o,const char *cls,const char *method,
   }
 }
 static int32_t full_ui_input(struct proxy *surface,int32_t value,int axis) {
-  struct object *s=full_ui_owner(find(surface));
+  struct object *layer=find(surface),*s=full_ui_owner(layer);
   if(!s)return value;
   int fw,fh,ox,oy;full_ui_box(s,&fw,&fh,&ox,&oy);
   int src=display_projection.w?(axis?display_projection.h:display_projection.w):(axis?s->full_canvas_h:s->full_canvas_w),dst=axis?fh:fw;
   if(src<=0||dst<=0)return value;
-  int64_t n=(int64_t)(value-(axis?oy:ox))*src/dst;
-  struct object *layer=find(surface);
+  /* Only root coordinates include the letterbox origin. A child is already
+   * positioned inside it, so subtracting it again shifts every click/scroll.
+   * Wayland pointer coordinates are 24.8 fixed point; box offsets are pixels. */
+  int64_t n=value;
+  if(layer==s)n-=256LL*(axis?oy:ox);
+  n=n*src/dst;
   n+=256LL*(layer==s?(axis?display_projection.y:display_projection.x):(axis?layer->full_clip_y:layer->full_clip_x));
   return n>INT32_MAX?INT32_MAX:n<INT32_MIN?INT32_MIN:(int32_t)n;
 }

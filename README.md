@@ -77,11 +77,20 @@ compatibility across custom images, desktops and games is still being developed.
 
 ## Requirements
 
-- Linux x86_64 with a Wayland desktop for native Android windows. On X11,
-  runtimes start Weston automatically and display Android inside its nested
-  window; the `weston` package is required. NVIDIA/Venus rendering also uses
-  this path, subject to the experimental requirements above.
+- Linux x86_64 with Wayland or X11. Automatic mode uses native X11 on Xorg
+  and preserves the Wayland backend on Wayland. Unsupported native X11
+  configurations fail before starting Android; Weston requires explicitly
+  selecting the compatibility backend.
+  Native X11 is included as an experimental per-runtime option under Display →
+  Desktop for SDK 33-36 images exposing Waydroid's per-app composer, with Mesa
+  guest rendering. The pinned NVIDIA/Venus guest renderer requires SDK 33;
+  AMD/Intel/NVIDIA can present its windows. SDK 36 remains under validation.
+  It uses bridge-drawn CSD directly on Xorg without Weston;
+  see [native X11 requirements](native/x11/README.md).
 - Waydroid, LXC, Binder/BinderFS, Linux namespaces and cgroups.
+  Managed runtimes can prepare downloaded/imported images before host Waydroid
+  initialization; they use the installed Waydroid package’s LXC templates.
+  Default still requires Waydroid initialization.
 - Mesa-compatible Intel or AMD GPU, or an NVIDIA setup meeting the experimental
   backend requirements above.
 - Python 3.11+, systemd and the host libraries declared by the selected package.
@@ -125,6 +134,13 @@ sh scripts/prepare-ci-inputs.sh
 sh scripts/prepare-scrcpy.sh
 python3 scripts/prepare-nvidia-fork.py --download
 ```
+
+Native X11 source builds additionally need Wayland server/protocols, EGL/GLES2,
+X11/Xcursor and xkbcommon development packages. The adapter uses the existing
+Android composer and bridge; no extra guest HAL, Android link libraries or NDK
+build is needed for X11. The shared build bundles both display backends.
+Release CI builds X11 once and passes the verified payload to package jobs using
+`ANVILDROID_X11_PAYLOAD=/absolute/path/to/payload`; local builds compile it by default.
 
 These inputs are cached under `target/tools/`, `target/native/` and
 `target/input-diagnostic/`. Verified

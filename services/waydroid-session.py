@@ -1,9 +1,10 @@
-"""Run Default Waydroid in a supervised nested Weston on an X11 desktop.
+"""Run Default Waydroid with the shared native X11 surface adapter.
 
 Embedded in the native launcher so installed packages and shortcuts use the
 same session startup path without relying on a separate helper installation.
 """
 import fcntl
+import importlib.util
 import os
 from pathlib import Path
 import signal
@@ -13,14 +14,29 @@ import subprocess
 import sys
 import time
 
-SOCKET = 'anvildroid-default-wayland'
+SOCKET = 'anvildroid-default-x11'
+ASSETS = Path('/usr/local/lib/anvildroid-controller')
+
+
+def native_adapter():
+    """Use only the installed root-owned adapter and its verified manifest."""
+    path = ASSETS / 'runtime-x11.py'
+    for entry in (path, *path.parents):
+        info = entry.lstat()
+        expected = stat.S_ISREG if entry == path else stat.S_ISDIR
+        if not expected(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+            raise RuntimeError('Unsafe native X11 installation: ' + str(entry))
+    spec = importlib.util.spec_from_file_location('anvildroid_default_x11', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    paths, _ = module.load_payload(ASSETS / 'native-x11')
+    return paths['anvildroid-x11-host'], module.presenter_environment()
 
 
 def stop_process(process):
     if process is None:
         return
-    # Weston also launches its shell; give the entire private process group
-    # the same lifetime as the Android session.
+    # Only a process group created by this supervisor is ever terminated.
     try:
         os.killpg(process.pid, signal.SIGTERM)
     except ProcessLookupError:
@@ -55,9 +71,32 @@ def session_running(env):
 
 def stop_session(env):
     try:
-        subprocess.run(['waydroid', 'session', 'stop'], env=env, timeout=5)
-    except (OSError, subprocess.TimeoutExpired):
-        pass
+        result = subprocess.run(['waydroid', 'session', 'stop'], env=env, timeout=5)
+        return result.returncode == 0 and not session_running(env)
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def acquire_session_lock(lock, env, timeout=10):
+    # Waydroid drops its session before this supervisor has finished tearing
+    # down the presenter. Restart may already see STOPPED during that interval.
+    # Serialize with that cleanup; never remove a held lock or start a second
+    # presenter. A running session (including another in-progress start) wins.
+    deadline = time.monotonic() + timeout
+    announced = False
+    while True:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return
+        except BlockingIOError as error:
+            if session_running(env):
+                raise RuntimeError('Default runtime is already starting or running on X11.') from error
+            if time.monotonic() >= deadline:
+                raise RuntimeError('Previous Default X11 session is still shutting down; no new session was started.') from error
+            if not announced:
+                print('Waiting for previous Default X11 session cleanup…', flush=True)
+                announced = True
+            time.sleep(.1)
 
 
 def run():
@@ -74,60 +113,58 @@ def run():
     env.pop('WAYLAND_DISPLAY', None)
     env.pop('WAYLAND_SOCKET', None)
     endpoint = xdg / SOCKET
-    # Separate GUI/shortcut processes must not start competing compositors.
+    # Separate GUI/shortcut processes must not start competing presenters.
     fd = os.open(xdg / (SOCKET + '.session.lock'), os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
-    compositor = session = None
+    presenter = session = None
     with os.fdopen(fd, 'w') as lock:
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as error:
-            raise RuntimeError('Default runtime is already starting or running on X11.') from error
+        acquire_session_lock(lock, env)
         if connected(endpoint):
             raise RuntimeError('The Default runtime Wayland socket is already in use.')
+        if session_running(env):
+            raise RuntimeError('Default runtime already has a running Waydroid session.')
+        executable, graphics = native_adapter()
         try:
-            for renderer in ('gl', 'pixman'):
-                print('Starting nested Weston for Default runtime on X11 (' + renderer + ')…', flush=True)
-                try:
-                    compositor = subprocess.Popen([
-                        'weston', '--backend=x11', '--renderer=' + renderer,
-                        '--socket=' + SOCKET, '--idle-time=0', '--no-config',
-                        '--width=1280', '--height=720',
-                    ], env=env, start_new_session=True)
-                except FileNotFoundError as error:
-                    raise RuntimeError('X11 startup requires Weston. Install the weston package, then retry Start.') from error
-                deadline = time.monotonic() + 10
-                while time.monotonic() < deadline and compositor.poll() is None:
-                    if connected(endpoint):
-                        break
-                    time.sleep(.1)
-                if compositor.poll() is None and connected(endpoint):
+            print('Starting native X11 app-window adapter for Default runtime…', flush=True)
+            presenter_env = dict(os.environ)
+            for name in ('WAYLAND_DISPLAY', 'WAYLAND_SOCKET', 'ANVILDROID_RUNTIME_ID',
+                         'DRI_PRIME', '__NV_PRIME_RENDER_OFFLOAD', '__GLX_VENDOR_LIBRARY_NAME'):
+                presenter_env.pop(name, None)
+            presenter_env.update(graphics)
+            presenter = subprocess.Popen([str(executable), '--socket', str(endpoint)],
+                                         env=presenter_env, start_new_session=True)
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline and presenter.poll() is None:
+                if connected(endpoint):
                     break
-                stop_process(compositor)
-                compositor = None
-            if compositor is None:
-                raise RuntimeError('Nested Weston could not open the X11 display; check DISPLAY, XAUTHORITY and the compositor log above.')
+                time.sleep(.1)
+            if presenter.poll() is not None or not connected(endpoint):
+                raise RuntimeError('Native X11 adapter could not open the display; inspect its log above. Weston was not started.')
             env['WAYLAND_DISPLAY'] = SOCKET
             session = subprocess.Popen(['waydroid', 'session', 'start'], env=env, start_new_session=True)
             while session.poll() is None:
-                if compositor.poll() is not None:
-                    raise RuntimeError('Nested Weston exited while Android was running.')
+                if presenter.poll() is not None:
+                    raise RuntimeError('Native X11 adapter exited while Android was running.')
                 time.sleep(.1)
             code = session.returncode
             # Some Waydroid versions hand startup to their D-Bus service and
-            # return successfully. Keep its compositor until that session stops.
+            # return successfully. Keep its presenter until that session stops.
             if code == 0:
                 while session_running(env):
-                    if compositor.poll() is not None:
-                        raise RuntimeError('Nested Weston exited while Android was running.')
+                    if presenter.poll() is not None:
+                        raise RuntimeError('Native X11 adapter exited while Android was running.')
                     time.sleep(.5)
             return code
-        except BaseException:
-            if session is not None:
-                stop_session(env)
-            raise
         finally:
+            # Do not release a live guest's graphics if Android stop fails.
+            if session is not None:
+                try:
+                    running = session_running(env)
+                except (OSError, subprocess.SubprocessError):
+                    running = True
+                if running and not stop_session(env):
+                    raise RuntimeError('Could not confirm Default runtime stopped; its X11 adapter was retained.')
             stop_process(session)
-            stop_process(compositor)
+            stop_process(presenter)
 
 
 def interrupted(signum, frame):

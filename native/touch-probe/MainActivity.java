@@ -65,6 +65,7 @@ public final class MainActivity extends Activity {
                 .append(" ageMs=").append(received-event.getEventTime())
                 .append(" source=0x").append(Integer.toHexString(event.getSource()))
                 .append(" device=").append(event.getDeviceId())
+                .append(String.format(Locale.ROOT," raw=(%.1f,%.1f)",event.getRawX(),event.getRawY()))
                 .append(" history=").append(event.getHistorySize());
             for (int i=0; i<event.getPointerCount(); ++i) {
                 int id = event.getPointerId(i);
@@ -79,6 +80,18 @@ public final class MainActivity extends Activity {
             row.append(" activeAfter=").append(points.size());
             log(row.toString());
             return true;
+        }
+
+        @Override public boolean onGenericMotionEvent(MotionEvent event) {
+            if (event.getActionMasked() == MotionEvent.ACTION_SCROLL) {
+                log(String.format(Locale.ROOT,
+                    "SCROLL local=(%.1f,%.1f) raw=(%.1f,%.1f) vertical=%.1f horizontal=%.1f source=0x%x",
+                    event.getX(),event.getY(),event.getRawX(),event.getRawY(),
+                    event.getAxisValue(MotionEvent.AXIS_VSCROLL),
+                    event.getAxisValue(MotionEvent.AXIS_HSCROLL),event.getSource()));
+                return true;
+            }
+            return super.onGenericMotionEvent(event);
         }
 
         @Override protected void onDraw(Canvas canvas) {

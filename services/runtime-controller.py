@@ -455,6 +455,15 @@ class Store:
     def android_job(self, identifier, job_id, operation, desktop=None):
         try:
             if operation == 'start':
+                if desktop and desktop[0].startswith(desktop_module.X11_TOKEN_PREFIX):
+                    instance = self.backend.location(identifier)
+                    backend = worker_module.native_x11.resolve_backend(worker_module.native_x11.selection(instance), True)
+                    if backend['backend'] == 'native-x11':
+                        # Older pinned reports need a read-only image scan.
+                        # Run it as part of this runtime's asynchronous Start,
+                        # without blocking the UI or operations on other runtimes.
+                        self.android.preflight_x11(identifier,
+                            worker_module.gpu.is_nvidia(worker_module.gpu.resolve(instance)))
                 if desktop: self.android.start(identifier, job_id, desktop=desktop)
                 else: self.android.start(identifier, job_id)
             else: self.android.stop(identifier)
@@ -641,11 +650,7 @@ class Store:
                           'detail': 'Managed image library available'}
         waydroid = shutil.which('waydroid') is not None
         missing = host_module.missing_commands()
-        support = all(Path(path).exists() for path in (
-            '/var/lib/waydroid/overlay',
-            '/var/lib/waydroid/lxc/waydroid/config', '/var/lib/waydroid/lxc/waydroid/waydroid.seccomp')) and any(
-                Path('/var/lib/waydroid', name).is_file()
-                for name in ('waydroid.prop', 'waydroid_base.prop'))
+        support = android_module.provision.managed_support_available()
         desktop_info = desktop_module.capabilities(uid)
         checks = [
             {'id': 'waydroid', 'label': 'Waydroid', 'available': waydroid,
@@ -656,8 +661,8 @@ class Store:
             {'id': 'arm_payload', 'label': 'ARM app support package',
              'available': worker_module.arm.ARCHIVE.is_file(),
              'detail': 'Downloaded automatically during Prepare or setup.'},
-            {'id': 'support', 'label': 'Waydroid setup', 'available': support,
-             'detail': 'Configuration found' if support else 'Complete Waydroid initialization before starting an additional runtime.'},
+            {'id': 'support', 'label': 'Waydroid runtime configuration', 'available': support,
+             'detail': 'Configuration available' if support else 'Install or repair the Waydroid package to provide its LXC templates.'},
             {'id': 'desktop', 'label': 'Desktop session', 'available': desktop_info['desktop'], 'detail': desktop_info['detail']}]
         return {'checks': checks, 'can_prepare': waydroid and images['available'],
                 'can_start': waydroid and not missing and support,
@@ -904,6 +909,7 @@ class Store:
             return self.catalog.request(request['refresh'])
         fields = {'resources_info': {'op', 'id'}, 'resources_set': {'op', 'id', 'memory_mib', 'cpu_count'}, 'start_on_boot': {'op', 'id', 'enabled'}, 'gpu_info': {'op', 'id'}, 'gpu_set': {'op', 'id', 'node'}, 'arm_info': {'op', 'id'}, 'arm_set': {'op', 'id', 'enabled'}, 'google_services': {'op', 'id'}, 'delete': {'op', 'id', 'confirmed_name'}, 'install': {'op', 'id'}, 'display_info': {'op', 'id'}, 'display_set': {'op', 'id', 'mode'}, 'app_action': {'op', 'id', 'action', 'package'}, 'app_job': {'op', 'id'}, 'apps': {'op', 'id'}, 'health': {'op', 'id'}, 'storage_info': {'op', 'id'}, 'move': {'op', 'id', 'destination'}, 'discard_previous': {'op', 'id', 'confirmed_name'}, 'requirements': {'op'}, 'list': {'op'}, 'create': {'op', 'name'}, 'inspect': {'op', 'id'},
                   'rename': {'op', 'id', 'name'}, 'prepare': {'op', 'id'}, 'reinstall': {'op', 'id', 'flavor'}, 'start': {'op', 'id'}, 'stop': {'op', 'id'}, 'refresh': {'op', 'id'}}
+        fields['backend_set'] = {'op', 'id', 'backend', 'presenter'}
         fields['adb_info'] = {'op', 'id'}
         fields['adb_set'] = {'op', 'id', 'enabled'}
         fields['keymaps']={'op','id'}
@@ -1087,7 +1093,27 @@ class Store:
             if record['state'] in ('Running', 'Frozen') and record['id'] not in self.active_jobs:
                 try: effective = self.android.status(record['id']).get('display_mode', 'headless')
                 except (OSError, RuntimeError, ValueError): pass
-            return {'mode': self.displays.get(record['id'], 'headless'), 'effective_mode': effective}
+            instance = self.backend.location(record['id'])
+            return dict(mode=self.displays.get(record['id'], 'headless'), effective_mode=effective,
+                        **worker_module.native_x11.selection(instance))
+        if operation == 'backend_set':
+            require(request['backend'] in ('auto', 'legacy', 'native-x11') and request['presenter'] in ('amd', 'intel', 'nvidia'),
+                    'INVALID_REQUEST', 'Invalid display backend or presenter GPU')
+            self.storage.ensure(record['id'])
+            instance = self.backend.location(record['id'])
+            require(record['id'] not in self.active_jobs and self.storage.busy is None and
+                    record['state'] in ('Prepared', 'Stopped', 'Error') and self.android.quiescent(record['id']),
+                    'BUSY', 'Prepare images and stop Android before changing display backend')
+            if request['backend'] == 'native-x11':
+                if not (instance / 'support').exists(): self.android.snapshot_support(record['id'])
+                node = worker_module.gpu.resolve(instance)
+                worker_module.native_x11.preflight(instance, worker_module.gpu.is_nvidia(node), defer_contract=True)
+                vendor = {'amd': '0x1002', 'intel': '0x8086', 'nvidia': '0x10de'}[request['presenter']]
+                require(any(d['vendor_id'] == vendor and d['available'] for d in worker_module.gpu.inventory()),
+                        'UNSUPPORTED', 'Selected presenter GPU is unavailable')
+            storage_module.atomic(instance / 'display-backend.json', {key: request[key] for key in ('backend', 'presenter')})
+            return dict(mode=self.displays.get(record['id'], 'headless'), effective_mode=None,
+                        **worker_module.native_x11.selection(instance))
         if operation == 'start_on_boot':
             require(type(request['enabled']) is bool, 'INVALID_REQUEST', 'Expected boolean start-on-boot setting')
             require(record['id'] not in self.active_jobs and record['state'] not in ('Provisioning', 'Starting', 'Stopping'), 'BUSY', 'Wait for the runtime operation before changing start-on-boot')
@@ -1215,6 +1241,16 @@ class Store:
                 else:
                     raise RequestError('DESKTOP_SESSION',
                                        'Desktop mode requires a Wayland or X11 graphical session. Open AnvilDroid from your desktop and retry.')
+                backend = worker_module.native_x11.resolve_backend(
+                    worker_module.native_x11.selection(self.backend.location(record['id'])),
+                    display.startswith(desktop_module.X11_TOKEN_PREFIX))
+                if backend['backend'] == 'native-x11':
+                    try:
+                        instance = self.backend.location(record['id'])
+                        node = worker_module.gpu.resolve(instance)
+                        worker_module.native_x11.preflight(instance, worker_module.gpu.is_nvidia(node), defer_contract=True)
+                    except (OSError, RuntimeError, ValueError) as error:
+                        raise RequestError('UNSUPPORTED', str(error))
                 try:
                     self.android.check_desktop_bridge()
                 except (OSError, RuntimeError) as error:

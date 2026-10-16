@@ -79,6 +79,17 @@ def replace_properties(text, values):
     return '\n'.join(lines + [key + '=' + value for key, value in values.items() if value is not None]) + '\n'
 
 
+def gpu_properties(node):
+    # NVIDIA's Venus overrides belong only to the generated session properties.
+    # Mesa selection must also replace stale software/NVIDIA renderer settings:
+    # changing only the DRM node leaves Android rendering through SwiftShader.
+    if gpu.is_nvidia(node):
+        return {'gralloc.gbm.device': node}
+    values = dict.fromkeys(gpu.RENDERER_PROPERTY_KEYS)
+    values.update(properties('\n'.join(gpu.properties([], node))))
+    return values
+
+
 class ExistingRuntime:
     def __init__(self, store, work=Path('/var/lib/waydroid')):
         self.store = store
@@ -199,7 +210,7 @@ class ExistingRuntime:
                 # Official/rootless Waydroid may have user-owned directories.
                 # Pin each directory rather than writing through a checked
                 # pathname that its owner could replace with a symlink.
-                for part in target.parent.parts[1:]:
+                for index, part in enumerate(target.parent.parts[1:], 1):
                     try:
                         child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
                     except FileNotFoundError:
@@ -207,8 +218,17 @@ class ExistingRuntime:
                         child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
                     os.close(directory); directory = child
                     info = os.fstat(directory)
+                    # Older Waydroid installs create this root-owned overlay
+                    # directory as 0775. Tighten only that known directory via
+                    # its pinned fd; never relax checks or chmod ancestors,
+                    # user-owned directories, symlinks or world-writable paths.
+                    overlay = self.work / 'overlay'
+                    if (target.parent.parts[:index + 1] == overlay.parts and info.st_uid == 0
+                            and stat.S_IMODE(info.st_mode) == 0o775):
+                        os.fchmod(directory, 0o755)
+                        info = os.fstat(directory)
                     if info.st_uid not in trusted_owners or info.st_mode & 0o022:
-                        raise RuntimeError('Unsafe Desktop overlay target')
+                        raise RuntimeError('Unsafe Desktop overlay directory: ' + str(Path(*target.parent.parts[:index + 1])))
                 try:
                     fd = os.open(target.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
                 except FileNotFoundError:
@@ -474,7 +494,7 @@ class ExistingRuntime:
         if device:
             node = device['node']
             cfg.set('waydroid', 'drm_device', node)
-            values['gralloc.gbm.device'] = node
+            values.update(gpu_properties(node))
             nodes_path = self.work / 'lxc/waydroid/config_nodes'
             nodes = [line for line in self.read(nodes_path).splitlines()
                      if not re.match(r'^\s*lxc\.mount\.entry\s*=\s*/dev/dri/renderD\d+\s', line)]
@@ -501,7 +521,9 @@ class ExistingRuntime:
                     self.replace_bytes(target, (payload / relative).read_bytes())
                     target.chmod(stat.S_IMODE((payload / relative).stat().st_mode))
             values.update(arm.PROPERTIES)
-        for key, value in values.items(): cfg.set('properties', key, value)
+        for key, value in values.items():
+            if value is None: cfg.remove_option('properties', key)
+            else: cfg.set('properties', key, value)
         if values:
             stream = io.StringIO(); cfg.write(stream)
             changes[self.work / 'waydroid.cfg'] = stream.getvalue()
@@ -735,7 +757,7 @@ class ExistingRuntime:
                     raise RuntimeError('Restart waydroid-container.service to activate AnvilDroid NVIDIA integration')
                 node = selected['node']
                 cfg.set('waydroid', 'drm_device', node)
-                values = {'gralloc.gbm.device': node}
+                values = gpu_properties(node)
                 nodes_path = self.work / 'lxc/waydroid/config_nodes'
                 nodes = self.read(nodes_path).splitlines()
                 nodes = [line for line in nodes if not re.match(r'^\s*lxc\.mount\.entry\s*=\s*/dev/dri/renderD\d+\s', line)]

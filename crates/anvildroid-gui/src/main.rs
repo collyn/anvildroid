@@ -60,7 +60,6 @@ fn op_result_ok(message: impl Into<String>) -> OperationResult {
         message: message.into(),
         error_code: None,
         recovery_hint: None,
-        pending_confirmation: false,
     }
 }
 
@@ -70,7 +69,6 @@ fn op_result_err(e: AnvilError) -> OperationResult {
         message: e.to_string(),
         error_code: Some(e.code().into()),
         recovery_hint: e.recovery_hint().map(String::from),
-        pending_confirmation: false,
     }
 }
 
@@ -80,7 +78,6 @@ fn busy_result() -> OperationResult {
         message: "Another operation is in progress.".into(),
         error_code: Some("BUSY".into()),
         recovery_hint: Some("Wait for the current operation to complete.".into()),
-        pending_confirmation: false,
     }
 }
 
@@ -266,8 +263,21 @@ async fn runtime_controller(
             scope::ensure_legacy(scope::LEGACY_ID).map_err(|e| e.to_string())?;
             Some(guard.try_lock().map_err(|_| "Another operation is in progress.".to_string())?)
         } else { None };
+        if let Request::Start { id, .. } = &request {
+            if library::valid_managed_runtime(id) {
+                let display = anvildroid_core::controller::request(Request::DisplayInfo { id: id.clone() })?;
+                if display["backend"] == "native-x11" || display["display_backend"] == "native-x11" {
+                    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+                    desktop::register_managed_window(id, "org.anvildroid.desktop", &exe).map_err(|e| e.to_string())?;
+                }
+            }
+        }
         if let Request::AppAction { id, action, package, .. } = &request {
-            if action == "launch" && library::valid_managed_runtime(id) {
+            let register = if action == "full_ui" && library::valid_managed_runtime(id) {
+                let display = anvildroid_core::controller::request(Request::DisplayInfo { id: id.clone() })?;
+                display["backend"] == "native-x11"
+            } else { action == "launch" && library::valid_managed_runtime(id) };
+            if register {
                 let exe = std::env::current_exe().map_err(|e| e.to_string())?;
                 desktop::register_managed_window(id, package, &exe).map_err(|e| e.to_string())?;
             }
@@ -1111,14 +1121,7 @@ async fn uninstall_app(
             return busy_result();
         };
         match backend::uninstall_app(&package) {
-            Ok(backend::UninstallOutcome::Removed) => uninstall_completed(&package),
-            Ok(backend::UninstallOutcome::AndroidConfirmationRequired) => {
-                let mut result = op_result_ok(
-                    "Uninstall request sent to Android. Confirm any Android dialog; waiting to verify removal.",
-                );
-                result.pending_confirmation = true;
-                result
-            }
+            Ok(()) => uninstall_completed(&package),
             Err(e) => op_result_err(e),
         }
     })
@@ -1132,32 +1135,6 @@ fn uninstall_completed(package: &str) -> OperationResult {
             "Uninstalled {package}, but its menu shortcut could not be removed: {e}"
         )),
     }
-}
-
-#[tauri::command]
-async fn check_uninstall(
-    runtime_id: String,
-    package: String,
-    guard: State<'_, OpGuard>,
-) -> Result<Option<OperationResult>, String> {
-    let guard = guard.0.clone();
-    blocking(move || {
-        scope::ensure_legacy(&runtime_id).map_err(|e| e.to_string())?;
-        if !backend::valid_package(&package) || backend::uninstall_block_reason(&package).is_some()
-        {
-            return Err("Invalid or protected package".into());
-        }
-        let Ok(_operation) = guard.try_lock() else {
-            return Ok(None);
-        };
-        let details = apps::details(&package).map_err(|e| e.to_string())?;
-        if details.installed {
-            Ok(None)
-        } else {
-            Ok(Some(uninstall_completed(&package)))
-        }
-    })
-    .await
 }
 
 fn main() {
@@ -1346,7 +1323,6 @@ fn main() {
             open_waydroid,
             request_waydroid_activation,
             uninstall_app,
-            check_uninstall,
         ])
         .build(context)
         .expect("error while building AnvilDroid GUI")

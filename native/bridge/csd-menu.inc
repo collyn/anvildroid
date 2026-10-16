@@ -119,6 +119,9 @@ static void csd_menu_sync(struct csd_frame *f,int x,int y,int w,int h) {
   union argument menu_sibling={.o=p->surface};
   if(s->fit)for(int i=0;i<4;++i)if(s->fit->bars[i].subsurface)
     wayland_send(s->fit->bars[i].subsurface,3,&menu_sibling);
+  /* Full Android UI owns its letterbox bars on the frame instead of fit. */
+  for(int i=0;i<4;++i)if(f->bars[i].subsurface)
+    wayland_send(f->bars[i].subsurface,3,&menu_sibling);
   if(s->hints&&s->hints->piece.subsurface)
     wayland_send(s->hints->piece.subsurface,3,&menu_sibling);
   if(p->width!=w||p->height!=h||position_changed) {
@@ -209,7 +212,6 @@ static void csd_menu_size(struct csd_frame *f,int width,int height) {
   }
   f->maximized=0;s->resize.maximized=0;
   s->fit_w=width;s->fit_h=height;
-  s->fit_width_snapped=resize_uses_nvidia()&&!game_fit_enabled(s);
   s->preview_width=s->preview_height=0;
   if(!game_fit_enabled(s)) {
     s->resize.ready=1;

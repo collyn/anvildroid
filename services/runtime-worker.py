@@ -7,6 +7,7 @@ import importlib.util
 import json
 import re
 import os
+import pwd
 from pathlib import Path
 import signal
 import stat
@@ -69,6 +70,10 @@ spec.loader.exec_module(network)
 spec = importlib.util.spec_from_file_location('runtime_adb', Path(__file__).with_name('runtime-adb.py'))
 adb = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(adb)
+
+spec = importlib.util.spec_from_file_location('runtime_x11', Path(__file__).with_name('runtime-x11.py'))
+native_x11 = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(native_x11)
 
 
 def atomic(path, value):
@@ -206,6 +211,35 @@ def private_device_node(source, directory):
     os.mknod(private, stat.S_IFMT(info.st_mode) | 0o600, info.st_rdev)
     private.chmod(0o666)
     return private
+
+
+def prepare_loop_devices(directory, sysfs=Path('/sys/class/block')):
+    """Seed existing loops; reused free loops do not emit a new device uevent.
+
+    Android's live ueventd handles newly allocated loops. Skipping coldboot must
+    still provide /dev/block/loopN for devices the host kernel already knows.
+    These are private inodes: Android cannot change host device permissions.
+    """
+    directory.mkdir(mode=0o755, exist_ok=True)
+    directory.chmod(0o755)
+    for entry in directory.iterdir():
+        require(re.fullmatch(r'loop[0-9]+', entry.name), 'Unexpected private loop device')
+        entry.unlink()
+    for entry in sorted(sysfs.glob('loop[0-9]*')):
+        require(re.fullmatch(r'loop[0-9]+', entry.name), 'Invalid loop device name')
+        device = entry.joinpath('dev').read_text().strip()
+        require(re.fullmatch(r'7:[0-9]+', device), 'Invalid loop device number')
+        node = directory / entry.name
+        os.mknod(node, stat.S_IFBLK | 0o600, os.makedev(7, int(device.split(':')[1])))
+        node.chmod(0o600)
+    return directory
+
+
+def host_control_mounts():
+    # SysRq is host-global even with a private PID namespace. Android init's
+    # shutdown fallback writes 'e'/'i' here if an early service fails. A bind of
+    # /dev/null remains harmless even if guest init remounts it writable.
+    return ['lxc.mount.entry = /dev/null proc/sysrq-trigger none bind,ro 0 0']
 
 
 def ensure_binder_filesystem():
@@ -557,6 +591,19 @@ def presentation_action(instance, identifier, action, token):
             'Android presentation transition failed: ' + output[-1024:])
 
 
+def freeform_launch_arguments(task_listing, package):
+    """Android 16 resets existing task bounds when windowingMode is repeated."""
+    freeform = False
+    for line in task_listing.splitlines():
+        if re.match(r'^(?:RootTask|Stack) id=', line):
+            freeform = False
+        elif 'configuration=' in line:
+            freeform = 'mWindowingMode=freeform' in line
+        elif freeform and re.search(r'\btaskId=\d+: ' + re.escape(package) + '/', line):
+            return []
+    return ['--windowingMode', '5']
+
+
 def app_action(instance, identifier, action, package, desktop=False, generation=None, single_display=False, activation_token=None):
     require(action in ('launch', 'force_stop', 'uninstall', 'keymap_edit', 'full_ui'), 'Unsupported app action')
     require(isinstance(package, str) and len(package) <= 255 and
@@ -675,7 +722,7 @@ def app_action(instance, identifier, action, package, desktop=False, generation=
             if sdk.isdecimal() and int(sdk) >= 36:
                 # Android 16 otherwise launches fullscreen tasks, whose bounds
                 # cannot be changed by the host-window resize bridge.
-                window_args = ['--windowingMode', '5']
+                window_args = freeform_launch_arguments(android('cmd', 'activity', 'stack', 'list'), package)
         output = android('am', 'start', '--user', '0', *window_args, '-n', components[0])
         # Waydroid's launcher applies immersive policy after starting the
         # activity. Without this, newer custom images keep the task in the
@@ -830,6 +877,26 @@ def single_display_properties(props):
     keys = set(sizes) | {'waydroid.anvil_single_display'}
     return [line for line in props if line.split('=', 1)[0] not in keys] + [
         key + '=' + str(value) for key, value in sizes.items()] + ['waydroid.anvil_single_display=true']
+
+
+def configure_x11_power(instance, shell, enabled):
+    """Keep native desktop windows drawn; restore the Android timeout on switch."""
+    marker = instance / 'x11-screen-timeout.json'
+    if not enabled and not marker.exists(): return
+    current = shell('settings', '--user', '0', 'get', 'system', 'screen_off_timeout').strip()
+    if enabled:
+        if not marker.exists(): atomic(marker, {'timeout': current})
+        if current != '2147483647':
+            shell('settings', '--user', '0', 'put', 'system', 'screen_off_timeout', '2147483647')
+        shell('input', 'keyevent', 'KEYCODE_WAKEUP')
+    else:
+        previous = json.loads(marker.read_text())['timeout']
+        if current == '2147483647':
+            if previous == 'null': shell('settings', '--user', '0', 'delete', 'system', 'screen_off_timeout')
+            else:
+                require(isinstance(previous, str) and previous.isdecimal(), 'Invalid saved Android screen timeout')
+                shell('settings', '--user', '0', 'put', 'system', 'screen_off_timeout', previous)
+        marker.unlink()
 
 
 def configure_host_desktop(instance, shell, desktop):
@@ -1009,6 +1076,8 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
     mounts, names, compositors, logfiles = [], [], [], []
     scrcpy_process = None
     venus = None
+    x11_session = None
+    native = False
     boot_completed = False
     uplink = network.Uplink() if host_net_fd is not None else None
     def loc(name): return root / name
@@ -1032,6 +1101,9 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
         Only write the flags when needed; existing runtimes with completed
         setup keep their original state.
         """
+        configure_x11_power(instance, shell, native and compatibility.get('sdk', 0) >= 36)
+        # One-time migration from the replaced framebuffer X11 backend.
+        shell('sh', '-c', native_x11.DISPLAY_RESTORE)
         user_ready = shell('settings', '--user', '0', 'get', 'secure', 'user_setup_complete').strip()
         if user_ready != '1':
             shell('settings', '--user', '0', 'put', 'secure', 'user_setup_complete', '1')
@@ -1068,6 +1140,14 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
         gpu_node = desktop_gpu(instance, desktop)
         nvidia_rendering = gpu.is_nvidia(gpu_node)
         state['gpu_node'] = gpu_node
+        backend = native_x11.resolve_backend(native_x11.selection(instance),
+            bool(desktop and desktop[0].startswith(desktop_module.X11_TOKEN_PREFIX)))
+        native = bool(desktop and backend['backend'] == 'native-x11')
+        if native:
+            require(desktop[0].startswith(desktop_module.X11_TOKEN_PREFIX), 'Native X11 requires an X11 desktop session; select the default backend on Wayland')
+            x11_payload, payload_hash = native_x11.preflight(instance, nvidia_rendering)
+            state.update(display_backend='native-x11', x11_payload_sha256=payload_hash,
+                         x11_presenter_gpu=backend['presenter'])
         run('mount', '--make-rprivate', '/')
         run('ip', 'link', 'add', 'anvilandroid', 'type', 'bridge')
         run('ip', 'addr', 'add', '192.0.2.1/24', 'dev', 'anvilandroid')
@@ -1081,7 +1161,7 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
         audio_available = False
         workarea_props = []
         workarea_info = {}
-        x11 = {'display': None, 'authority': None}
+        x11 = {'display': None, 'authority': None, 'environment': {}}
         if desktop:
             fd = pin_audio_socket(desktop[1])
             if fd is not None:
@@ -1098,14 +1178,15 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
             if desktop[0].startswith(desktop_module.X11_TOKEN_PREFIX):
                 x11_display = desktop[0][len(desktop_module.X11_TOKEN_PREFIX):]
                 require(desktop_module.parse_x11_display(x11_display) is not None, 'Invalid X11 display token')
-                authority = desktop_module.x11_authority(desktop[1])
-                if authority is not None:
-                    # Copy before the private /run mount hides the source.
-                    pinned = instance / 'x11-authority'
-                    pinned.write_bytes(authority.read_bytes())
-                    os.chmod(pinned, 0o600)
-                    x11['authority'] = pinned  # instance dir is root 0700: safe
+                pinned = instance / 'x11-authority'
+                if pinned.exists():
+                    info = pinned.lstat()
+                    require(stat.S_ISREG(info.st_mode) and info.st_uid == 0 and not info.st_mode & 0o077
+                            and 0 < info.st_size <= 65536, 'Unsafe pinned Xauthority')
+                    x11['authority'] = pinned
                 x11['display'] = x11_display
+                if native:
+                    x11['environment'] = desktop_module.x11_input_environment(desktop[1], x11_display)
             else:
                 fd = pin_desktop_socket(Path('/run/user') / str(desktop[1]) / desktop[0], desktop[1])
                 try:
@@ -1117,6 +1198,22 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
             # the session bus and Wayland socket; never fails the boot.
             workarea_props, workarea_info = workarea.boot_props([], desktop[0], desktop[1])
         mount('-t', 'tmpfs', 'tmpfs', '/run')
+        if native:
+            require(x11['authority'] is not None, 'Native X11 requires desktop Xauthority')
+            account = pwd.getpwuid(desktop[1])
+            authority = Path('/run/anvil-x11-authority')
+            authority.write_bytes(x11['authority'].read_bytes())
+            os.chown(authority, desktop[1], account.pw_gid)
+            authority.chmod(0o600)
+            x11_session = native_x11.Session(Path('/run/anvil-x11-' + generation),
+                x11_payload['anvildroid-x11-host'], instance / ('x11-' + generation + '.log'),
+                desktop[1], account.pw_gid, x11['display'], authority, backend['presenter'], generation,
+                dict(PATH='/usr/bin:/bin', HOME=account.pw_dir, LD_LIBRARY_PATH='/usr/lib/x86_64-linux-gnu',
+                     ANVILDROID_RUNTIME_ID=identifier, **x11['environment']),
+                groups=os.getgrouplist(account.pw_name, account.pw_gid))
+            x11_session.start()
+            x11_session.wait_listening()
+
         sysview = root / 'sysview'
         sysview.mkdir(exist_ok=True)
         mount('-t', 'sysfs', '-o', 'ro', 'sysfs', sysview)
@@ -1130,13 +1227,14 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
             pass
         native_wayland = compatibility.get('desktop_bridge') == 'native-wayland'
         software_compatibility = compatibility.get('software_renderer') == 'angle-pastel'
+        native_app_windows = native and compatibility.get('app_window_contract') == 'waydroid-hidl'
         # Custom images frequently ship a vendor composer with a different
         # ABI. Keep the untouched stock path only when the image does not
         # advertise the native Wayland contract; native-wayland images need
         # the bridge preload even when they also use ANGLE/Pastel.
         custom_stock_hwc = (compatibility.get('flavor') == 'CUSTOM'
                             and software_compatibility
-                            and not native_wayland)
+                            and not native_wayland and not native_app_windows)
         # Explicit image compatibility metadata is authoritative. Some
         # official images omit waydroid.system_ota even though they ship the
         # native app-window composer; the old heuristic misclassified those
@@ -1231,29 +1329,21 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
                 existing = settings.read_text(errors='replace').splitlines() if settings.exists() else []
                 settings.write_text('\n'.join(gpu.properties(existing, gpu_node, software_backend)) + '\n')
             props = gpu.properties((instance / 'support/waydroid.prop').read_text().splitlines(), gpu_node, software_backend)
-            # Android 15/LineageOS 22 custom images can abort SurfaceFlinger
-            # while priming the desktop hole-punch shader on GBM buffers:
-            # "output buffer not gpu writeable". The cache is optional; skip
-            # this shader so framework boot can complete and desktop windows
-            # still render normally after startup.
-            shader_cache_keys = (
-                'solid_layers', 'clipped_layers', 'image_dimmed_layers',
-                'shadow_layers', 'hole_punch', 'transparent_image_dimmed_layers',
-                'image_layers', 'clipped_dimmed_image_layers', 'pip_image_layers',
-                'solid_dimmed_layers', 'edge_extension_shader')
-            props = [p for p in props
-                     if not any(p.startswith('debug.sf.prime_shader_cache.' + key + '=')
-                                for key in shader_cache_keys)
-                     and not p.startswith('ro.surface_flinger.prime_shader_cache.ultrahdr=')]
-            props += ['debug.sf.prime_shader_cache.' + key + '=false' for key in shader_cache_keys]
-            props.append('ro.surface_flinger.prime_shader_cache.ultrahdr=false')
-            props += ['service.sf.prime_shader_cache=0', 'debug.sf.prime_shader_cache=false']
+            props = gpu.surfaceflinger_properties(props)
             if arm_props is not None:
                 arm_keys = set(arm.PROPERTIES) | {'ro.enable.native.bridge.exec', 'ro.vendor.enable.native.bridge.exec', 'ro.vendor.enable.native.bridge.exec64'}
                 props = [p for p in props if p.split('=', 1)[0] not in arm_keys]
                 props += [key + '=' + value for key, value in arm_props.items()]
             props = [p for p in props if not p.startswith('ro.adb.secure=')] + ['ro.adb.secure=1']
             props = managed_session_properties(props)
+            if native and compatibility.get('sdk', 0) >= 36:
+                # LXC supplies the devices below. Replaying host device add
+                # events during Android coldboot reaches the host udev/Xorg
+                # too (including GPUs Android does not use). Keep ueventd's
+                # live listener for new APEX/loop devices, without replaying
+                # the host's entire hardware inventory.
+                props = [p for p in props if not p.startswith('ro.cold_boot_done=')]
+                props.append('ro.cold_boot_done=true')
             init = fs / 'system/etc/init/init.waydroid.rc'
             # Regenerate from prepared support, not the previous boot's upper
             # overlay, where a stock launch may have removed LD_PRELOAD.
@@ -1320,7 +1410,7 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
                 # Stock custom composers commonly implement only Waydroid's
                 # single-display path. Enabling multi-window makes them
                 # recreate the HWC layer and abort when the first app opens.
-                props += [('persist.waydroid.multi_windows=false' if (single_display or software_compatibility)
+                props += [('persist.waydroid.multi_windows=false' if (single_display or (software_compatibility and not native_app_windows))
                            else 'persist.waydroid.multi_windows=true'),
                           f'waydroid.host.uid={desktop[1]}']
                 if single_display:
@@ -1344,7 +1434,10 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
             xdg.chmod(0o700)
             for stale in ('wayland-probe', 'wayland-probe.lock'):
                 (xdg / stale).unlink(missing_ok=True)
-            if desktop and not x11['display']:
+            if native:
+                (xdg / 'wayland-probe').touch(mode=0o600)
+                mount('--bind', x11_session.directory / 'wayland-probe', xdg / 'wayland-probe')
+            elif desktop and not x11['display']:
                 (xdg / 'wayland-probe').touch(mode=0o600)
                 mount('--bind', desktop_pin, xdg / 'wayland-probe')
             else:
@@ -1365,7 +1458,7 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
                 (pulse / 'native').touch(mode=0o600, exist_ok=True)
                 mount('--bind', audio_pin, pulse / 'native')
             xdg.chmod(0o777)
-            if not desktop or x11['display']: (xdg / 'wayland-probe').chmod(0o777)
+            if not native and (not desktop or x11['display']): (xdg / 'wayland-probe').chmod(0o777)
             original = (instance / 'support/config').read_text().splitlines()
             keep = ('lxc.arch', 'lxc.apparmor.profile', 'lxc.cap.keep', 'lxc.mount.auto', 'lxc.no_new_privs', 'lxc.seccomp.allow_nesting')
             # Android init writes its per-uid cgroup dirs at boot; the host
@@ -1383,6 +1476,7 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
             config = [line for line in original
                       if line.startswith(keep) and not line.startswith('lxc.mount.auto')]
             config.append('lxc.mount.auto = sys:ro proc')
+            config += host_control_mounts()
             # Cap Android LP32 thread IDs on kernels with namespaced pid_max.
             # The helper uses private procfs; Android keeps its read-only mount.
             try:
@@ -1408,6 +1502,9 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
                        'lxc.mount.entry = none dev/pts devpts defaults,mode=644,ptmxmode=666,create=dir 0 0']
             if venus:
                 config.append(f'lxc.mount.entry = {venus.directory} dev/venus none bind,ro,create=dir 0 0')
+            if native and compatibility.get('sdk', 0) >= 36:
+                loop_devices = prepare_loop_devices(work / 'loop-block')
+                config.append(f'lxc.mount.entry = {loop_devices} dev/block none bind,dev,create=dir 0 0')
             if not uplink: config.append(f'lxc.net.0.ipv4.address = 192.0.2.{index}/24')
             # loop-control + loop nodes let apexd mount APEX payloads; without
             # them /system/bin/linker64's /apex target never appears and every
@@ -1504,8 +1601,11 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
             config += [f'lxc.mount.entry = {xdg} run/xdg none bind,create=dir 0 0',
                        f'lxc.mount.entry = {work}/data data none bind,create=dir 0 0',
                        f'lxc.mount.entry = {work}/data anvil-data none bind,create=dir 0 0']
-            if desktop and not x11['display']:
-                config.append(f'lxc.mount.entry = {desktop_pin} run/xdg/wayland-probe none bind,create=file 0 0')
+            # LXC's directory bind is not recursive. Pin the endpoint again
+            # inside Android or its socket submount becomes an empty file.
+            if native or (desktop and not x11['display']):
+                endpoint = x11_session.directory / 'wayland-probe' if native else desktop_pin
+                config.append(f'lxc.mount.entry = {endpoint} run/xdg/wayland-probe none bind,create=file 0 0')
             if audio_available:
                 config.append(f'lxc.mount.entry = {audio_pin} run/xdg/pulse/native none bind,create=file 0 0')
             (work / 'config').write_text('\n'.join(config) + '\n')
@@ -1526,8 +1626,10 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
         # framework/apex data on first boot.
         deadline = time.monotonic() + 300
         boot_wait = 'Waiting for sys.boot_completed=1'
+        user_provisioned = False
         while not stopping.is_set():
             if venus: venus.check()
+            if x11_session: x11_session.check()
             try:
                 # lxc-attach can return success with empty output after the
                 # init process has already exited. Check the container state
@@ -1537,9 +1639,18 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
                     raise RuntimeError('Android container exited before sys.boot_completed')
                 boot_property = shell('getprop', 'sys.boot_completed')
                 dev_boot_property = shell('getprop', 'dev.bootcomplete')
+                if (native and compatibility.get('sdk', 0) >= 36 and not user_provisioned
+                        and 'waydroidplatform' in shell('service', 'list')
+                        and shell('settings', 'get', 'secure', 'android_id') not in ('', 'null')):
+                    # A broken/ARM-only Setup Wizard can keep Android 16
+                    # waiting for its first drawn home activity indefinitely.
+                    # Complete the managed desktop setup once framework
+                    # services are ready, before waiting for boot completion.
+                    provision_android_user()
+                    user_provisioned = True
                 if boot_property == '1' or dev_boot_property == '1':
                     require('waydroidplatform' in shell('service', 'list'), 'Platform service missing')
-                    provision_android_user()
+                    if not user_provisioned: provision_android_user()
                     if nvidia_rendering:
                         # Hybrid NVIDIA hosts cannot import the task-snapshot
                         # buffers (vkr-exported images outside the sysmem
@@ -1583,6 +1694,13 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
                 state['desktop_ime'] = 'Unavailable'
                 state['desktop_ime_warning'] = str(error)[-1024:]
                 print('Desktop IME setup warning: ' + state['desktop_ime_warning'], flush=True)
+            if x11_session:
+                ready_deadline = time.monotonic() + 20
+                while x11_session.state != 'ready':
+                    x11_session.check()
+                    require(time.monotonic() < ready_deadline, 'Native X11 protocol endpoint startup timed out')
+                    if stopping.wait(.1): return
+                state['x11_status'] = x11_session.state
             state.update(state='Running', error=None, android_id=android_id)
             state.pop('boot_wait', None)
             state['network'] = 'private_uplink' if uplink else 'isolated'
@@ -1610,8 +1728,9 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
                 state['keymap_backend'] = 'scrcpy-control'
         while not stopping.wait(1):
             if venus: venus.check()
+            if x11_session: x11_session.check()
             if uplink: uplink.check()
-            if desktop:
+            if desktop and not native:
                 watchdog_target = desktop_pin if not x11['display'] else Path('/run/anvil-xdg') / 'wayland-probe'
                 with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
                     probe.settimeout(1)
@@ -1635,13 +1754,21 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
             try:
                 state.update(stop_android(lxc, name, boot_completed))
             except Exception as error: errors.append(str(error))
+        if x11_session:
+            def verified_guest_stop():
+                require(not errors, 'Android stop failed; retaining native X11 graphics until supervisor cleanup')
+                for name in names:
+                    require(lxc('lxc-info', name, '-sH') == 'STOPPED', 'Android still owns X11 buffers')
+            try:
+                x11_session.close(verified_guest_stop, lambda: venus.close() if venus else None)
+            except Exception as error: errors.append(str(error))
         for process in compositors:
             process.terminate()
             try: process.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait(timeout=5)
-        if venus:
+        if venus and not x11_session:
             try: venus.close()
             except Exception as error: errors.append(str(error))
         if uplink:

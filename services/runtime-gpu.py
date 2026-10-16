@@ -12,6 +12,27 @@ nvidia = importlib.util.module_from_spec(_nv_spec)
 _nv_spec.loader.exec_module(nvidia)
 
 
+def surfaceflinger_properties(props):
+    """Skip optional shader warm-up on GBM buffers that cannot be GPU-written.
+
+    Android 13 checks service.sf.prime_shader_cache; newer images also have
+    per-shader switches. Keep the normal RenderEngine backend and rendering.
+    """
+    shaders = (
+        'solid_layers', 'clipped_layers', 'image_dimmed_layers',
+        'shadow_layers', 'hole_punch', 'transparent_image_dimmed_layers',
+        'image_layers', 'clipped_dimmed_image_layers', 'pip_image_layers',
+        'solid_dimmed_layers', 'edge_extension_shader')
+    overrides = {'debug.sf.prime_shader_cache.' + key: 'false' for key in shaders}
+    overrides.update({
+        'ro.surface_flinger.prime_shader_cache.ultrahdr': 'false',
+        'service.sf.prime_shader_cache': '0',
+        'debug.sf.prime_shader_cache': 'false',
+    })
+    return [p for p in props if p.split('=', 1)[0] not in overrides] + [
+        key + '=' + value for key, value in overrides.items()]
+
+
 @lru_cache(maxsize=1)
 def pci_names():
     result = {}
@@ -222,14 +243,17 @@ def resolve(instance):
     return current['node']
 
 
+RENDERER_PROPERTY_KEYS = (
+    'mesa.vn.debug', 'mesa.vtest.socket.name', 'debug.renderengine.backend',
+    'debug.angle.feature_overrides_disabled', 'gralloc.gbm.device',
+    'ro.hardware.egl', 'ro.hardware.gralloc', 'ro.hardware.vulkan',
+    'ro.waydroid.software_rendering', 'ro.waydroid.override_props', 'debug.hwui.renderer')
+
+
 def properties(props, node, software='angle-pastel'):
     if node and is_nvidia(node):
         return nvidia.properties(props)
-    keys = ('mesa.vn.debug=', 'mesa.vtest.socket.name=', 'debug.renderengine.backend=',
-            'debug.angle.feature_overrides_disabled=',
-            'gralloc.gbm.device=', 'ro.hardware.egl=', 'ro.hardware.gralloc=',
-            'ro.hardware.vulkan=', 'ro.waydroid.software_rendering=',
-            'ro.waydroid.override_props=', 'debug.hwui.renderer=')
+    keys = tuple(key + '=' for key in RENDERER_PROPERTY_KEYS)
     if node is None:
         if software == 'swiftshader':
             return [p for p in props if not p.startswith(keys)] + [

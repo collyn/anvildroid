@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""Grant Android apps access to the private Venus socket via a local override."""
+"""Install local Android IPC permissions and host-control restrictions."""
 import os
 from pathlib import Path
 import re
@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 
 RULE = b'  /run/anvil-venus/venus.sock rwk,\n'
+HOST_CONTROL_RULE = b'  deny /proc/sysrq-trigger w,\n'
 
 
 def trusted(path, directory=False):
@@ -31,31 +32,28 @@ def replace(path, data):
         Path(temporary).unlink(missing_ok=True)
 
 
-def install(directory=Path('/etc/apparmor.d'), parser=None, run=subprocess.run):
-    profile = directory / 'android_app'
-    if not profile.exists():
-        return 'No Android AppArmor profile; no override needed'
-    trusted(directory, directory=True)
+def install_override(directory, profile, name, rules, parser, run):
+    trusted(profile.parent, directory=True)
     trusted(profile)
-    if not re.search(rb'^\s*#?include\s+(?:if exists\s+)?<local/android_app>\s*$',
+    if not re.search(rb'^\s*#?include\s+(?:if exists\s+)?<local/' + re.escape(name.encode()) + rb'>\s*$',
                      profile.read_bytes(), re.MULTILINE):
-        raise RuntimeError('Android AppArmor profile does not include local/android_app')
-    parser = parser or shutil.which('apparmor_parser')
-    if not parser:
-        raise RuntimeError('apparmor_parser is required to validate the socket override')
+        raise RuntimeError('Android AppArmor profile does not include local/' + name)
     local = directory / 'local'
     local.mkdir(mode=0o755, exist_ok=True)
     trusted(local, directory=True)
-    target = local / 'android_app'
+    target = local / name
     previous = None
     if target.exists() or target.is_symlink():
         trusted(target)
         previous = target.read_bytes()
     data = previous or b''
-    if RULE.strip() in (line.strip() for line in data.splitlines()):
-        return 'Venus socket AppArmor override already installed'
+    existing = {line.strip() for line in data.splitlines()}
+    missing = [rule for rule in rules if rule.strip() not in existing]
+    if not missing:
+        return name + ' override already installed'
     data += (b'\n' if data and not data.endswith(b'\n') else b'')
-    data += b'# AnvilDroid: private per-runtime Venus IPC; avoid per-frame audit traffic.\n' + RULE
+    data += b'# AnvilDroid: private runtime IPC; Android must not signal host tasks via SysRq.\n'
+    data += b''.join(missing)
     replace(target, data)
     try:
         run([parser, '-Q', '-T', str(profile)], check=True, capture_output=True, timeout=30)
@@ -66,7 +64,21 @@ def install(directory=Path('/etc/apparmor.d'), parser=None, run=subprocess.run):
         else:
             replace(target, previous)
         raise
-    return 'Venus socket AppArmor override validated and loaded'
+    return name + ' override validated and loaded'
+
+
+def install(directory=Path('/etc/apparmor.d'), parser=None, run=subprocess.run):
+    profiles = [(directory / 'lxc/lxc-waydroid', 'lxc-waydroid', (HOST_CONTROL_RULE,)),
+                (directory / 'android_app', 'android_app', (RULE, HOST_CONTROL_RULE))]
+    available = [(path, name, rules) for path, name, rules in profiles if path.exists()]
+    if not available:
+        return 'No Android AppArmor profile; no override needed'
+    trusted(directory, directory=True)
+    parser = parser or shutil.which('apparmor_parser')
+    if not parser:
+        raise RuntimeError('apparmor_parser is required to validate the runtime overrides')
+    return '; '.join(install_override(directory, path, name, rules, parser, run)
+                     for path, name, rules in available)
 
 
 if __name__ == '__main__':

@@ -1,12 +1,12 @@
-/* Shared aspect-preserving app presentation. Layout mode resizes the Android
- * task after release; Keep resolution only resizes its host.
- * Source bounds come from the task; host windows use a separate contain transform.
+/* Shared app presentation. Layout mode resizes the Android task after release;
+ * Keep resolution only resizes its host and preserves the source aspect.
+ * Source bounds come from the task; host windows have a separate fit transform.
  * Real Wayland child buffers remain owned by HWC (no screenshots/copies).
  */
 struct game_fit_state {
   struct csd_piece bars[4];
   struct proxy *viewports[4];
-  int applied, x, y, sw, sh, w, h, csd, fullscreen;
+  int applied, x, y, sw, sh, w, h, csd, fullscreen, rx, ry, rw, rh;
   struct proxy *above;
 };
 static int game_fit_enabled(struct object *s) {
@@ -59,9 +59,11 @@ static void game_fit_report_transport(struct object *layer) {
   layer->transport_seen=1;layer->transport_reported=layer->buffer_transport;
 }
 static struct game_fit_rect game_fit_area(struct object *s) {
-  /* Settled layout widths match their task, including NVIDIA snapped host
-   * frames. Absorb the <=1px fractional-scale round trip instead of bars. */
-  if(!game_fit_enabled(s) && (!resize_uses_nvidia()||s->fit_width_snapped) && window_fit_settled(s))
+  /* Once layout has reached its requested bounds, fill the accepted frame.
+   * NVIDIA's <=63px pitch alignment and fractional-scale rounding must not
+   * leave permanent bars in maximized windows. Only the old snapshot during
+   * relayout and Keep resolution retain an aspect-preserving contain fit. */
+  if(!game_fit_enabled(s) && window_fit_settled(s))
     return (struct game_fit_rect){0,0,s->fit_w,s->fit_h};
   return game_fit_rect(s->fit_sw,s->fit_sh,s->fit_w,s->fit_h);
 }
@@ -204,7 +206,8 @@ static int game_fit_geometry(struct object *s,int x,int y,int sw,int sh) {
   struct game_fit_state *f=s->fit;
   int csd=s->csd&&s->csd->pieces[0].surface,fullscreen=s->csd&&s->csd->fullscreen;
   int changed=!f->applied||f->x!=x||f->y!=y||f->sw!=sw||f->sh!=sh||
-    f->w!=s->fit_w||f->h!=s->fit_h||f->csd!=csd||f->fullscreen!=fullscreen;
+    f->w!=s->fit_w||f->h!=s->fit_h||f->csd!=csd||f->fullscreen!=fullscreen||
+    f->rx!=r.x||f->ry!=r.y||f->rw!=r.width||f->rh!=r.height;
   if(changed){
     __android_log_print(4,game_fit_enabled(s)?"AnvilGameFit":"AnvilWindowFit",
       "presentation app=%s source=%dx%d host=%dx%d content=%d,%d %dx%d task_resize=%d",
@@ -264,6 +267,7 @@ static int game_fit_geometry(struct object *s,int x,int y,int sw,int sh) {
   if(changed)wayland_send(s->xdg->p,3,g);
   f->applied=painted;f->x=x;f->y=y;f->sw=sw;f->sh=sh;f->w=s->fit_w;f->h=s->fit_h;
   f->csd=csd;f->fullscreen=fullscreen;f->above=above;
+  f->rx=r.x;f->ry=r.y;f->rw=r.width;f->rh=r.height;
   s->bx=0;s->by=0;s->bw=s->fit_w;s->bh=s->fit_h;s->has_bounds=1;
   return 1;
 }

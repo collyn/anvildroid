@@ -99,7 +99,7 @@ struct object {
   int full_clip_x,full_clip_y;
   int window_configured, window_content, window_activated;
   int fit_w, fit_h, fit_x, fit_y, fit_sw, fit_sh, fit_bar_focus;
-  int fit_delivered_w, fit_delivered_h, fit_width_snapped;
+  int fit_delivered_w, fit_delivered_h;
   struct game_fit_state *fit;
   int fit_applied, fit_last_x, fit_last_y, fit_last_w, fit_last_h;
   int buffer_transport, transport_reported, transport_seen;
@@ -704,10 +704,8 @@ static void configure(void *data, struct proxy *p, int32_t w, int32_t h,
       }
       if (!display_sized) {
         int fitted = window_fit_enabled(s) && s->fit;
-        s->fit_width_snapped=0;
         if(fitted&&!maximized&&!fullscreen&&w>=64&&h>=64&&w<=8192&&h<=8192) {
           w=window_layout_width(s,w);
-          s->fit_width_snapped=resize_uses_nvidia();
           if(s->csd){s->csd->restore_width=w;s->csd->restore_height=h;}
         }
         if (fitted && w >= 64 && h >= 64 && w <= 8192 && h <= 8192) {
@@ -1093,6 +1091,14 @@ static struct proxy *bridge_marshal(
     if (!strcmp(interface->name, "xdg_toplevel"))
       request_window_decoration(n);
   }
+  /* create_immed consumes the params' plane metadata. The resulting buffer
+   * already owns our transport/stride copy. Legacy HWC may retain params
+   * proxies indefinitely, so keeping them in every geometry lookup makes
+   * frame handling progressively slower. Drop only our bookkeeping: the
+   * caller still owns the protocol proxy and may destroy it later. */
+  if (result && interface && !strcmp(interface->name, "wl_buffer") &&
+      !strcmp(cls, "zwp_linux_buffer_params_v1") && !strcmp(method, "create_immed"))
+    forget_proxy(p);
   if (modern && (flags & 1)) forget_proxy(p);
   pthread_mutex_unlock(mutex);
   return result;
@@ -1252,6 +1258,27 @@ static int submit_resize_request(int task, int width, int height) {
   return ok;
 }
 
+/* Initial bounds use the same coalesced request as a user resize. Publishing
+ * directly here let the next stale snapshot's pitch correction overwrite the
+ * requested height before Android had consumed it. */
+static void queue_open_size(struct object *s) {
+  s->resize.ready = 1;
+  s->resize.width = task_to_logical(448, 1);
+  s->resize.height = task_to_logical(704, 1);
+  s->resize.dirty = 1;
+  s->resize.quiet_ticks = 0;
+  s->fit_w = s->resize.width;
+  s->fit_h = s->resize.height;
+  s->preview_width = s->preview_height = 0;
+}
+
+static int snap_resize_protected(struct object *s) {
+  return game_fit_enabled(s) || s->resize.dragging || s->resize.width ||
+    s->resize.cooldown || (s->resize.sent_width && window_fit_enabled(s) &&
+    !window_fit_settled(s)) ||
+    (!window_fit_enabled(s) && s->csd && s->csd->maximized);
+}
+
 /* The shell-UID companion supplies authoritative task bounds. It never calls
  * Wayland; the renderer thread consumes the snapshot on its next commit.
  */
@@ -1360,23 +1387,14 @@ static void *task_worker(void *unused) {
           if (found != 0) continue; /* Preserve invalid/unreadable saved files too. */
         }
       }
-      if (submit_resize_request(tasks[i].id, 448, 704)) {
-        opening[i]=1;
-        __android_log_print(4, "AnvilDroid",
-                            "open-size task %d %dx%d -> 448x704",
-                            tasks[i].id, tasks[i].width, tasks[i].height);
-        /* Cancel any pending resize the initial canvas-sized configure
-         * queued; the open-size request owns the initial bounds. */
-        pthread_mutex_lock(mutex);
-        for (struct object *o = objects; o; o = o->next)
-          if (o->app && o->app_id && !strcmp(o->app_id, tasks[i].package)) {
-            o->resize.width = o->resize.height = 0;
-            o->fit_w = o->fit_delivered_w = task_to_logical(448, 1);
-            o->fit_h = o->fit_delivered_h = task_to_logical(704, 1);
-            o->preview_width = o->preview_height = 0;
-          }
-        pthread_mutex_unlock(mutex);
-      }
+      pthread_mutex_lock(mutex);
+      for (struct object *o = objects; o; o = o->next)
+        if (o->app && o->app_id && !strcmp(o->app_id, tasks[i].package)) {
+          queue_open_size(o);
+          opening[i]=1;
+        }
+      pthread_mutex_unlock(mutex);
+      if (!opening[i]) open_size_defer(&opened, tasks[i].id);
     }
     /* Hybrid NVIDIA: snap app window widths to 64-pixel multiples so the
      * surface pitch is 256-byte-aligned (radeonsi's LINEAR dmabuf import
@@ -1397,8 +1415,7 @@ static void *task_worker(void *unused) {
       pthread_mutex_lock(mutex);
       for (struct object *o = objects; o; o = o->next)
         if (o->app && o->app_id && !strcmp(o->app_id, tasks[i].package) &&
-            (game_fit_enabled(o) || o->resize.dragging || o->resize.width ||
-             o->resize.cooldown || (!window_fit_enabled(o) && o->csd && o->csd->maximized)))
+            snap_resize_protected(o))
           protected = 1;
       pthread_mutex_unlock(mutex);
       if (protected) continue;
@@ -1440,8 +1457,8 @@ static void *task_worker(void *unused) {
       }
       if (matches == 1) {
         width = logical_to_task(s->resize.width);
-        /* NVIDIA aligns down; letterboxing keeps maximize and normal host
-         * frames exact while the Android task remains importable. */
+        /* NVIDIA aligns the task down; the shared viewport fills the accepted
+         * host frame once that importable task has finished relayout. */
         width = resize_task_width(width, resize_uses_nvidia());
         height = logical_to_task(s->resize.height);
         resize_noop = width == task_width && height == task_height;
@@ -1463,6 +1480,14 @@ static void *task_worker(void *unused) {
         if (window_fit_enabled(s)) {
           s->fit_delivered_w = s->resize.width;
           s->fit_delivered_h = s->resize.height;
+          /* A resize in the same pitch bucket needs no Android relayout.
+           * Its settled fit still changes: an idle task may not commit a
+           * new frame to remove the transient contain bars for us. */
+          if (resize_noop) {
+            geometry(s);
+            wayland_send(s->p, 6, 0);
+            if (real_display_flush && s->display) real_display_flush(s->display);
+          }
         }
         if (resize_noop) s->resize.width = s->resize.height = 0;
         else resize_submitted(&s->resize);

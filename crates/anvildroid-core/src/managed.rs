@@ -20,7 +20,7 @@ pub fn validate(id: &str, package: &str) -> Result<(), AnvilError> {
 pub fn launch(id: &str, package: &str) -> Result<(), AnvilError> {
     validate(id, package)?;
     launch_with(id, package, |request| {
-        if matches!(&request, Request::AppAction { action, .. } if action == "launch") {
+        if matches!(&request, Request::AppAction { action, .. } if action == "launch" || action == "full_ui") {
             let exe=std::env::current_exe().map_err(|e| e.to_string())?;
             crate::desktop::register_managed_window(id, package, &exe).map_err(|e| e.to_string())?;
         }
@@ -73,9 +73,10 @@ fn launch_with(
         }
         wait();
     }
+    let action = if package == "org.anvildroid.desktop" { "full_ui" } else { "launch" };
     let mut job = request(Request::AppAction {
         id: id.into(),
-        action: "launch".into(),
+        action: action.into(),
         package: package.into(),
         activation_token: None,
     })?;
@@ -89,7 +90,7 @@ fn launch_with(
         if job["id"] != job_id
             || job["runtime_id"] != id
             || job["package"] != package
-            || job["action"] != "launch"
+            || job["action"] != action
         {
             return Err("App job changed; review this runtime in Settings.".into());
         }
@@ -138,6 +139,19 @@ mod tests {
             || {},
         )
         .unwrap();
+        assert!(replies.next().is_none());
+    }
+    #[test]
+    fn runtime_shortcut_requests_full_ui_and_checks_its_job() {
+        let id = "r-11111111111111111111111111111111";
+        let mut replies = vec![json!({"mode":"desktop"}), json!({"state":"Running"}),
+            json!({"id":"job","runtime_id":id,"package":"org.anvildroid.desktop","action":"full_ui","status":"Succeeded"})].into_iter();
+        launch_with(id, "org.anvildroid.desktop", |request| {
+            if let Request::AppAction {action, package, ..} = &request {
+                assert_eq!(action, "full_ui");assert_eq!(package, "org.anvildroid.desktop");
+            }
+            Ok(replies.next().unwrap())
+        }, || {}).unwrap();
         assert!(replies.next().is_none());
     }
     #[test]

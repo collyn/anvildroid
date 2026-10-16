@@ -27,7 +27,7 @@ URL: https://github.com/collyn/anvildroid
 BuildArch: x86_64
 Requires: python3, weston, iproute, nftables, slirp4netns, lxc, kmod, curl, systemd, patchelf >= 0.18
 Requires: java-headless >= 1:17
-Requires: glibc >= 2.39, libepoxy, libdrm, mesa-libgbm, libX11, expat, vulkan-loader, util-linux
+Requires: glibc >= 2.39, libepoxy, libdrm, mesa-libgbm, libX11, libXcursor, libxcb, mesa-libEGL, mesa-libGLES, wayland-libs, libxkbcommon, libstdc++, libgcc, expat, vulkan-loader, util-linux
 Requires: webkit2gtk4.1, gtk3, glib2, javascriptcoregtk4.1, libsoup3, pango, cairo, gdk-pixbuf2
 Requires(post): systemd
 Requires(preun): systemd

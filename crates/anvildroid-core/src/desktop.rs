@@ -202,6 +202,14 @@ fn write_managed_registration(id: &str, package: &str, launcher: &Path, hidden: 
     use base64::Engine;
     crate::managed::validate(id, package)?;
     let record = request(Request::Refresh { id: id.into() }).map_err(AnvilError::BackendFailed)?;
+    if package == "org.anvildroid.desktop" {
+        let class = format!("waydroid.anvildroid.{id}.Waydroid");
+        let content = format!("[Desktop Entry]\nType=Application\nName={} (AnvilDroid)\nExec={} --launch-app org.anvildroid.desktop --runtime {id}\nIcon=org.anvildroid.gui\nTerminal=false\nCategories=Utility;\nStartupNotify=false\nStartupWMClass={class}\nX-AnvilDroid-Runtime={id}\n{OWNER}\n",
+            value(record["name"].as_str().unwrap_or(id)), exec_path(&installed_launcher(launcher)?)?);
+        let path = write_content(data_dir()?.join("applications").join(format!("{class}.desktop")), &content)?;
+        refresh_menu_cache();
+        return Ok(path);
+    }
     let apps = request(Request::Apps { id: id.into() }).map_err(AnvilError::BackendFailed)?;
     let app = apps["apps"]
         .as_array()

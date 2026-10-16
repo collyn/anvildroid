@@ -30,6 +30,27 @@ while true; do
                             echo 'Protected component'; exit 2;;
                     esac
                     am force-stop --user 0 "$package" ;;
+                uninstall)
+                    case "$package" in
+                        android|com.android.*|org.lineageos.*|org.anvildroid.*|id.waydro.*|cu.axel.smartdock)
+                            echo 'Protected component'; exit 2;;
+                    esac
+                    third_party=$(pm list packages -3 --user 0 "$package") || exit 1
+                    printf '%s\n' "$third_party" | grep -Fxq "package:$package" || {
+                        echo 'Cannot uninstall a system or protected app'; exit 2;
+                    }
+                    response=$(timeout 15 pm uninstall --user 0 "$package")
+                    result=$?
+                    printf '%s\n' "$response"
+                    if [ "$result" -ne 0 ] || [ "$response" != Success ]; then
+                        echo "Android uninstall did not complete (exit $result). Refresh before retrying."
+                        exit 1
+                    fi
+                    remaining=$(pm list packages --user 0 "$package") || exit 1
+                    if printf '%s\n' "$remaining" | grep -Fxq "package:$package"; then
+                        echo 'Android still reports the app installed; refresh before retrying'
+                        exit 1
+                    fi ;;
                 *) echo 'Unsupported operation'; exit 2;;
             esac
         )

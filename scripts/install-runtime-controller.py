@@ -19,7 +19,7 @@ import importlib.util
 
 ROOT = Path(__file__).resolve().parent.parent
 MODULES = ('runtime-system.py', 'runtime-controller.py', 'runtime-existing.py', 'runtime-keymap.py', 'runtime-host.py', 'runtime-images.py', 'runtime-android.py',
-           'runtime-worker.py', 'runtime-path-guard.py', 'runtime-linux.py', 'runtime-image-format.py', 'runtime-adb.py', 'runtime-network.py', 'runtime-storage.py', 'runtime-labels.py', 'runtime-transfer.py', 'runtime-catalog.py', 'runtime-download.py', 'runtime-extract.py', 'runtime-provision.py', 'runtime-arm.py', 'runtime-arm-source.py', 'runtime-gpu.py', 'runtime-nvidia.py', 'runtime-resources.py', 'runtime-desktop.py', 'runtime-workarea.py')
+           'runtime-worker.py', 'runtime-x11.py', 'runtime-path-guard.py', 'runtime-linux.py', 'runtime-image-format.py', 'runtime-adb.py', 'runtime-network.py', 'runtime-storage.py', 'runtime-labels.py', 'runtime-transfer.py', 'runtime-catalog.py', 'runtime-download.py', 'runtime-extract.py', 'runtime-provision.py', 'runtime-arm.py', 'runtime-arm-source.py', 'runtime-gpu.py', 'runtime-nvidia.py', 'runtime-resources.py', 'runtime-desktop.py', 'runtime-workarea.py')
 DESTINATION = Path('/usr/local/lib/anvildroid-controller')
 SOCKET_PATH = Path('/run/anvildroid/control.sock')
 
@@ -48,13 +48,13 @@ def trusted_directory(path, strict=True):
         trusted_directory(path.parent, strict=False)
 
 
-def replace(path, data):
+def replace(path, data, mode=0o644):
     # Atomic file replacement never follows a pre-existing destination symlink.
     fd, temporary = tempfile.mkstemp(prefix='.install-', dir=path.parent)
     try:
         with os.fdopen(fd, 'wb') as stream:
             stream.write(data)
-            os.fchmod(stream.fileno(), 0o644)
+            os.fchmod(stream.fileno(), mode)
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)
@@ -62,7 +62,7 @@ def replace(path, data):
         Path(temporary).unlink(missing_ok=True)
 
 
-def install_controller_files(source_root, destination=DESTINATION, arm_archive=None):
+def install_controller_files(source_root, destination=DESTINATION, arm_archive=None, x11_payload=None):
     """Validate the payload of source_root (a repo checkout or AppImage stage
     mirroring the portable release layout) and install it under destination.
     Purely file operations; does not touch systemd."""
@@ -70,6 +70,16 @@ def install_controller_files(source_root, destination=DESTINATION, arm_archive=N
     sources = {name: (source_root / 'services' / name).read_bytes() for name in MODULES}
     for name, data in sources.items():
         compile(data, name, 'exec')
+    x11_sources = None
+    if x11_payload is not None:
+        spec = importlib.util.spec_from_file_location('install_x11', source_root / 'services/runtime-x11.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        paths, _ = module.load_payload(x11_payload, trusted_owner=x11_payload.stat().st_uid)
+        x11_sources = {name: path.read_bytes() for name, path in paths.items()}
+        x11_sources['manifest.json'] = (x11_payload / 'manifest.json').read_bytes()
+        for name in ('NOTICE', 'menu-font-OFL.txt'):
+            x11_sources[name] = (x11_payload / name).read_bytes()
     bridge = (source_root / 'target/native/libanvildroid-runtime-window.so').read_bytes()
     if bridge[:4] != b'\x7fELF' or bridge[4:6] != b'\x02\x01' or bridge[18:20] != b'\x3e\x00':
         raise RuntimeError('Build the x86_64 Android desktop bridge with scripts/build-runtime-desktop.sh first')
@@ -95,6 +105,13 @@ def install_controller_files(source_root, destination=DESTINATION, arm_archive=N
     trusted_directory(destination)
     for name, data in sources.items():
         replace(destination / name, data)
+    if x11_sources is not None:
+        native = destination / 'native-x11'
+        trusted_directory(native)
+        for name, data in x11_sources.items():
+            if name == 'manifest.json': continue
+            replace(native / name, data, 0o755 if name in ('anvildroid-x11-host',) else 0o644)
+        replace(native / 'manifest.json', x11_sources['manifest.json'])
     if arm_archive is not None: replace(destination / 'libndk-0.2.3.zip', arm_archive)
     replace(destination / 'scrcpy-server-cancel.jar', (source_root / 'target/input-diagnostic/scrcpy-server-cancel.jar').read_bytes())
     replace(destination / 'libanvildroid-window.so', bridge)
@@ -141,6 +158,7 @@ def main():
     if os.geteuid() != 0:
         raise SystemExit('Run this installer as root.')
     parser = argparse.ArgumentParser()
+    parser.add_argument('--x11-payload', type=Path)
     parser.add_argument('--arm-archive', type=Path)
     args = parser.parse_args()
     arm_archive = None
@@ -155,7 +173,7 @@ def main():
                              'anvildroid-controller.service'], check=True, capture_output=True, text=True)
     if loaded.stdout.strip() != 'not-found':
         subprocess.run(['systemctl', 'stop', 'anvildroid-controller.service'], check=True)
-    install_controller_files(ROOT, arm_archive=arm_archive)
+    install_controller_files(ROOT, arm_archive=arm_archive, x11_payload=args.x11_payload)
     replace(Path('/etc/systemd/system/anvildroid-controller.service'), unit)
     subprocess.run(['systemctl', 'daemon-reload'], check=True)
     subprocess.run(['systemctl', 'enable', '--now', 'anvildroid-controller.service'], check=True)

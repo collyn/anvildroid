@@ -1,0 +1,147 @@
+--- a/hwcomposer/hwcomposer.cpp
++++ b/hwcomposer/hwcomposer.cpp
+@@ -189,10 +189,16 @@
+     buffer *find_cached_buffer(waydroid_hwc_composer_device_1 *pdev, const buffer_metadata &metadata, buffer_handle_t handle) {
+         auto it = pdev->display->buffer_map.find(handle);
+         if (it != pdev->display->buffer_map.end()) {
+-            /* FIXME We can't be sure that our cached buffer actually refers to the buffer corresponding to the given handle
+-             * It's possible that a new buffer got the same handle after the old one was destroyed
+-             * At least check for the metadata to match. This way this situation is hopefully unlikely */
++            // DMA-BUF metadata includes allocation identity: a recycled native
++            // handle must not keep the old GPU-copy source/import alive.
+             if (it->second->metadata != metadata) {
++                auto *old = it->second.get();
++                for (auto &[id, window] : pdev->display->windows) {
++                    if (window->last_layer_buffer == old)
++                        window->last_layer_buffer = nullptr;
++                    for (auto *&held : window->presented_buffers)
++                        if (held == old) held = nullptr;
++                }
+                 pdev->display->buffer_map.erase(it);
+             } else {
+                 return it->second.get();
+@@ -202,6 +208,20 @@
+     }
+ 
+     buffer *get_wl_buffer(waydroid_hwc_composer_device_1 *pdev, hwc_layer_1_t *layer, size_t pos) {
++        // Import/copy paths below read producer memory. Waiting only before
++        // wl_surface_attach is too late for GPU presentation and SHM copies.
++        if (layer->acquireFenceFd != -1) {
++            const int fd = layer->acquireFenceFd;
++            const int result = sync_wait(fd, 1000);
++            const int wait_errno = errno;
++            close(fd);
++            layer->acquireFenceFd = -1;
++            if (result < 0) {
++                ALOGW("producer fence wait failed: %s; skipping unreadable frame",
++                      strerror(wait_errno));
++                return nullptr;
++            }
++        }
+         const auto& gralloc_handler = pdev->gralloc_handler;
+         auto metadata = gralloc_handler.get_buffer_metadata(pdev->display, layer, pos);
+         metadata.opaque = layer->blending == HWC_BLENDING_NONE
+@@ -506,14 +526,6 @@
+ }
+ 
+ static int apply_hwc_layer_to_surface_context(waydroid_hwc_composer_device_1 *pdev, hwc_layer_1 *hwc_layer, size_t hwc_layer_index, surface_context &surface_context, buffer *buf = nullptr, const hwc_frect_t *crop_in = nullptr, const hwc_rect_t *dest_in = nullptr) {
+-    /* Venus first frames of a new client routinely exceed 100ms. The old
+-     * 100ms wait logged ETIME then still committed, but returned -1 so
+-     * apply_hwc_layer_to_window skipped set_position and wp_presentation
+-     * feedback — WindowManager stayed in DRAW_PENDING / enter-animation
+-     * (AnTuTu black window, 2 frames). Wait longer; still present; treat
+-     * timeout as a warning so position + presented callbacks are installed. */
+-    constexpr int acquireTimeoutMS = 1000;
+-
+     if (!buf) {
+         buf = get_wl_buffer(pdev, hwc_layer, hwc_layer_index);
+         if (!buf) {
+@@ -528,19 +540,6 @@
+ 
+     // TODO: Implement per-hwc_layer explicit synchronization
+     hwc_layer->releaseFenceFd = -1;
+-
+-    if (hwc_layer->acquireFenceFd != -1) {
+-        int wres = sync_wait(hwc_layer->acquireFenceFd, acquireTimeoutMS);
+-        if (wres < 0) {
+-            if (errno == ETIME) {
+-                ALOGW("hwcomposer waited on fence %d for %d ms; presenting anyway",
+-                      hwc_layer->acquireFenceFd, acquireTimeoutMS);
+-            } else {
+-                ALOGE("hwcomposer acquire fence %d wait failed: %s",
+-                      hwc_layer->acquireFenceFd, strerror(errno));
+-            }
+-        }
+-    }
+ 
+     hwc_frect_t crop;
+     hwc_rect_t dest;
+--- a/hwcomposer/wayland-hwc.h
++++ b/hwcomposer/wayland-hwc.h
+@@ -114,13 +114,19 @@
+      * (opaque app windows routinely carry undefined alpha, e.g. games
+      * leave the sky at a=0 — SF ignores it, the compositor must too). */
+     bool opaque{false};
++    // native_handle addresses and fd numbers are reused after an activity
++    // closes. Retained imports must match the underlying DMA-BUF allocation.
++    uint64_t buffer_device{0};
++    uint64_t buffer_inode{0};
+ };
+ constexpr bool operator==(const buffer_metadata &lhs, const buffer_metadata &rhs) {
+     return lhs.height == rhs.height
+            && lhs.width == rhs.width
+            && lhs.pixel_stride == rhs.pixel_stride
+            && lhs.format == rhs.format
+-           && lhs.opaque == rhs.opaque;
++           && lhs.opaque == rhs.opaque
++           && lhs.buffer_device == rhs.buffer_device
++           && lhs.buffer_inode == rhs.buffer_inode;
+ }
+ constexpr bool operator!=(const buffer_metadata &lhs, const buffer_metadata &rhs) {
+     return !(lhs == rhs);
+--- a/hwcomposer/gralloc_handler.cpp
++++ b/hwcomposer/gralloc_handler.cpp
+@@ -31,6 +31,7 @@
+ 
+ #include <linux/memfd.h>
+ #include <sys/syscall.h>
++#include <sys/stat.h>
+ #include <drm_fourcc.h>
+ #include <wayland-client.h>
+ 
+@@ -316,21 +317,33 @@
+ }
+ buffer_metadata get_buffer_metadata_gbm(display *, hwc_layer_1_t *layer, size_t) {
+     auto handle = reinterpret_cast<const gralloc_handle_t *>(layer->handle);
+-    return {
++    buffer_metadata metadata{
+             handle->height,
+             handle->width,
+             handle->stride,
+             handle->format
+     };
++    struct stat info{};
++    if (fstat(handle->prime_fd, &info) == 0) {
++        metadata.buffer_device = info.st_dev;
++        metadata.buffer_inode = info.st_ino;
++    }
++    return metadata;
+ }
+ buffer_metadata get_buffer_metadata_cros(display *, hwc_layer_1_t *layer, size_t) {
+     auto handle = reinterpret_cast<const cros_gralloc_handle *>(layer->handle);
+-    return {
++    buffer_metadata metadata{
+             handle->height,
+             handle->width,
+             handle->pixel_stride,
+             static_cast<uint32_t>(handle->droid_format)
+     };
++    struct stat info{};
++    if (fstat(handle->fds[0], &info) == 0) {
++        metadata.buffer_device = info.st_dev;
++        metadata.buffer_inode = info.st_ino;
++    }
++    return metadata;
+ }
+ 
+ std::unique_ptr<buffer> create_buffer_generic(display *display, const buffer_metadata& metadata, buffer_handle_t handle) {

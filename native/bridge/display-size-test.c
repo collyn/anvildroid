@@ -72,6 +72,32 @@ int main(void) {
   full_ui_request(&s,"wl_surface","commit",0,&temporary);
   assert(source[0]==0&&source[2]==720*256&&pos[0]==0);
   assert(layer.full_clip_x==0&&full_ui_input(&child,0,0)==0);
+  /* A maximized portrait canvas has side bars. Root events include that
+   * offset in 24.8 coordinates; child events are already surface-local. */
+  s.full_w=1600;s.full_h=900;
+  int fw,fh,ox,oy;full_ui_box(&s,&fw,&fh,&ox,&oy);
+  assert(fw==506&&fh==900&&ox==547&&oy==0);
+  full_ui_clip(&layer);
+  assert(pos[0]==ox&&pos[1]==oy);
+  assert(full_ui_input(&root,ox*256,0)==632*256);
+  assert(full_ui_input(&root,(ox+fw)*256,0)==(632+720)*256);
+  assert(full_ui_input(&child,0,0)==0);
+  assert(full_ui_input(&child,fw*256,0)==720*256);
+  /* A cropped child adds only its source inset. Landscape content in a
+   * tall host exercises the corresponding top/bottom letterbox. */
+  sub.x=600;vp.width=752;vp.source_width=752*256;
+  full_ui_clip(&layer);
+  assert(layer.full_clip_x==32&&full_ui_input(&child,0,0)==32*256);
+  display_projection=(struct display_projection){1280,720,1280,1280,0,280,1280,720};
+  s.full_w=900;s.full_h=1000;s.full_canvas_w=s.full_canvas_h=1280;
+  sub.x=sub.y=0;vp.width=vp.height=1280;vp.source_width=vp.source_height=1280*256;
+  full_ui_box(&s,&fw,&fh,&ox,&oy);full_ui_clip(&layer);
+  assert(fw==900&&fh==506&&ox==0&&oy==247);
+  assert(full_ui_input(&root,oy*256,1)==280*256);
+  assert(full_ui_input(&child,0,1)==280*256);
+  assert(full_ui_input(&child,fh*256,1)==1000*256);
+  display_projection=(struct display_projection){720,1280,1984,1280,632,0,720,1280};
+  s.full_canvas_w=1984;s.full_canvas_h=1280;s.full_w=720;s.full_h=1280;
   /* Custom accepts the compositor's aspect ratio, not the old preset's. */
   s.custom_size.enabled=1;
   struct object top={.surface=&s};

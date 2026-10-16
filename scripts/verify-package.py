@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import re
+import runpy
 import socket
 import stat
 import subprocess
@@ -63,6 +64,9 @@ def binaries(root, version):
         assert binary.is_file() and os.access(binary, os.X_OK), f'Missing executable: {binary}'
         dependencies = run(['ldd', str(binary)])
         assert 'not found' not in dependencies.stdout, dependencies.stdout
+        embedded = binary.read_bytes()
+        assert b'Starting native X11 app-window adapter for Default runtime' in embedded, 'Default X11 launcher is stale'
+        assert b'Starting nested Weston for Default runtime' not in embedded, 'Default X11 still launches Weston'
     with tempfile.TemporaryDirectory(prefix='anvil-cli-smoke-') as directory:
         fixture = Path(directory)
         environment = dict(os.environ, HOME=directory, XDG_CONFIG_HOME=str(fixture / 'config'),
@@ -112,10 +116,25 @@ def payload(root, installed=False):
     assert scrcpy['revision'] == 'f01231dff8294fe2c99045a4f9a14b233a71bb86'
     assert hashlib.sha256((base / 'scrcpy-server-cancel.jar').read_bytes()).hexdigest() == scrcpy['jar_sha256']
     assert hashlib.sha256((base / 'scrcpy-LICENSE').read_bytes()).hexdigest() == scrcpy['license_sha256']
+    native = base / 'native-x11'
+    x11 = runpy.run_path(str(base / 'runtime-x11.py'))
+    x11['load_payload'](native, trusted_owner=0 if installed else native.stat().st_uid)
+    assert (native / 'runtime-x11.py').read_bytes() == (base / 'runtime-x11.py').read_bytes()
+    for name in ('NOTICE', 'menu-font-OFL.txt'):
+        assert (native / name).is_file(), f'Missing X11 notice: {name}'
+    assert os.access(native / 'anvildroid-x11-host', os.X_OK), 'X11 adapter executable mode'
+    dependencies = run(['ldd', str(native / 'anvildroid-x11-host')]).stdout
+    assert 'not found' not in dependencies, dependencies
+    print('Native X11 surface adapter manifest, hashes, dependencies and notices: OK')
     for path in base.rglob('*.py'):
         compile(path.read_bytes(), str(path), 'exec')
     manifests = list(base.glob('nvidia-*/manifest.json'))
-    assert len(manifests) == 1, 'Expected one pinned NVIDIA payload'
+    if installed:
+        # Development hosts can retain older manually installed payloads. Verify
+        # the exact version selected by the installed controller, without deleting them.
+        nvidia = runpy.run_path(str(base / 'runtime-nvidia.py'))
+        manifests = [base / nvidia['PAYLOAD_ROOT'].name / 'manifest.json']
+    assert len(manifests) == 1 and manifests[0].is_file(), 'Expected one pinned NVIDIA payload'
     manifest = json.loads(manifests[0].read_text())
     for relative, digest in manifest['files'].items():
         path = manifests[0].parent / relative

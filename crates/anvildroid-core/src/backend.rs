@@ -315,8 +315,12 @@ pub fn list_apps_if_running() -> Result<Vec<AppInfo>, AnvilError> {
     .ok()
     .and_then(|record| inventory_available(&record))
     .map(|running| running && crate::runtime::session_owner().unwrap_or(false))
-    .unwrap_or_else(|| matches!(crate::runtime::runtime_status().state,
-        crate::models::RuntimeState::Running | crate::models::RuntimeState::Frozen));
+    .unwrap_or_else(|| {
+        matches!(
+            crate::runtime::runtime_status().state,
+            crate::models::RuntimeState::Running | crate::models::RuntimeState::Frozen
+        )
+    });
     if !running {
         return Err(AnvilError::BackendFailed(
             "Runtime is not running. Keeping the saved app list; use Start or open an app when needed.".into(),
@@ -326,7 +330,9 @@ pub fn list_apps_if_running() -> Result<Vec<AppInfo>, AnvilError> {
 }
 
 fn inventory_available(record: &serde_json::Value) -> Option<bool> {
-    if record.get("id")?.as_str()? != "default" { return None; }
+    if record.get("id")?.as_str()? != "default" {
+        return None;
+    }
     match record.get("state")?.as_str()? {
         "Running" | "Frozen" => Some(true),
         "Stopped" | "Starting" | "Stopping" | "Error" => Some(false),
@@ -360,6 +366,11 @@ pub fn list_apps() -> Result<Vec<AppInfo>, AnvilError> {
 
 /// Protect Android and AnvilDroid components from removal through the library.
 pub fn uninstall_block_reason(package: &str) -> Option<&'static str> {
+    if package == "cu.axel.smartdock" {
+        return Some(
+            "Smart Dock is the Android system launcher; removal is disabled in the app library.",
+        );
+    }
     if package == "android"
         || package.starts_with("com.android.")
         || package.starts_with("org.lineageos.")
@@ -372,57 +383,9 @@ pub fn uninstall_block_reason(package: &str) -> Option<&'static str> {
     }
 }
 
-#[derive(Debug, PartialEq)]
-pub enum UninstallOutcome {
-    Removed,
-    AndroidConfirmationRequired,
-}
-
-/// Uninstall and verify disappearance, or hand off to Android's confirmation UI.
-pub fn uninstall_app(package: &str) -> Result<UninstallOutcome, AnvilError> {
-    if !valid_package(package) {
-        return Err(AnvilError::InvalidArgument(
-            "Invalid Android package name".into(),
-        ));
-    }
-    if let Some(reason) = uninstall_block_reason(package) {
-        return Err(AnvilError::InvalidArgument(reason.into()));
-    }
-    crate::launch::ensure_ready(crate::launch::BOOT_TIMEOUT)?;
-    if !list_apps()?.iter().any(|app| app.package == package) {
-        return Err(AnvilError::InvalidArgument(format!(
-            "{package} is no longer in the app library. Refresh the app list."
-        )));
-    }
-    let output = crate::launch::output_timeout(
-        Command::new("waydroid").args(["app", "remove", package]),
-        std::time::Duration::from_secs(30),
-    )?;
-    let combined = format!(
-        "{}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    // Waydroid's removeApp reads this from the Binder exception header, NOT
-    // PackageManager's DELETE_* return code. Its Android 13 implementation
-    // builds a PendingIntent without a mutability flag and throws -3.
-    if combined
-        .lines()
-        .any(|line| line.trim_end().ends_with("Failed with code: -3"))
-    {
-        crate::launch::request_android_uninstall(package)?;
-        return Ok(UninstallOutcome::AndroidConfirmationRequired);
-    }
-    crate::launch::check_output(output)?;
-    for _ in 0..3 {
-        if !list_apps()?.iter().any(|app| app.package == package) {
-            return Ok(UninstallOutcome::Removed);
-        }
-        std::thread::sleep(std::time::Duration::from_millis(300));
-    }
-    Err(AnvilError::BackendFailed(format!(
-        "Removal of {package} could not be confirmed: the app is still listed."
-    )))
+/// Uninstall through the companion and verify PackageManager's installed state.
+pub fn uninstall_app(package: &str) -> Result<(), AnvilError> {
+    crate::apps::uninstall(package)
 }
 
 /// Run doctor checks. Returns exit code.
@@ -496,14 +459,23 @@ mod tests {
     #[test]
     fn inventory_requires_verified_default_runtime_state() {
         for state in ["Running", "Frozen"] {
-            assert_eq!(inventory_available(&serde_json::json!({"id":"default","state":state})), Some(true));
+            assert_eq!(
+                inventory_available(&serde_json::json!({"id":"default","state":state})),
+                Some(true)
+            );
         }
         for state in ["Stopped", "Starting", "Stopping", "Error"] {
-            assert_eq!(inventory_available(&serde_json::json!({"id":"default","state":state})), Some(false));
+            assert_eq!(
+                inventory_available(&serde_json::json!({"id":"default","state":state})),
+                Some(false)
+            );
         }
-        for record in [serde_json::json!({"id":"r-other","state":"Running"}),
+        for record in [
+            serde_json::json!({"id":"r-other","state":"Running"}),
             serde_json::json!({"id":"default","state":"Unknown"}),
-            serde_json::json!({"id":"default","state":true}), serde_json::json!({})] {
+            serde_json::json!({"id":"default","state":true}),
+            serde_json::json!({}),
+        ] {
             assert_eq!(inventory_available(&record), None);
         }
     }

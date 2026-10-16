@@ -1,5 +1,5 @@
 //! Bounded GUI startup and launch. Callers serialize runtime mutations.
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom};
 use std::process::{Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -85,21 +85,29 @@ pub(crate) fn native_wayland_available() -> bool {
     } else {
         std::env::var_os("XDG_RUNTIME_DIR").map(|dir| std::path::PathBuf::from(dir).join(path))
     };
-    socket.is_some_and(|path| path.metadata().is_ok_and(|info| info.file_type().is_socket()))
+    socket.is_some_and(|path| {
+        path.metadata()
+            .is_ok_and(|info| info.file_type().is_socket())
+    })
 }
 
-pub(crate) fn needs_nested_weston() -> bool {
+pub(crate) fn needs_x11_adapter() -> bool {
     !native_wayland_available()
-        && std::env::var("DISPLAY").ok()
+        && std::env::var("DISPLAY")
+            .ok()
             .is_some_and(|display| crate::controller::x11_display(&display).is_some())
 }
 
-/// Default Waydroid still needs a Wayland compositor when the host uses X11.
+/// Default Waydroid uses the shared native surface adapter on an X11 desktop.
 /// Keep this command shared by GUI startup and explicit session recovery.
 pub fn session_start_command() -> Command {
-    if needs_nested_weston() {
+    if needs_x11_adapter() {
         let mut command = Command::new("python3");
-        command.args(["-u", "-c", include_str!("../../../services/waydroid-session.py")]);
+        command.args([
+            "-u",
+            "-c",
+            include_str!("../../../services/waydroid-session.py"),
+        ]);
         command
     } else {
         let mut command = Command::new("waydroid");
@@ -130,16 +138,41 @@ pub fn android_ready(timeout: Duration) -> Result<bool, AnvilError> {
         .map(|value| value == "1")
 }
 
+fn session_attempt_log(path: &std::path::Path, offset: u64) -> Option<String> {
+    let mut file = std::fs::File::open(path).ok()?;
+    let length = file.metadata().ok()?.len();
+    let offset = if length < offset { 0 } else { offset };
+    file.seek(SeekFrom::Start(
+        offset.max(length.saturating_sub(64 * 1024)),
+    ))
+    .ok()?;
+    let mut bytes = Vec::new();
+    file.take(64 * 1024).read_to_end(&mut bytes).ok()?;
+    let text = String::from_utf8_lossy(&bytes);
+    let mut lines: Vec<&str> = text.lines().collect();
+    if lines.len() > 12 {
+        lines.drain(..lines.len() - 12);
+    }
+    let detail = lines.join("\n");
+    (!detail.trim().is_empty()).then_some(detail)
+}
+
 /// Start only a stopped runtime. Never stop/recover an existing session implicitly.
 pub fn ensure_ready(timeout: Duration) -> Result<(), AnvilError> {
     let deadline = Instant::now() + timeout;
     let mut session = None;
     let mut session_exited_at = None;
     let mut session_exit_error = None;
+    let mut session_log = None;
     let mut status = check_output(waydroid(&["status"], PROBE_TIMEOUT)?)?;
     let stale_session = |value: &str| {
-        value.lines().any(|line| line.split_once(':').is_some_and(|(k, v)| k.trim() == "Session" && v.trim() == "RUNNING"))
-            && value.lines().any(|line| line.split_once(':').is_some_and(|(k, v)| k.trim() == "Container" && v.trim() == "STOPPED"))
+        value.lines().any(|line| {
+            line.split_once(':')
+                .is_some_and(|(k, v)| k.trim() == "Session" && v.trim() == "RUNNING")
+        }) && value.lines().any(|line| {
+            line.split_once(':')
+                .is_some_and(|(k, v)| k.trim() == "Container" && v.trim() == "STOPPED")
+        })
     };
     if stale_session(&status) {
         // A crashed container can leave the per-user Waydroid session alive.
@@ -149,23 +182,36 @@ pub fn ensure_ready(timeout: Duration) -> Result<(), AnvilError> {
         while Instant::now() < stale_deadline {
             thread::sleep(Duration::from_millis(250));
             status = check_output(waydroid(&["status"], PROBE_TIMEOUT)?)?;
-            if !stale_session(&status) { break; }
+            if !stale_session(&status) {
+                break;
+            }
         }
         if stale_session(&status) {
             return Err(AnvilError::BackendFailed(
-                "Stale Waydroid session could not be stopped; retry after checking waydroid.log".into(),
+                "Stale Waydroid session could not be stopped; retry after checking waydroid.log"
+                    .into(),
             ));
         }
     }
-    if status.lines().any(|line| line.split_once(':').is_some_and(|(key, value)|
-        key.trim() == "Container" && value.trim() == "FROZEN")) {
+    if status.lines().any(|line| {
+        line.split_once(':')
+            .is_some_and(|(key, value)| key.trim() == "Container" && value.trim() == "FROZEN")
+    }) {
         // An explicit Start/Open owns this wakeup. Passive health/library
         // polling keeps the container asleep.
-        check_output(output_timeout(Command::new("gdbus").args([
-            "call", "--system", "--dest", "id.waydro.Container",
-            "--object-path", "/ContainerManager", "--method",
-            "id.waydro.ContainerManager.Unfreeze",
-        ]), PROBE_TIMEOUT)?)?;
+        check_output(output_timeout(
+            Command::new("gdbus").args([
+                "call",
+                "--system",
+                "--dest",
+                "id.waydro.Container",
+                "--object-path",
+                "/ContainerManager",
+                "--method",
+                "id.waydro.ContainerManager.Unfreeze",
+            ]),
+            PROBE_TIMEOUT,
+        )?)?;
     }
     if !runtime::session_owner()? {
         if !status.lines().any(|line| {
@@ -183,10 +229,12 @@ pub fn ensure_ready(timeout: Duration) -> Result<(), AnvilError> {
                 .ok_or_else(|| AnvilError::Io("Cannot locate state directory".into()))?
                 .join("anvildroid");
             std::fs::create_dir_all(&state_dir)?;
+            let log_path = state_dir.join("session.log");
             let log = std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
-                .open(state_dir.join("session.log"))?;
+                .open(&log_path)?;
+            session_log = Some((log_path, log.metadata()?.len()));
             let mut child = session_start_command()
                 .stdin(Stdio::null())
                 .stdout(log.try_clone()?)
@@ -226,19 +274,10 @@ pub fn ensure_ready(timeout: Duration) -> Result<(), AnvilError> {
             }
         } else if let Some(exited_at) = session_exited_at {
             if exited_at.elapsed() >= Duration::from_secs(5) {
-                let detail = std::fs::read_to_string(
-                    dirs::state_dir()
-                        .map(|path| path.join("anvildroid/session.log"))
-                        .unwrap_or_else(|| std::path::PathBuf::from("anvildroid/session.log")),
-                )
-                .ok()
-                .map(|text| {
-                    let mut lines: Vec<&str> = text.lines().collect();
-                    if lines.len() > 12 { lines.drain(..lines.len() - 12); }
-                    lines.join("\n")
-                })
-                .filter(|text| !text.trim().is_empty())
-                .unwrap_or_else(|| format!("session process exited: {:?}", session_exit_error));
+                let detail = session_log
+                    .as_ref()
+                    .and_then(|(path, offset)| session_attempt_log(path, *offset))
+                    .unwrap_or_else(|| format!("session process exited: {:?}", session_exit_error));
                 return Err(AnvilError::BackendFailed(format!(
                     "Waydroid session exited before Android was ready. {detail}"
                 )));
@@ -289,23 +328,44 @@ pub fn open_app_info(package: &str) -> Result<(), AnvilError> {
     Ok(())
 }
 
-/// Ask Android's package installer to confirm removal. Sending this intent is
-/// not evidence of successful uninstall; callers must verify the app disappears.
-pub(crate) fn request_android_uninstall(package: &str) -> Result<(), AnvilError> {
-    if !backend::valid_package(package) || backend::uninstall_block_reason(package).is_some() {
-        return Err(AnvilError::InvalidArgument(
-            "Package cannot be removed from the app library".into(),
+#[cfg(test)]
+mod tests {
+    use super::session_attempt_log;
+    use std::io::Write;
+
+    #[test]
+    fn startup_error_reads_only_the_current_attempt() {
+        let root = std::env::temp_dir().join(format!(
+            "anvil-session-log-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
         ));
+        std::fs::create_dir(&root).unwrap();
+        let path = root.join("session.log");
+        let old = "x11_toplevel_mapped=old-session\n".repeat(5000);
+        std::fs::write(&path, &old).unwrap();
+        let offset = old.len() as u64;
+        assert_eq!(session_attempt_log(&path, offset), None);
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        for index in 1..=20 {
+            writeln!(file, "new attempt line {index}").unwrap();
+        }
+        let detail = session_attempt_log(&path, offset).unwrap();
+        assert_eq!(detail.lines().count(), 12);
+        assert!(detail.starts_with("new attempt line 9\n"));
+        assert!(detail.ends_with("new attempt line 20"));
+        assert!(!detail.contains("old-session"));
+        std::fs::write(&path, "attempt after log rotation\n").unwrap();
+        assert_eq!(
+            session_attempt_log(&path, offset).unwrap(),
+            "attempt after log rotation"
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
-    runtime::launch_preflight()?;
-    check_output(waydroid(
-        &[
-            "app",
-            "intent",
-            "android.intent.action.DELETE",
-            &format!("package:{package}"),
-        ],
-        Duration::from_secs(15),
-    )?)?;
-    Ok(())
 }

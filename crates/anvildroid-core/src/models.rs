@@ -69,9 +69,6 @@ pub struct OperationResult {
     pub error_code: Option<String>,
     /// Human-readable recovery suggestion.
     pub recovery_hint: Option<String>,
-    /// The action was handed to Android and still requires user confirmation.
-    #[serde(default)]
-    pub pending_confirmation: bool,
 }
 
 /// Health check report combining backend and D-Bus state.

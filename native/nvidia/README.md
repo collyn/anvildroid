@@ -18,6 +18,36 @@ buffers; no CPU frame readback is needed on this supported path. Unsupported
 formats or hosts retain the existing wl_shm fallback.
 The payload version is `fork-window-transition-5c5d35d`.
 
+The local `hwc-frame-sync.patch` is a candidate on top of that exact pin.
+It waits for producer fences before GPU/SHM copies and includes the DMA-BUF
+device/inode in the import-cache key, clearing retained raw references when
+an allocation changes. These prevent reading an unfinished frame and reusing
+an old allocation when Android recycles a native_handle address. The active
+payload pin is unchanged until live validation of the candidate.
+
+`check-frame-sync.py <hwcomposer-source>` compiles the actual cache, copy and
+metadata functions with a controlled producer/transport. It covers GPU and
+SHM copy ordering, fence failure/ownership, recycled CROS/GBM allocations and
+retained references. All three cases fail on the original pinned code.
+An isolated build can be reproduced from existing pinned source/SDK caches:
+
+```sh
+python3 scripts/build-nvidia-hwc-frame-sync.py \
+  --fork /path/to/waydroid-nvidia \
+  --hwc /path/to/android_hardware_waydroid \
+  --sdk /path/to/provisioned-hwc-sdk \
+  --rootfs /path/to/unpacked-android13-libraries \
+  --ndk /path/to/android-ndk-r29
+```
+
+This writes a binary, provenance report and build log under
+`target/nvidia-hwc-frame-sync/build`, without installing or restarting anything.
+`python3 scripts/stage-nvidia-hwc-frame-sync.py` combines the candidate with
+verified cached base archives, stages all 14 ELFs and generates a matching
+controller module/manifest under `target/nvidia-hwc-frame-sync/staged`.
+The candidate has its own version and records both the local patch and binary
+hashes; it never overwrites the active payload or changes the production pin.
+
 Managed and Default runtimes can also use Venus on X11. Startup uses a nested
 Weston X11 compositor for guest presentation; the private Venus server still uses the
 NVIDIA Vulkan ICD for Android rendering. Weston tries GL, then pixman if GL

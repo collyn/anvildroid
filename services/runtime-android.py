@@ -35,6 +35,14 @@ spec = importlib.util.spec_from_file_location('runtime_linux', Path(__file__).wi
 linux = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(linux)
 
+spec = importlib.util.spec_from_file_location('runtime_desktop', Path(__file__).with_name('runtime-desktop.py'))
+desktop_module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(desktop_module)
+
+spec = importlib.util.spec_from_file_location('runtime_x11', Path(__file__).with_name('runtime-x11.py'))
+native_x11 = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(native_x11)
+
 
 def attach_app_icons(instance, identifier, apps):
     """Read only this instance's Android icon cache, without following Android links."""
@@ -325,7 +333,9 @@ class AndroidBackend:
         staging = Path(tempfile.mkdtemp(prefix='.support-', dir=instance))
         mounts = []
         try:
-            shutil.copytree('/var/lib/waydroid/overlay', staging / 'overlay', symlinks=True)
+            host_overlay = provision.WAYDROID_ROOT / 'overlay'
+            if host_overlay.is_dir():
+                shutil.copytree(host_overlay, staging / 'overlay', symlinks=True)
             # The host overlay only carries the desktop bridge and patched init
             # on machines that ran the native host installer; rebuild them from
             # the installed assets so Desktop mode works from a stock Waydroid
@@ -334,10 +344,8 @@ class AndroidBackend:
             subprocess.run(['mount', '-o', 'loop,ro,noload', instance / 'prepared/system.img', str(system_mount)], check=True, capture_output=True)
             mounts.append(system_mount)
             provision.build_overlay(staging / 'overlay', system_mount, require_caption=False)
-            (staging / 'waydroid.prop').write_text('\n'.join(provision.host_properties()) + '\n')
-            for name, source in [('config', '/var/lib/waydroid/lxc/waydroid/config'),
-                                 ('waydroid.seccomp', '/var/lib/waydroid/lxc/waydroid/waydroid.seccomp')]:
-                shutil.copyfile(source, staging / name)
+            (staging / 'waydroid.prop').write_text('\n'.join(provision.host_properties(managed=True)) + '\n')
+            provision.copy_lxc_support(staging)
             (staging / 'images.json').write_text(json.dumps(manifest['images']))
             for directory, _, files in os.walk(staging):
                 for name in files:
@@ -351,6 +359,18 @@ class AndroidBackend:
             for mount in reversed(mounts):
                 subprocess.run(['umount', str(mount)], capture_output=True)
             if staging.exists(): shutil.rmtree(staging)
+
+    def preflight_x11(self, identifier, nvidia_rendering):
+        instance = self.instance(identifier)
+        report = json.loads((instance / 'support/compatibility.json').read_text())
+        if (not nvidia_rendering and report.get('sdk') in (33, 34, 35, 36)
+                and 'app_window_contract' not in report):
+            result = subprocess.run(['unshare', '--mount', '--propagation', 'private', '--fork', '--kill-child',
+                sys.executable, str(Path(__file__).with_name('runtime-provision.py')), str(instance), '--window-contract'],
+                capture_output=True, text=True, timeout=90)
+            if result.returncode:
+                raise RuntimeError('Could not verify native X11 image support: ' + result.stderr[-700:])
+        return native_x11.preflight(instance, nvidia_rendering)
 
     @staticmethod
     def check_desktop_bridge():
@@ -419,7 +439,20 @@ class AndroidBackend:
                 os.replace(temporary, instance / 'shutdown.jar')
                 self.images.sync_directory(instance)
             finally: Path(temporary).unlink(missing_ok=True)
-        if desktop: self.pin_desktop_bridge(instance)
+        if desktop:
+            self.pin_desktop_bridge(instance)
+            if desktop[0].startswith(desktop_module.X11_TOKEN_PREFIX):
+                # Resolve in the host PID namespace: the worker cannot see the
+                # desktop's /proc environments after unshare --pid --mount-proc.
+                authority = desktop_module.read_x11_authority(desktop[1], desktop[0][len(desktop_module.X11_TOKEN_PREFIX):])
+                pinned = instance / 'x11-authority'
+                pinned.unlink(missing_ok=True)
+                if authority is not None:
+                    fd = os.open(pinned, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+                    with os.fdopen(fd, 'wb') as stream:
+                        stream.write(authority)
+                        stream.flush()
+                        os.fsync(stream.fileno())
         worker = Path(__file__).with_name('runtime-worker.py')
         self.children = [child for child in self.children if child.poll() is None]
         host_net_fd = os.open('/proc/self/ns/net', os.O_RDONLY) if internet else None

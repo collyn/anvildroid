@@ -38,6 +38,16 @@ jobs:
             echo "rpm=$(python3 scripts/release-version.py --rpm)"
             case "$version" in *-*) echo 'prerelease=true';; *) echo 'prerelease=false';; esac
           } >> "$GITHUB_OUTPUT"
+      - name: Test preparation without initialized Waydroid host
+        run: python3 services/provision-support-test.py
+      - name: Test Default NVIDIA session devices and shader warm-up
+        run: |
+          python3 services/default-gpu-test.py
+          python3 services/surfaceflinger-cache-test.py
+      - name: Test confirmed app removal without Android
+        run: |
+          python3 services/default-apps-test.py
+          node crates/anvildroid-gui/uninstall-check.cjs
       - uses: actions/setup-java@v4
         with: {distribution: temurin, java-version: '17'}
       - uses: android-actions/setup-android@v3
@@ -45,14 +55,21 @@ jobs:
       - name: Prepare shared CI inputs
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends e2fsprogs unzip curl patch
+          sudo apt-get install -y --no-install-recommends e2fsprogs unzip curl patch \
+            build-essential pkg-config git cmake flex bison libssl-dev libjsoncpp-dev \
+            libxcb1-dev libx11-dev libvulkan-dev libwayland-dev wayland-protocols \
+            libegl1-mesa-dev libgles2-mesa-dev libxkbcommon-dev libxcursor-dev aapt apksigner
           command -v sdkmanager >/dev/null
           yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager 'platforms;android-23' 'platforms;android-35' 'build-tools;35.0.0'
+          sdkmanager 'platforms;android-23' 'platforms;android-35' 'build-tools;35.0.0' 'ndk;26.3.11579264'
+          sudo ln -s "$ANDROID_HOME/ndk/26.3.11579264" /opt/android-ndk
           sudo mkdir -p /usr/lib/android-sdk/platforms/android-23
           sudo ln -sf "$ANDROID_HOME/platforms/android-23/android.jar" /usr/lib/android-sdk/platforms/android-23/android.jar
           sh scripts/prepare-ci-inputs.sh
           sh scripts/prepare-scrcpy.sh
+      - name: Build pinned native X11 payload
+        run: |
+          python3 scripts/build-x11-payload.py
       - name: Prepare pinned NVIDIA archives
         env:
           GH_TOKEN: ${{ secrets.NVIDIA_ARTIFACT_TOKEN || github.token }}
@@ -65,6 +82,7 @@ jobs:
             target/native/init.waydroid.rc
             target/native/framework-res.apk
             target/tools/nvidia/*.tar.gz
+            target/native-x11/package/
             target/input-diagnostic/scrcpy-server-cancel.jar
             target/input-diagnostic/scrcpy-LICENSE
             target/input-diagnostic/scrcpy-build.json
@@ -93,6 +111,8 @@ jobs:
           cp native/framework-res.apk target/native/framework-res.apk
           test -d tools/nvidia
           cp -a tools/nvidia target/tools/nvidia
+          mkdir -p target/native-x11
+          cp -a native-x11/package target/native-x11/package
           cp input-diagnostic/scrcpy-server-cancel.jar input-diagnostic/scrcpy-LICENSE input-diagnostic/scrcpy-build.json target/input-diagnostic/
       - name: Install build dependencies
         run: |
@@ -115,6 +135,7 @@ jobs:
         run: cargo test --workspace --locked
       - name: Build selected package
         env:
+          ANVILDROID_X11_PAYLOAD: ${{ github.workspace }}/target/native-x11/package
           VERSION: ${{ needs.prepare.outputs.version }}
           DEBIAN_VERSION: ${{ needs.prepare.outputs.debian }}
           RPM_VERSION: ${{ needs.prepare.outputs.rpm }}

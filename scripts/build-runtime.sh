@@ -30,3 +30,6 @@ if ! python3 native/input/build-scrcpy-diagnostic.py --verify >/dev/null 2>&1; t
   sh scripts/prepare-scrcpy.sh
 fi
 python3 native/input/build-scrcpy-diagnostic.py --verify
+
+# Native X11 is bundled alongside Wayland; backend selection stays per runtime.
+python3 scripts/build-x11-payload.py
