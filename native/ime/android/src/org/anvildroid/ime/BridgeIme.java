@@ -18,12 +18,15 @@ public final class BridgeIme extends InputMethodService {
     private long generation;
     private boolean active, composing;
     private EditorInfo editor;
+    private ClipboardSync clipboard;
+    private CursorAnchorInfo cursorInfo;
 
     @Override public boolean onEvaluateInputViewShown() { return false; }
     @Override public boolean onEvaluateFullscreenMode() { return false; }
     @Override public void onCreate() {
         super.onCreate();
         running = true;
+        clipboard = new ClipboardSync(this, msg -> { if (peer != null) peer.send(msg); });
         new Thread(() -> {
             try {
                 server = new LocalServerSocket(SOCKET);
@@ -39,11 +42,18 @@ public final class BridgeIme extends InputMethodService {
                     Peer next = new Peer(socket);
                     main.post(() -> {
                         if (!running) { next.close(); return; }
+                        // The explicit self-test can borrow the connection;
+                        // HWC's reconnect timer must not steal it mid-test.
+                        if (peer != null && !peer.closed && uid != android.os.Process.myUid()) {
+                            next.close();
+                            return;
+                        }
                         if (peer != null) peer.close();
                         peer = next;
                         ++generation;
                         publish();
                         next.start();
+                        clipboard.publish(true);
                     });
                 }
             } catch (IOException e) {
@@ -57,6 +67,9 @@ public final class BridgeIme extends InputMethodService {
         editor = info;
         active = info != null && info.inputType != InputType.TYPE_NULL;
         composing = false;
+        cursorInfo = null;
+        InputConnection connection = getCurrentInputConnection();
+        if (connection != null) connection.requestCursorUpdates(InputConnection.CURSOR_UPDATE_IMMEDIATE | InputConnection.CURSOR_UPDATE_MONITOR);
         publish();
     }
     @Override public void onFinishInput() {
@@ -68,9 +81,22 @@ public final class BridgeIme extends InputMethodService {
     }
     @Override public void onDestroy() {
         running = false;
+        clipboard.close();
         if (peer != null) peer.close();
         try { if (server != null) server.close(); } catch (IOException ignored) {}
         super.onDestroy();
+    }
+    @Override public void onUpdateCursorAnchorInfo(CursorAnchorInfo info) {
+        super.onUpdateCursorAnchorInfo(info); cursorInfo = info; publish();
+    }
+    @Override public void onUpdateSelection(int oldStart, int oldEnd, int start, int end, int candidatesStart, int candidatesEnd) {
+        super.onUpdateSelection(oldStart, oldEnd, start, end, candidatesStart, candidatesEnd);
+        publish();
+    }
+    private boolean password() {
+        int type = editor == null ? 0 : editor.inputType;
+        int klass = type & 15, variation = type & 0xff0;
+        return (klass == 1 && (variation == 0x80 || variation == 0x90 || variation == 0xe0)) || (klass == 2 && variation == 0x10);
     }
     private void publish() {
         if (peer == null) return;
@@ -80,6 +106,29 @@ public final class BridgeIme extends InputMethodService {
                 .put("package", editor == null ? "" : editor.packageName)
                 .put("inputType", editor == null ? 0 : editor.inputType)
                 .put("imeOptions", editor == null ? 0 : editor.imeOptions);
+            if (active && !password()) {
+                InputConnection ic = getCurrentInputConnection();
+                if (ic != null) {
+                    ExtractedTextRequest request = new ExtractedTextRequest(); request.hintMaxChars = 1024;
+                    ExtractedText text = ic.getExtractedText(request, 0);
+                    if (text != null && text.text != null) {
+                        String value = text.text.toString();
+                        int start = text.selectionStart, end = text.selectionEnd;
+                        if (Wire.validText(value) && value.getBytes(java.nio.charset.StandardCharsets.UTF_8).length <= 4000 && Wire.boundary(value, start) && Wire.boundary(value, end)) {
+                            state.put("surrounding", android.util.Base64.encodeToString(value.getBytes(java.nio.charset.StandardCharsets.UTF_8), android.util.Base64.NO_WRAP | android.util.Base64.URL_SAFE));
+                            state.put("cursor", value.substring(0, start).getBytes(java.nio.charset.StandardCharsets.UTF_8).length);
+                            state.put("anchor", value.substring(0, end).getBytes(java.nio.charset.StandardCharsets.UTF_8).length);
+                        }
+                    }
+                }
+                if (cursorInfo != null && !Float.isNaN(cursorInfo.getInsertionMarkerHorizontal())) {
+                    float[] point = {cursorInfo.getInsertionMarkerHorizontal(), cursorInfo.getInsertionMarkerTop(), cursorInfo.getInsertionMarkerHorizontal(), cursorInfo.getInsertionMarkerBottom()};
+                    cursorInfo.getMatrix().mapPoints(point);
+                    if (!Float.isNaN(point[0]) && !Float.isNaN(point[1]) && !Float.isNaN(point[3]))
+                        state.put("rectX", Math.round(point[0])).put("rectY", Math.round(Math.min(point[1], point[3])))
+                            .put("rectH", Math.max(1, Math.round(Math.abs(point[3] - point[1]))));
+                }
+            }
             peer.send(state);
         } catch (JSONException ignored) {}
     }
@@ -89,6 +138,7 @@ public final class BridgeIme extends InputMethodService {
             if (msg.getInt("v") != 1) throw new JSONException("Version");
             String op = msg.getString("op");
             if (op.equals("state")) { publish(); return; }
+            if (clipboard.receive(msg)) return;
             if (!op.equals("batch")) throw new JSONException("Operation");
             long requested = msg.getLong("generation");
             if (!active || requested != generation || getCurrentInputConnection() == null) {
@@ -144,7 +194,7 @@ public final class BridgeIme extends InputMethodService {
     }
     private final class Peer {
         final LocalSocket socket;
-        final ArrayBlockingQueue<JSONObject> output = new ArrayBlockingQueue<>(64);
+        final ArrayBlockingQueue<JSONObject> output = new ArrayBlockingQueue<>(128);
         volatile boolean closed;
         Peer(LocalSocket socket) { this.socket = socket; }
         void send(JSONObject msg) { if (!closed && !output.offer(msg)) close(); }

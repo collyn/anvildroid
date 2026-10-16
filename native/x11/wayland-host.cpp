@@ -4,11 +4,15 @@
  * injection.
  */
 #include "linux-dmabuf-server.h"
+#include "pointer-constraints-server.h"
+#include "popup-position.hpp"
+#include "relative-pointer-server.h"
 #include "text-input-server.h"
 #include "viewporter-server.h"
 #include "x11-platform.hpp"
 #include "xdg-activation-server.h"
 #include "xdg-shell-server.h"
+#include "xim-text.hpp"
 #include <array>
 #include <csignal>
 #include <deque>
@@ -22,6 +26,7 @@
 #include <sys/stat.h>
 #include <wayland-server-protocol.h>
 #include <wayland-server.h>
+#include <wayland-version.h>
 #include <xkbcommon/xkbcommon.h>
 
 using namespace x11host;
@@ -62,11 +67,42 @@ struct Top {
   std::deque<uint32_t> serials;
   XIC ic = nullptr;
   bool ic_focused = false;
+  bool preedit_callbacks = false;
+  Preedit preedit;
+  XIMCallback ime_callbacks[4]{};
   bool identity_dirty = true;
+  bool popup = false, dismissed = false;
+  Top *parent = nullptr;
+  Positioner positioner;
+  Rect popup_geometry;
 };
 struct Text {
   bool enabled = false, pending = false;
   uint32_t serial = 0;
+  Rect cursor, pending_cursor;
+  std::string surrounding, pending_surrounding;
+  int32_t selection = 0, anchor = 0, pending_selection = 0, pending_anchor = 0;
+  uint32_t hint = 0, purpose = 0, pending_hint = 0, pending_purpose = 0;
+};
+struct TouchPoint {
+  Node *node;
+  int id;
+};
+struct Constraint {
+  Server *server;
+  Node *node;
+  wl_resource *resource, *pointer;
+  bool locked, persistent, active = false, spent = false;
+  bool refresh = true;
+  uint64_t input_revision = 0;
+  double native_width = -1, native_height = -1, native_x = 0, native_y = 0;
+  bool default_region = true, pending_default = true, region_pending = false;
+  std::vector<std::pair<bool, Rect>> region, pending_region;
+  bool region_cached = false, cached_default = true, hint_cached = false;
+  std::vector<std::pair<bool, Rect>> cached_region;
+  double cached_x = 0, cached_y = 0;
+  bool hint_pending = false, hint_valid = false;
+  double hint_x = 0, hint_y = 0, pending_x = 0, pending_y = 0;
 };
 static volatile sig_atomic_t stopping = 0;
 static int stop(int, void *) {
@@ -96,16 +132,40 @@ static wl_resource *resource(wl_client *c, const wl_interface *type,
   wl_resource_set_implementation(r, ops, data, destroy);
   return r;
 }
+#include "clipboard.hpp"
 struct Server {
   Platform platform;
   wl_display *display;
   wl_event_loop *loop;
+  wl_protocol_logger *protocol_trace = nullptr;
   wl_event_source *x11_source = nullptr;
   wl_event_source *term_source = nullptr, *int_source = nullptr;
   std::map<wl_resource *, std::unique_ptr<Node>> nodes;
   std::map<wl_resource *, std::shared_ptr<DmaBuffer>> buffers;
   std::set<Top *> tops;
   std::set<wl_resource *> pointers, keyboards;
+  std::set<wl_resource *> touches;
+  std::map<wl_resource *, wl_resource *> relatives;
+  std::map<uint64_t, TouchPoint> touch_points;
+  std::map<wl_resource *, std::unique_ptr<Constraint>> constraints;
+  Constraint *active_constraint = nullptr;
+  Window confine_window = 0;
+  double pointer_x = 0, pointer_y = 0;
+  void input_globals();
+  bool xi_event(XEvent &e);
+  void touch_event(int type, uint64_t contact, Top *t, double x, double y,
+                   uint32_t time);
+  void cancel_touches(Node *node = nullptr);
+  void release_constraint(bool notify = true);
+  void sync_constraints();
+  bool constrain_native(Constraint *c);
+  bool constraint_changed(Constraint *c);
+  void pointer_destroy(wl_resource *r);
+  void input_commit(Node *node);
+  void input_cache(Node *node);
+  void input_destroy(Node *node);
+  std::pair<double, double> node_origin(Node *n);
+  std::unique_ptr<Clipboard> clipboard;
   std::map<wl_resource *, Text> texts;
   Node *pointer_focus = nullptr;
   Node *cursor_node = nullptr;
@@ -118,9 +178,49 @@ struct Server {
   xkb_state *key_state = nullptr;
   int xkb_event = 0;
   int keymap_fd = -1;
+  std::vector<Top *> popup_grabs;
+  std::map<wl_client *, uint32_t> input_serials;
+  std::map<wl_client *, std::deque<uint32_t>> input_history;
+  uint32_t input_serial(wl_client *c) {
+    auto value = serial();
+    input_serials[c] = value;
+    auto &history = input_history[c];
+    history.push_back(value);
+    if (history.size() > 64)
+      history.pop_front();
+    return value;
+  }
+  bool valid_input(wl_client *c, uint32_t value) const {
+    auto at = input_history.find(c);
+    return value && at != input_history.end() &&
+           std::find(at->second.begin(), at->second.end(), value) !=
+               at->second.end();
+  }
+  void popup_configure(Top *t, uint32_t token = 0, bool reposition = false);
+  void popup_place(Top *t);
+  void popup_dismiss(Top *t);
+  bool popup_button(Top *target, int x, int y);
   explicit Server(bool testing) : platform(testing) {
     display = wl_display_create();
     ensure(display, "Cannot create private Waydroid protocol endpoint");
+    // Keep libwayland's 4 KiB read batch. Raising the connection limit also
+    // raises its input batch: many DMA-BUF snapshots in one dispatch can stall
+    // XIM and overflow the legacy composer's outgoing request queue.
+    if (getenv("ANVIL_TEST_PROTOCOL_TRACE"))
+      protocol_trace = wl_display_add_protocol_logger(
+          display,
+          [](void *, wl_protocol_logger_type direction,
+             const wl_protocol_logger_message *message) {
+            pid_t pid;
+            wl_client_get_credentials(wl_resource_get_client(message->resource),
+                                      &pid, nullptr, nullptr);
+            // Trace only names/IDs; never print clipboard or editor contents.
+            fprintf(stderr, "protocol pid=%d %s %s@%u.%s\n", int(pid),
+                    direction == WL_PROTOCOL_LOGGER_REQUEST ? "request" : "event",
+                    wl_resource_get_class(message->resource),
+                    wl_resource_get_id(message->resource), message->message->name);
+          },
+          nullptr);
     loop = wl_display_get_event_loop(display);
     term_source = wl_event_loop_add_signal(loop, SIGTERM, stop, nullptr);
     int_source = wl_event_loop_add_signal(loop, SIGINT, stop, nullptr);
@@ -189,6 +289,13 @@ struct Server {
                ssize_t(keymap.size() + 1),
            "Cannot write keymap");
     wl_display_init_shm(display);
+    clipboard = std::make_unique<Clipboard>(
+        display, platform.display,
+        [this]() -> wl_client * {
+          return keyboard_focus ? wl_resource_get_client(keyboard_focus->xdg)
+                                : nullptr;
+        },
+        [this](wl_client *c, uint32_t value) { return valid_input(c, value); });
     globals();
   }
   ~Server() {
@@ -198,9 +305,12 @@ struct Server {
       wl_event_source_remove(x11_source);
     wl_display_destroy_clients(display);
     nodes.clear();
+    clipboard.reset();
     if (keymap_fd >= 0)
       close(keymap_fd);
     xkb_state_unref(key_state);
+    if (protocol_trace)
+      wl_protocol_logger_destroy(protocol_trace);
     wl_display_destroy(display);
   }
   uint32_t serial() { return wl_display_next_serial(display); }
@@ -218,6 +328,10 @@ struct Server {
   void configure(Top *t, int w = 0, int h = 0) {
     if (!t->resource)
       return;
+    if (t->popup) {
+      popup_configure(t);
+      return;
+    }
     // The composer calibrates Android's canvas from the first maximized
     // configure. An unspecified size defers that calibration until Full UI,
     // after the bridge has already assigned the window's role.
@@ -264,6 +378,17 @@ struct Server {
                  t->window.height - (constrained ? 0 : t->normal_padding_h)));
   }
   void close_top(Top *t) {
+    if (t->node)
+      cancel_touches(t->node);
+    if (active_constraint && root(active_constraint->node) == t)
+      release_constraint();
+    if (t->popup)
+      popup_dismiss(t);
+    for (auto *child : tops)
+      if (child->parent == t) {
+        popup_dismiss(child);
+        child->parent = nullptr;
+      }
     if (keyboard_focus == t)
       focus(nullptr);
     if (pointer_focus && root(pointer_focus) == t)
@@ -329,8 +454,13 @@ struct Server {
           configure(t);
           continue;
         }
-        bool mapped = n->current.image && t->configured;
+        bool mapped = n->current.image && t->configured && !t->dismissed;
         if (!mapped) {
+          if (t->window.mapped) {
+            cancel_touches(n);
+            if (active_constraint && root(active_constraint->node) == t)
+              release_constraint();
+          }
           platform.map(t->window, false);
           continue;
         }
@@ -349,10 +479,28 @@ struct Server {
           t->resize_window = false;
         }
         platform.map(t->window, true);
+        sync_constraints();
+        if (t->popup) {
+          popup_place(t);
+          if (!popup_grabs.empty() && popup_grabs.back() == t &&
+              !platform.testing()) {
+            XGrabPointer(platform.display, t->window.window, True,
+                         ButtonPressMask | ButtonReleaseMask |
+                             PointerMotionMask,
+                         GrabModeAsync, GrabModeAsync, None, None, CurrentTime);
+            focus(t);
+          }
+        }
         platform.render(t->window, *n, frame.bounds);
       }
   }
   void pointer(Node *n, double x, double y) {
+    if (active_constraint && active_constraint->locked && n)
+      return;
+    if (pointer_focus == n && pointer_x == x && pointer_y == y)
+      return;
+    pointer_x = x;
+    pointer_y = y;
     if (pointer_focus != n) {
       for (auto *r : pointers)
         if (pointer_focus &&
@@ -363,8 +511,8 @@ struct Server {
       for (auto *r : pointers)
         if (n &&
             wl_resource_get_client(r) == wl_resource_get_client(n->resource))
-          wl_pointer_send_enter(r, serial(), n->resource,
-                                wl_fixed_from_double(x),
+          wl_pointer_send_enter(r, input_serial(wl_resource_get_client(r)),
+                                n->resource, wl_fixed_from_double(x),
                                 wl_fixed_from_double(y));
     }
     if (n)
@@ -375,15 +523,45 @@ struct Server {
           if (wl_resource_get_version(r) >= 5)
             wl_pointer_send_frame(r);
         }
+    sync_constraints();
   }
   bool text_active(Top *t) const {
     if (!t || keyboard_focus != t)
       return false;
     for (const auto &entry : texts)
-      if (entry.second.enabled && wl_resource_get_client(entry.first) ==
-                                      wl_resource_get_client(t->xdg))
+      if (entry.second.enabled &&
+          wl_resource_get_client(entry.first) == wl_resource_get_client(t->xdg))
         return true;
     return false;
+  }
+  void create_ime(Top *t);
+  void ime_preedit(Top *t) {
+    if (!text_active(t))
+      return;
+    const auto value = encode_utf8(t->preedit.text);
+    for (auto &entry : texts)
+      if (entry.second.enabled && wl_resource_get_client(entry.first) ==
+                                      wl_resource_get_client(t->xdg)) {
+        zwp_text_input_v3_send_preedit_string(entry.first, value.c_str(),
+                                              t->preedit.byte_caret(),
+                                              t->preedit.byte_caret());
+        zwp_text_input_v3_send_done(entry.first, entry.second.serial);
+      }
+  }
+  void ime_spot(Top *t) {
+    if (!t || !t->ic || !text_active(t))
+      return;
+    for (auto &entry : texts)
+      if (entry.second.enabled && wl_resource_get_client(entry.first) ==
+                                      wl_resource_get_client(t->xdg)) {
+        auto r = entry.second.cursor;
+        XPoint point{
+            short(std::clamp(r.x - t->frame.bounds.x, -32768., 32767.)),
+            short(std::clamp(r.y + r.h - t->frame.bounds.y, -32768., 32767.))};
+        auto list = XVaCreateNestedList(0, XNSpotLocation, &point, nullptr);
+        XSetICValues(t->ic, XNPreeditAttributes, list, nullptr);
+        XFree(list);
+      }
   }
   void sync_ime() {
     for (auto *t : tops) {
@@ -398,8 +576,11 @@ struct Server {
         if (pending)
           XFree(pending);
         XUnsetICFocus(t->ic);
+        t->preedit = {};
       }
       t->ic_focused = active;
+      if (active)
+        ime_spot(t);
     }
   }
   void focus(Top *t) {
@@ -418,8 +599,10 @@ struct Server {
         }
       for (auto &entry : texts)
         if (old->node && wl_resource_get_client(entry.first) ==
-                             wl_resource_get_client(old->xdg))
+                             wl_resource_get_client(old->xdg)) {
           zwp_text_input_v3_send_leave(entry.first, old->node->resource);
+          entry.second.enabled = entry.second.pending = false;
+        }
       configure_native(old);
     }
     pressed.clear();
@@ -430,7 +613,8 @@ struct Server {
       wl_array_init(&keys);
       for (auto *r : keyboards)
         if (wl_resource_get_client(r) == wl_resource_get_client(t->xdg))
-          wl_keyboard_send_enter(r, serial(), t->node->resource, &keys);
+          wl_keyboard_send_enter(r, input_serial(wl_resource_get_client(r)),
+                                 t->node->resource, &keys);
       wl_array_release(&keys);
       if (!platform.testing()) {
         XkbStateRec state{};
@@ -445,6 +629,8 @@ struct Server {
       configure_native(t);
     }
     sync_ime();
+    sync_constraints();
+    clipboard->focus();
   }
   void modifiers(unsigned depressed, unsigned latched, unsigned locked,
                  unsigned group, unsigned latched_group,
@@ -463,236 +649,323 @@ struct Server {
             xkb_state_serialize_mods(key_state, XKB_STATE_MODS_LOCKED),
             xkb_state_serialize_layout(key_state, XKB_STATE_LAYOUT_EFFECTIVE));
   }
+  void native_event(XEvent e) {
+    if (clipboard->event(e))
+      return;
+    // Remote XIMs also use ClientMessage events addressed to their own
+    // protocol windows. Filter those before looking up an Android window.
+    if (e.type != KeyPress && e.type != KeyRelease && XFilterEvent(&e, None))
+      return;
+    if (e.type == MappingNotify) {
+      XRefreshKeyboardMapping(&e.xmapping);
+      return;
+    }
+    if (xkb_event && e.type == xkb_event) {
+      auto *event = reinterpret_cast<XkbEvent *>(&e);
+      if (event->any.xkb_type == XkbStateNotify) {
+        auto &state = event->state;
+        modifiers(state.base_mods, state.latched_mods, state.locked_mods,
+                  state.base_group, state.latched_group, state.locked_group);
+      }
+      return;
+    }
+    Top *t = nullptr;
+    for (auto *item : tops)
+      if (item->window.window == e.xany.window) {
+        t = item;
+        break;
+      }
+    if (!t || !t->node)
+      return;
+    if (e.type == ClientMessage &&
+        e.xclient.message_type == platform.protocols &&
+        Atom(e.xclient.data.l[0]) == platform.wm_delete) {
+      if (t->popup)
+        popup_dismiss(t);
+      else
+        xdg_toplevel_send_close(t->resource);
+      return;
+    }
+    if (e.type == Expose)
+      t->dirty = true;
+    if (e.type == PropertyNotify &&
+        e.xproperty.atom == platform.atom("_NET_WM_STATE")) {
+      Atom type;
+      int format;
+      unsigned long count, left;
+      unsigned char *bytes = nullptr;
+      if (XGetWindowProperty(platform.display, t->window.window,
+                             e.xproperty.atom, 0, 32, False, XA_ATOM, &type,
+                             &format, &count, &left, &bytes) == Success) {
+        bool maxh = false, maxv = false, full = false;
+        auto *values = reinterpret_cast<Atom *>(bytes);
+        if (bytes && type == XA_ATOM && format == 32)
+          for (unsigned long i = 0; i < count; ++i) {
+            maxh |=
+                values[i] == platform.atom("_NET_WM_STATE_MAXIMIZED_HORZ");
+            maxv |=
+                values[i] == platform.atom("_NET_WM_STATE_MAXIMIZED_VERT");
+            full |= values[i] == platform.atom("_NET_WM_STATE_FULLSCREEN");
+          }
+        bool changed =
+            t->maximized != (maxh && maxv) || t->fullscreen != full;
+        t->maximized = maxh && maxv;
+        t->fullscreen = full;
+        if (bytes)
+          XFree(bytes);
+        if (changed)
+          configure_native(t);
+      }
+      return;
+    }
+    if (e.type == ConfigureNotify) {
+      for (auto *p : tops)
+        if (p->popup && p->parent == t && !p->dismissed) {
+          if (p->positioner.reactive)
+            popup_configure(p);
+          else
+            popup_place(p);
+        }
+      if (t->window.width != e.xconfigure.width ||
+          t->window.height != e.xconfigure.height) {
+        t->window.width = e.xconfigure.width;
+        t->window.height = e.xconfigure.height;
+        if (!t->popup)
+          configure_native(t);
+        t->dirty = true;
+      }
+      return;
+    }
+    if (e.type == FocusIn) {
+      focus(t);
+      return;
+    }
+    if (e.type == FocusOut) {
+      if (e.xfocus.mode == NotifyGrab || e.xfocus.mode == NotifyUngrab)
+        return;
+      if (keyboard_focus == t)
+        focus(nullptr);
+      return;
+    }
+    if (e.type == LeaveNotify && !grab) {
+      if (active_constraint)
+        return;
+      pointer(nullptr, 0, 0);
+      return;
+    }
+    if (e.type == EnterNotify || e.type == MotionNotify ||
+        e.type == ButtonPress || e.type == ButtonRelease) {
+      if (e.type == EnterNotify && e.xcrossing.mode == NotifyGrab)
+        return;
+      // A WM may ignore our accepted-size request during its resize grab.
+      // Ask the client to commit its final geometry once that grab ends.
+      if (e.type == EnterNotify && e.xcrossing.mode == NotifyUngrab &&
+          (t->window.width != t->frame.bounds.w ||
+           t->window.height != t->frame.bounds.h))
+        configure_native(t);
+      unsigned state = e.type == EnterNotify    ? e.xcrossing.state
+                       : e.type == MotionNotify ? e.xmotion.state
+                                                : e.xbutton.state;
+      if (grab && e.type != ButtonRelease &&
+          !(state & (Button1Mask | Button2Mask | Button3Mask)))
+        end_grab(); // Recover when another X11 grab consumed the release.
+      if (e.type == ButtonRelease && e.xbutton.button < 4 &&
+          !pointer_buttons.count(e.xbutton.button))
+        return;
+      int local_x = e.type == EnterNotify    ? e.xcrossing.x
+                    : e.type == MotionNotify ? e.xmotion.x
+                                             : e.xbutton.x;
+      int local_y = e.type == EnterNotify    ? e.xcrossing.y
+                    : e.type == MotionNotify ? e.xmotion.y
+                                             : e.xbutton.y;
+      auto *target = active_constraint ? root(active_constraint->node)
+                     : grab            ? root(grab)
+                                       : t;
+      if (!target) {
+        end_grab(); // The grabbed subsurface may have detached meanwhile.
+        target = t;
+      }
+      if (target != t) {
+        Window child;
+        XTranslateCoordinates(platform.display, t->window.window,
+                              target->window.window, local_x, local_y,
+                              &local_x, &local_y, &child);
+      }
+      if (e.type == ButtonPress && popup_button(t, local_x, local_y))
+        return;
+      double x = local_x + target->frame.bounds.x,
+             y = local_y + target->frame.bounds.y;
+      Node *hit = nullptr;
+      if (active_constraint || grab) {
+        hit = active_constraint ? active_constraint->node : grab;
+        for (auto *at = hit; at->parent;
+             at = static_cast<Node *>(at->parent)) {
+          x -= at->x;
+          y -= at->y;
+        }
+      } else
+        hit = static_cast<Node *>(t->node->hit(x, y));
+      pointer(hit, x, y);
+      if ((e.type == ButtonPress || e.type == ButtonRelease) && hit) {
+        auto button = e.xbutton.button;
+        auto button_serial =
+            input_serial(wl_resource_get_client(hit->resource));
+        if (button < 4 && e.type == ButtonPress) {
+          if (popup_button(t, local_x, local_y))
+            return;
+          if (!grab)
+            grab = hit;
+          pointer_buttons[button] = button_serial;
+          input_serials[wl_resource_get_client(hit->resource)] =
+              button_serial;
+          focus(root(hit));
+        }
+        for (auto *r : pointers)
+          if (wl_resource_get_client(r) ==
+              wl_resource_get_client(hit->resource)) {
+            if (button >= 4 && button <= 7) {
+              if (e.type == ButtonPress)
+                wl_pointer_send_axis(
+                    r, e.xbutton.time,
+                    button <= 5 ? WL_POINTER_AXIS_VERTICAL_SCROLL
+                                : WL_POINTER_AXIS_HORIZONTAL_SCROLL,
+                    wl_fixed_from_int((button == 4 || button == 6) ? -10
+                                                                   : 10));
+            } else
+              wl_pointer_send_button(r, button_serial, e.xbutton.time,
+                                     button == 1   ? BTN_LEFT
+                                     : button == 2 ? BTN_MIDDLE
+                                                   : BTN_RIGHT,
+                                     e.type == ButtonPress
+                                         ? WL_POINTER_BUTTON_STATE_PRESSED
+                                         : WL_POINTER_BUTTON_STATE_RELEASED);
+            if (wl_resource_get_version(r) >= 5)
+              wl_pointer_send_frame(r);
+          }
+        if (button < 4 && e.type == ButtonRelease) {
+          pointer_buttons.erase(button);
+          if (pointer_buttons.empty())
+            end_grab();
+        }
+      }
+      return;
+    }
+    if (e.type == KeyPress || e.type == KeyRelease) {
+      if (e.type == KeyPress &&
+          e.xkey.keycode == XKeysymToKeycode(platform.display, XK_Escape) &&
+          !popup_grabs.empty()) {
+        popup_dismiss(popup_grabs.back());
+        return;
+      }
+      bool input = text_active(t);
+      // Editors, shortcuts and games need physical keys even when a host
+      // input method is active. XIM must only consume opted-in text input.
+      if (input && XFilterEvent(&e, t->window.window)) {
+        if (getenv("ANVIL_TEST_XIM_TRACE"))
+          fprintf(stderr, "xim key filtered type=%d window=0x%lx\n", e.type,
+                  t->window.window);
+        return;
+      }
+      bool handled = false;
+      if (input && e.type == KeyPress && t->ic) {
+        // Leave room for Wayland's message header and trailing NUL within
+        // its 4096-byte wire buffer, just as for surrounding/preedit text.
+        std::vector<char> text(4001);
+        KeySym symbol;
+        Status status;
+        int n = Xutf8LookupString(t->ic, &e.xkey, text.data(),
+                                  text.size() - 1, &symbol, &status);
+        if (getenv("ANVIL_TEST_XIM_TRACE"))
+          fprintf(stderr, "xim lookup status=%d bytes=%d key=%u\n", status, n,
+                  e.xkey.keycode);
+        handled = status == XBufferOverflow;
+        if (n > 0 && n <= 4000 &&
+            (status == XLookupChars || status == XLookupBoth) &&
+            static_cast<unsigned char>(text[0]) >= 32 &&
+            !(e.xkey.state & (ControlMask | Mod1Mask | Mod4Mask))) {
+          for (auto &entry : texts)
+            if (entry.second.enabled && wl_resource_get_client(entry.first) ==
+                                            wl_resource_get_client(t->xdg)) {
+              text[n] = 0;
+              zwp_text_input_v3_send_commit_string(entry.first, text.data());
+              zwp_text_input_v3_send_done(entry.first, entry.second.serial);
+              handled = true;
+            }
+        }
+      }
+      if (handled || e.xkey.keycode < 8)
+        return;
+      uint32_t key = e.xkey.keycode - 8;
+      if (e.type == KeyRelease && !pressed.count(key))
+        return;
+      if (e.type == KeyPress)
+        pressed.insert(key);
+      else
+        pressed.erase(key);
+      for (auto *r : keyboards)
+        if (wl_resource_get_client(r) == wl_resource_get_client(t->xdg))
+          wl_keyboard_send_key(
+              r, input_serial(wl_resource_get_client(r)), e.xkey.time, key,
+              e.type == KeyPress ? WL_KEYBOARD_KEY_STATE_PRESSED
+                                 : WL_KEYBOARD_KEY_STATE_RELEASED);
+    }
+  }
   void events() {
     if (platform.testing())
       return;
-    while (XPending(platform.display)) {
+    XEvent motion{};
+    bool pending_motion = false;
+    auto flush_motion = [&]() {
+      if (pending_motion) {
+        native_event(motion);
+        pending_motion = false;
+      }
+    };
+    // Bound each turn and coalesce absolute samples without moving clicks,
+    // keys, focus transitions or touch events ahead of the preceding motion.
+    // Bound motion traffic to Android's input injector while retaining every
+    // relative sample and every button/key transition.
+    for (unsigned budget = 64; budget && XPending(platform.display); --budget) {
       XEvent e;
       XNextEvent(platform.display, &e);
-      // Remote XIMs also use ClientMessage events addressed to their own
-      // protocol windows. Filter those before looking up an Android window.
-      if (e.type != KeyPress && e.type != KeyRelease && XFilterEvent(&e, None))
-        continue;
-      if (e.type == MappingNotify) {
-        XRefreshKeyboardMapping(&e.xmapping);
-        continue;
-      }
-      if (xkb_event && e.type == xkb_event) {
-        auto *event = reinterpret_cast<XkbEvent *>(&e);
-        if (event->any.xkb_type == XkbStateNotify) {
-          auto &state = event->state;
-          modifiers(state.base_mods, state.latched_mods, state.locked_mods,
-                    state.base_group, state.latched_group, state.locked_group);
-        }
-        continue;
-      }
-      Top *t = nullptr;
-      for (auto *item : tops)
-        if (item->window.window == e.xany.window) {
-          t = item;
-          break;
-        }
-      if (!t || !t->node)
-        continue;
-      if (e.type == ClientMessage &&
-          e.xclient.message_type == platform.protocols &&
-          Atom(e.xclient.data.l[0]) == platform.wm_delete) {
-        xdg_toplevel_send_close(t->resource);
-        continue;
-      }
-      if (e.type == Expose)
-        t->dirty = true;
-      if (e.type == PropertyNotify &&
-          e.xproperty.atom == platform.atom("_NET_WM_STATE")) {
-        Atom type;
-        int format;
-        unsigned long count, left;
-        unsigned char *bytes = nullptr;
-        if (XGetWindowProperty(platform.display, t->window.window,
-                               e.xproperty.atom, 0, 32, False, XA_ATOM, &type,
-                               &format, &count, &left, &bytes) == Success) {
-          bool maxh = false, maxv = false, full = false;
-          auto *values = reinterpret_cast<Atom *>(bytes);
-          if (bytes && type == XA_ATOM && format == 32)
-            for (unsigned long i = 0; i < count; ++i) {
-              maxh |=
-                  values[i] == platform.atom("_NET_WM_STATE_MAXIMIZED_HORZ");
-              maxv |=
-                  values[i] == platform.atom("_NET_WM_STATE_MAXIMIZED_VERT");
-              full |= values[i] == platform.atom("_NET_WM_STATE_FULLSCREEN");
-            }
-          bool changed =
-              t->maximized != (maxh && maxv) || t->fullscreen != full;
-          t->maximized = maxh && maxv;
-          t->fullscreen = full;
-          if (bytes)
-            XFree(bytes);
-          if (changed)
-            configure_native(t);
-        }
-        continue;
-      }
-      if (e.type == ConfigureNotify) {
-        if (t->window.width != e.xconfigure.width ||
-            t->window.height != e.xconfigure.height) {
-          t->window.width = e.xconfigure.width;
-          t->window.height = e.xconfigure.height;
-          configure_native(t);
-          t->dirty = true;
-        }
-        continue;
-      }
-      if (e.type == FocusIn) {
-        focus(t);
-        continue;
-      }
-      if (e.type == FocusOut) {
-        if (keyboard_focus == t)
-          focus(nullptr);
-        continue;
-      }
-      if (e.type == LeaveNotify && !grab) {
-        pointer(nullptr, 0, 0);
-        continue;
-      }
-      if (e.type == EnterNotify || e.type == MotionNotify ||
-          e.type == ButtonPress || e.type == ButtonRelease) {
-        if (e.type == EnterNotify && e.xcrossing.mode == NotifyGrab)
+      if (getenv("ANVIL_TEST_XIM_TRACE") &&
+          (e.type == KeyPress || e.type == KeyRelease))
+        fprintf(stderr, "xim native event type=%d window=0x%lx\n", e.type,
+                e.xany.window);
+      if (e.type == GenericEvent) {
+        if (e.xcookie.evtype != XI_RawMotion && e.xcookie.evtype != XI_Motion)
+          flush_motion();
+        if (xi_event(e))
           continue;
-        // A WM may ignore our accepted-size request during its resize grab.
-        // Ask the client to commit its final geometry once that grab ends.
-        if (e.type == EnterNotify && e.xcrossing.mode == NotifyUngrab &&
-            (t->window.width != t->frame.bounds.w ||
-             t->window.height != t->frame.bounds.h))
-          configure_native(t);
-        unsigned state = e.type == EnterNotify    ? e.xcrossing.state
-                         : e.type == MotionNotify ? e.xmotion.state
-                                                  : e.xbutton.state;
-        if (grab && e.type != ButtonRelease &&
-            !(state & (Button1Mask | Button2Mask | Button3Mask)))
-          end_grab(); // Recover when another X11 grab consumed the release.
-        if (e.type == ButtonRelease && e.xbutton.button < 4 &&
-            !pointer_buttons.count(e.xbutton.button))
-          continue;
-        int local_x = e.type == EnterNotify    ? e.xcrossing.x
-                      : e.type == MotionNotify ? e.xmotion.x
-                                               : e.xbutton.x;
-        int local_y = e.type == EnterNotify    ? e.xcrossing.y
-                      : e.type == MotionNotify ? e.xmotion.y
-                                               : e.xbutton.y;
-        auto *target = grab ? root(grab) : t;
-        if (!target) {
-          end_grab(); // The grabbed subsurface may have detached meanwhile.
-          target = t;
-        }
-        if (target != t) {
-          Window child;
-          XTranslateCoordinates(platform.display, t->window.window,
-                                target->window.window, local_x, local_y,
-                                &local_x, &local_y, &child);
-        }
-        double x = local_x + target->frame.bounds.x,
-               y = local_y + target->frame.bounds.y;
-        Node *hit = nullptr;
-        if (grab) {
-          hit = grab;
-          for (auto *at = grab; at->parent;
-               at = static_cast<Node *>(at->parent)) {
-            x -= at->x;
-            y -= at->y;
-          }
-        } else
-          hit = static_cast<Node *>(t->node->hit(x, y));
-        pointer(hit, x, y);
-        if ((e.type == ButtonPress || e.type == ButtonRelease) && hit) {
-          auto button = e.xbutton.button;
-          auto button_serial = serial();
-          if (button < 4 && e.type == ButtonPress) {
-            if (!grab)
-              grab = hit;
-            pointer_buttons[button] = button_serial;
-            focus(root(hit));
-          }
-          for (auto *r : pointers)
-            if (wl_resource_get_client(r) ==
-                wl_resource_get_client(hit->resource)) {
-              if (button >= 4 && button <= 7) {
-                if (e.type == ButtonPress)
-                  wl_pointer_send_axis(
-                      r, e.xbutton.time,
-                      button <= 5 ? WL_POINTER_AXIS_VERTICAL_SCROLL
-                                  : WL_POINTER_AXIS_HORIZONTAL_SCROLL,
-                      wl_fixed_from_int((button == 4 || button == 6) ? -10
-                                                                     : 10));
-              } else
-                wl_pointer_send_button(r, button_serial, e.xbutton.time,
-                                       button == 1   ? BTN_LEFT
-                                       : button == 2 ? BTN_MIDDLE
-                                                     : BTN_RIGHT,
-                                       e.type == ButtonPress
-                                           ? WL_POINTER_BUTTON_STATE_PRESSED
-                                           : WL_POINTER_BUTTON_STATE_RELEASED);
-              if (wl_resource_get_version(r) >= 5)
-                wl_pointer_send_frame(r);
-            }
-          if (button < 4 && e.type == ButtonRelease) {
-            pointer_buttons.erase(button);
-            if (pointer_buttons.empty())
-              end_grab();
-          }
-        }
-        continue;
       }
-      if (e.type == KeyPress || e.type == KeyRelease) {
-        bool input = text_active(t);
-        // Editors, shortcuts and games need physical keys even when a host
-        // input method is active. XIM must only consume opted-in text input.
-        if (input && XFilterEvent(&e, t->window.window))
-          continue;
-        bool handled = false;
-        if (input && e.type == KeyPress && t->ic) {
-          std::array<char, 4096> text{};
-          KeySym symbol;
-          Status status;
-          int n = Xutf8LookupString(t->ic, &e.xkey, text.data(),
-                                    text.size() - 1, &symbol, &status);
-          if (n > 0 && (status == XLookupChars || status == XLookupBoth) &&
-              static_cast<unsigned char>(text[0]) >= 32 &&
-              !(e.xkey.state & (ControlMask | Mod1Mask | Mod4Mask))) {
-            for (auto &entry : texts)
-              if (entry.second.enabled && wl_resource_get_client(entry.first) ==
-                                              wl_resource_get_client(t->xdg)) {
-                text[n] = 0;
-                zwp_text_input_v3_send_commit_string(entry.first, text.data());
-                zwp_text_input_v3_send_done(entry.first, entry.second.serial);
-                handled = true;
-              }
-          }
-        }
-        if (handled || e.xkey.keycode < 8)
-          continue;
-        uint32_t key = e.xkey.keycode - 8;
-        if (e.type == KeyRelease && !pressed.count(key))
-          continue;
-        if (e.type == KeyPress)
-          pressed.insert(key);
-        else
-          pressed.erase(key);
-        for (auto *r : keyboards)
-          if (wl_resource_get_client(r) == wl_resource_get_client(t->xdg))
-            wl_keyboard_send_key(r, serial(), e.xkey.time, key,
-                                 e.type == KeyPress
-                                     ? WL_KEYBOARD_KEY_STATE_PRESSED
-                                     : WL_KEYBOARD_KEY_STATE_RELEASED);
+      if (platform.xi_opcode && !e.xany.send_event &&
+          (e.type == MotionNotify || e.type == ButtonPress ||
+           e.type == ButtonRelease))
+        continue;
+      if (e.type == MotionNotify) {
+        if (pending_motion && (motion.xmotion.window != e.xmotion.window ||
+                               motion.xmotion.state != e.xmotion.state))
+          flush_motion();
+        motion = e;
+        pending_motion = true;
+      } else {
+        flush_motion();
+        native_event(e);
       }
     }
+    flush_motion();
   }
   void globals();
 };
 
+#include "input.hpp"
+#include "popup.hpp"
+#include "xim-input.hpp"
+
 static void node_destroy(wl_resource *r) {
   auto *n = get<Node>(r);
   auto *s = n->server;
+  s->input_destroy(n);
   if (s->cursor_node == n)
     s->cursor_node = nullptr;
   if (s->pointer_focus == n)
@@ -712,7 +985,16 @@ static void node_destroy(wl_resource *r) {
     wl_resource_set_user_data(n->sub, nullptr);
   if (parent)
     s->invalidate(parent);
+  auto *client = wl_resource_get_client(r);
   s->nodes.erase(r);
+  bool other = false;
+  for (auto &entry : s->nodes)
+    if (wl_resource_get_client(entry.first) == client)
+      other = true;
+  if (!other) {
+    s->input_serials.erase(client);
+    s->input_history.erase(client);
+  }
 }
 static void surface_create(wl_client *c, wl_resource *r, uint32_t id) {
   auto *s = get<Server>(r);
@@ -833,6 +1115,7 @@ static void surface_create(wl_client *c, wl_resource *r, uint32_t id) {
       [](wl_client *, wl_resource *, wl_resource *) {},
       [](wl_client *, wl_resource *r, wl_resource *region) {
         auto &state = Server::node(r)->pending;
+        ++state.input_revision;
         state.default_input = !region;
         state.region.clear();
         if (region)
@@ -855,6 +1138,7 @@ static void surface_create(wl_client *c, wl_resource *r, uint32_t id) {
           t->geometry_pending = false;
           t->configure_acked = false;
         }
+        n->server->input_cache(n);
         n->commit();
         if (n->server->cursor_node == n) {
           n->server->cursor();
@@ -882,7 +1166,10 @@ static void surface_create(wl_client *c, wl_resource *r, uint32_t id) {
   n->resource = resource(c, &wl_surface_interface, wl_resource_get_version(r),
                          id, &ops, n.get(), node_destroy);
   auto *raw = n.get();
-  n->changed = [s, raw]() { s->invalidate(raw); };
+  n->changed = [s, raw]() {
+    s->invalidate(raw);
+    s->input_commit(raw);
+  };
   s->nodes[n->resource] = std::move(n);
 }
 static void region_create(wl_client *c, wl_resource *, uint32_t id) {
@@ -1052,21 +1339,31 @@ static void toplevel_create(wl_client *c, wl_resource *r, uint32_t id) {
           XIconifyWindow(p.display, t->window.window, DefaultScreen(p.display));
       }};
   t->window = s->platform.create();
-  t->resource =
-      resource(c, &xdg_toplevel_interface, 1, id, &ops, t, [](wl_resource *r) {
-        auto *t = get<Top>(r);
-        if (t->node)
-          t->node->server->close_top(t);
-        t->resource = nullptr;
-      });
-  if (s->platform.xim)
-    t->ic =
-        XCreateIC(s->platform.xim, XNInputStyle,
-                  XIMPreeditNothing | XIMStatusNothing, XNClientWindow,
-                  t->window.window, XNFocusWindow, t->window.window, nullptr);
+  t->resource = resource(c, &xdg_toplevel_interface, wl_resource_get_version(r),
+                         id, &ops, t, [](wl_resource *r) {
+                           auto *t = get<Top>(r);
+                           if (t->node)
+                             t->node->server->close_top(t);
+                           t->resource = nullptr;
+                         });
+  if (wl_resource_get_version(t->resource) >= 5) {
+    wl_array capabilities;
+    wl_array_init(&capabilities);
+    for (uint32_t value : {XDG_TOPLEVEL_WM_CAPABILITIES_WINDOW_MENU,
+                           XDG_TOPLEVEL_WM_CAPABILITIES_MAXIMIZE,
+                           XDG_TOPLEVEL_WM_CAPABILITIES_FULLSCREEN,
+                           XDG_TOPLEVEL_WM_CAPABILITIES_MINIMIZE}) {
+      auto *p = static_cast<uint32_t *>(wl_array_add(&capabilities, 4));
+      if (p)
+        *p = value;
+    }
+    xdg_toplevel_send_wm_capabilities(t->resource, &capabilities);
+    wl_array_release(&capabilities);
+  }
+  s->create_ime(t);
   printf("x11_toplevel_created=0x%lx\n", t->window.window);
 }
-static void xdg_surface_create(wl_client *c, wl_resource *, uint32_t id,
+static void xdg_surface_create(wl_client *c, wl_resource *r, uint32_t id,
                                wl_resource *surface) {
   auto *n = Server::node(surface);
   if (n->has_role) {
@@ -1081,12 +1378,7 @@ static void xdg_surface_create(wl_client *c, wl_resource *, uint32_t id,
   n->top = t;
   n->server->tops.insert(t);
   static const struct xdg_surface_interface ops = {
-      destroy_request, toplevel_create,
-      [](wl_client *, wl_resource *r, uint32_t, wl_resource *, wl_resource *) {
-        wl_resource_post_error(
-            r, XDG_WM_BASE_ERROR_INVALID_POSITIONER,
-            "Waydroid uses subsurface menus; xdg popups unsupported");
-      },
+      destroy_request, toplevel_create, popup_create,
       [](wl_client *, wl_resource *r, int32_t x, int32_t y, int32_t w,
          int32_t h) {
         auto *t = get<Top>(r);
@@ -1111,19 +1403,19 @@ static void xdg_surface_create(wl_client *c, wl_resource *, uint32_t id,
         t->configured = true;
         t->configure_acked = true;
       }};
-  t->xdg =
-      resource(c, &xdg_surface_interface, 1, id, &ops, t, [](wl_resource *r) {
-        auto *t = get<Top>(r);
-        if (t->resource)
-          wl_resource_destroy(t->resource);
-        if (t->node) {
-          auto *s = t->node->server;
-          s->close_top(t);
-          t->node->top = nullptr;
-        }
-        t->server->tops.erase(t);
-        delete t;
-      });
+  t->xdg = resource(c, &xdg_surface_interface, wl_resource_get_version(r), id,
+                    &ops, t, [](wl_resource *r) {
+                      auto *t = get<Top>(r);
+                      if (t->resource)
+                        wl_resource_destroy(t->resource);
+                      if (t->node) {
+                        auto *s = t->node->server;
+                        s->close_top(t);
+                        t->node->top = nullptr;
+                      }
+                      t->server->tops.erase(t);
+                      delete t;
+                    });
 }
 
 static void viewport_create(wl_client *c, wl_resource *, uint32_t id,
@@ -1291,7 +1583,7 @@ static void seat_pointer(wl_client *c, wl_resource *r, uint32_t id) {
       destroy_request};
   auto *p =
       resource(c, &wl_pointer_interface, wl_resource_get_version(r), id, &ops,
-               s, [](wl_resource *r) { get<Server>(r)->pointers.erase(r); });
+               s, [](wl_resource *r) { get<Server>(r)->pointer_destroy(r); });
   s->pointers.insert(p);
 }
 static void seat_keyboard(wl_client *c, wl_resource *r, uint32_t id) {
@@ -1317,15 +1609,51 @@ static void text_create(wl_client *c, wl_resource *r, uint32_t id,
       [](wl_client *, wl_resource *r) {
         get<Server>(r)->texts.at(r).pending = false;
       },
-      [](wl_client *, wl_resource *, const char *, int32_t, int32_t) {},
+      [](wl_client *, wl_resource *r, const char *value, int32_t cursor,
+         int32_t anchor) {
+        auto &t = get<Server>(r)->texts.at(r);
+        std::string text(value);
+        try {
+          decode_utf8(text);
+          if (text.size() > 4000 || cursor < 0 || anchor < 0 ||
+              size_t(cursor) > text.size() || size_t(anchor) > text.size())
+            return;
+          decode_utf8(text.substr(0, cursor));
+          decode_utf8(text.substr(0, anchor));
+          t.pending_surrounding = text;
+          t.pending_selection = cursor;
+          t.pending_anchor = anchor;
+        } catch (const std::exception &) {
+        }
+      },
       [](wl_client *, wl_resource *, uint32_t) {},
-      [](wl_client *, wl_resource *, uint32_t, uint32_t) {},
-      [](wl_client *, wl_resource *, int32_t, int32_t, int32_t, int32_t) {},
+      [](wl_client *, wl_resource *r, uint32_t hint, uint32_t purpose) {
+        auto &t = get<Server>(r)->texts.at(r);
+        t.pending_hint = hint;
+        t.pending_purpose = purpose;
+      },
+      [](wl_client *, wl_resource *r, int32_t x, int32_t y, int32_t w,
+         int32_t h) {
+        if (w < 0 || h < 0)
+          return;
+        get<Server>(r)->texts.at(r).pending_cursor = {double(x), double(y),
+                                                      double(w), double(h)};
+      },
       [](wl_client *, wl_resource *r) {
         auto &t = get<Server>(r)->texts.at(r);
-        t.enabled = t.pending;
+        auto *s = get<Server>(r);
+        t.enabled = t.pending && s->keyboard_focus &&
+                    wl_resource_get_client(r) ==
+                        wl_resource_get_client(s->keyboard_focus->xdg);
+        t.cursor = t.pending_cursor;
+        t.surrounding = t.pending_surrounding;
+        t.selection = t.pending_selection;
+        t.anchor = t.pending_anchor;
+        t.hint = t.pending_hint;
+        t.purpose = t.pending_purpose;
         ++t.serial;
         get<Server>(r)->sync_ime();
+        get<Server>(r)->ime_spot(get<Server>(r)->keyboard_focus);
       }};
   auto *t = resource(c, &zwp_text_input_v3_interface, 1, id, &ops, s,
                      [](wl_resource *r) {
@@ -1334,8 +1662,12 @@ static void text_create(wl_client *c, wl_resource *r, uint32_t id,
                        s->sync_ime();
                      });
   s->texts.emplace(t, Text{});
+  if (s->keyboard_focus && wl_resource_get_client(t) ==
+                               wl_resource_get_client(s->keyboard_focus->xdg))
+    zwp_text_input_v3_send_enter(t, s->keyboard_focus->node->resource);
 }
 void Server::globals() {
+  input_globals();
   wl_global_create(display, &wl_compositor_interface, 4, this,
                    [](wl_client *c, void *data, uint32_t v, uint32_t id) {
                      static const struct wl_compositor_interface ops = {
@@ -1350,18 +1682,14 @@ void Server::globals() {
                      resource(c, &wl_subcompositor_interface, 1, id, &ops,
                               data);
                    });
-  wl_global_create(
-      display, &xdg_wm_base_interface, 1, this,
-      [](wl_client *c, void *data, uint32_t, uint32_t id) {
-        static const struct xdg_wm_base_interface ops = {
-            destroy_request,
-            [](wl_client *, wl_resource *r, uint32_t) {
-              wl_resource_post_error(r, XDG_WM_BASE_ERROR_INVALID_POSITIONER,
-                                     "xdg positioners unsupported");
-            },
-            xdg_surface_create, [](wl_client *, wl_resource *, uint32_t) {}};
-        resource(c, &xdg_wm_base_interface, 1, id, &ops, data);
-      });
+  wl_global_create(display, &xdg_wm_base_interface, 6, this,
+                   [](wl_client *c, void *data, uint32_t v, uint32_t id) {
+                     static const struct xdg_wm_base_interface ops = {
+                         destroy_request, positioner_create, xdg_surface_create,
+                         [](wl_client *, wl_resource *, uint32_t) {}};
+                     resource(c, &xdg_wm_base_interface, std::min(v, 6u), id,
+                              &ops, data);
+                   });
   wl_global_create(display, &wp_viewporter_interface, 1, this,
                    [](wl_client *c, void *data, uint32_t, uint32_t id) {
                      static const struct wp_viewporter_interface ops = {
@@ -1404,16 +1732,15 @@ void Server::globals() {
       display, &wl_seat_interface, 5, this,
       [](wl_client *c, void *data, uint32_t v, uint32_t id) {
         static const struct wl_seat_interface ops = {
-            seat_pointer, seat_keyboard,
-            [](wl_client *, wl_resource *r, uint32_t) {
-              wl_resource_post_error(r, WL_DISPLAY_ERROR_INVALID_METHOD,
-                                     "touch not advertised");
-            },
-            destroy_request};
+            seat_pointer, seat_keyboard, seat_touch, destroy_request};
         auto *r =
             resource(c, &wl_seat_interface, std::min(v, 5u), id, &ops, data);
-        wl_seat_send_capabilities(r, WL_SEAT_CAPABILITY_POINTER |
-                                         WL_SEAT_CAPABILITY_KEYBOARD);
+        wl_seat_send_capabilities(
+            r, WL_SEAT_CAPABILITY_POINTER | WL_SEAT_CAPABILITY_KEYBOARD |
+                   ((static_cast<Server *>(data)->platform.testing() ||
+                     static_cast<Server *>(data)->platform.touch_available)
+                        ? WL_SEAT_CAPABILITY_TOUCH
+                        : 0));
         if (v >= 2)
           wl_seat_send_name(r, "anvildroid-x11");
       });
@@ -1462,6 +1789,7 @@ int main(int argc, char **argv) {
   try {
     // Block before EGL starts worker threads, so the event-loop signal sources
     // always wake the indefinite wait, including an endpoint with no clients.
+    signal(SIGPIPE, SIG_IGN);
     sigset_t signals;
     sigemptyset(&signals);
     sigaddset(&signals, SIGTERM);
@@ -1499,12 +1827,13 @@ int main(int argc, char **argv) {
       wl_display_flush_clients(server.display);
       // EGL/Xlib round trips can read events into Xlib's queue, leaving its
       // socket empty. Drain those before entering an indefinite fd wait.
+      int timeout = -1;
       if (!server.platform.testing()) {
         XFlush(server.platform.display);
         if (XEventsQueued(server.platform.display, QueuedAlready))
-          continue;
+          timeout = 0;
       }
-      auto status = wl_event_loop_dispatch(server.loop, -1);
+      auto status = wl_event_loop_dispatch(server.loop, timeout);
       if (status < 0 && errno == EINTR)
         continue;
       ensure(status >= 0, "Waydroid endpoint dispatch failed");

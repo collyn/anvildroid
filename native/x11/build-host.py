@@ -17,6 +17,8 @@ PROTOCOLS = {
     'linux-dmabuf': 'unstable/linux-dmabuf/linux-dmabuf-unstable-v1.xml',
     'text-input': 'unstable/text-input/text-input-unstable-v3.xml',
     'xdg-activation': 'staging/xdg-activation/xdg-activation-v1.xml',
+    'pointer-constraints': 'unstable/pointer-constraints/pointer-constraints-unstable-v1.xml',
+    'relative-pointer': 'unstable/relative-pointer/relative-pointer-unstable-v1.xml',
 }
 
 
@@ -38,7 +40,7 @@ def build():
         obj = OUT / (name + '.o')
         subprocess.run(cc + ['-O2', '-c', str(OUT / (name + '.c')), '-o', str(obj)], check=True)
         objects.append(str(obj))
-    packages = ['wayland-server', 'egl', 'glesv2', 'x11', 'xcursor', 'xkbcommon']
+    packages = ['wayland-server', 'egl', 'glesv2', 'x11', 'xcursor', 'xkbcommon', 'xi', 'xfixes', 'xext']
     flags = shlex.split(subprocess.check_output(['pkg-config', '--cflags', *packages], text=True))
     libs = shlex.split(subprocess.check_output(['pkg-config', '--libs', *packages], text=True))
     checked = ['-fsanitize=address,undefined', '-fno-omit-frame-pointer'] if os.environ.get('ANVILDROID_X11_SANITIZE') == '1' else []
@@ -50,6 +52,12 @@ def build():
     subprocess.run(cxx + ['-std=c++17', '-O2', '-g', '-Wall', '-Wextra', '-Werror',
                          *checked, '-I' + str(OUT), str(HERE / 'host-client-check.cpp'), *objects,
                          '-o', str(OUT / 'host-client-check'), '-lwayland-client', '-lX11'], check=True)
+    subprocess.run(cxx + ['-std=c++17', '-O2', '-g', '-Wall', '-Wextra', '-Werror',
+                         *checked, '-I' + str(OUT), *flags, str(HERE / 'feature-state-check.cpp'),
+                         *objects, '-o', str(OUT / 'feature-state-check'), *libs], check=True)
+    subprocess.run(cxx + ['-std=c++17', '-O2', '-g', '-Wall', '-Wextra', '-Werror',
+                         *checked, '-I' + str(OUT), str(HERE / 'feature-client-check.cpp'), *objects,
+                         '-o', str(OUT / 'feature-client-check'), '-lwayland-client', '-lX11', '-lXtst'], check=True)
     print(OUT / 'anvildroid-x11-host')
     (OUT / 'NOTICE').write_text('\n\n'.join(notices) + '\n')
     (OUT / 'source-manifest.json').write_text(json.dumps(dict(

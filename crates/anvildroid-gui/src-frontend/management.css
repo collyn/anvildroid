@@ -467,7 +467,7 @@
 :is(#page-images, #page-adb) .image-catalog-table summary { font-size: 12px; min-height: 20px; padding: 0; color: #9aafc7; }
 :is(#page-images, #page-adb) .image-catalog-table summary::after { display: none; }
 :is(#page-images, #page-adb) .image-library-official { margin-top: 12px; padding-top: 10px; }
-:is(#page-images, #page-adb) :is(#image-library-message, #custom-image-status):empty { display: none; }
+:is(#page-images, #page-adb) #custom-image-status:empty { display: none; }
 
 :is(#page-images, #page-adb) .image-catalog-table td:last-child { text-align: right; }
 :is(#page-images, #page-adb) .image-catalog-table .runtime-actions { justify-content: flex-end; flex-wrap: nowrap; }

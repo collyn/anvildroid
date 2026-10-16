@@ -25,9 +25,15 @@ def private_xim(environment, root, enabled):
                        XDG_CONFIG_HOME=str(root / 'config'),
                        XDG_CACHE_HOME=str(root / 'cache'),
                        XDG_DATA_HOME=str(root / 'data'))
+    profile = root / 'config/fcitx5/profile'
+    profile.parent.mkdir(parents=True, exist_ok=True)
+    profile.write_text('[Groups/0]\nName=Default\nDefault Layout=us\nDefaultIM=keyboard-us\n\n[Groups/0/Items/0]\nName=keyboard-us\nLayout=\n\n[Groups/0/Items/1]\nName=pinyin\nLayout=\n\n[GroupOrder]\n0=Default\n')
+    (profile.parent / 'conf').mkdir(exist_ok=True)
+    (profile.parent / 'conf/xim.conf').write_text('UseOnTheSpot=True\n')
+    environment['ANVIL_TEST_COMPOSITION'] = '1'
     with (root / 'xim.log').open('w+') as log:
         method = subprocess.Popen(
-            ['fcitx5', '-D', '--disable=all', '--enable=xcb,xim,keyboard,dbus'],
+            ['fcitx5', '-D', '--disable=all', '--enable=xcb,xim,keyboard,dbus,pinyin,punctuation'],
             env=environment, stdout=log, stderr=log)
         try:
             deadline = time.monotonic() + 5
@@ -58,6 +64,7 @@ def private_xim(environment, root, enabled):
 def main(software_x11=False, xim=False):
     assert not xim or software_x11, 'XIM tests require a private Xvfb'
     subprocess.run([str(OUT / 'surface-tree-check')], check=True)
+    subprocess.run([str(OUT / 'feature-state-check')], check=True)
     with tempfile.TemporaryDirectory(prefix='anvil-x11-host-', dir='/tmp') as directory, ExitStack() as cleanup:
         root = Path(directory)
         socket = root / 'wayland-test'
@@ -92,6 +99,9 @@ def main(software_x11=False, xim=False):
                 environment.pop('LC_CTYPE', None)
             finally:
                 os.close(read)
+        if software_x11:
+            subprocess.run([str(OUT / 'feature-state-check'), '--x11-input-burst'],
+                           env=environment, check=True, timeout=10)
         with private_xim(environment, root, xim), (root / 'host.log').open('w+') as log:
             host = subprocess.Popen([str(OUT / 'anvildroid-x11-host'),
                                      *([] if software_x11 else ['--test-headless']), '--socket', str(socket)],
@@ -104,6 +114,9 @@ def main(software_x11=False, xim=False):
                     time.sleep(.02)
                 log.seek(0)
                 assert 'toplevel_created' not in log.read(), 'Start opened a window'
+                if os.environ.get('ANVIL_X11_FEATURES_ONLY'):
+                    subprocess.run([str(OUT / 'feature-client-check'), str(socket)], env=environment, check=True, timeout=30)
+                    return
                 baseline = None
                 environment['ANVIL_TEST_HOST_PID'] = str(host.pid)
                 for index in range(5):
@@ -128,6 +141,9 @@ def main(software_x11=False, xim=False):
                 assert output.count('x11_toplevel_created=') == 12
                 assert output.count('x11_toplevel_mapped=') == 11
                 assert output.count('x11_toplevel_unmapped=') == 5
+                if software_x11:
+                    subprocess.run([str(OUT / 'feature-client-check'), str(socket)], env=environment, check=True, timeout=30)
+                    assert host.poll() is None
                 print('PASS repeated client teardown and independent app windows; Start creates no window')
             except BaseException:
                 log.seek(0)

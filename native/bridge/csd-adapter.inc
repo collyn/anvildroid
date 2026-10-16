@@ -415,6 +415,7 @@ static void csd_pointer_enter(void *data, struct proxy *p, uint32_t serial,
   struct object *o = data;
   pthread_mutex_lock(mutex);
   o->cursor_serial=serial;
+  clipboard_input(serial);
   /* A compositor-owned resize consumes the release. Its subsequent enter
    * ends that grab, even when the pointer returns to Android content or a
    * different window. The transient header focus is already gone. */
@@ -503,6 +504,7 @@ static void csd_pointer_button(void *data, struct proxy *p, uint32_t serial, uin
   void (*closed)(void *,struct proxy *)=0;
   void *closed_data=0; struct proxy *closed_proxy=0;
   pthread_mutex_lock(mutex);
+  clipboard_input(serial);
   int suppress=o->csd_suppress;
   struct csd_frame *f=o->csd_focus;
   if (button==0x110 && state==0) csd_resize_finished(o);

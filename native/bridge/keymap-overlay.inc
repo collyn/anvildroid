@@ -613,6 +613,7 @@ static void keymap_kenter(void *data, struct proxy *p, uint32_t serial,
                           struct proxy *surface, void *keys) {
   struct object *o = data;
   pthread_mutex_lock(mutex);
+  clipboard_input(serial);
   keymap_hints_clear(o->keyboard_focus);
   o->keyboard_focus = keymap_owner(surface);
   pthread_mutex_unlock(mutex);
@@ -638,6 +639,7 @@ static void keymap_key(void *data, struct proxy *p, uint32_t serial,
                        uint32_t time, uint32_t key, uint32_t state) {
   struct object *o = data;
   pthread_mutex_lock(mutex);
+  clipboard_input(serial);
   if(csd_menu_key(o,key,state)){pthread_mutex_unlock(mutex);return;}
   struct keymap_overlay *f = o->keyboard_focus ? o->keyboard_focus->overlay : 0;
   int blocked =
@@ -767,6 +769,7 @@ static void keymap_tdown(void *data, struct proxy *p, uint32_t serial,
   struct object *o = data;
   int slot = -1, blocked = 0;
   pthread_mutex_lock(mutex);
+  clipboard_input(serial);
   for (int i = 0; i < 32; ++i)
     if (!(o->keymap_touch_present & (1u << i))) {
       slot = i;

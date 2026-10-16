@@ -15,6 +15,9 @@
 #include <X11/Xcursor/Xcursor.h>
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
+#include <X11/extensions/XInput2.h>
+#include <X11/extensions/Xfixes.h>
+#include <X11/extensions/shape.h>
 #include <cassert>
 #include <cstdio>
 #include <cstring>
@@ -128,12 +131,53 @@ public:
   Display *display = nullptr;
   Atom protocols = 0, wm_delete = 0;
   XIM xim = nullptr;
+  int xi_opcode = 0;
+  bool touch_available = false, constraints_available = false;
   explicit Platform(bool test = false) : headless(test) {
     if (test)
       return;
     XInitThreads();
     display = XOpenDisplay(nullptr);
     ensure(display, "Cannot connect to the selected X11 desktop");
+    XSetErrorHandler([](Display *, XErrorEvent *event) -> int {
+      // X11 windows can disappear while asynchronous selection/grab work is in
+      // flight.
+      if (event->error_code != BadWindow && event->error_code != BadDrawable)
+        fprintf(
+            stderr,
+            "X11 protocol error code=%d request=%d minor=%d resource=0x%lx\n",
+            event->error_code, event->request_code, event->minor_code,
+            event->resourceid);
+      return 0;
+    });
+    int first_event, first_error;
+    if (XQueryExtension(display, "XInputExtension", &xi_opcode, &first_event,
+                        &first_error)) {
+      int major = 2, minor = 2;
+      if (XIQueryVersion(display, &major, &minor) != Success || major < 2)
+        xi_opcode = 0;
+      else {
+        touch_available = major > 2 || minor >= 2;
+        unsigned char bits[XIMaskLen(XI_LASTEVENT)]{};
+        XISetMask(bits, XI_RawMotion);
+        XIEventMask mask{XIAllMasterDevices, int(sizeof(bits)), bits};
+        XISelectEvents(display, DefaultRootWindow(display), &mask, 1);
+        memset(bits, 0, sizeof(bits));
+        XISetMask(bits, XI_HierarchyChanged);
+        mask.deviceid = XIAllDevices;
+        XISelectEvents(display, DefaultRootWindow(display), &mask, 1);
+      }
+    }
+    int fixes_event, fixes_error, shape_event, shape_error;
+    int fixes_major = 5, fixes_minor = 0, shape_major = 0, shape_minor = 0;
+    constraints_available =
+        xi_opcode &&
+        XFixesQueryExtension(display, &fixes_event, &fixes_error) &&
+        XFixesQueryVersion(display, &fixes_major, &fixes_minor) &&
+        fixes_major >= 2 &&
+        XShapeQueryExtension(display, &shape_event, &shape_error) &&
+        XShapeQueryVersion(display, &shape_major, &shape_minor) &&
+        (shape_major > 1 || (shape_major == 1 && shape_minor >= 1));
     Bool repeat;
     XkbSetDetectableAutoRepeat(display, True, &repeat);
     egl = eglGetDisplay((EGLNativeDisplayType)display);
@@ -340,6 +384,16 @@ public:
         visual->depth, InputOutput, visual->visual,
         CWColormap | CWEventMask | CWBackPixel | CWBorderPixel, &attr);
     XFree(visual);
+    if (xi_opcode) {
+      unsigned char bits[XIMaskLen(XI_LASTEVENT)]{};
+      for (int event : {XI_Motion, XI_ButtonPress, XI_ButtonRelease})
+        XISetMask(bits, event);
+      if (touch_available)
+        for (int event : {XI_TouchBegin, XI_TouchUpdate, XI_TouchEnd})
+          XISetMask(bits, event);
+      XIEventMask mask{XIAllMasterDevices, int(sizeof(bits)), bits};
+      XISelectEvents(display, w.window, &mask, 1);
+    }
     XSetWMProtocols(display, w.window, &wm_delete, 1);
     unsigned long hints[] = {2, 0, 0, 0, 0};
     XChangeProperty(display, w.window, atom("_MOTIF_WM_HINTS"),

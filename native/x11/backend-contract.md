@@ -30,10 +30,13 @@ The old framebuffer-only guest HAL and input companion have been removed.
 
 The endpoint supports xdg toplevel lifecycle/configure acknowledgement,
 subsurface commits/stacking, SHM, LINEAR RGB DMA-BUF imports, viewporter, output,
-pointer/keyboard focus, guest cursors, text-input-v3 via XIM and activation.
-Waydroid's menus are subsurfaces; xdg popups, touch devices and pointer confinement
-are not advertised. Clipboard and rich XIM preedit still need adapter work before
-claiming every Wayland feature is supported. There is no automatic Weston fallback.
+pointer/keyboard/touch focus, guest cursors, text-input-v3 with XIM preedit/caret,
+relative pointers and pointer confinement/lock, clipboard and activation. xdg
+positioners/popups support constrained placement, reposition and nested grabs;
+Waydroid's existing CSD menus remain subsurfaces. Clipboard text reaches Android
+through the authenticated IME companion. See README for transfer bounds and the
+host XIM callback configuration. Physical touchscreen and broader IME/WM hardware
+matrices still require live acceptance. There is no automatic Weston fallback.
 
 ## Acceptance checks before deployment as the integrated backend
 

@@ -1007,4 +1007,5 @@ int main(int argc, char **argv) {
   wl_display_disconnect(c.display);
   puts("PASS real protocol: two apps, bridge CSD child, configure ACK, "
        "frame/release, independent close, teardown");
+  return 0;
 }

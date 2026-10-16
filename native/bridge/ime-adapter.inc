@@ -20,6 +20,12 @@ static uint32_t ime_manager_name, ime_serial, ime_first_serial;
 static uint64_t ime_generation, ime_enabled_generation;
 static int ime_connected, ime_active, ime_type, ime_enabled, ime_broken;
 static char ime_package[256];
+static char ime_surrounding[4097];
+static int ime_cursor,ime_anchor,ime_rect_valid,ime_rect_x,ime_rect_y,ime_rect_h;
+static unsigned ime_metadata_revision,ime_metadata_applied;
+static int ime_dirty;
+static void ime_cursor_geometry(struct object *,int *,int *,int *);
+
 static struct anvil_ime_state ime_state;
 /* Android may acknowledge a batch after the editor has already changed its
  * composing state. Keep the authenticated channel alive and absorb bursts. */
@@ -44,6 +50,8 @@ static const struct message ime_events[] = {
     {"delete_surrounding_text", "uu", 0}, {"done", "u", 0}};
 static const struct interface ime_text_interface = {
     "zwp_text_input_v3", 1, 8, ime_requests, 6, ime_events};
+
+#include "clipboard-adapter.inc"
 
 static void ime_enqueue(const char *value) {
   if (!ime_connected || ime_broken) return;
@@ -89,14 +97,17 @@ static void ime_commit_state(void) {
   ++ime_serial;
 }
 static void ime_sync(void) {
+  clipboard_sync();
   if (!ime_text) return;
+  ime_dirty = 0;
   struct object *s = find(ime_surface);
   int klass = ime_type & 15, variation = ime_type & 0xff0;
   int password = (klass == 1 && (variation == 0x80 || variation == 0x90 ||
                                  variation == 0xe0)) ||
                  (klass == 2 && variation == 0x10);
   int want = ime_connected && !ime_broken && ime_active && !password &&
-             s && s->app && !s->overlay && s->app_id && !strcmp(s->app_id, ime_package);
+             s && !s->overlay && (s->full_ui || (s->app && s->app_id && !strcmp(s->app_id, ime_package)));
+  if (!want) ime_metadata_applied = ime_metadata_revision;
   if (ime_enabled && (!want || ime_enabled_generation != ime_generation)) {
     wayland_send(ime_text, 2, 0);
     ime_commit_state();
@@ -106,6 +117,7 @@ static void ime_sync(void) {
     __android_log_print(4, "AnvilDroidIme", "text-input disabled");
   }
   if (want && !ime_enabled) {
+    ime_metadata_applied = ime_metadata_revision - 1;
     ime_enabled = 1;
     ime_enabled_generation = ime_generation;
     anvil_ime_focus(&ime_state, 1);
@@ -117,6 +129,16 @@ static void ime_sync(void) {
     ime_first_serial = ime_serial;
     __android_log_print(4, "AnvilDroidIme", "text-input enabled for %s generation %llu",
                         ime_package, (unsigned long long)ime_generation);
+  }
+  if(ime_enabled && ime_metadata_applied != ime_metadata_revision){
+    union argument surrounding[3]={{.s=ime_surrounding},{.i=ime_cursor},{.i=ime_anchor}};
+    wayland_send(ime_text,3,surrounding);
+    if(ime_rect_valid){
+      int x=ime_rect_x,y=ime_rect_y,h=ime_rect_h;
+      ime_cursor_geometry(s,&x,&y,&h);
+      union argument rect[4]={{.i=x},{.i=y},{.i=1},{.i=h}};wayland_send(ime_text,6,rect);
+    }
+    ime_commit_state();ime_metadata_applied=ime_metadata_revision;
   }
 }
 static void ime_enter(void *data, struct proxy *text, struct proxy *surface) {
@@ -168,6 +190,7 @@ static void (*ime_listener[])(void) = {
     (void (*)(void))ime_preedit, (void (*)(void))ime_insert,
     (void (*)(void))ime_delete_event, (void (*)(void))ime_done};
 static void ime_create(void) {
+  clipboard_create();
   if (!ime_manager || !ime_seat || ime_text) return;
   union argument a[2] = {{.o = 0}, {.o = ime_seat}};
   ime_text = real_marshal(ime_manager, 1, a, &ime_text_interface, 1);
@@ -179,6 +202,19 @@ static void ime_create(void) {
 static void ime_global(void *data, struct proxy *registry, uint32_t name,
                        const char *interface, uint32_t version) {
   struct object *o = data;
+  if (!strcmp(interface,"wl_data_device_manager") && clip_manager_i && clip_device_i && clip_source_i && clip_user_data) {
+    pthread_mutex_lock(mutex);
+    if(!clip_manager){
+      union argument a[4]={{.u=name},{.s=interface},{.u=1},{.o=0}};
+      clip_manager=real_marshal(registry,0,a,clip_manager_i,1);
+      clip_manager_name=name;
+      if(clip_manager&&real_set_queue)real_set_queue(clip_manager,0);
+      clipboard_create();
+    }
+    pthread_mutex_unlock(mutex);
+    /* HWC has no data-device listener. Keep one clipboard owner in the bridge. */
+    return;
+  }
   if (!strcmp(interface,"xdg_activation_v1")) { window_activation_global(o,name,version); return; }
   if (!strcmp(interface, "zxdg_decoration_manager_v1")) {
     pthread_mutex_lock(mutex);
@@ -220,6 +256,7 @@ static void ime_global(void *data, struct proxy *registry, uint32_t name,
 static void ime_global_remove(void *data, struct proxy *registry, uint32_t name) {
   struct object *o = data;
   if (window_activation_remove(o,name)) return;
+  if(name==clip_manager_name){pthread_mutex_lock(mutex);clipboard_disconnect();clip_manager_name=0;pthread_mutex_unlock(mutex);return;}
   struct decoration_binding *binding=decoration_for(o->display);
   if (binding && name == binding->name) {
     pthread_mutex_lock(mutex);

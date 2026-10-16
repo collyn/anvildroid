@@ -24,11 +24,49 @@ waiting, flushes input before rendering, and uses EGL swap interval zero: Androi
 paces the producer and the desktop compositor schedules scanout. Stop signals
 also wake this wait, including when no clients remain. DMA-BUF snapshot completion
 still precedes buffer release; this scheduling change does not bypass GPU fences.
+Native input runs in bounded turns so continuous motion cannot starve guest
+requests. Consecutive absolute motion samples are coalesced within each turn,
+without reordering buttons, keys, focus or touch events. Duplicate coordinates
+are suppressed. The default 4 KiB protocol read batch is retained: enlarging it
+also batches DMA-BUF snapshots and can starve XIM or overflow the legacy
+composer's outgoing request queue.
+The shared bridge requests a bounded 1 MiB client socket send buffer so older
+libwayland clients can absorb short multi-layer Android clipboard-overlay
+bursts while DMA-BUF snapshots complete. This adds capacity, not a flush delay.
 
 Host XIM is focused only while the focused guest has enabled text-input-v3.
 Keymap editing and other non-text input bypass XIM and receive physical keys,
 even when Fcitx is active. Remote XIM protocol events are filtered before
 native window lookup, preserving UTF-8 commits without duplicate raw keys.
+XIM callback preedit edits use Unicode character offsets internally and emit
+UTF-8 byte caret positions. Android supplies surrounding text/selection and
+cursor-anchor geometry, including Full UI scaling. Password fields retain the
+physical-key path without exporting surrounding text. Preedit and commit strings
+are bounded to 4,000 UTF-8 bytes per message; surrounding context above that
+protocol limit is omitted. Fcitx must enable
+`UseOnTheSpot=True` in `~/.config/fcitx5/conf/xim.conf` to expose preedit callbacks;
+with off-the-spot XIM, the host input method owns its composition UI. The adapter
+does not change or restart the user's input method.
+
+`wl_data_device_manager` bridges X11 CLIPBOARD asynchronously, including TARGETS,
+UTF8_STRING/TEXT and INCR transfers. Native MIME transfers are bounded to 32 MiB
+and 10 seconds. The authenticated Android IME companion synchronizes plain UTF-8
+text up to 1 MiB in chunks, suppresses echoes, and leaves content URIs untouched.
+Offers and writes require guest keyboard focus and a delivered input serial.
+An initial Android snapshot does not replace the host's clipboard at startup.
+This does not provide drag and drop or the X11 PRIMARY selection.
+
+XI2 supplies multitouch with stable contact IDs, surface-local coordinates,
+client cancellation and suppression of duplicate touch-emulated pointer events.
+Relative-pointer and pointer-constraints globals require XI2, XFixes and Shape.
+Locked/confined pointers support one-shot/persistent lifetime, committed regions,
+release hints and focus/surface teardown. Confinement shape is refreshed only
+when its geometry or input region changes, rather than on each rendered frame.
+
+xdg popups use native override-redirect/transient windows, positioner
+flip/slide/resize constraints, desktop workarea, reactive placement, reposition
+acknowledgements and nested grabs. Outside clicks and Escape dismiss grabs and
+restore parent focus.
 
 Native windows use a depth-32 ARGB EGL visual and a transparent clear color, so
 the desktop compositor receives the bridge's premultiplied rounded CSD pixels.
@@ -71,7 +109,8 @@ Build and test without connecting to the user's desktop:
 python3 native/x11/build-host.py
 python3 native/x11/host-check.py
 python3 native/x11/host-check.py --software-x11
-# Optional: requires fcitx5, dbus-run-session and xprop; all run privately.
+# Xvfb tests also require xclip and libXtst; XIM tests require Fcitx Pinyin,
+# dbus-run-session and xprop. All run privately.
 python3 native/x11/host-check.py --xim
 python3 services/x11-integration-test.py
 python3 services/x11-lifecycle-test.py
@@ -89,7 +128,10 @@ CSD hit testing, move/resize serial ownership and a WM consuming button releases
 before the next app is clicked, unchanged accepted geometry after a WM resize,
 deferred resize requests without stale drawable dimensions, CSD/content edge
 pixels after the grab ends, cursor reuse, canvas
-calibration and WM close delivery. A separate chrome fixture checks raw ARGB
+calibration and WM close delivery. Dedicated feature checks cover Unicode
+preedit/caret replacement, deterministic multitouch/cancellation, native pointer
+lock/confinement/relative motion, nested popup grabs/reposition, and bidirectional
+1 MiB clipboard INCR. The private Fcitx test composes Pinyin into a CJK commit. A separate chrome fixture checks raw ARGB
 corner/antialias pixels from the shared bridge style, every pixel of all four
 5 px resize edges, diagonal corners, padded configure/accepted sizes and frame
 extents across maximize/fullscreen/restore. Raw alpha checks on Xvfb do not
@@ -139,8 +181,18 @@ resize/maximize/restore and the bridge CSD menu render correctly, and closing
 Full UI allows launching a separate app again. The shared keymap editor also
 rendered in the app window and accepted Escape. Xorg and the RustDesk service
 kept their original PIDs; Weston was never started. Multi-runtime hardware,
-other guest GPU paths, clipboard and rich IME composition still need validation
-or adapter support before claiming complete Wayland parity.
+other guest GPU paths, physical touchscreen devices and broader IME/WM matrices
+still need live validation before claiming complete Wayland parity.
+
+Live feature checks on 2026-10-16 passed on the Default Android 13 runtime:
+Unicode host clipboard paste/copy-back and new text entry/copy passed before and
+after 4,000 targeted X11 motion events. HWC/SurfaceFlinger PIDs stayed unchanged,
+with no Wayland marshal errors. The private Fcitx test covers inline Pinyin
+preedit/caret/commit and ordered physical Control shortcuts; Android's receiver
+covers composing replacement, emoji deletion and stale editor generations.
+Live keyboard probes used explicit events targeted at the disposable editor;
+XTest delivery on this desktop did not reach the target, while private Xvfb
+XTest checks passed. Physical touchscreen and broader IME/WM checks remain open.
 
 For AddressSanitizer/UBSan use a separate build directory:
 

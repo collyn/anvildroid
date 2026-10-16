@@ -60,7 +60,7 @@ public final class SmokeActivity extends Activity {
         throw new IOException("Editor assertion failed");
     }
     private JSONObject readResult(DataInputStream in) throws Exception {
-        for (int i = 0; i < 8; i++) {
+        for (int i = 0; i < 256; i++) {
             JSONObject msg = Wire.read(in);
             if (msg.optString("op").equals("result")) return msg;
         }

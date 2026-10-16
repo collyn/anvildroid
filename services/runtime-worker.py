@@ -947,13 +947,18 @@ def configure_desktop_ime(instance, work, shell, desktop):
         # aborting setup before we can install the keyboard on a fresh image.
         installed = 'package:org.anvildroid.ime' in shell(
             'pm', 'list', 'packages', '--user', '0', 'org.anvildroid.ime').splitlines()
-        # A previous PackageInstaller call can finish after lxc-attach has
-        # timed out. If Android already exposes the package, trust that
-        # completed install and record the marker instead of reinstalling on
-        # every boot.
+        needs_install = not installed
         if installed and (not version.exists() or version.read_text() != digest):
-            version.write_text(digest)
-        if not installed:
+            # Verify the actual installed APK. A completed timed-out install can
+            # be reused; an older companion must be upgraded with the bridge.
+            paths = shell('pm', 'path', 'org.anvildroid.ime').splitlines()
+            require(len(paths) == 1 and paths[0].startswith('package:/data/app/') and
+                    paths[0].endswith('/base.apk'), 'Unexpected desktop IME APK path')
+            installed_digest = shell('sha256sum', paths[0][8:]).split()[0]
+            needs_install = installed_digest != digest
+            if not needs_install:
+                version.write_text(digest)
+        if needs_install:
             target = work / 'data/local/tmp/anvildroid-desktop-ime.apk'
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(apk, target)

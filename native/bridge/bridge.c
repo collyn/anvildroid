@@ -194,6 +194,7 @@ static int task_count;
 static int object_is(const struct object *, const char *);
 static void *task_worker(void *unused);
 static void *ime_worker(void *unused);
+static void clipboard_input(uint32_t);
 static void ime_protocol_init(void *library);
 static void window_activation_protocol_init(void *library);
 static void window_activation_global(struct object *,uint32_t,uint32_t);
@@ -333,7 +334,23 @@ static void decoration_destroy(struct object *top) {
 #include "game-fit.inc"
 #include "content-clip.inc"
 #include "csd-menu.inc"
+static void ime_cursor_geometry(struct object *s,int *x,int *y,int *h){
+  if(s->full_ui){
+    int fw,fh,ox,oy;full_ui_box(s,&fw,&fh,&ox,&oy);
+    *x=ox+full_ui_scaled(s,*x-display_projection.x,0,0);
+    *y=oy+full_ui_scaled(s,*y-display_projection.y,1,0);
+    *h=full_ui_scaled(s,*h,1,1);
+  }else{*x-=s->bx;*y-=s->by;}
+}
 static void ime_protocol_init(void *library) {
+  clip_manager_i=dlsym(library,"wl_data_device_manager_interface");
+  clip_source_i=dlsym(library,"wl_data_source_interface");
+  clip_device_i=dlsym(library,"wl_data_device_interface");
+  clip_user_data=dlsym(library,"wl_proxy_get_user_data");
+  if(!clip_manager_i)clip_manager_i=&clip_manager_interface;
+  if(!clip_source_i)clip_source_i=&clip_source_interface;
+  if(!clip_device_i)clip_device_i=&clip_device_interface;
+  if(!clip_user_data)clip_user_data=dlsym((void *)-1L,"wl_proxy_get_user_data");
   ime_object_types[0] = &ime_text_interface;
   ime_object_types[1] = dlsym(library, "wl_seat_interface");
   ime_surface_types[0] = dlsym(library, "wl_surface_interface");
@@ -1223,6 +1240,7 @@ static void bridge_disconnecting(struct wl_display *display) {
   decoration_global_name=decoration_bindings?decoration_bindings->name:0;
   decoration_available=decoration_manager!=0;
   if (ime_display==display) {
+    clipboard_disconnect();
     if (ime_text) {wayland_send(ime_text,0,0);real_destroy(ime_text);}
     if (ime_manager) {wayland_send(ime_manager,0,0);real_destroy(ime_manager);}
     ime_manager=ime_text=ime_seat=ime_surface=0;ime_display=0;
@@ -1434,6 +1452,10 @@ static void *task_worker(void *unused) {
     profile_state_poll();
     close_poll();
     keymap_io_poll();
+    pthread_mutex_lock(mutex);
+    if((clip_dirty && clip_device && clip_serial && ime_surface) ||
+       (ime_dirty && ime_text))keymap_wake();
+    pthread_mutex_unlock(mutex);
     int id = -1, width = 0, height = 0, resize_noop = 0;
     char persist_package[256] = "";
     int persist_w = 0, persist_h = 0;

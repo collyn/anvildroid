@@ -2,6 +2,7 @@
 #pragma once
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <stdexcept>
@@ -25,6 +26,7 @@ struct Surface {
     int scale = 1, transform = 0, dw = -1, dh = -1;
     Rect source{-1, -1, -1, -1};
     bool default_input = true;
+    uint64_t input_revision = 0;
     // Region subtraction is preserved as ordered operations.
     std::vector<std::pair<bool, Rect>> region;
   } current, pending, cached;

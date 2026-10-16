@@ -98,10 +98,12 @@ async function startRuntimeController() {
     // Direct invoke: the invoke() wrapper pins runtimeId, which Tauri would
     // reject as an unexpected argument for this command.
     const result = await tauriInvoke('start_runtime_controller');
-    status.textContent = result.message;
+    status.textContent = '';
+    showAppToast(result.message, result.ok ? 'success' : 'error');
     if (result.ok) await refreshController();
   } catch (error) {
-    status.textContent = `Cannot start runtime controller: ${error}`;
+    status.textContent = '';
+    showAppToast(`Cannot start runtime controller: ${error}`, 'error');
   } finally {
     button.disabled = false;
   }
@@ -149,13 +151,13 @@ async function restartRuntimeController() {
       }
     }
     if (!reachable) throw new Error(`Service restart finished, but reconnect failed: ${lastError}`);
-    controllerNotice = 'Controller restarted.';
+    showAppToast('Controller restarted.', 'success');
   } catch (error) {
-    controllerNotice = `Cannot restart controller: ${error}`;
-    showAppToast(controllerNotice, 'error');
+    showAppToast(`Cannot restart controller: ${error}`, 'error');
   } finally {
     if (locked) {
       controllerMutation = false;
+      document.getElementById('controller-message').textContent = '';
       await refreshController();
     }
     button.textContent = 'Restart controller';
@@ -329,12 +331,15 @@ function dismissAppToast() {
   document.getElementById('app-toast').hidden = true;
 }
 function showAppToast(message, type = 'info') {
+  message = String(message ?? '');
+  if (!message) return;
   clearTimeout(appToastTimer);
   const toast = document.getElementById('app-toast');
   document.getElementById('app-toast-message').textContent = message;
   toast.className = `app-toast ${type}`;
   toast.hidden = false;
-  appToastTimer = setTimeout(dismissAppToast, type === 'error' ? 10000 : type === 'success' ? 3500 : 6000);
+  const minimumDuration = type === 'error' ? 10000 : type === 'success' ? 3500 : 6000;
+  appToastTimer = setTimeout(dismissAppToast, Math.min(12000, Math.max(minimumDuration, message.length * 50)));
 }
 document.getElementById('app-toast-close').addEventListener('click', dismissAppToast);
 
@@ -528,10 +533,10 @@ document.getElementById('install-touch-probe').addEventListener('click',async()=
     if(!await AppDialog.confirm(`Install Touch Probe in ${record.name}?`,{title:'Touch diagnostics',kind:'info',okLabel:'Install',cancelLabel:'Cancel'}))return;
     status.textContent='Installing…';
     const result=await tauriInvoke('install_touch_probe',{runtimeId:id});
-    status.textContent=result.message;
-    if(!result.success)showAppToast(result.message||'Touch Probe installation failed.','error');
+    status.textContent='';
+    showAppToast(result.message || (result.success ? 'Touch Probe installed.' : 'Touch Probe installation failed.'), result.success ? 'success' : 'error');
     await refreshManagedLibrary();
-  }catch(e){status.textContent='Installation failed.';showAppToast(`Touch Probe: ${e.message||e}`,'error');}
+  }catch(e){status.textContent='';showAppToast(`Touch Probe: ${e.message||e}`,'error');}
   finally{probeInstallBusy=false;select.disabled=false;button.disabled=false;window.AnvilKeymapLibrary?.updateDiagnostics();}
 });
 
@@ -1576,7 +1581,6 @@ let reinstallTargetId = null;
 let controllerTimer = null;
 let runtimeUsageTimer = null, runtimeUsagePolling = false;
 let controllerError = '';
-let controllerNotice = '';
 let controllerPending = null;
 let controllerRequirements = null;
 let controllerSetupError = '';
@@ -1756,7 +1760,7 @@ let imageDownloadBusy = false;
 let imageDownloadTimer = null;
 let imageDownloadEpoch = 0;
 let selectedImageLibraryId = '';
-let armSourceState = {sources: [], busy: false, error: '', url:'', sha256:'', notice:'', engine:'libndk', version:''};
+let armSourceState = {sources: [], busy: false, error: '', url:'', sha256:'', engine:'libndk', version:''};
 let armSourcesRefresh = null;
 function refreshArmSources({light = false} = {}) {
   if (armSourcesRefresh) return armSourcesRefresh;
@@ -1934,8 +1938,10 @@ document.getElementById('available-runtime-images').addEventListener('click', as
     const item = (imageDownloadState?.available_images || []).find(entry => entry.library_id === rename.dataset.imageRename);
     const name = await AppDialog.prompt('Custom image name', item?.custom_name || 'Custom image', {title:'Rename image', okLabel:'Save name'});
     if (!name?.trim()) return;
-    try { renderImageDownload(await controllerRequest({op:'image_rename', image_id:rename.dataset.imageRename, name:name.trim()})); }
-    catch (error) { document.getElementById('image-library-message').textContent = `Cannot rename image: ${error}`; }
+    try {
+      renderImageDownload(await controllerRequest({op:'image_rename', image_id:rename.dataset.imageRename, name:name.trim()}));
+      showAppToast('Image name saved.', 'success');
+    } catch (error) { showAppToast(`Cannot rename image: ${error}`, 'error'); }
     return;
   }
   if (!button || button.disabled || runtimeBatchBusy || imageDownloadBusy || imageDownloadActive()) return;
@@ -1961,7 +1967,7 @@ document.getElementById('available-runtime-images').addEventListener('click', as
     panel.scrollIntoView({block:'center', behavior:'smooth'});
     document.getElementById('controller-name').focus();
   } catch (error) {
-    document.getElementById('image-library-message').textContent = `Cannot select image: ${error}`;
+    showAppToast(`Cannot select image: ${error}`, 'error');
   } finally { imageDownloadBusy = false; renderAvailableImages(); renderCreateImageHint(); }
 });
 function renderArmSources(force = false) {
@@ -1972,7 +1978,7 @@ function renderArmSources(force = false) {
   const selected = versions.find(source => source.sha256 === armSourceState.version) || versions[0];
   const status = armSourceState.error ? `<p class="runtime-feedback error" role="alert">${escapeHtml(armSourceState.error)}</p>` : armSourceState.busy
     ? '<p role="status">Preparing ARM source… Downloading or reading files, then validating payload.</p><progress aria-label="Preparing ARM source"></progress>'
-    : armSourceState.notice ? `<p class="runtime-feedback success" role="status">${escapeHtml(armSourceState.notice)}</p>` : '';
+    : '';
   const list = sources.filter(source => source.installed).length ? `<details class="arm-source-list"><summary>Downloaded versions</summary>${sources.filter(source => source.installed).map(source => `<div class="arm-source-item"><span>${escapeHtml(source.label || source.provider)}<br><small>${escapeHtml(source.sha256.slice(0,12))}</small></span><span class="hint">${(Number(source.bytes || 0) / 1024 ** 2).toFixed(1)} MiB</span></div>`).join('')}</details>` : '';
   const markup = `<div class="arm-provider-fields"><label>Engine<select data-arm-catalog="engine"><option value="libndk" ${armSourceState.engine === 'libndk' ? 'selected' : ''}>libndk_translation</option><option value="libhoudini" ${armSourceState.engine === 'libhoudini' ? 'selected' : ''}>libhoudini</option></select></label><label>Version<select data-arm-catalog="version">${versions.map(source => `<option value="${escapeHtml(source.sha256)}" ${source === selected ? 'selected' : ''}>${escapeHtml(source.version || source.label)}</option>`).join('')}</select></label></div><button class="btn btn-primary" data-arm-source="builtin" data-arm-version="${escapeHtml(selected?.sha256 || '')}" ${armSourceState.busy || !selected || selected.installed ? 'disabled' : ''}>${selected?.installed ? 'Downloaded' : 'Download selected version'}</button><p class="hint">${escapeHtml(selected?.android || 'Select a version')}. Source: supremegamers GitHub. Catalog archives are SHA-256 pinned.</p><details class="arm-custom-import"><summary>Import custom version from URL, ZIP or folder</summary><div class="arm-source-form"><label>HTTPS archive URL<input id="arm-source-url" value="${escapeHtml(armSourceState.url)}" type="url" placeholder="https://…/libndk-translation.zip" spellcheck="false"></label><label>SHA-256 (optional for custom source)<input id="arm-source-sha256" value="${escapeHtml(armSourceState.sha256)}" type="text" inputmode="text" placeholder="64 hex characters" spellcheck="false"></label></div><div class="arm-source-actions"><button class="btn btn-quiet" data-arm-source="url" ${armSourceState.busy ? 'disabled' : ''}>Download URL</button><button class="btn btn-quiet" data-arm-source="archive" ${armSourceState.busy ? 'disabled' : ''}>Import archive…</button><button class="btn btn-quiet" data-arm-source="folder" ${armSourceState.busy ? 'disabled' : ''}>Import folder…</button></div><p class="hint">Accepted payload must contain <code>libndk_translation.so</code> or <code>libhoudini.so</code> under both <code>system/lib</code> and <code>system/lib64</code>. Installer scripts are never executed. Custom sources are experimental; verify publisher and checksum.</p></details>${status}${list}`;
   if (panel._armMarkup !== markup && (force || !panel.contains?.(document.activeElement))) { panel.innerHTML = markup; panel._armMarkup = markup; }
@@ -1997,7 +2003,7 @@ async function importArmSource(kind, version = '') {
     if (!result?.sha256) throw new Error('Controller returned an invalid ARM source record');
     armSourceState.sources = [result, ...(armSourceState.sources || []).filter(item => item.sha256 !== result.sha256)];
     armSourceState.error = '';
-    armSourceState.notice = 'ARM source ready. Select it in a stopped runtime, then save ARM translation.';
+    showAppToast('ARM source ready. Select it in a stopped runtime, then save ARM translation.', 'success');
     await refreshController();
   } catch (error) { armSourceState.error = `ARM source import failed: ${error}`; }
   finally { armSourceState.busy = false; renderArmSources(true); }
@@ -2283,7 +2289,6 @@ function renderWaydroidInitStatus(status) {
   if (!status) { line.textContent = ''; return; }
   if (status.state === 'installing' || status.state === 'initializing') line.textContent = status.detail || 'Working…';
   else if (status.state === 'failed') line.textContent = `Waydroid setup failed: ${status.error || status.detail || 'Unknown error'}`;
-  else if (status.state === 'done') line.textContent = status.detail || 'Waydroid setup complete.';
   else if (status.state === 'timeout') line.textContent = 'Waydroid initialization is still running in the background. Refresh to re-check.';
   else line.textContent = '';
 }
@@ -2312,6 +2317,7 @@ async function startWaydroidInitPolling() {
     onUpdate: renderWaydroidInitStatus,
     onDone: async status => {
       renderWaydroidInitStatus(status);
+      if (status.state === 'done') showAppToast(status.detail || 'Waydroid setup complete.', 'success');
       waydroidInitPolling = false;
       waydroidInitBusy = false;
       updateWaydroidSetupActions();
@@ -2542,7 +2548,6 @@ function renderController() {
         ${record.storage?.path?.split('/').pop().startsWith('.anvildroid-') ? '<p class="hint">Hidden folder: Ctrl+H to show. Administrator access required.</p>' : ''}
         ${needsImages && canMoveState ? '<p class="hint">Choose a storage location before Prepare.</p>' : ''}
         ${record.storage?.previous_path ? `<p class="hint">Retained copy: ${escapeHtml(record.storage.previous_path)}. Verify the runtime at its new location before removing this copy to reclaim space. Moving alone does not free space on the original disk.</p>` : ''}
-        ${record.storage?.job?.status === 'Succeeded' ? `<p class="setup-ready">Storage operation completed for ${escapeHtml(record.name)}.</p>` : ''}
         ${record.storage?.job?.error || record.storage?.error ? `<p class="runtime-feedback error" role="alert">${escapeHtml(record.storage.error || record.storage.job.error)}</p>` : ''}
       </div></details>
       <details class="runtime-settings-group" data-settings-key="${escapeHtml(record.id)}:arm" ${runtimeSettingsOpen.has(record.id + ':arm') ? 'open' : ''}><summary>ARM translation</summary><div class="runtime-arm-panel">${renderRuntimeArm(record, busy)}</div></details>
@@ -2618,7 +2623,7 @@ async function refreshController({light = false} = {}) {
     const records = await controllerRequest({ op: 'list' });
     if (!Array.isArray(records)) throw new Error('Invalid runtime list');
     const deleted = controllerRecords.filter(record => record.deletion_pending && !records.some(current => current.id === record.id));
-    if (deleted.length) controllerNotice = `Deleted runtime: ${deleted.map(record => record.name).join(', ')}.`;
+    if (deleted.length) showAppToast(`Deleted runtime: ${deleted.map(record => record.name).join(', ')}.`, 'success');
     const previousRecords = controllerRecords;
     const states = await Promise.all(records.map(async record => {
       try {
@@ -2650,6 +2655,9 @@ async function refreshController({light = false} = {}) {
       try { record.storage = await controllerRequest({ op: 'storage_info', id: r.id }); }
       catch (error) { record.storageLoadError = `Cannot load storage: ${error}`; }
       const previous = previousRecords.find(item => item.id === r.id);
+      if (previous?.storage?.job?.status === 'Running' && record.storage?.job?.status === 'Succeeded') {
+        showAppToast(`Storage operation completed for ${record.name}.`, 'success');
+      }
       const cached = kind => light && previous?.[kind] && previous.state === record.state && !previous.refreshError;
       try { record.display = cached('display') ? previous.display : await controllerRequest({op: 'display_info', id: r.id}); }
       catch (error) { record.displayError = `Cannot read display mode: ${error}`; }
@@ -2674,7 +2682,7 @@ async function refreshController({light = false} = {}) {
     document.getElementById('controller-connection').className = 'status-badge connected';
     document.getElementById('controller-start').style.display = 'none';
     document.getElementById('btn-start-controller').textContent = 'Start runtime controller';
-    message.textContent = controllerError || controllerNotice;
+    message.textContent = '';
   } catch (error) {
     create.disabled = true;
     controllerRequirements = null;
@@ -2730,7 +2738,6 @@ async function mutateController(request) {
   document.getElementById('runtime-rename-save').disabled = true;
   document.getElementById('runtime-rename-cancel').disabled = true;
   controllerError = '';
-  controllerNotice = '';
   controllerPending = { ...request, phase: 'wait' };
   document.getElementById('controller-message').textContent = 'Processing your request…';
   clearTimeout(controllerTimer);
@@ -2738,6 +2745,7 @@ async function mutateController(request) {
   renderController();
   const message = document.getElementById('controller-message');
   let failure = null;
+  let completionNotice = '';
   try {
     await controllerRefreshDone;
     await lazyFeatures.ensure('runtime');
@@ -2799,7 +2807,6 @@ async function mutateController(request) {
       }) : {result: await controllerRequest(request), restarted:false};
     if (request.op === 'existing_import' && result?.id) {
       selectedRuntimeId = result.id;
-      controllerNotice = 'Import started. Keep Default runtime stopped until preparation succeeds.';
     }
     if (['create', 'create_image'].includes(request.op) && result?.id) {
       selectedRuntimeId = result.id;
@@ -2833,22 +2840,20 @@ async function mutateController(request) {
       else controllerRecords[position] = result;
     }
     controllerPending = null;
-    controllerNotice = ({resources_set: 'RAM and CPU limits saved. Start this runtime to apply them.', gpu_set: 'GPU saved. Start this runtime to apply it.', arm_set: `ARM translation ${request.enabled ? 'installed' : 'disabled'}. Start this runtime to apply it.`, delete: 'Deletion accepted. The runtime will disappear when its data has been removed.', display_set: 'Display mode saved. Start Android to apply it.', app_action: 'App action accepted. Watch its job result below.', create: 'Runtime created with Desktop mode. Next: prepare images.', rename: 'Runtime name saved.', prepare: 'Preparation accepted. Watch the runtime status below.', start: 'Start request accepted. The runtime card below shows boot progress and the result.', stop: 'Stop request accepted. The runtime card below shows progress and the result.', move: 'Storage move accepted. Keep both disks connected until verification completes.', discard_previous: 'Removal accepted. Watch storage status below; active runtime data is kept.'})[request.op] || 'Request accepted.';
-    message.textContent = controllerNotice;
+    completionNotice = ({resources_set: 'RAM and CPU limits saved. Start this runtime to apply them.', gpu_set: 'GPU saved. Start this runtime to apply it.', arm_set: `ARM translation ${request.enabled ? 'installed' : 'disabled'}. Start this runtime to apply it.`, delete: 'Deletion accepted. The runtime will disappear when its data has been removed.', display_set: 'Display mode saved. Start Android to apply it.', backend_set: 'Display backend saved. Start Android to apply it.', app_action: 'App action accepted. Watch its job result below.', create: 'Runtime created with Desktop mode. Next: prepare images.', rename: 'Runtime name saved.', prepare: 'Preparation accepted. Watch the runtime status below.', start: 'Start request accepted. The runtime card below shows boot progress and the result.', stop: 'Stop request accepted. The runtime card below shows progress and the result.', move: 'Storage move accepted. Keep both disks connected until verification completes.', discard_previous: 'Removal accepted. Watch storage status below; active runtime data is kept.', existing_import: 'Import started. Keep Default runtime stopped until preparation succeeds.'})[request.op] || 'Request accepted.';
     if (restarted) {
-      controllerNotice = 'Settings applied. Android restarted successfully.';
-      message.textContent = controllerNotice;
+      completionNotice = 'Settings applied. Android restarted successfully.';
     }
     renderController();
     if (request.op === 'reinstall') {
       cancelReinstall();
       document.getElementById('runtime-create-panel').open = false;
-      controllerNotice = 'Runtime reinstall started. Wait for image preparation to finish before starting it.';
+      completionNotice = 'Runtime reinstall started. Wait for image preparation to finish before starting it.';
     }
     if (['create', 'create_image'].includes(request.op)) {
       document.getElementById('controller-name').value = '';
       document.getElementById('runtime-create-panel').open = false;
-      if (request.op === 'create_image') controllerNotice = `${request.flavor} runtime created. Prepare selects a compatible GPU and installs ARM translation.`;
+      if (request.op === 'create_image') completionNotice = `${request.flavor} runtime created. Prepare selects a compatible GPU and installs ARM translation.`;
     }
   } catch (error) { failure = String(error); }
   finally {
@@ -2856,11 +2861,13 @@ async function mutateController(request) {
     controllerPending = null;
     document.getElementById('runtime-rename-save').disabled = false;
     document.getElementById('runtime-rename-cancel').disabled = false;
+    message.textContent = '';
     await refreshController();
     if (failure) {
       controllerError = `Runtime operation failed: ${failure}`;
-      message.textContent = controllerError;
-    }
+      // Dialogs keep their own actionable errors beside the fields.
+      if (!document.getElementById('runtime-rename-dialog').open && !document.getElementById('runtime-storage-dialog').open) showAppToast(controllerError, 'error');
+    } else if (completionNotice) showAppToast(completionNotice, 'success');
   }
 }
 function submitRuntimeCreate(event) {
@@ -2964,7 +2971,7 @@ function handleRuntimeAction(event) {
   else if (button.dataset.controllerOp === 'google_services') checkRuntimeGoogle(button.dataset.controllerId);
   else if (button.dataset.controllerOp === 'create_gapps') openGappsCreation();
   else if (button.dataset.controllerOp === 'google_guide') {
-    tauriInvoke('open_google_play_guide').catch(error => { document.getElementById('controller-message').textContent = `Cannot open guide: ${error}`; });
+    tauriInvoke('open_google_play_guide').catch(error => { showAppToast(`Cannot open guide: ${error}`, 'error'); });
   }
   else if (button.dataset.controllerOp === 'google_register') {
     tauriInvoke('open_google_device_registration').catch(error => showAppToast(`Cannot open Google registration: ${error}`, 'error'));
@@ -3057,7 +3064,7 @@ if (openControlsOnLaunch) navigatePage('controls');
 
 document.getElementById('btn-waydroid-guide').addEventListener('click', async () => {
   try { await tauriInvoke('open_waydroid_setup_guide'); }
-  catch (error) { document.getElementById('controller-message').textContent = `Cannot open guide: ${error}. See https://docs.waydro.id/usage/install-on-desktops`; }
+  catch (error) { showAppToast(`Cannot open guide: ${error}. See https://docs.waydro.id/usage/install-on-desktops`, 'error'); }
 });
 
 function openRuntimeStorage(id, operation) {
@@ -3548,7 +3555,7 @@ async function installRuntimeArm(id) {
     }
     await mutateController({op:'arm_set',id,enabled:true,archive_sha256:digest});
     if (!controllerError) runtimeArmDraft.delete(id);
-  } catch (error) { controllerError = `ARM installation failed: ${error}`; document.getElementById('controller-message').textContent = controllerError; }
+  } catch (error) { controllerError = `ARM installation failed: ${error}`; showAppToast(controllerError, 'error'); }
   finally { armInstallBusy = null; renderController(); }
 }
 document.addEventListener('change', event => {
@@ -3768,6 +3775,7 @@ async function runRuntimeBatchPlan(plan, imageRequest) {
   renderController();
   renderAvailableImages();
   const output = document.getElementById('runtime-batch-result');
+  output.textContent = '';
   let results;
   try {
     const activationTokens = new Map();
@@ -3795,7 +3803,22 @@ async function runRuntimeBatchPlan(plan, imageRequest) {
     await Promise.all([refreshController(), refreshStatus()]);
     renderRuntimeBatchSelection();
     renderAvailableImages();
-    if (results) output.innerHTML = renderRuntimeBatchResult(plan, results);
+    if (results) {
+      const succeeded = results.filter(item => item.status === 'succeeded').length;
+      const failed = results.filter(item => item.status === 'failed').length;
+      const skipped = (plan.skipped || 0) + results.filter(item => item.status === 'skipped').length;
+      // Keep per-runtime details available when the user needs to resolve a failure.
+      output.innerHTML = failed || skipped ? renderRuntimeBatchResult(plan, results) : '';
+      let summary = plan.op === 'open' && results.length === 1 && !failed && !skipped
+        ? `${results[0].name}: ${describeWaydroidWindow(results[0].result)}`
+        : `${plan.op}: ${succeeded} completed · ${failed} failed · ${skipped} skipped${results.length === 1 ? ' · ' + results[0].name : ''}`;
+      if (plan.op === 'open' && (results.length !== 1 || failed || skipped)) {
+        const ready = results.filter(item => item.status === 'succeeded' && item.result?.window?.state === 'ready').length;
+        summary = 'Waydroid: ' + [ready && `${ready} ready`, succeeded > ready && `${succeeded - ready} request sent`, failed && `${failed} failed`, skipped && `${skipped} skipped`].filter(Boolean).join(' · ');
+      }
+      const unverifiedWindow = plan.op === 'open' && results.some(item => item.result?.window?.state !== 'ready');
+      showAppToast(summary, failed ? 'error' : skipped || unverifiedWindow ? 'info' : 'success');
+    }
   }
 }
 

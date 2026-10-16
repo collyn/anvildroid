@@ -1,4 +1,4 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="org.anvildroid.ime" android:versionCode="2" android:versionName="0.2">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="org.anvildroid.ime" android:versionCode="3" android:versionName="0.3">
     <uses-sdk android:minSdkVersion="23" android:targetSdkVersion="33"/>
     <application android:label="AnvilDroid Input" android:allowBackup="false" android:theme="@android:style/Theme.Material.Light.NoActionBar">
         <service android:name=".BridgeIme" android:label="AnvilDroid host keyboard" android:permission="android.permission.BIND_INPUT_METHOD" android:exported="true">

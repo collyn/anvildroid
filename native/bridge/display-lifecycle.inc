@@ -10,6 +10,23 @@ static struct wl_display *(*real_display_connect_fd)(int);
 static void (*real_display_disconnect)(struct wl_display *);
 static int (*real_display_flush)(struct wl_display *);
 static int (*real_display_get_error)(struct wl_display *);
+static int (*real_display_get_fd)(struct wl_display *);
+extern int setsockopt(int, int, int, const void *, unsigned);
+extern int getsockopt(int, int, int, void *, unsigned *);
+/* Legacy libwayland treats a full 4 KiB marshal queue as fatal after socket
+ * EAGAIN. Android clipboard overlays can submit a brief burst of many layers
+ * while the compositor snapshots DMA-BUFs. Bound that burst in the kernel
+ * socket instead of enlarging the compositor's expensive read batch. This is
+ * capacity only: requests retain normal flushing and gain no batching delay. */
+static void display_send_capacity(struct wl_display *display) {
+  if (!real_display_get_fd)
+    return;
+  int fd = real_display_get_fd(display), current = 0;
+  unsigned size = sizeof(current);
+  const int requested = 1024 * 1024;
+  if (fd >= 0 && !getsockopt(fd, 1, 7, &current, &size) && current < requested)
+    setsockopt(fd, 1, 7, &requested, sizeof(requested));
+}
 static struct wl_event_queue *(*real_create_queue)(struct wl_display *);
 static void (*real_queue_destroy)(struct wl_event_queue *);
 static void *(*real_create_wrapper)(void *);
@@ -45,6 +62,8 @@ static void display_symbols(void *h) {
       (int (*)(struct wl_display *))dlsym(h, "wl_display_flush");
   real_display_get_error =
       (int (*)(struct wl_display *))dlsym(h, "wl_display_get_error");
+  real_display_get_fd =
+      (int (*)(struct wl_display *))dlsym(h, "wl_display_get_fd");
   real_create_queue = (struct wl_event_queue * (*)(struct wl_display *))
       dlsym(h, "wl_display_create_queue");
   real_queue_destroy =
@@ -77,6 +96,7 @@ static void keymap_cancel_callback(void) {
 static void display_connected(struct wl_display *display) {
   if (!display)
     return;
+  display_send_capacity(display);
   pthread_mutex_lock(keymap_queue_gate);
   pthread_mutex_lock(mutex);
   bridge_connected(display);
