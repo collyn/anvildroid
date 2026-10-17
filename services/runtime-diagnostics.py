@@ -3,6 +3,7 @@ import datetime
 import json
 import os
 import platform
+from pathlib import Path
 import re
 import stat
 
@@ -84,7 +85,21 @@ def log_tail(directory, name):
         os.close(folder)
 
 
-def collect(runtime_id, collectors, *, include_logs=False, log_directory=None, generation=None):
+def process_start(pid):
+    if not isinstance(pid, str) or not pid.isdecimal() or int(pid) <= 0:
+        raise ValueError('Default runtime process identity is unavailable')
+    # comm can contain spaces and parentheses; starttime is field 22.
+    try:
+        value = Path('/proc', pid, 'stat').read_text().rsplit(')', 1)[1].split()[19]
+    except (OSError, IndexError) as error:
+        raise ValueError('Default runtime process start time is unavailable') from error
+    if not value.isdecimal():
+        raise ValueError('Default runtime process start time is invalid')
+    return value
+
+
+def collect(runtime_id, collectors, *, include_logs=False, log_directory=None, generation=None,
+            verify_session=None, logs_unavailable_reason=None):
     if type(include_logs) is not bool:
         raise ValueError('include_logs must be boolean')
     if not isinstance(runtime_id, str) or (runtime_id != 'default' and not re.fullmatch(r'r-[0-9a-f]{32}', runtime_id)):
@@ -94,9 +109,29 @@ def collect(runtime_id, collectors, *, include_logs=False, log_directory=None, g
               'host': host_summary(), 'sections': {}, 'logs': {},
               'privacy': {'logs_requested': include_logs, 'redacted': True,
                           'redaction': 'best_effort', 'app_private_files_collected': False}}
+    if any(name not in ('runtime', 'health', 'resources', 'display', 'components', 'image') for name in collectors):
+        raise ValueError('Unknown diagnostic section')
+    session_error = None
+    if verify_session is not None:
+        report['session'] = {'status': 'verified'}
+
+    def verify():
+        nonlocal session_error
+        if session_error is not None:
+            return False
+        if verify_session is not None:
+            try:
+                verify_session()
+            except Exception as error:
+                session_error = 'Runtime session could not be verified: ' + redact_text(str(error))[:1600] + '. Retry diagnostic collection.'
+                report['session'] = {'status': 'unavailable', 'error': session_error}
+                return False
+        return True
+
+    verify()
     for name, callback in collectors.items():
-        if name not in ('runtime', 'health', 'resources', 'display', 'components', 'image'):
-            raise ValueError('Unknown diagnostic section')
+        if not verify():
+            continue
         try:
             value = redact(callback())
             if len(json.dumps(value).encode()) > 128 * 1024:
@@ -104,17 +139,27 @@ def collect(runtime_id, collectors, *, include_logs=False, log_directory=None, g
             report['sections'][name] = {'status': 'collected', 'data': value}
         except Exception as error:
             report['sections'][name] = {'status': 'unavailable', 'error': redact_text(str(error))[:2048]}
+        verify()
+    names = []
     if include_logs:
         names = list(LOG_NAMES)
         if isinstance(generation, str) and re.fullmatch(r'[0-9a-f]{32}', generation):
             names.append('x11-' + generation + '.log')
         for name in names:
+            if not verify():
+                continue
             try:
                 if log_directory is None:
-                    raise ValueError('Controller-owned logs are unavailable for this runtime')
+                    raise ValueError(logs_unavailable_reason or 'Controller-owned logs are unavailable for this runtime')
                 report['logs'][name] = log_tail(log_directory, name)
             except (OSError, ValueError) as error:
                 report['logs'][name] = {'status': 'unavailable', 'error': redact_text(str(error))[:1024]}
+            verify()
+    verify()
+    if session_error is not None:
+        # Never present a mixture of generations, even when earlier reads succeeded.
+        report['sections'] = {name: {'status': 'unavailable', 'error': session_error} for name in collectors}
+        report['logs'] = {name: {'status': 'unavailable', 'error': session_error} for name in names}
     if len(json.dumps(report).encode()) > MAX_REPORT:
         raise ValueError('Diagnostic report exceeds its size limit')
     return report

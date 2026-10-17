@@ -19,7 +19,7 @@ import importlib.util
 
 ROOT = Path(__file__).resolve().parent.parent
 MODULES = ('runtime-system.py', 'runtime-controller.py', 'runtime-existing.py', 'runtime-keymap.py', 'runtime-host.py', 'runtime-images.py', 'runtime-android.py',
-           'runtime-worker.py', 'runtime-x11.py', 'runtime-path-guard.py', 'runtime-linux.py', 'runtime-image-format.py', 'runtime-adb.py', 'runtime-network.py', 'runtime-storage.py', 'runtime-labels.py', 'runtime-transfer.py', 'runtime-catalog.py', 'runtime-download.py', 'runtime-extract.py', 'runtime-provision.py', 'runtime-arm.py', 'runtime-arm-source.py', 'runtime-gpu.py', 'runtime-nvidia.py', 'runtime-resources.py', 'runtime-desktop.py', 'runtime-workarea.py', 'runtime-features.py', 'runtime-compatibility.py', 'runtime-shares.py', 'runtime-components.py', 'runtime-diagnostics.py')
+           'runtime-worker.py', 'runtime-x11.py', 'runtime-path-guard.py', 'runtime-linux.py', 'runtime-image-format.py', 'runtime-adb.py', 'runtime-network.py', 'runtime-storage.py', 'runtime-labels.py', 'runtime-transfer.py', 'runtime-catalog.py', 'runtime-download.py', 'runtime-extract.py', 'runtime-provision.py', 'runtime-arm.py', 'runtime-arm-source.py', 'runtime-gpu.py', 'runtime-nvidia.py', 'runtime-resources.py', 'runtime-desktop.py', 'runtime-workarea.py', 'runtime-features.py', 'runtime-compatibility.py', 'runtime-shares.py', 'runtime-default-shares.py', 'runtime-components.py', 'runtime-diagnostics.py')
 DESTINATION = Path('/usr/local/lib/anvildroid-controller')
 SOCKET_PATH = Path('/run/anvildroid/control.sock')
 
@@ -71,12 +71,21 @@ def install_controller_files(source_root, destination=DESTINATION, arm_archive=N
     for name, data in sources.items():
         compile(data, name, 'exec')
     x11_sources = None
+    # Portable bundles carry their verified native backend beside services/.
+    # Explicit --x11-payload remains available for checkout/development installs.
+    bundled_x11 = source_root / 'native-x11'
+    if x11_payload is None and (bundled_x11.exists() or bundled_x11.is_symlink()):
+        x11_payload = bundled_x11
     if x11_payload is not None:
         spec = importlib.util.spec_from_file_location('install_x11', source_root / 'services/runtime-x11.py')
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         paths, _ = module.load_payload(x11_payload, trusted_owner=x11_payload.stat().st_uid)
         x11_sources = {name: path.read_bytes() for name, path in paths.items()}
+        if x11_sources['runtime-x11.py'] != sources['runtime-x11.py']:
+            raise RuntimeError('Native X11 payload/controller source mismatch')
+        if json.loads(x11_sources['source-manifest.json']).get('sanitized') is not False:
+            raise RuntimeError('Do not install sanitizer/test native X11 builds')
         x11_sources['manifest.json'] = (x11_payload / 'manifest.json').read_bytes()
         for name in ('NOTICE', 'menu-font-OFL.txt'):
             x11_sources[name] = (x11_payload / name).read_bytes()
@@ -125,6 +134,23 @@ def install_controller_files(source_root, destination=DESTINATION, arm_archive=N
         replace(target, data)
 
 
+
+def systemd_payload(source_root):
+    return {relative: (source_root / 'packaging/systemd' / name).read_bytes()
+            for relative, name in (
+                ('anvildroid-controller.service', 'anvildroid-controller.service'),
+                ('waydroid-container.service.d/50-anvildroid.conf', '50-anvildroid.conf'))}
+
+
+def install_systemd_files(payload, directory=Path('/etc/systemd/system')):
+    """Install the controller unit and Default hook without running systemd."""
+    trusted_directory(directory)
+    for relative, data in payload.items():
+        target = directory / relative
+        trusted_directory(target.parent)
+        replace(target, data)
+
+
 def wait_for_ready_socket(socket_path=SOCKET_PATH, deadline=None, error_hint='inspect systemd service logs'):
     """Poll socket_path until it serves an authenticated 'requirements' response.
     Type=simple (or a detached spawn) becomes alive before Python binds the
@@ -166,7 +192,7 @@ def main():
         with args.arm_archive.open('rb') as stream: arm_archive = stream.read(64 * 1024**2 + 1)
         if hashlib.sha256(arm_archive).hexdigest() != 'a142d1586c9eafb5edf62277110f2128bc03066179a6783bcaa33ee322e1cbd0':
             raise RuntimeError('ARM archive checksum mismatch')
-    unit = (ROOT / 'packaging/systemd/anvildroid-controller.service').read_bytes()
+    units = systemd_payload(ROOT)
     trusted_directory(Path('/etc/systemd/system'))
     # Controller is stopped during updates, so imports cannot mix releases.
     loaded = subprocess.run(['systemctl', 'show', '--property=LoadState', '--value',
@@ -174,12 +200,13 @@ def main():
     if loaded.stdout.strip() != 'not-found':
         subprocess.run(['systemctl', 'stop', 'anvildroid-controller.service'], check=True)
     install_controller_files(ROOT, arm_archive=arm_archive, x11_payload=args.x11_payload)
-    replace(Path('/etc/systemd/system/anvildroid-controller.service'), unit)
+    install_systemd_files(units)
     subprocess.run(['systemctl', 'daemon-reload'], check=True)
     subprocess.run(['systemctl', 'enable', '--now', 'anvildroid-controller.service'], check=True)
     subprocess.run(['systemctl', 'is-active', '--quiet', 'anvildroid-controller.service'], check=True)
     wait_for_ready_socket()
     print('Controller installed and socket ready. No Android runtime was created or started.')
+    print('Default integration takes effect on the next Waydroid container service restart.')
 
 
 if __name__ == '__main__':

@@ -86,4 +86,76 @@ class DiagnosticsTests(unittest.TestCase):
         nested={};current=nested
         for _ in range(20):current['child']={};current=current['child']
         self.assertIn('depth-limit',json.dumps(diag.redact(nested)))
+    def test_stable_verified_session_keeps_partial_failures_and_logs_opt_in(self):
+        verify = unittest.mock.Mock()
+        def broken(): raise RuntimeError('Health unavailable')
+        with patch.object(diag, 'log_tail') as tail:
+            report = diag.collect('default', {'runtime':lambda:{'state':'Stopped'}, 'health':broken},
+                                  verify_session=verify)
+        self.assertEqual(report['session']['status'], 'verified')
+        self.assertEqual(report['sections']['runtime']['status'], 'collected')
+        self.assertEqual(report['sections']['health']['status'], 'unavailable')
+        self.assertEqual(report['logs'], {})
+        self.assertGreater(verify.call_count, 2)
+        tail.assert_not_called()
+
+    def test_changed_section_discards_earlier_data_and_stops_remaining_collectors(self):
+        for failure in (False, True):
+            current = ['first']
+            later = unittest.mock.Mock(return_value={'later':'MUST_NOT_COLLECT'})
+            def verify():
+                if current[0] != 'first': raise RuntimeError('Runtime changed during diagnostic collection')
+            def changes():
+                current[0] = 'second'
+                if failure: raise RuntimeError('Section failed after restart')
+                return {'mixed':'MUST_NOT_EXPORT'}
+            with self.subTest(failure=failure), patch.object(diag, 'log_tail') as tail:
+                report = diag.collect('default', {'runtime':lambda:{'old':'MUST_NOT_EXPORT'},
+                                      'health':changes, 'resources':later}, include_logs=True,
+                                      verify_session=verify)
+                self.assertEqual(report['session']['status'], 'unavailable')
+                self.assertIn('Runtime changed', report['session']['error'])
+                self.assertTrue(all(row['status']=='unavailable' and 'data' not in row
+                                    for row in report['sections'].values()))
+                self.assertTrue(all(row['status']=='unavailable' and 'text' not in row
+                                    for row in report['logs'].values()))
+                self.assertNotIn('MUST_NOT_EXPORT', json.dumps(report))
+                later.assert_not_called(); tail.assert_not_called()
+
+    def test_missing_session_skips_all_reads_and_redacts_verification_errors(self):
+        def unavailable(): raise RuntimeError('Lost session token=PRIVATE /home/alice/private')
+        callback = unittest.mock.Mock()
+        with patch.object(diag, 'log_tail') as tail:
+            report = diag.collect('default', {'health':callback}, include_logs=True,
+                                  verify_session=unavailable)
+        callback.assert_not_called(); tail.assert_not_called()
+        self.assertEqual(report['session']['status'], 'unavailable')
+        self.assertNotIn('PRIVATE', json.dumps(report)); self.assertNotIn('alice', json.dumps(report))
+        self.assertIn('Retry diagnostic collection', report['sections']['health']['error'])
+
+    def test_restart_during_logs_discards_sections_and_first_log_and_does_not_read_new_generation(self):
+        generation = ['a'*32]
+        def verify():
+            if generation[0] != 'a'*32: raise RuntimeError('Runtime changed during diagnostic collection')
+        def tail(directory, name):
+            generation[0] = 'b'*32
+            return {'status':'collected', 'text':'OLD_SESSION_LOG'}
+        with patch.object(diag, 'log_tail', side_effect=tail) as read:
+            report = diag.collect('r-'+'1'*32, {'health':lambda:{'gpu':'OLD_SESSION_DATA'}},
+                                  include_logs=True, log_directory=self.root, generation='a'*32,
+                                  verify_session=verify)
+        self.assertEqual(read.call_count, 1)
+        self.assertEqual(report['session']['status'], 'unavailable')
+        self.assertNotIn('OLD_SESSION', json.dumps(report))
+        self.assertIn('x11-'+'a'*32+'.log', report['logs'])
+        self.assertNotIn('x11-'+'b'*32+'.log', report['logs'])
+        self.assertTrue(all(row['status']=='unavailable' for row in report['logs'].values()))
+
+    def test_process_start_parses_parentheses_and_rejects_missing_identity(self):
+        fields = ['S'] + ['0']*18 + ['123456'] + ['0']*4
+        with patch.object(diag.Path, 'read_text', return_value='91 (session (with) spaces) '+' '.join(fields)):
+            self.assertEqual(diag.process_start('91'), '123456')
+        for pid in (None, 0, '0', '-1', '91/../../other', 'not-a-pid'):
+            with self.subTest(pid=pid), self.assertRaises(ValueError): diag.process_start(pid)
+
 if __name__=='__main__':unittest.main()

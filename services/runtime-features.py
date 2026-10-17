@@ -16,8 +16,10 @@ def module(name):
 
 compatibility = module('runtime-compatibility')
 shares = module('runtime-shares')
+default_shares = module('runtime-default-shares')
 components = module('runtime-components')
 diagnostics = module('runtime-diagnostics')
+linux = module('runtime-linux')
 
 FIELDS = {
     'compatibility_get': {'op', 'id', 'package'},
@@ -79,6 +81,45 @@ def component_report(store, identifier, uid):
     return report
 
 
+def diagnostic_session(store, identifier, uid):
+    """Read owner-authorized identity without starting or waking Android."""
+    if identifier == 'default':
+        session, _ = store.existing.authorize(uid)
+        state = store.existing.state()
+        if not session:
+            if state != 'STOPPED':
+                raise RuntimeError('Default runtime has no authenticated session')
+            return ('default', state, None)
+        pid = session.get('pid')
+        if session.get('user_id') != str(uid):
+            raise RuntimeError('Default runtime session owner changed')
+        identity = ('default', state, pid, session['user_id'], diagnostics.process_start(pid))
+        if state in ('RUNNING', 'FROZEN'):
+            container_pid = linux.run_bounded('lxc-info', '-P', store.existing.work / 'lxc',
+                '-n', 'waydroid', '-pH', timeout=1, full_output=True, output_limit=256,
+                operation='Default diagnostic container identity').strip()
+            identity += (container_pid, diagnostics.process_start(container_pid))
+        return identity
+    record = authorize(store, identifier, uid)
+    try:
+        status = store.android.status(identifier)
+    except (OSError, RuntimeError, ValueError):
+        if record['state'] not in ('Allocated', 'Prepared', 'Stopped', 'Error') or not store.android.quiescent(identifier):
+            raise
+        # Configuration-only reports do not require a live worker or reuse old logs.
+        return ('managed', record['state'], 'Stopped', None)
+    if not isinstance(status, dict) or status.get('runtime_id') != identifier:
+        raise RuntimeError('Diagnostic worker runtime identity is unavailable')
+    state, generation = status.get('state'), status.get('generation')
+    if state not in ('Starting', 'Running', 'Frozen', 'Stopping', 'Stopped', 'Error'):
+        raise RuntimeError('Diagnostic worker state is unavailable')
+    if generation is not None and (not isinstance(generation, str) or not re.fullmatch(r'[0-9a-f]{32}', generation)):
+        raise RuntimeError('Diagnostic worker generation is unavailable')
+    if generation is None and (state != 'Stopped' or not store.android.quiescent(identifier)):
+        raise RuntimeError('Diagnostic worker generation is unavailable')
+    return ('managed', record['state'], state, generation)
+
+
 def dispatch(store, request, uid, descriptor=None):
     op = request.get('op')
     if op not in FIELDS or set(request) != FIELDS[op] or descriptor is not None:
@@ -106,7 +147,10 @@ def dispatch(store, request, uid, descriptor=None):
                                             request.get('settings'), request.get('revision'))
     if op.startswith('shares_'):
         if identifier == 'default':
-            raise RuntimeError('Shared folders currently require a managed runtime; Default uses the system Waydroid mount lifecycle')
+            adapter = default_shares.DefaultShares(store.existing.store, store.existing)
+            if op == 'shares_get': return adapter.get(uid)
+            if op == 'shares_remove': return adapter.remove(uid, request['name'])
+            return adapter.set(uid, {key: request[key] for key in ('name', 'source', 'read_only')})
         instance = store.backend.location(identifier)
         if op == 'shares_get':
             mounted = None
@@ -139,13 +183,23 @@ def dispatch(store, request, uid, descriptor=None):
                       'display': lambda: store._dispatch({'op': 'display_info', 'id': identifier}, uid),
                       'components': lambda: component_report(store, identifier, uid),
                       'image': lambda: store.selections.get(identifier) or {'source': 'system_waydroid'}}
-        generation = None
-        if identifier != 'default':
-            try:
-                generation = store.android.status(identifier).get('generation')
-            except (OSError, RuntimeError, ValueError):
-                pass
+        session, session_error = None, None
+        try:
+            session = diagnostic_session(store, identifier, uid)
+        except Exception as error:
+            session_error = str(error)
+
+        def verify_session():
+            if session is None:
+                raise RuntimeError(session_error)
+            if diagnostic_session(store, identifier, uid) != session:
+                raise RuntimeError('Runtime changed during diagnostic collection')
+
+        live_states = ('Starting', 'Running', 'Frozen', 'Stopping')
+        active = (identifier != 'default' and session is not None
+                  and session[1] in live_states and session[2] in live_states)
         return diagnostics.collect(identifier, collectors, include_logs=request['include_logs'],
-                                   log_directory=store.backend.location(identifier) if identifier != 'default' else None,
-                                   generation=generation)
+                                   log_directory=store.backend.location(identifier) if active else None,
+                                   generation=session[3] if active else None, verify_session=verify_session,
+                                   logs_unavailable_reason='No current managed runtime session; previous-session logs were not collected')
     raise RuntimeError('Unsupported feature operation')

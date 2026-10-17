@@ -3,7 +3,7 @@ import importlib.util
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 spec = importlib.util.spec_from_file_location('features', Path(__file__).with_name('runtime-features.py'))
 features = importlib.util.module_from_spec(spec)
@@ -101,6 +101,8 @@ class Store:
         self.deletions = {}; self.active_jobs = {}; self.app_jobs = {}
         self.storage = Storage(self.calls); self.backend = Backend(root,self.calls)
         self.android = Workers(self.calls); self.existing = Existing(self.calls)
+        self.existing.store = root
+        self.existing.work = root / 'system-waydroid'
         self.selections = {}
         self.arm = {'enabled':False,'provider':'libndk_translation 0.2.3','supported':True,'available':True,
                     'sources':[{'engine':'libndk','sha256':DIGEST,'installed':True,'version':'0.2.3'}]}
@@ -335,10 +337,194 @@ class FeatureDispatchTest(unittest.TestCase):
             self.assertEqual(result['runtime_id'],FIRST)
             self.assertTrue(result['editable'])
 
-    def test_default_shares_are_explicitly_unavailable(self):
-        with self.assertRaisesRegex(RuntimeError,'managed runtime'):
-            self.dispatch('shares_get',identifier='default')
+    def test_default_shares_delegate_after_owner_authorization_to_system_lifecycle(self):
+        adapter = Mock()
+        adapter.get.return_value = {'runtime_id':'default','shares':[],'editable':False,
+                                    'unsupported_reason':'Restart the Waydroid container service to activate sharing'}
+        adapter.set.return_value = {'runtime_id':'default','shares':[],'editable':True}
+        adapter.remove.return_value = adapter.set.return_value
+        with patch.object(features.default_shares, 'DefaultShares', return_value=adapter) as factory:
+            result = self.dispatch('shares_get',identifier='default')
+            self.assertFalse(result['editable'])
+            self.assertIn('activate sharing',result['unsupported_reason'])
+            factory.assert_called_once_with(self.store.existing.store,self.store.existing)
+            adapter.get.assert_called_once_with(UID)
+            self.dispatch('shares_set',identifier='default',name='docs',source='/home/fixture/docs',read_only=True)
+            adapter.set.assert_called_once_with(UID,{'name':'docs','source':'/home/fixture/docs','read_only':True})
+            self.dispatch('shares_remove',identifier='default',name='docs')
+            adapter.remove.assert_called_once_with(UID,'docs')
+            self.store.existing.owner = UID+1
+            factory.reset_mock()
+            with self.assertRaisesRegex(RuntimeError,'another user'):
+                self.dispatch('shares_get',identifier='default')
+            factory.assert_not_called()
         self.assertFalse(any(call[0] in ('location','default-android') for call in self.store.calls))
+
+
+    def diagnostics(self, identifier=FIRST, include_logs=False):
+        return self.dispatch('diagnostics_collect', identifier=identifier, include_logs=include_logs)
+
+    def diagnostics_ready(self):
+        self.store.android.generations[FIRST] = 'a'*32
+        self.store.android.generations[SECOND] = 'b'*32
+
+    def assert_session_unavailable(self, report):
+        self.assertEqual(report['session']['status'], 'unavailable')
+        self.assertTrue(all(row['status']=='unavailable' and 'data' not in row
+                            for row in report['sections'].values()))
+        self.assertTrue(all(row['status']=='unavailable' and 'text' not in row
+                            for row in report['logs'].values()))
+
+    def test_diagnostics_stable_managed_session_is_scoped_and_logs_use_current_generation(self):
+        self.diagnostics_ready()
+        for identifier, generation in ((FIRST, 'a'*32), (SECOND, 'b'*32)):
+            self.store.calls.clear()
+            with self.subTest(identifier=identifier), patch.object(features.diagnostics, 'log_tail',
+                    return_value={'status':'collected','text':'fixture current log'}) as tail:
+                report = self.diagnostics(identifier, include_logs=True)
+            self.assertEqual(report['runtime_id'], identifier)
+            self.assertEqual(report['session']['status'], 'verified')
+            self.assertTrue(all(row['status']=='collected' for row in report['sections'].values()))
+            self.assertEqual([call.args[1] for call in tail.call_args_list],
+                             [*features.diagnostics.LOG_NAMES, 'x11-'+generation+'.log'])
+            self.assertTrue(all(call.args[0]==self.store.backend.root/identifier for call in tail.call_args_list))
+            self.assertTrue(all(call[1]==identifier for call in self.store.calls if call[0] in ('worker','ensure','location')))
+
+    def test_diagnostics_no_implicit_logs(self):
+        self.diagnostics_ready()
+        with patch.object(features.diagnostics, 'log_tail') as tail:
+            report = self.diagnostics()
+        self.assertEqual(report['session']['status'], 'verified')
+        self.assertEqual(report['logs'], {})
+        tail.assert_not_called()
+
+    def test_diagnostics_restart_inside_section_invalidates_every_section_and_skips_logs(self):
+        self.diagnostics_ready()
+        dispatch = self.store._dispatch
+        def changed(request, uid):
+            if request['op']=='health':
+                self.store.android.generations[FIRST] = 'c'*32
+                return {'session':'DO_NOT_EXPORT_OLD_OR_NEW_DATA'}
+            return dispatch(request, uid)
+        with patch.object(self.store, '_dispatch', side_effect=changed), patch.object(features.diagnostics, 'log_tail') as tail:
+            report = self.diagnostics(include_logs=True)
+        self.assert_session_unavailable(report)
+        self.assertIn('Runtime changed', report['session']['error'])
+        self.assertNotIn('DO_NOT_EXPORT', str(report))
+        tail.assert_not_called()
+        self.assertFalse(any(call[0]=='dispatch' and call[1]['op'] in ('resources_info','display_info') for call in self.store.calls))
+
+    def test_diagnostics_restart_during_log_read_discards_report_without_reading_replacement_logs(self):
+        self.diagnostics_ready()
+        def changed(directory, name):
+            self.store.android.generations[FIRST] = 'c'*32
+            return {'status':'collected','text':'DO_NOT_EXPORT_LOG'}
+        with patch.object(features.diagnostics, 'log_tail', side_effect=changed) as tail:
+            report = self.diagnostics(include_logs=True)
+        self.assert_session_unavailable(report)
+        self.assertEqual(tail.call_count, 1)
+        self.assertNotIn('DO_NOT_EXPORT_LOG', str(report))
+        self.assertNotIn('x11-'+'c'*32+'.log', report['logs'])
+
+    def test_diagnostics_missing_invalid_or_cross_runtime_worker_identity_fails_closed(self):
+        for status in ({'runtime_id':SECOND,'state':'Running','generation':'a'*32},
+                       {'runtime_id':FIRST,'state':'Running'},
+                       {'runtime_id':FIRST,'state':'Running','generation':'not-a-generation'}):
+            with self.subTest(status=status), patch.object(self.store.android, 'status', return_value=status), \
+                    patch.object(self.store, '_dispatch') as dispatch, patch.object(features.diagnostics, 'log_tail') as tail:
+                report = self.diagnostics(include_logs=True)
+                self.assert_session_unavailable(report)
+                dispatch.assert_not_called(); tail.assert_not_called()
+
+    def test_diagnostics_stopped_managed_configuration_does_not_require_live_worker_or_export_previous_logs(self):
+        for state in ('Allocated','Prepared','Stopped','Error'):
+            self.store.data['runtimes'][0]['state'] = state
+            for status in ({'runtime_id':FIRST,'state':'Stopped'},
+                           {'runtime_id':FIRST,'state':'Stopped','generation':'a'*32}, None):
+                worker = patch.object(self.store.android, 'status', side_effect=RuntimeError('No live worker')) if status is None else patch.object(self.store.android, 'status', return_value=status)
+                with self.subTest(state=state,status=status), worker, patch.object(features.diagnostics, 'log_tail') as tail:
+                    report = self.diagnostics(include_logs=True)
+                    self.assertEqual(report['session']['status'], 'verified')
+                    self.assertEqual(report['sections']['runtime']['data']['state'], state)
+                    self.assertTrue(all(row['status']=='unavailable' for row in report['logs'].values()))
+                    self.assertTrue(all('previous-session logs were not collected' in row['error'] for row in report['logs'].values()))
+                    self.assertFalse(any(name.startswith('x11-') for name in report['logs']))
+                    tail.assert_not_called()
+
+    def test_diagnostics_owner_loss_invalidates_previously_collected_data(self):
+        self.diagnostics_ready()
+        dispatch = self.store._dispatch
+        def changed(request, uid):
+            if request['op']=='health': self.store.data['runtimes'][0]['owner_uid'] = UID+1
+            return dispatch(request, uid)
+        with patch.object(self.store, '_dispatch', side_effect=changed): report = self.diagnostics()
+        self.assert_session_unavailable(report)
+        self.assertIn('not found for this user', report['session']['error'])
+
+    def test_diagnostics_default_stable_session_and_stopped_without_session(self):
+        for stopped in (False, True):
+            self.store.existing.running = not stopped
+            if stopped: self.store.existing.session = None
+            with self.subTest(stopped=stopped), patch.object(features.diagnostics, 'process_start', return_value='start-91'), \
+                    patch.object(features.linux, 'run_bounded', return_value='101') as lxc, \
+                    patch.object(features.diagnostics, 'log_tail') as tail:
+                report = self.diagnostics('default', include_logs=True)
+            self.assertEqual(report['session']['status'], 'verified')
+            self.assertEqual(report['sections']['runtime']['data']['state'], 'Stopped' if stopped else 'Running')
+            self.assertTrue(all(row['status']=='unavailable' for row in report['logs'].values()))
+            tail.assert_not_called()
+            if stopped: lxc.assert_not_called()
+            else:
+                self.assertTrue(all(call.args==('lxc-info','-P',self.store.existing.work/'lxc','-n','waydroid','-pH') for call in lxc.call_args_list))
+
+    def test_diagnostics_default_pid_owner_starttime_or_state_change_is_stale(self):
+        original_dispatch = self.store._dispatch
+        for field in ('pid','user_id','starttime','state','missing'):
+            self.store.existing.session = {'pid':'91','user_id':str(UID)}
+            self.store.existing.running = True
+            start = ['old-start']
+            def changed(request, uid):
+                if request['op']=='health':
+                    if field=='pid': self.store.existing.session['pid'] = '92'
+                    elif field=='user_id': self.store.existing.session['user_id'] = str(UID+1)
+                    elif field=='starttime': start[0] = 'new-start'
+                    elif field=='state': self.store.existing.running = False
+                    else: self.store.existing.session = None
+                return original_dispatch(request, uid)
+            with self.subTest(field=field), patch.object(features.diagnostics, 'process_start', side_effect=lambda pid:start[0]), \
+                    patch.object(features.linux, 'run_bounded', return_value='101'), \
+                    patch.object(self.store, '_dispatch', side_effect=changed):
+                report = self.diagnostics('default')
+                self.assert_session_unavailable(report)
+
+    def test_diagnostics_default_android_restart_with_same_desktop_session_is_stale(self):
+        original_dispatch = self.store._dispatch
+        for field in ('container-pid','container-starttime'):
+            container_pid, container_start = ['101'], ['android-old-start']
+            def changed(request, uid):
+                if request['op']=='health':
+                    if field=='container-pid': container_pid[0]='102'
+                    else: container_start[0]='android-new-start'
+                return original_dispatch(request,uid)
+            def process_start(pid):
+                return 'desktop-stable-start' if pid=='91' else container_start[0]
+            with self.subTest(field=field), patch.object(features.linux, 'run_bounded', side_effect=lambda *a,**k:container_pid[0]), \
+                    patch.object(features.diagnostics, 'process_start', side_effect=process_start), \
+                    patch.object(self.store, '_dispatch', side_effect=changed):
+                report = self.diagnostics('default')
+                self.assert_session_unavailable(report)
+                self.assertIn('Runtime changed', report['session']['error'])
+                self.assertEqual(self.store.existing.session, {'pid':'91','user_id':str(UID)})
+
+    def test_diagnostics_default_missing_or_unreadable_active_process_fails_closed(self):
+        for pid in (None, '0', 'bad', '91'):
+            self.store.existing.session = {'pid':pid,'user_id':str(UID)}
+            with self.subTest(pid=pid), patch.object(features.diagnostics, 'process_start', side_effect=OSError('Process disappeared')), \
+                    patch.object(self.store, '_dispatch') as dispatch:
+                report = self.diagnostics('default')
+                self.assert_session_unavailable(report)
+                dispatch.assert_not_called()
+
 
 
 if __name__ == '__main__':

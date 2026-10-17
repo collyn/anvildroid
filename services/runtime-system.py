@@ -11,6 +11,8 @@ import os
 from pathlib import Path
 import re
 import stat
+import subprocess
+import threading
 import sys
 import tempfile
 import time
@@ -33,6 +35,7 @@ def module(name):
 gpu = module('runtime-gpu')
 existing = module('runtime-existing')
 workarea = module('runtime-workarea')
+default_shares = module('runtime-default-shares')
 
 
 def available():
@@ -40,7 +43,7 @@ def available():
 
 
 class Integration:
-    def __init__(self, tools, glib):
+    def __init__(self, tools, glib, original_mnt=None):
         self.tools, self.glib = tools, glib
         self.renderer = self.log = None
         self.timer = None
@@ -49,11 +52,24 @@ class Integration:
         self.dri = None
         self.dri_node = None
         self.snapshots_disabled = False
+        self.original_mnt = original_mnt
+        self.sharing = (default_shares.SessionMounts(
+            Path('/var/lib/anvildroid-controller'),
+            existing.ExistingRuntime(Path('/var/lib/anvildroid-controller')), STATE, original_mnt, self.publish)
+            if original_mnt is not None else None)
         self.original_start = tools.actions.container_manager.do_start
         self.original_freeze = tools.actions.container_manager.freeze
         self.original_stop = tools.actions.container_manager.stop
         self.original_mount = tools.helpers.images.mount_rootfs
         self.original_props = tools.helpers.images.make_prop
+
+    def publish(self):
+        if self.original_mnt is None: return
+        default_shares.storage.atomic(MARKER, {
+            'pid': os.getpid(), 'version': 2, 'sharing_version': 1,
+            'start_time': default_shares.process_start(os.getpid()),
+            'mount_namespace': os.readlink('/proc/self/ns/mnt'),
+            'original_mount_namespace': self.original_mnt})
 
     def install(self):
         self.tools.actions.container_manager.do_start = self.start
@@ -69,6 +85,8 @@ class Integration:
         cfg = self.tools.config.load(args)
         node = cfg['waydroid'].get('drm_device', 'auto')
         self.nvidia = gpu.is_nvidia(node)
+        if self.sharing and self.tools.helpers.lxc.status(args) != 'STOPPED':
+            raise RuntimeError('Stop the existing Default container before creating a private sharing session')
         try:
             # Updating the installed GUI alone used to leave Default's bridge
             # stale, causing its CSD plus KDE's SSD to appear together.
@@ -77,6 +95,9 @@ class Integration:
             global existing
             existing = module('runtime-existing')
             runtime = existing.ExistingRuntime(Path('/var/lib/anvildroid-controller'))
+            if self.sharing:
+                self.sharing.runtime = runtime
+                self.sharing.begin(session)
             runtime.sync_desktop_assets(int(session['user_id']))
             if self.nvidia:
                 gpu.choose(node)
@@ -89,7 +110,13 @@ class Integration:
                 self.renderer = gpu.nvidia.Renderer(directory=STATE / 'venus', private_host_endpoint=True)
                 self.renderer.start(uid, self.log)
             self.original_start(args, session)
-            if self.renderer:
+            if self.sharing:
+                pid = existing.linux.run_bounded('lxc-info', '-P', Path(self.tools.config.defaults['lxc']),
+                    '-n', 'waydroid', '-pH', timeout=2, full_output=True, output_limit=256,
+                    operation='Default sharing container identity').strip()
+                if not re.fullmatch(r'[1-9][0-9]*', pid): raise RuntimeError('Default Android process identity is unavailable')
+                self.sharing.started(int(pid))
+            if self.renderer or self.sharing:
                 self.timer = self.glib.timeout_add(1000, self.watch)
         except Exception:
             try: self.original_stop(args)
@@ -119,7 +146,10 @@ class Integration:
         target.write_text('\n'.join(props) + '\n')
 
     def mount(self, args, images, session):
+        if self.sharing: self.sharing.check_thread()
         self.original_mount(args, images, session)
+        if self.sharing:
+            self.sharing.prepare(Path(self.tools.config.defaults['lxc']) / 'waydroid/config_session')
         if not self.nvidia: return
         root = Path(self.tools.config.defaults['rootfs'])
         for source, target in gpu.nvidia.image_mounts(root):
@@ -154,12 +184,12 @@ class Integration:
 
     def watch(self):
         try:
-            self.renderer.check()
+            if self.renderer: self.renderer.check()
             if self.tools.helpers.lxc.status(self.args) == 'STOPPED':
                 self.timer = None
                 self.stop(self.args)
                 return False
-            if not self.snapshots_disabled:
+            if self.renderer and not self.snapshots_disabled:
                 result = existing.linux.run_bounded('lxc-attach', '-P', '/var/lib/waydroid/lxc', '-n', 'waydroid',
                     '--', '/system/bin/getprop', 'sys.boot_completed', timeout=2, full_output=True,
                     output_limit=256, operation='Default NVIDIA boot check')
@@ -193,6 +223,19 @@ class Integration:
         finally: self.close()
 
     def close(self):
+        if self.sharing and self.sharing.active:
+            self.sharing.check_thread()
+            # Stock hardware_manager owns an inherited namespace and can issue
+            # OTA callbacks. Never switch namespaces while that thread survives.
+            helper = getattr(self.args, 'hardware_manager', None)
+            if helper is not None and helper.is_alive():
+                if helper is threading.current_thread():
+                    raise RuntimeError('Default sharing cleanup cannot run from its hardware callback thread')
+                helper.join(timeout=3)
+                if helper.is_alive():
+                    raise RuntimeError('Default hardware callbacks did not stop; retaining shared-folder namespace')
+            if self.tools.helpers.lxc.status(self.args) != 'STOPPED':
+                raise RuntimeError('Default Android is still active; retaining shared-folder namespace')
         if self.timer is not None:
             self.glib.source_remove(self.timer)
             self.timer = None
@@ -214,22 +257,29 @@ class Integration:
             self.dri = None
         self.dri_node = None
         self.nvidia = self.snapshots_disabled = False
+        if self.sharing and self.sharing.active: self.sharing.close(True)
 
 
 def main():
     if os.geteuid() != 0: raise RuntimeError('Waydroid system integration requires root')
+    # This must precede importing stock Waydroid (which may create threads).
+    # All subsequent container sessions inherit only this private baseline.
+    original_mnt = os.readlink('/proc/self/ns/mnt')
+    os.unshare(os.CLONE_NEWNS)
+    subprocess.run(['mount', '--make-rprivate', '/'], check=True, capture_output=True)
+    if os.readlink('/proc/self/ns/mnt') == original_mnt:
+        raise RuntimeError('System Waydroid needs a private mount namespace')
     launcher = Path('/usr/bin/waydroid').resolve(strict=True)
     sys.path.insert(0, str(launcher.parent))
     import tools
     from gi.repository import GLib
-    integration = Integration(tools, GLib)
+    integration = Integration(tools, GLib, original_mnt)
     integration.install()
     # RuntimeDirectory is created by systemd, owned by root, not caller input.
     info = STATE.lstat()
     if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
         raise RuntimeError('Unsafe system Waydroid runtime directory')
-    MARKER.write_text(json.dumps({'pid': os.getpid(), 'version': 1}) + '\n')
-    MARKER.chmod(0o644)
+    integration.publish()
     atexit.register(integration.close)
     atexit.register(lambda: MARKER.unlink(missing_ok=True))
     sys.argv = [str(launcher), 'container', 'start']

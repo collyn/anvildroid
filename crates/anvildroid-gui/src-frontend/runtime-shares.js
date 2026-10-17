@@ -67,7 +67,7 @@
         'Changes are unavailable. Stop the runtime completely, then refresh.');
     }
     async function load(operation = 'shares_get', payload = {}) {
-      if (!identity || identity.id === 'default' || busy || (operation !== 'shares_get' && !editable)) return;
+      if (!identity || busy || (operation !== 'shares_get' && !editable)) return;
       const runtime = identity, current = epoch;
       // A prior snapshot cannot authorize more mutations during or after failure.
       lock(true); invalidate(); notice.textContent = operation === 'shares_get' ? 'Loading shared folders…' : 'Saving shared folders…';
@@ -111,11 +111,6 @@
         panel.dataset.runtimeId = runtime.id; panel.dataset.runtimeState = runtime.state;
         if (changed) { source.value = ''; name.value = ''; ro.checked = true; }
         busy = false; invalidate(); lock(false);
-        if (runtime.id === 'default') {
-          refresh.disabled = true;
-          notice.textContent = 'Shared folders require a managed runtime with isolated storage.';
-          return;
-        }
         return load();
       },
       deactivate() {

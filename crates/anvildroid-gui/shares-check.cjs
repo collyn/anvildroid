@@ -259,13 +259,22 @@ test('state changes invalidate pending picker results and pending mutation compl
   assert.equal(g.button('Save share').disabled,true);assert.equal(g.calls.length,3);
 });
 
-test('Default runtime renders unsupported inline without fetching or granting any access',async()=>{
+test('Default reads integration availability and shows missing prerequisite without allowing grants',async()=>{
+  const f=fixture({request:args=>report(args.id,{editable:false,shares:[],unsupported_reason:'Restart the Waydroid container service to activate shared-folder integration'})});
+  await f.mount('default','Stopped');
+  assert.deepEqual(f.calls,[{op:'shares_get',id:'default'}]);assert.equal(f.choices.length,0);assert.equal(f.section.parentNode,f.host);
+  assert.match(f.notice().textContent,/Restart the Waydroid container service/);
+  assert.equal(f.button('Save share').disabled,true);await f.button('Choose folder').fire('click',true);
+  await f.ui.refresh();assert.equal(f.calls.length,2);assert.equal(f.choices.length,0);
+});
+
+test('supported Default uses the existing inline folder picker and grant operations',async()=>{
   const f=fixture();await f.mount('default','Stopped');
-  assert.equal(f.calls.length,0);assert.equal(f.choices.length,0);assert.equal(f.section.parentNode,f.host);
-  assert.match(f.section.textContent,/Default|managed runtime/);assert.match(f.section.textContent,/unsupported|require|unavailable|system Waydroid/i);
-  assert.equal(f.button('Save share').disabled,true);await f.ui.refresh();await f.button('Refresh').fire('click',true);
-  assert.equal(f.calls.length,0);
-  await f.mount('one');assert.equal(f.calls.length,1);assert.equal(f.button('Save share').disabled,false);
+  assert.equal(f.button('Save share').disabled,false);await f.button('Choose folder').fire();
+  f.name().value='DefaultDocs';await f.form().fire('submit');
+  assert.deepEqual(f.calls[1],{op:'shares_set',id:'default',name:'DefaultDocs',source:'/home/user/selected',read_only:true});
+  await f.button('Remove').fire();assert.deepEqual(f.calls[2],{op:'shares_remove',id:'default',name:'Docs'});
+  await f.mount('default','Running');assert.equal(f.button('Save share').disabled,true);
 });
 
 test('deactivate detaches the stable section, suppresses pending replies and requires fresh mount',async()=>{
