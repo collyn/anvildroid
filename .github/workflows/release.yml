@@ -77,6 +77,8 @@ jobs:
       - name: Build pinned native X11 payload
         run: |
           python3 scripts/build-x11-payload.py
+      - name: Test native X11 protocols without a display
+        run: python3 native/x11/host-check.py
       - name: Prepare pinned NVIDIA archives
         env:
           GH_TOKEN: ${{ secrets.NVIDIA_ARTIFACT_TOKEN || github.token }}

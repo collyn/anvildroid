@@ -12,6 +12,72 @@ static std::vector<uint32_t> wire(Server &s, int fd) {
   assert(n >= 0 && n % 4 == 0);
   return {words, words + n / 4};
 }
+static void clipboard_source_reuse() {
+  Server s(true);
+  int fds[2];
+  assert(!socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, fds));
+  auto *client = wl_client_create(s.display, fds[0]);
+  assert(client);
+  auto request = [&](const std::vector<uint32_t> &words) {
+    assert(write(fds[1], words.data(), words.size() * 4) ==
+           ssize_t(words.size() * 4));
+    assert(wl_event_loop_dispatch(s.loop, 0) >= 0);
+  };
+  request({1, (12u << 16) | 1, 2}); // wl_display.get_registry
+  uint32_t manager = 0;
+  auto messages = wire(s, fds[1]);
+  for (size_t i = 0; i < messages.size(); i += (messages[i + 1] >> 16) / 4)
+    if (messages[i] == 2 && (messages[i + 1] & 65535) == WL_REGISTRY_GLOBAL &&
+        !strcmp(reinterpret_cast<const char *>(&messages[i + 4]),
+                "wl_data_device_manager"))
+      manager = messages[i + 2];
+  assert(manager);
+  const char interface[] = "wl_data_device_manager";
+  std::vector<uint32_t> bind(6 + (sizeof(interface) + 3) / 4);
+  bind[0] = 2;
+  bind[1] = uint32_t(bind.size() * 4) << 16; // wl_registry.bind
+  bind[2] = manager;
+  bind[3] = sizeof(interface);
+  memcpy(bind.data() + 4, interface, sizeof(interface));
+  bind[bind.size() - 2] = 3; // version
+  bind.back() = 3;           // new manager ID
+  request(bind);
+  assert(wl_client_get_object(client, 3));
+  assert(wl_resource_create(client, &wl_seat_interface, 5, 4));
+  Top t{};
+  t.xdg = wl_resource_create(client, &xdg_surface_interface, 3, 5);
+  assert(t.xdg);
+  wl_resource_set_implementation(t.xdg, nullptr, &s, [](wl_resource *r) {
+    get<Server>(r)->keyboard_focus = nullptr;
+  });
+  s.keyboard_focus = &t;
+  const auto serial = s.input_serial(client);
+  request({3, 12u << 16, 6,                 // create_data_source
+           3, (16u << 16) | 1, 7, 4,        // get_data_device
+           7, (16u << 16) | 1, 6, serial}); // set_selection
+  messages = wire(s, fds[1]);
+  bool selected = false;
+  for (size_t i = 0; i < messages.size(); i += (messages[i + 1] >> 16) / 4)
+    if (messages[i] == 7 &&
+        (messages[i + 1] & 65535) == WL_DATA_DEVICE_SELECTION &&
+        messages[i + 2])
+      selected = true;
+  assert(selected);
+  request({7, (16u << 16) | 1, 6, serial}); // reuse the same source
+  messages = wire(s, fds[1]);
+  bool rejected = false;
+  for (size_t i = 0; i < messages.size(); i += (messages[i + 1] >> 16) / 4)
+    if (messages[i] == 1 && (messages[i + 1] & 65535) == WL_DISPLAY_ERROR) {
+      // Assert the protocol's numeric value, independently of header enums.
+      assert(messages[i + 2] == 7 && messages[i + 3] == 1);
+      rejected = true;
+    }
+  assert(rejected);
+  s.keyboard_focus = nullptr;
+  close(fds[1]);
+  puts("PASS clipboard accepts a fresh source and rejects reuse with "
+       "wl_data_device error 1");
+}
 static void geometry_unicode() {
   Preedit p;
   p.replace(0, 0, U"Toi😀", 4);
@@ -280,6 +346,7 @@ int main(int argc, char **argv) {
     return 0;
   }
   assert(argc == 1);
+  clipboard_source_reuse();
   input_backpressure();
   geometry_unicode();
   Server s(true);

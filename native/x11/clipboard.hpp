@@ -42,6 +42,9 @@ class Clipboard {
     }
   };
   static constexpr size_t limit = 32 * 1024 * 1024, chunk = 65536;
+  // wl_data_device.used_source has wire value 1, but older Wayland headers
+  // (including Ubuntu 24.04's) do not define its enum name.
+  static constexpr uint32_t used_source_error = 1;
   Display *x;
   wl_display *display;
   wl_event_loop *loop;
@@ -357,8 +360,7 @@ public:
                       auto s = source ? *get<std::shared_ptr<Source>>(source)
                                       : std::shared_ptr<Source>{};
                       if (s && s->used) {
-                        wl_resource_post_error(r,
-                                               WL_DATA_DEVICE_ERROR_USED_SOURCE,
+                        wl_resource_post_error(r, used_source_error,
                                                "source already used");
                         return;
                       }
