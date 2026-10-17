@@ -35,7 +35,8 @@ class InstallationPermissions(unittest.TestCase):
             info = user_owned.stat()
             user_identity = info.st_dev, info.st_ino
         identities = {(p.stat().st_dev, p.stat().st_ino)
-                      for p in (self.root, self.parent, self.destination) if p.exists()}
+                      for p in (self.root, self.parent, self.destination, *self.destination.rglob('*'))
+                      if p.exists()}
 
         def metadata(fd):
             info = original(fd)
@@ -52,6 +53,7 @@ class InstallationPermissions(unittest.TestCase):
     def test_legacy_0775_directory_is_repaired_without_changing_assets(self):
         asset = self.destination / 'sentinel'
         asset.write_bytes(b'keep')
+        asset.chmod(0o644)
         before = asset.stat()
         self.destination.chmod(0o775)
         with self.root_metadata():
@@ -68,6 +70,114 @@ class InstallationPermissions(unittest.TestCase):
         with self.root_metadata(), patch.object(os, 'fchmod') as chmod:
             secure(self.destination)
         chmod.assert_not_called()
+
+    def test_nested_legacy_directories_are_repaired_and_assets_preserved(self):
+        nested = self.destination / 'provision' / 'vendor' / 'lib64'
+        nested.mkdir(parents=True)
+        script = self.destination / 'services'
+        script.mkdir()
+        asset = nested / 'libprobe.so'
+        asset.write_bytes(b'unchanged')
+        asset.chmod(0o644)
+        before = asset.stat()
+        for directory in (self.destination, nested.parent.parent, nested.parent, nested, script):
+            directory.chmod(0o775)
+        with self.root_metadata():
+            secure(self.destination)
+            secure(self.destination)
+        for directory in (self.destination, nested.parent.parent, nested.parent, nested, script):
+            self.assertEqual(stat.S_IMODE(directory.stat().st_mode), 0o755)
+        after = asset.stat()
+        self.assertEqual((before.st_ino, before.st_mode, before.st_uid, before.st_gid, before.st_mtime_ns),
+                         (after.st_ino, after.st_mode, after.st_uid, after.st_gid, after.st_mtime_ns))
+        self.assertEqual(asset.read_bytes(), b'unchanged')
+
+    def test_nested_unsafe_ownership_and_modes_fail_without_adoption(self):
+        nested = self.destination / 'services'
+        nested.mkdir()
+        for mode, owner in ((0o777, None), (0o2775, None), (0o775, nested)):
+            with self.subTest(mode=oct(mode), owner=owner):
+                nested.chmod(mode)
+                with self.root_metadata(user_owned=owner), patch.object(os, 'fchmod') as chmod:
+                    with self.assertRaisesRegex(RuntimeError, str(nested)):
+                        secure(self.destination)
+                chmod.assert_not_called()
+                self.assertEqual(stat.S_IMODE(nested.stat().st_mode), mode)
+
+    def test_only_two_known_legacy_0664_resources_are_repaired_without_content_changes(self):
+        resources = [self.destination / 'provision/AndroidManifest.xml',
+                     self.destination / 'provision/res/layout/decor_caption.xml']
+        before = {}
+        for resource in resources:
+            resource.parent.mkdir(parents=True, exist_ok=True)
+            resource.write_bytes(b'legacy resource bytes')
+            resource.chmod(0o664)
+            before[resource] = resource.stat()
+        with self.root_metadata():
+            secure(self.destination)
+            secure(self.destination)
+        for resource in resources:
+            after = resource.stat()
+            prior = before[resource]
+            self.assertEqual(stat.S_IMODE(after.st_mode), 0o644)
+            self.assertEqual((prior.st_ino, prior.st_uid, prior.st_gid, prior.st_mtime_ns),
+                             (after.st_ino, after.st_uid, after.st_gid, after.st_mtime_ns))
+            self.assertEqual(resource.read_bytes(), b'legacy resource bytes')
+
+    def test_known_legacy_resource_exception_rejects_unsafe_modes_and_owner(self):
+        resource = self.destination / 'provision/AndroidManifest.xml'
+        resource.parent.mkdir(mode=0o755)
+        resource.write_bytes(b'keep')
+        for mode, owner in ((0o666, None), (0o664, resource)):
+            with self.subTest(mode=oct(mode), owner=owner):
+                resource.chmod(mode)
+                with self.root_metadata(user_owned=owner), patch.object(os, 'fchmod') as chmod:
+                    with self.assertRaisesRegex(RuntimeError, str(resource)):
+                        secure(self.destination)
+                chmod.assert_not_called()
+
+    def test_known_legacy_resource_hardlink_cannot_change_external_inode(self):
+        external = self.root / 'external-resource'
+        external.write_bytes(b'external must remain unchanged')
+        external.chmod(0o664)
+        resource = self.destination / 'provision/AndroidManifest.xml'
+        resource.parent.mkdir(mode=0o755)
+        os.link(external, resource)
+        with self.root_metadata(), patch.object(os, 'fchmod') as chmod:
+            with self.assertRaisesRegex(RuntimeError, 'hard-linked legacy controller resource'):
+                secure(self.destination)
+        chmod.assert_not_called()
+        self.assertEqual(stat.S_IMODE(external.stat().st_mode), 0o664)
+        self.assertEqual(external.read_bytes(), b'external must remain unchanged')
+
+    def test_nested_links_cannot_change_external_targets(self):
+        external = self.root / 'external'
+        external.mkdir(mode=0o775)
+        external.chmod(0o775)
+        asset = external / 'keep'
+        asset.write_bytes(b'keep')
+        (self.destination / 'services').symlink_to(external, target_is_directory=True)
+        with self.root_metadata(), patch.object(os, 'fchmod') as chmod:
+            with self.assertRaisesRegex(RuntimeError, str(self.destination / 'services')):
+                secure(self.destination)
+        chmod.assert_not_called()
+        self.assertEqual(stat.S_IMODE(external.stat().st_mode), 0o775)
+        self.assertEqual(asset.read_bytes(), b'keep')
+
+    def test_writable_user_owned_or_linked_assets_are_rejected(self):
+        asset = self.destination / 'asset'
+        asset.write_bytes(b'keep')
+        for mode, owner in ((0o664, None), (0o644, asset)):
+            with self.subTest(mode=oct(mode), owner=owner):
+                asset.chmod(mode)
+                with self.root_metadata(user_owned=owner), patch.object(os, 'fchmod') as chmod:
+                    with self.assertRaisesRegex(RuntimeError, str(asset)):
+                        secure(self.destination)
+                chmod.assert_not_called()
+        asset.unlink()
+        asset.symlink_to(self.root / 'absent')
+        with self.root_metadata(), self.assertRaisesRegex(RuntimeError, str(asset)):
+            secure(self.destination)
 
     def test_missing_directory_is_left_for_dpkg(self):
         self.destination.rmdir()
