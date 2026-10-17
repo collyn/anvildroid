@@ -107,6 +107,31 @@ class HostIsolation(unittest.TestCase):
                     worker.prepare_loop_devices(root / 'block', root / 'sys')
                 create.assert_not_called()
 
+    def test_restart_cleans_android_block_aliases_without_following_them(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            destination = root / 'block'
+            (destination / 'vold').mkdir(parents=True)
+            (destination / 'vold/stale').touch()
+            outside = root / 'outside'
+            outside.mkdir()
+            sentinel = outside / 'keep'
+            sentinel.write_text('unchanged')
+            (destination / 'by-name').symlink_to(outside, target_is_directory=True)
+            (destination / 'loop999').symlink_to(sentinel)
+            (destination / 'dm-0').touch()
+            worker.prepare_loop_devices(destination, root / 'empty-sys')
+            self.assertEqual(list(destination.iterdir()), [])
+            self.assertEqual(sentinel.read_text(), 'unchanged')
+
+    def test_private_block_root_symlink_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / 'outside').mkdir()
+            (root / 'block').symlink_to(root / 'outside', target_is_directory=True)
+            with self.assertRaisesRegex(RuntimeError, 'Invalid private block directory'):
+                worker.prepare_loop_devices(root / 'block', root / 'empty-sys')
+
     @unittest.skipUnless(os.environ.get('ANVILDROID_ISOLATION_MOUNTS') == '1',
                          'opt-in private mount namespace check')
     def test_mask_discards_commands_in_private_mount_namespace(self):

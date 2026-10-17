@@ -10,7 +10,62 @@ FUNCTIONS = SOURCE.split('# Only this shell-UID service')[1].split('# Fresh capa
 FUNCTIONS = '# Only this shell-UID service' + FUNCTIONS
 
 class DisplaySizeTests(unittest.TestCase):
-    def run_helper(self, command, full='', scaled=False, noscale=False):
+    def test_task_snapshot_publishes_changes_atomically_and_retries_failure(self):
+        functions = SOURCE[SOURCE.index('publish_task_snapshot()'):SOURCE.index('# Fresh capability token')]
+        script = '''
+cmd() { [ ! -f fail ] || return 1; cat fixture; }
+snapshot_published=0 last_snapshot=
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            (root / 'fixture').write_text('taskId=12 bounds=[0,0][720,1280]\n')
+            script += functions + '''
+publish_task_snapshot || exit 1
+ln tasks retained
+publish_task_snapshot || exit 2
+[ tasks -ef retained ] || exit 3
+echo changed > fixture
+touch fail
+if publish_task_snapshot; then exit 4; fi
+[ tasks -ef retained ] || exit 5
+rm fail
+publish_task_snapshot || exit 6
+[ "$(cat tasks)" = changed ] || exit 7
+[ ! tasks -ef retained ] || exit 8
+rm tasks
+publish_task_snapshot || exit 9
+[ "$(cat tasks)" = changed ] || exit 10
+# An empty first result must replace a snapshot left by a prior helper.
+snapshot_published=0 last_snapshot=
+: > fixture
+publish_task_snapshot || exit 11
+[ "$(cat tasks)" = '' ] || exit 12
+'''
+            result = subprocess.run(['sh', '-c', script], cwd=directory, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_task_resize_keeps_android16_origin_and_exact_dimensions(self):
+        functions = SOURCE[SOURCE.index('resize_app_task()'):SOURCE.index('# Fresh capability token')]
+        snapshot = ('RootTask id=12 bounds=[609,134][1374,1055]\n'
+                    '  taskId=12: com.android.settings/.Settings bounds=[609,134][1374,1055] userId=0\n')
+        with tempfile.TemporaryDirectory() as directory:
+            pathlib.Path(directory, 'tasks').write_text(snapshot)
+            script = 'getprop() { echo "$SDK"; }; cmd() { echo "$*"; };\n' + functions
+            for sdk, expected in [('36', 'activity task resize 12 609 134 1889 854'),
+                                  ('33', 'activity task resize 12 0 0 1280 720')]:
+                result = subprocess.run(['sh', '-c', script + '\nresize_app_task 12 1280 720'],
+                                        cwd=directory, env={'PATH': '/usr/bin:/bin', 'SDK': sdk},
+                                        capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.strip(), expected)
+            # Never apply another task's coordinates or guessed (0,0) bounds.
+            result = subprocess.run(['sh', '-c', script + '\nresize_app_task 99 1280 720'],
+                                    cwd=directory, env={'PATH': '/usr/bin:/bin', 'SDK': '36'},
+                                    capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(result.stdout, '')
+
+    def run_helper(self, command, full='', scaled=False, noscale=False, android16=False):
         with tempfile.TemporaryDirectory() as directory:
             script = '''
 wm() {
@@ -21,11 +76,14 @@ wm() {
     esac
 }
 settings() { case "$*" in *accelerometer_rotation) echo 1;; *) echo 2;; esac; }
-getprop() { case "$1" in waydroid.anvil_full_ui) printf '%s' "$FULL";; waydroid.active_apps) printf '%s' "$ACTIVE";; esac; }
+getprop() { case "$1" in waydroid.anvil_full_ui) printf '%s' "$FULL";; waydroid.active_apps) printf '%s' "$ACTIVE";; waydroid.anvil_single_display) printf '%s' "$SINGLE";; esac; }
 dumpsys() { if [ "$1" = window ]; then printf '%s' "$NOSCALE"; return; fi; echo 'mViewports=[DisplayViewport{type=INTERNAL, displayId=0, orientation=0, logicalFrame=Rect(0, 0 - 720, 1280), physicalFrame=Rect(280, 0 - 1000, 1280), deviceWidth=1280, deviceHeight=1280}]'; }
 '''
             if scaled:
                 script = script.replace('Rect(280, 0 - 1000, 1280)', 'Rect(128, 0 - 1152, 1280)')
+            if android16:
+                script = script.replace('orientation=0, logicalFrame=',
+                                        'orientation=0, densityDpi=180, xDpi=180.0, yDpi=180.0, logicalFrame=')
             result = subprocess.run(['sh', '-c', script + FUNCTIONS + command], cwd=directory,
                                     env={'PATH': '/usr/bin:/bin', 'FULL': full, 'NOSCALE': 'init=1280x1280 base=1000x600 noscale' if noscale else ''}, text=True, capture_output=True)
             files = {p.name: p.read_text() for p in pathlib.Path(directory).iterdir()}
@@ -42,6 +100,11 @@ dumpsys() { if [ "$1" = window ]; then printf '%s' "$NOSCALE"; return; fi; echo 
         result, files = self.run_helper('\nresize_display 720 1280 canvas\n', scaled=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(files['display-state'], '720 1280 1280 1280 128 0 1024 1280\n')
+
+    def test_android_16_density_fields_do_not_hide_projection(self):
+        result, files = self.run_helper('\nresize_display 720 1280 canvas\n', android16=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(files['display-state'], '720 1280 1280 1280 280 0 720 1280\n')
 
     def test_default_full_ui_selector_is_accepted(self):
         result, files = self.run_helper('\nACTIVE=Waydroid\nresize_display 720 1280 full\n')
@@ -75,6 +138,22 @@ dumpsys() { if [ "$1" = window ]; then printf '%s' "$NOSCALE"; return; fi; echo 
             self.assertNotEqual(result.returncode, 0)
             self.assertNotIn('calls', files)
             self.assertNotIn('display-state', files)
+
+    def test_app_windows_clear_persisted_single_display_override(self):
+        result, files = self.run_helper('\necho stale > display-state\nbootstrap_display\n')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(files['calls'], 'size reset\nscaling auto\n')
+        self.assertNotIn('display-state', files)
+
+    def test_single_display_bootstrap_keeps_canvas(self):
+        result, files = self.run_helper('\nSINGLE=true\nresize_display() { echo "$*" > request; }\nbootstrap_display\n')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(files['request'], '1280 720 canvas\n')
+
+    def test_bootstrap_preserves_active_full_ui(self):
+        result, files = self.run_helper('\nbootstrap_display\n', full='active')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn('calls', files)
 
 if __name__ == '__main__':
     unittest.main()

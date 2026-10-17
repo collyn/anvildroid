@@ -104,6 +104,7 @@ static int pointer_x = 0, pointer_y = 0;
 static unsigned buttons = 0, keys = 0, locked_mods = 0;
 static std::vector<std::pair<uint32_t, uint32_t>> physical_keys;
 static uint32_t button_serial = 0;
+static std::vector<std::pair<uint32_t, wl_fixed_t>> scroll_axes;
 static const wl_pointer_listener pointer_events = {
     [](void *, wl_pointer *, uint32_t, wl_surface *s, wl_fixed_t x,
        wl_fixed_t y) {
@@ -124,7 +125,9 @@ static const wl_pointer_listener pointer_events = {
       if (state == WL_POINTER_BUTTON_STATE_PRESSED)
         button_serial = serial;
     },
-    [](void *, wl_pointer *, uint32_t, uint32_t, wl_fixed_t) {},
+    [](void *, wl_pointer *, uint32_t, uint32_t axis, wl_fixed_t value) {
+      scroll_axes.emplace_back(axis, value);
+    },
     [](void *, wl_pointer *) {},
     [](void *, wl_pointer *, uint32_t) {},
     [](void *, wl_pointer *, uint32_t, uint32_t) {},

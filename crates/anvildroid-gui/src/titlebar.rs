@@ -23,7 +23,7 @@ pub fn install(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         let square = event
             .new_window_state()
             .intersects(gdk::WindowState::MAXIMIZED | gdk::WindowState::FULLSCREEN);
-        let _ = webview.eval(&format!(
+        let _ = webview.eval(format!(
             "document.documentElement.classList.toggle('window-square', {square})"
         ));
         gtk::glib::Propagation::Proceed

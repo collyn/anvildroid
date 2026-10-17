@@ -6,6 +6,21 @@ base=/data/waydroid_tmp/anvildroid
 cd "$base" || exit 1
 mkdir -p apps
 chmod 2770 apps
+# Use mksh's timeout instead of creating a sleep process on every idle tick.
+tick_ready=0
+if [ -n "${KSH_VERSION:-}" ]; then
+    tick_dir=$(mktemp -d /data/local/tmp/anvil-app-tick-XXXXXX)
+    if [ -n "$tick_dir" ] && mkfifo "$tick_dir/tick" && { exec 9<>"$tick_dir/tick"; }; then
+        tick_ready=1
+    fi
+    # The open descriptor holds the FIFO alive; no pathname or exit trap is
+    # needed while processing queue jobs in subshells.
+    if [ -n "$tick_dir" ]; then rm -f "$tick_dir/tick"; rmdir "$tick_dir"; fi
+fi
+wait_tick() {
+    if [ "$tick_ready" -eq 1 ]; then IFS= read -r -t "$1" tick <&9 || :
+    else sleep "$1"; fi
+}
 while true; do
     for request in apps/job-*.ready; do
         [ -d "$request" ] && [ ! -L "$request" ] || continue
@@ -60,5 +75,5 @@ while true; do
         mv "$work/status.tmp" "$work/status"
         # Host owns cleanup after consuming the atomic status marker.
     done
-    sleep 0.1
+    wait_tick 0.1
 done

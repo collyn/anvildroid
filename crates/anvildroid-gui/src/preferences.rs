@@ -120,10 +120,10 @@ fn handle_panel_menu(app: &tauri::AppHandle, id: &str) {
 
 pub fn handle_close(window: &tauri::Window, event: &tauri::WindowEvent) {
     if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-        if window.label() == "main" && minimize_to_panel(window.app_handle()) {
-            if window.hide().is_ok() {
-                api.prevent_close();
-            }
+        if window.label() == "main" && minimize_to_panel(window.app_handle())
+            && window.hide().is_ok()
+        {
+            api.prevent_close();
         }
     }
 }

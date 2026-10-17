@@ -38,9 +38,11 @@ def load_payload(directory, *, trusted_owner=0):
     for path in (directory, *directory.parents):
         metadata = path.lstat()
         if not stat.S_ISDIR(metadata.st_mode):
-            raise RuntimeError('Native X11 payload path contains a symlink/non-directory')
+            raise RuntimeError('Native X11 payload path contains a symlink/non-directory: ' + str(path))
         if trusted_owner == 0 and (metadata.st_uid != 0 or metadata.st_mode & 0o022):
-            raise RuntimeError('Native X11 payload requires root-owned private install parents')
+            raise RuntimeError(
+                f'Native X11 payload requires root-owned private install parents: {path} '
+                f'(uid={metadata.st_uid}, gid={metadata.st_gid}, mode={stat.S_IMODE(metadata.st_mode):04o})')
     encoded = read('manifest.json', 65536)
     try:
         manifest = json.loads(encoded)
@@ -88,8 +90,9 @@ def preflight(instance, nvidia_rendering, *, defer_contract=False):
     sdk = report.get('sdk')
     if sdk not in (33, 34, 35, 36):
         raise RuntimeError(f"Native X11 supports SDK 33-36; this image uses SDK {sdk}. Weston was not started")
-    if nvidia_rendering and sdk != 33:
-        raise RuntimeError(f'Native X11 NVIDIA/Venus requires SDK 33; this image uses SDK {sdk}. Select AMD or Intel in Graphics. Weston was not started')
+    if nvidia_rendering and sdk != 33 and (report.get('app_window_contract') != 'waydroid-hidl'
+            or report.get('desktop_bridge') != 'anvildroid'):
+        raise RuntimeError(f'Native X11 NVIDIA/Venus requires the Waydroid per-app composer and desktop bridge on SDK {sdk}. Weston was not started')
     pending_contract = defer_contract and 'app_window_contract' not in report
     if not nvidia_rendering and ((not pending_contract and report.get('app_window_contract') != 'waydroid-hidl')
             or report.get('desktop_bridge') == 'native-wayland'):

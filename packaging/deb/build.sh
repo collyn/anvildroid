@@ -19,11 +19,13 @@ Section: misc
 Priority: optional
 Architecture: amd64
 Maintainer: AnvilDroid
+Pre-Depends: python3
 Recommends: adb
 Description: AnvilDroid GUI, CLI and Android runtime controller
  GPU accelerated Waydroid runtime controller with BinderFS, Wayland and native X11 support.
 Depends: libc6 (>= 2.39), libepoxy0, libdrm2, libgbm1, libx11-6, libxcb1, libegl1, libgles2, libwayland-server0, libxkbcommon0, libxcursor1, libxi6, libxfixes3, libxext6, libstdc++6, libgcc-s1, libexpat1, libvulkan1, util-linux, mount, iproute2, nftables, slirp4netns, lxc, kmod, curl, weston, python3, default-jre-headless (>= 2:1.17), systemd, patchelf (>= 0.18), libwebkit2gtk-4.1-0, libgtk-3-0, libglib2.0-0, libjavascriptcoregtk-4.1-0, libsoup-3.0-0, libpango-1.0-0, libcairo2, libgdk-pixbuf-2.0-0, libayatana-appindicator3-1 | libappindicator3-1
 EOF
+install -m 0755 "$ROOT/packaging/deb/preinst.py" "$PKG/DEBIAN/preinst"
 cat > "$PKG/DEBIAN/postinst" <<'EOF'
 #!/bin/sh
 set -e

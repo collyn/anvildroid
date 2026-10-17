@@ -36,6 +36,8 @@ extern char *strrchr(const char *, int);
 extern char *strdup(const char *);
 extern char *getenv(const char *);
 extern int usleep(unsigned int);
+static int trace_frames;
+#define FRAME_TRACE(...) do { if (trace_frames) __android_log_print(__VA_ARGS__); } while (0)
 
 /* Interpose the HIDL ProcessState entry point used by setupBinderPolling.
  * Leave both configure*RpcThreadpool wrappers alone: one calls the other,
@@ -89,11 +91,17 @@ static _Alignas(8) unsigned char mutex[64];
 #include "display-lifecycle.inc"
 
 struct object {
+  struct nv_ring *nv_ring, *nv_pending;
+  int nv_plane_fd, nv_nvidia, nv_planes;
+  uint32_t nv_stride, nv_offset, nv_formats[32];
+  unsigned nv_format_count;
+  uint64_t nv_modifier;
   struct proxy *p;
   const char *protocol_name; /* Immutable protocol metadata, not proxy internals. */
   const struct interface *protocol_interface;
   struct wl_display *display;
   struct proxy *pointer_surface;
+  int absolute_x, absolute_y, absolute_valid, absolute_buttons;
   struct custom_size custom_size;
   int full_ui, full_w, full_h, full_canvas_w, full_canvas_h;
   int full_clip_x,full_clip_y;
@@ -118,6 +126,7 @@ struct object {
   struct resize_policy resize;
   unsigned long profile_token;
   int profile_loaded, profile_dirty, profile_restoring, profile_ticks, profile_recreated;
+  int initial_presented, initial_wait_ticks;
   int profile_width, profile_height;
   int profile_state_dirty;
   int host_fullscreen;
@@ -151,6 +160,7 @@ static int window_fit_enabled(struct object *);
 static int window_fit_settled(struct object *);
 static int window_layout_width(struct object *,int);
 static int game_fit_bar(struct proxy *);
+static struct object *game_fit_owner(struct object *);
 static int32_t game_fit_input(struct proxy *,int32_t,int);
 static int game_fit_geometry(struct object *,int,int,int,int);
 static void game_fit_destroy(struct object *);
@@ -244,6 +254,7 @@ static void init(void) {
     return;
   }
   anvil_native_passthrough = getenv("ANVILDROID_NATIVE_WAYLAND") != NULL;
+  trace_frames = getenv("ANVILDROID_TRACE_FRAMES") != NULL;
   __android_log_print(4, "AnvilDroid",
                       "window bridge loaded (Wayland legacy ABI)");
   unsigned long thread;
@@ -277,7 +288,11 @@ static struct object *track(void *p) {
   objects = o;
   return o;
 }
+static void nv_commit(struct object *);
+static int nv_internal_attach(struct object *,struct proxy *);
 static void wayland_send(struct proxy *p, uint32_t op, union argument *a) {
+  if(op==1&&p&&p->interface&&!strcmp(p->interface->name,"wl_surface")&&a&&nv_internal_attach(find(p),a[0].o))return;
+  if(op==6&&p&&p->interface&&!strcmp(p->interface->name,"wl_surface"))nv_commit(find(p));
   real_marshal(p, op, a, 0, get_version(p));
 }
 static void decoration_configure(void *data, struct proxy *p, uint32_t mode) {
@@ -317,11 +332,13 @@ static void decoration_destroy(struct object *top) {
 }
 #include "csd-adapter.inc"
 #include "csd-cursor.inc"
+#include "nvidia-present.inc"
 #include "ime-adapter.inc"
 #include "scale-adapter.inc"
 #include "boot-canvas.inc"
 #include "window-profile.inc"
 #include "resize-mode.inc"
+#include "task-watch.h"
 #include "window-activation.inc"
 #include "window-feedback.inc"
 #include "window-transition.inc"
@@ -340,17 +357,21 @@ static void ime_cursor_geometry(struct object *s,int *x,int *y,int *h){
     *x=ox+full_ui_scaled(s,*x-display_projection.x,0,0);
     *y=oy+full_ui_scaled(s,*y-display_projection.y,1,0);
     *h=full_ui_scaled(s,*h,1,1);
+  }else if(window_fit_enabled(s)) {
+    struct game_fit_rect r=game_fit_area(s);
+    *x=r.x+game_fit_scaled(s,task_to_logical(*x-s->frame_origin_x,0)-s->fit_x,0);
+    *y=r.y+game_fit_scaled(s,task_to_logical(*y-s->frame_origin_y,0)-s->fit_y,1);
+    *h=game_fit_scaled(s,task_to_logical(*h,1),1);
+    if(*h<1)*h=1;
   }else{*x-=s->bx;*y-=s->by;}
 }
 static void ime_protocol_init(void *library) {
   clip_manager_i=dlsym(library,"wl_data_device_manager_interface");
   clip_source_i=dlsym(library,"wl_data_source_interface");
   clip_device_i=dlsym(library,"wl_data_device_interface");
-  clip_user_data=dlsym(library,"wl_proxy_get_user_data");
   if(!clip_manager_i)clip_manager_i=&clip_manager_interface;
   if(!clip_source_i)clip_source_i=&clip_source_interface;
   if(!clip_device_i)clip_device_i=&clip_device_interface;
-  if(!clip_user_data)clip_user_data=dlsym((void *)-1L,"wl_proxy_get_user_data");
   ime_object_types[0] = &ime_text_interface;
   ime_object_types[1] = dlsym(library, "wl_seat_interface");
   ime_surface_types[0] = dlsym(library, "wl_surface_interface");
@@ -394,7 +415,7 @@ static void geometry(struct object *s) {
      * coordinates, not surface-local: derive the content rect from the
      * app's own subsurfaces instead. */
     if (task_matches != 1) {
-      __android_log_print(4, "AnvilDroid",
+      FRAME_TRACE(4, "AnvilDroid",
                           "geom: region invalid app_id=%s tasks=%d bounds=%d attached=%d",
                           s->app_id ? s->app_id : "?", task_matches,
                           s->has_bounds, s->attached);
@@ -784,7 +805,10 @@ int wl_proxy_add_listener(struct proxy *p, void (**listener)(void),
   o->listener = listener;
   o->listener_data = data;
   int result;
-  if (!strcmp(p->interface->name, "xdg_toplevel"))
+  if(o->nv_ring) result=0; /* Ring already owns the physical release listeners. */
+  else if(nv_copy_enabled()&&!strcmp(p->interface->name,"zwp_linux_dmabuf_v1"))
+    result=real_listen(p,nv_dmabuf_listener,o);
+  else if (!strcmp(p->interface->name, "xdg_toplevel"))
     result = real_listen(p, toplevel_listener, o);
   else if (!strcmp(p->interface->name, "wl_registry"))
     result = real_listen(p, ime_registry_listener, o);
@@ -824,6 +848,8 @@ static struct proxy *bridge_marshal(
   if (o) {o->protocol_name = cls;o->protocol_interface = p->interface;}
   if(!strcmp(cls,"wl_pointer")&&!strcmp(method,"set_cursor"))csd_cursor_request(o,a);
   int skip = 0;
+  struct proxy *nv_result=0;
+  int nv_constructor=0;
   if ((!strcmp(cls, "xdg_toplevel") || !strcmp(cls, "wl_surface")) && !strcmp(method, "destroy"))
     csd_destroy(o);
   if (!strcmp(cls,"wl_surface") && !strcmp(method,"destroy")) {
@@ -956,6 +982,7 @@ static struct proxy *bridge_marshal(
   }
   if (!strcmp(cls, "wl_surface") && o) {
     if (!strcmp(method, "attach")) {
+      struct proxy *previous_buffer=o->attached_buffer;
       o->attached = a[0].o != 0;
       o->attached_buffer = a[0].o;
       o->attach_x = a[1].i; o->attach_y = a[2].i;
@@ -963,6 +990,12 @@ static struct proxy *bridge_marshal(
       struct object *buffer=find(a[0].o);
       o->buffer_transport=buffer?buffer->buffer_transport:0;
       o->buffer_stride=buffer?buffer->buffer_stride:0;
+      o->nv_pending=buffer?buffer->nv_ring:0;
+      if(o->nv_pending) {
+        /* Keep a real copied destination for geometry-only restores and for
+         * skipped/failed copies; the logical proxy has never been written. */
+        o->attached_buffer=previous_buffer;skip=1;
+      }
     }
     if (!strcmp(method, "set_input_region")) {
       o->region = find(a[0].o);
@@ -970,7 +1003,7 @@ static struct proxy *bridge_marshal(
        * its temporary wl_region before commit; geometry must retain bounds. */
       o->region_valid=o->region && o->region->valid;
       if (o->app)
-        __android_log_print(4, "AnvilDroid",
+        FRAME_TRACE(4, "AnvilDroid",
                             "input_region app_id=%s region=%p valid=%d",
                             o->app_id ? o->app_id : "?", (void *)o->region,
                             o->region_valid);
@@ -986,8 +1019,9 @@ static struct proxy *bridge_marshal(
       content_clip_commit(o);
       /* Do not map the temporary display-sized transparent background.
        * The empty initial commit still negotiates xdg configure normally. */
-      if (o->app && o->xdg && o->attached && !o->has_bounds) {
-        __android_log_print(4, "AnvilDroid",
+      if (o->app && o->xdg && o->attached &&
+          (!o->has_bounds || initial_layout_pending(o))) {
+        FRAME_TRACE(4, "AnvilDroid",
                             "commit SKIP app_id=%s bounds=%d region_valid=%d",
                             o->app_id ? o->app_id : "?", o->has_bounds,
                             o->region_valid);
@@ -1015,9 +1049,25 @@ static struct proxy *bridge_marshal(
     skip = 1;
 #endif
   if (!strcmp(cls, "zwp_linux_buffer_params_v1")) {
+    if(o&&nv_copy_enabled()&&!strcmp(method,"add")&&
+       (o->nv_plane_fd||((a[4].u>>24)==3&&o->parent&&!o->parent->nv_nvidia))) {
+      ++o->nv_planes;
+      if(!o->nv_plane_fd&&a[1].u==0) {
+        int fd=dup(a[0].i);
+        if(fd>=0) {
+          o->nv_plane_fd=fd+1;o->nv_stride=a[3].u;o->nv_offset=a[2].u;
+          o->nv_modifier=((uint64_t)a[4].u<<32)|a[5].u;
+        }
+      }
+      skip=1;
+    }
+    if(o&&o->nv_plane_fd&&!strcmp(method,"create_immed")) {
+      nv_constructor=1;skip=1;
+      if(o->nv_planes==1)nv_result=nv_create(o,a,interface);
+    }
     if (!strcmp(method, "create") || !strcmp(method, "create_immed")) {
       if (o) o->height = a[2].i; /* remember h for the stride rewrite */
-      __android_log_print(4, "AnvilDroid", "dmabuf %s: %dx%d fmt=0x%x",
+      FRAME_TRACE(4, "AnvilDroid", "dmabuf %s: %dx%d fmt=0x%x",
                           method, a[1].i, a[2].i, a[3].u);
     } else if (!strcmp(method, "add")) {
       /* The guest computes the dmabuf stride from its own view of the
@@ -1051,10 +1101,13 @@ static struct proxy *bridge_marshal(
   struct proxy *temporary_region=0;
   full_ui_request(o,cls,method,a,&temporary_region);
   game_fit_request(o,cls,method,a,&temporary_region);
-  struct proxy *result = skip ? 0 : modern
+  if(!skip&&o&&!strcmp(cls,"wl_surface")&&!strcmp(method,"commit"))nv_commit(o);
+  struct proxy *result = nv_constructor ? nv_result : skip ? 0 : modern
       ? real_array_flags(p, op, interface, version, flags, a)
       : real_marshal(p, op, a, interface, version);
   if (!skip) window_feedback_event(o,cls,method);
+  if (!skip && o && o->app && o->attached && !strcmp(cls,"wl_surface") &&
+      !strcmp(method,"commit")) o->initial_presented=1;
   if(temporary_region){wayland_send(temporary_region,0,0);real_destroy(temporary_region);}
   if (original_identity) a[0].s = original_identity;
   if(o&&o->surface&&o->surface->full_ui&&!strcmp(cls,"xdg_surface")&&!strcmp(method,"ack_configure"))
@@ -1070,7 +1123,10 @@ static struct proxy *bridge_marshal(
       wayland_send(o->surface->csd->top->p, 9, 0);
     }
     geometry(o->surface);
-    wayland_send(o->surface->p, 6, 0);
+    if (!initial_layout_pending(o->surface)) {
+      wayland_send(o->surface->p, 6, 0);
+      if(o->surface->attached)o->surface->initial_presented=1;
+    }
   }
   if (result && interface) {
     if (!strcmp(interface->name, "wp_viewporter")) scale_has_viewporter = 1;
@@ -1082,8 +1138,9 @@ static struct proxy *bridge_marshal(
       if(!strcmp(cls,"wl_shm_pool"))n->buffer_transport=1;
       else if(!strcmp(cls,"zwp_linux_buffer_params_v1"))n->buffer_transport=2;
       else if(!strcmp(cls,"wl_drm")||!strcmp(cls,"android_wlegl"))n->buffer_transport=3;
-      if (o) n->buffer_stride = o->buffer_stride;
+      if (o) n->buffer_stride = n->nv_ring?n->nv_ring->stride:o->buffer_stride;
     }
+    if(!strcmp(interface->name,"zwp_linux_buffer_params_v1"))n->parent=o;
     csd_track_global(result, interface);
     if (!strcmp(interface->name,"wl_subsurface")) {
       n->surface = track(a[1].o);
@@ -1158,6 +1215,8 @@ static void forget_proxy(struct proxy *p) {
     at = &(*at)->next;
   if (*at) {
     struct object *old = *at;
+    if(old->nv_ring){nv_orphan(old->nv_ring);old->nv_ring=0;nv_trim();}
+    if(old->nv_plane_fd)close(old->nv_plane_fd-1);
     if(old->full_ui){display_projection=(struct display_projection){0};display_pending_w=display_pending_h=0;}
     csd_cursor_destroy(old);
     keymap_overlay_destroy(old);
@@ -1235,6 +1294,7 @@ static void bridge_disconnecting(struct wl_display *display) {
     wayland_send(b->manager,0,0);real_destroy(b->manager);
     *at=b->next;free(b);
   }
+  for(struct nv_ring *r=nv_rings,*next;r;r=next){next=r->next;if(r->display==display)nv_destroy(r);}
   window_activation_disconnect(display);
   decoration_manager=decoration_bindings?decoration_bindings->manager:0;
   decoration_global_name=decoration_bindings?decoration_bindings->name:0;
@@ -1283,8 +1343,11 @@ static void queue_open_size(struct object *s) {
   s->resize.ready = 1;
   s->resize.width = task_to_logical(448, 1);
   s->resize.height = task_to_logical(704, 1);
-  s->resize.dirty = 1;
-  s->resize.quiet_ticks = 0;
+  /* This is a one-shot initial layout, not an interactive resize. Waiting
+   * for pointer quiet adds 300ms and makes the already visible window jump.
+   * resize_due still refuses submission during a grab or cooldown. */
+  s->resize.dirty = 0;
+  s->resize.quiet_ticks = RESIZE_QUIET_TICKS;
   s->fit_w = s->resize.width;
   s->fit_h = s->resize.height;
   s->preview_width = s->preview_height = 0;
@@ -1302,41 +1365,46 @@ static int snap_resize_protected(struct object *s) {
  */
 static void *task_worker(void *unused) {
   (void)unused;
-  int logged_scale = 0;
+  int logged_scale = 0, count = 0;
+  struct task snapshot[128];
+  struct task_watch watch = {.fd = -1};
   for (;;) {
-    struct task snapshot[128];
-    int count = 0;
-    char line[4096];
-    void *f = fopen("/data/waydroid_tmp/anvildroid/tasks", "r");
-    if (f) {
-      while (fgets(line, sizeof(line), f)) {
-        char *t = strstr(line, "taskId="), *b = strstr(line, "bounds=[");
-        if (!t || !b || !strstr(line, "visible=true") || count == 128)
-          continue;
-        struct task task = {0};
-        char component[512];
-        int right, bottom;
-        if (sscanf(t, "taskId=%d: %511s", &task.id, component) != 2 ||
-            sscanf(b, "bounds=[%d,%d][%d,%d]", &task.x, &task.y, &right,
-                   &bottom) != 4)
-          continue;
-        char *slash = strchr(component, '/');
-        if (!slash || (size_t)(slash - component) >= sizeof(task.package))
-          continue;
-        *slash = 0;
-        snprintf(task.package, sizeof(task.package), "%.255s", component);
-        task.width = right - task.x;
-        task.height = bottom - task.y;
-        if (task.width > 0 && task.height > 0)
-          snapshot[count++] = task;
+    if (task_watch_changed(&watch, "/data/waydroid_tmp/anvildroid")) {
+      count = 0;
+      char line[4096];
+      void *f = fopen("/data/waydroid_tmp/anvildroid/tasks", "r");
+      if (f) {
+        while (fgets(line, sizeof(line), f)) {
+          char *t = strstr(line, "taskId="), *b = strstr(line, "bounds=[");
+          if (!t || !b || !strstr(line, "visible=true") || count == 128)
+            continue;
+          struct task task = {0};
+          char component[512];
+          int right, bottom;
+          if (sscanf(t, "taskId=%d: %511s", &task.id, component) != 2 ||
+              sscanf(b, "bounds=[%d,%d][%d,%d]", &task.x, &task.y, &right,
+                     &bottom) != 4)
+            continue;
+          char *slash = strchr(component, '/');
+          if (!slash || (size_t)(slash - component) >= sizeof(task.package))
+            continue;
+          *slash = 0;
+          snprintf(task.package, sizeof(task.package), "%.255s", component);
+          task.width = right - task.x;
+          task.height = bottom - task.y;
+          if (task.width > 0 && task.height > 0)
+            snapshot[count++] = task;
+        }
+        fclose(f);
       }
-      fclose(f);
     }
     for (int i=0;i<count;++i) hwc_transition_call(5,snapshot[i].id,snapshot[i].package);
     hwc_transition_call(3,0,0);
     for (int i = 0; i < count; i++) resize_mode_load(snapshot[i].package);
     resize_mode_poll();
     pthread_mutex_lock(mutex);
+    for(struct object *s=objects;s;s=s->next)
+      if(s->app&&!s->initial_presented&&s->initial_wait_ticks<20)++s->initial_wait_ticks;
     int snapshot_changed=count!=task_count;
     for (int i = 0; i < count; i++) {
       int changed = logged_scale != hwc_scale_120 || i >= task_count ||
@@ -1449,6 +1517,19 @@ static void *task_worker(void *unused) {
     }
     window_feedback_poll();
     profile_poll();
+    /* A static app can stop committing while the IO worker reads its
+     * profile. Publish the pending first frame once ready (or timed out),
+     * without requiring another Android redraw to make it visible. */
+    pthread_mutex_lock(mutex);
+    for(struct object *s=objects;s;s=s->next) {
+      if(!s->app||s->initial_presented||!s->attached||!s->has_bounds||initial_layout_pending(s))continue;
+      geometry(s);
+      if(initial_layout_pending(s))continue;
+      wayland_send(s->p,6,0);
+      s->initial_presented=1;
+      if(real_display_flush&&s->display)real_display_flush(s->display);
+    }
+    pthread_mutex_unlock(mutex);
     profile_state_poll();
     close_poll();
     keymap_io_poll();
@@ -1507,7 +1588,10 @@ static void *task_worker(void *unused) {
            * new frame to remove the transient contain bars for us. */
           if (resize_noop) {
             geometry(s);
-            wayland_send(s->p, 6, 0);
+            if(!initial_layout_pending(s)) {
+              wayland_send(s->p, 6, 0);
+              if(s->attached)s->initial_presented=1;
+            }
             if (real_display_flush && s->display) real_display_flush(s->display);
           }
         }

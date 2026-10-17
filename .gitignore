@@ -12,6 +12,13 @@ __pycache__/
 
 # Local test suites, fixtures and standalone experiments
 tests/
+!/crates/anvildroid-core/tests/
+/crates/anvildroid-core/tests/*
+!/crates/anvildroid-core/tests/launch.rs
+!/crates/anvildroid-core/tests/library.rs
+!/crates/anvildroid-cli/tests/
+/crates/anvildroid-cli/tests/*
+!/crates/anvildroid-cli/tests/cli.rs
 test-results/
 coverage/
 .pytest_cache/

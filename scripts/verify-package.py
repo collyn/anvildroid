@@ -151,6 +151,7 @@ def payload(root, installed=False):
             assert (root / 'usr/share/doc/anvildroid-controller' / name).is_file(), name
     if installed:
         assert base.stat().st_uid == 0, f'Controller directory is not root-owned: {base}'
+    assert not base.stat().st_mode & 0o022, f'Writable controller directory: {base}'
     for path in base.rglob('*'):
         if installed:
             assert path.stat().st_uid == 0, f'Controller asset is not root-owned: {path}'

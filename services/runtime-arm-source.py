@@ -5,7 +5,6 @@ the resulting archive before publishing an Android overlay.
 """
 import hashlib
 import os
-from pathlib import Path
 import re
 import stat
 import sys

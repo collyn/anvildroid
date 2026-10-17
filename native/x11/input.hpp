@@ -312,6 +312,39 @@ void Server::input_destroy(Node *n) {
       entry.second->node = nullptr;
     }
 }
+static bool xi_pointer_event(const XIDeviceEvent &event, XEvent &e) {
+  // XI2 marks legacy wheel buttons synthesized from scroll valuators as
+  // emulated too. They are our scroll path; only suppress duplicate pointer
+  // motion/clicks generated for touch contacts. Core duplicates are filtered
+  // separately by events().
+  bool wheel = (event.evtype == XI_ButtonPress || event.evtype == XI_ButtonRelease)
+               && event.detail >= 4 && event.detail <= 7;
+  if ((event.flags & XIPointerEmulated) && !wheel)
+    return false;
+  unsigned buttons = 0;
+  for (int b = 1; b <= 3; ++b)
+    if (event.buttons.mask_len * 8 > b && XIMaskIsSet(event.buttons.mask, b))
+      buttons |= Button1Mask << (b - 1);
+  e = {};
+  e.xany.display = event.display;
+  e.xany.window = event.event;
+  e.xany.send_event = True;
+  if (event.evtype == XI_Motion) {
+    e.type = MotionNotify;
+    e.xmotion.x = int(event.event_x);
+    e.xmotion.y = int(event.event_y);
+    e.xmotion.time = event.time;
+    e.xmotion.state = event.mods.effective | buttons;
+  } else {
+    e.type = event.evtype == XI_ButtonPress ? ButtonPress : ButtonRelease;
+    e.xbutton.x = int(event.event_x);
+    e.xbutton.y = int(event.event_y);
+    e.xbutton.time = event.time;
+    e.xbutton.button = event.detail;
+    e.xbutton.state = event.mods.effective | buttons;
+  }
+  return true;
+}
 bool Server::xi_event(XEvent &e) {
   if (!platform.xi_opcode || e.xcookie.extension != platform.xi_opcode)
     return false;
@@ -368,35 +401,9 @@ bool Server::xi_event(XEvent &e) {
   }
   if (cookie.evtype == XI_Motion || cookie.evtype == XI_ButtonPress ||
       cookie.evtype == XI_ButtonRelease) {
-    auto event = *static_cast<XIDeviceEvent *>(cookie.data);
-    unsigned buttons = 0;
-    for (int b = 1; b <= 3; ++b)
-      if (event.buttons.mask_len * 8 > b && XIMaskIsSet(event.buttons.mask, b))
-        buttons |= Button1Mask << (b - 1);
+    bool deliver = xi_pointer_event(*static_cast<XIDeviceEvent *>(cookie.data), e);
     XFreeEventData(platform.display, &cookie);
-    if (event.flags & XIPointerEmulated)
-      return true;
-    e = {};
-    e.xany.display = platform.display;
-    e.xany.window = event.event;
-    e.xany.send_event = True;
-    if (cookie.evtype == XI_Motion) {
-      e.type = MotionNotify;
-      e.xmotion.x = int(event.event_x);
-      e.xmotion.y = int(event.event_y);
-      e.xmotion.time = event.time;
-      e.xmotion.state = event.mods.effective;
-      e.xmotion.state |= buttons;
-    } else {
-      e.type = cookie.evtype == XI_ButtonPress ? ButtonPress : ButtonRelease;
-      e.xbutton.x = int(event.event_x);
-      e.xbutton.y = int(event.event_y);
-      e.xbutton.time = event.time;
-      e.xbutton.button = event.detail;
-      e.xbutton.state = event.mods.effective;
-      e.xbutton.state |= buttons;
-    }
-    return false;
+    return !deliver;
   }
   XFreeEventData(platform.display, &cookie);
   return true;

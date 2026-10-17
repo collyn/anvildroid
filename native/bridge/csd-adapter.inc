@@ -410,6 +410,10 @@ static void csd_resize_finished(struct object *pointer) {
   __android_log_print(4,"AnvilDroidCsd","resize grab ended %dx%d",
                       surface->resize.width,surface->resize.height);
 }
+static int absolute_pointer_update(struct object *,int32_t,int32_t,int);
+static int absolute_pointer_button(struct object *,uint32_t,uint32_t);
+static int absolute_pointer_axis(struct object *,uint32_t,int32_t);
+static void absolute_pointer_leave(struct object *);
 static void csd_pointer_enter(void *data, struct proxy *p, uint32_t serial,
                                struct proxy *surface, int32_t x, int32_t y) {
   struct object *o = data;
@@ -439,6 +443,7 @@ static void csd_pointer_enter(void *data, struct proxy *p, uint32_t serial,
   x=content_clip_input(surface,x,0);y=content_clip_input(surface,y,1);
   x=full_ui_input(surface,x,0);y=full_ui_input(surface,y,1);
   x=game_fit_input(surface,x,0);y=game_fit_input(surface,y,1);
+  absolute_pointer_update(o,x,y,0);
   pthread_mutex_unlock(mutex);
   /* Upstream enter only updates focus/cursor, never injects Android input. */
   ((void (*)(void *,struct proxy *,uint32_t,struct proxy *,int32_t,int32_t))o->listener[0])(
@@ -451,6 +456,7 @@ static void csd_pointer_leave(void *data, struct proxy *p, uint32_t serial, stru
   struct object *o=data;
   pthread_mutex_lock(mutex);
   int was_bar=o->fit_bar_focus;o->fit_bar_focus=0;
+  absolute_pointer_leave(o);
   keymap_overlay_pointer_cancel(o);
   csd_feedback(o->csd_focus,0,0);
   o->pointer_surface=0;o->cursor_serial=0;
@@ -473,8 +479,9 @@ static void csd_pointer_motion(void *data, struct proxy *p, uint32_t time, int32
   x=content_clip_input(o->pointer_surface,x,0);y=content_clip_input(o->pointer_surface,y,1);
   x=full_ui_input(o->pointer_surface,x,0);y=full_ui_input(o->pointer_surface,y,1);
   x=game_fit_input(o->pointer_surface,x,0);y=game_fit_input(o->pointer_surface,y,1);
+  int absolute=!suppress&&absolute_pointer_update(o,x,y,1);
   pthread_mutex_unlock(mutex);
-  if (!suppress) ((void (*)(void *,struct proxy *,uint32_t,int32_t,int32_t))o->listener[2])(o->listener_data,p,time,x,y);
+  if (!suppress&&!absolute) ((void (*)(void *,struct proxy *,uint32_t,int32_t,int32_t))o->listener[2])(o->listener_data,p,time,x,y);
 }
 static void csd_toggle_maximize(struct csd_frame *f) {
   f->maximize_pending=0;
@@ -548,6 +555,7 @@ static void csd_pointer_button(void *data, struct proxy *p, uint32_t serial, uin
     }
     csd_pointer_feedback(o);
   }
+  if(!suppress&&absolute_pointer_button(o,button,state))suppress=1;
   pthread_mutex_unlock(mutex);
   if (closed) closed(closed_data,closed_proxy);
   if (!suppress) ((void (*)(void *,struct proxy *,uint32_t,uint32_t,uint32_t,uint32_t))o->listener[3])(
@@ -556,6 +564,10 @@ static void csd_pointer_button(void *data, struct proxy *p, uint32_t serial, uin
 /* HWC binds wl_seat v5: keep the complete nine-event pointer ABI. */
 static void csd_pointer_axis(void *d,struct proxy *p,uint32_t t,uint32_t axis,int32_t value) {
   struct object *o=d;
+  pthread_mutex_lock(mutex);
+  int absolute=!o->csd_suppress&&absolute_pointer_axis(o,axis,value);
+  pthread_mutex_unlock(mutex);
+  if(absolute)return;
   if(o->menu_focus&&axis==0&&value) {
     pthread_mutex_lock(mutex);
     csd_menu_scroll(o,value>0?1:-1);

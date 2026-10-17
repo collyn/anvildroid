@@ -8,6 +8,18 @@ int __android_log_print(int level, const char *tag, const char *format, ...) {
 }
 extern int socketpair(int, int, int, int *);
 static int display_fd;
+static struct proxy manager_proxy={&clip_manager_interface},device_proxy={&clip_device_interface};
+static int destroyed;
+static struct proxy *clip_test_marshal(struct proxy *p,uint32_t op,union argument *a,
+                                      const struct interface *type,uint32_t version) {
+  (void)p;(void)op;(void)a;(void)version;
+  return type==&clip_manager_interface?&manager_proxy:type==&clip_device_interface?&device_proxy:0;
+}
+static uint32_t clip_test_version(struct proxy *p){(void)p;return 1;}
+static int clip_test_listen(struct proxy *p,void (**listener)(void),void *data) {
+  (void)p;(void)listener;(void)data;return 0;
+}
+static void clip_test_destroy(struct proxy *p){(void)p;++destroyed;}
 static int display_test_fd(struct wl_display *display) {
   assert(display == (struct wl_display *)1);
   return display_fd;
@@ -112,5 +124,20 @@ int main(void) {
   assert(clip_clear && !clip_size);
   free(clip_current);
   clip_current = 0;
+  /* Binding and offer ownership work without an exported get_user_data. */
+  real_marshal=clip_test_marshal;real_listen=clip_test_listen;
+  get_version=clip_test_version;real_destroy=clip_test_destroy;
+  clip_manager_i=&clip_manager_interface;clip_device_i=&clip_device_interface;clip_source_i=&clip_source_interface;
+  struct object registry={0};struct proxy seat={0},offer={&clip_offer_interface};
+  ime_seat=&seat;
+  ime_global(&registry,0,5,"wl_data_device_manager",3);
+  assert(clip_manager==&manager_proxy&&clip_device==&device_proxy);
+  clip_device_offer(0,clip_device,&offer);
+  assert(clip_offers&&clip_offers->p==&offer);
+  clip_device_selection(0,clip_device,&offer);
+  assert(clip_offer==clip_offers);
+  clip_device_selection(0,clip_device,&offer);
+  assert(!destroyed&&clip_offer==clip_offers); /* Same offer is not freed. */
+  clipboard_disconnect();assert(!clip_offers&&!clip_offer&&destroyed==3);
   return 0;
 }

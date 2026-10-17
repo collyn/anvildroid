@@ -40,6 +40,8 @@ jobs:
           } >> "$GITHUB_OUTPUT"
       - name: Test preparation without initialized Waydroid host
         run: python3 services/provision-support-test.py
+      - name: Test legacy Debian installation permissions
+        run: python3 services/install-permissions-test.py
       - name: Test Default NVIDIA session devices and shader warm-up
         run: |
           python3 services/default-gpu-test.py
@@ -48,6 +50,11 @@ jobs:
         run: |
           python3 services/default-apps-test.py
           node crates/anvildroid-gui/uninstall-check.cjs
+      - name: Test task snapshot notifications and atomic publication
+        run: |
+          cc -Wall -Wextra -Werror native/bridge/task-watch-test.c -o /tmp/anvildroid-task-watch-check
+          /tmp/anvildroid-task-watch-check
+          python3 native/bridge/display-size-shell-test.py
       - uses: actions/setup-java@v4
         with: {distribution: temurin, java-version: '17'}
       - uses: android-actions/setup-android@v3
@@ -122,6 +129,7 @@ jobs:
             clang lld aapt apksigner patchelf rpm zstd cpio
           rustup toolchain install stable --profile minimal
           rustup default stable
+          rustup component add clippy
       - uses: actions/setup-java@v4
         with: {distribution: temurin, java-version: '17'}
       - uses: android-actions/setup-android@v3
@@ -133,6 +141,8 @@ jobs:
           sudo ln -sf "$ANDROID_HOME/platforms/android-23/android.jar" /usr/lib/android-sdk/platforms/android-23/android.jar
       - name: Run Rust tests
         run: cargo test --workspace --locked
+      - name: Check Rust warnings
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Build selected package
         env:
           ANVILDROID_X11_PAYLOAD: ${{ github.workspace }}/target/native-x11/package

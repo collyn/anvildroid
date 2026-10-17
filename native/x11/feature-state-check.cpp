@@ -204,10 +204,79 @@ static void motion_order() {
   close(fds[1]);
   puts("PASS absolute motion coalesces while preserving drag/click/release order");
 }
+static void scroll_events() {
+  Server s(false);
+  int fds[2];
+  assert(!socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, fds));
+  auto *client = wl_client_create(s.display, fds[0]);
+  assert(client);
+  Node n;
+  Top t{};
+  n.server = &s;
+  n.top = &t;
+  n.resource = wl_resource_create(client, &wl_surface_interface, 4, 2);
+  n.current.image = std::make_shared<Image>();
+  n.current.image->width = n.current.image->height = 300;
+  t.server = &s;
+  t.node = &n;
+  t.window.window = 0x123456;
+  s.tops.insert(&t);
+  s.pointer_focus = &n;
+  auto *pointer = wl_resource_create(client, &wl_pointer_interface, 5, 3);
+  s.pointers.insert(pointer);
+  for (int flags : {0, XIPointerEmulated}) {
+    for (int button = 4; button <= 7; ++button) {
+      for (int type : {XI_ButtonPress, XI_ButtonRelease}) {
+        XIDeviceEvent input{};
+        input.display = s.platform.display;
+        input.event = t.window.window;
+        input.evtype = type;
+        input.flags = flags;
+        input.detail = button;
+        input.event_x = input.event_y = 20;
+        XEvent event{};
+        assert(xi_pointer_event(input, event));
+        s.native_event(event);
+      }
+    }
+  }
+  auto messages = wire(s, fds[1]);
+  std::vector<std::pair<unsigned, int>> axes;
+  unsigned frames = 0;
+  for (size_t i = 0; i < messages.size();) {
+    unsigned opcode = messages[i + 1] & 65535;
+    assert(opcode != WL_POINTER_BUTTON);
+    if (opcode == WL_POINTER_AXIS)
+      axes.emplace_back(messages[i + 3], int32_t(messages[i + 4]));
+    if (opcode == WL_POINTER_FRAME)
+      ++frames;
+    i += (messages[i + 1] >> 16) / 4;
+  }
+  const std::vector<std::pair<unsigned, int>> expected = {
+      {0, -2560}, {0, 2560}, {1, -2560}, {1, 2560},
+      {0, -2560}, {0, 2560}, {1, -2560}, {1, 2560}};
+  assert(axes == expected && frames >= axes.size());
+  assert(!s.grab && s.pointer_buttons.empty());
+  for (int type : {XI_ButtonPress, XI_ButtonRelease, XI_Motion}) {
+    XIDeviceEvent touch{};
+    touch.evtype = type;
+    touch.flags = XIPointerEmulated;
+    touch.detail = 1;
+    XEvent ignored{};
+    assert(!xi_pointer_event(touch, ignored));
+  }
+  s.tops.clear();
+  s.pointers.clear();
+  s.pointer_focus = nullptr;
+  close(fds[1]);
+  puts("PASS native/emulated XInput wheel scroll reaches both Wayland axes "
+       "once per notch without duplicate touch clicks");
+}
 int main(int argc, char **argv) {
   if (argc == 2 && !strcmp(argv[1], "--x11-input-burst")) {
     native_event_budget();
     motion_order();
+    scroll_events();
     return 0;
   }
   assert(argc == 1);

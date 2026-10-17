@@ -40,3 +40,33 @@ No NVIDIA driver installation or global Waydroid changes are made. Runtime
 validation layers remain opt-in; CPU-readable capture stays on the udmabuf path.
 See `native/nvidia/README.md` for reproduction and
 `target/diagnostics/nvidia-fork-20261012/REPORT.md` for live integration evidence.
+
+Managed desktop runtimes also admit SDK 34–36 images with the verified
+Waydroid per-app HIDL composer contract. These retain the image's own HWC,
+HWC2 adapter and SurfaceFlinger: the pinned Android 13 composer is not ABI
+compatible with newer private graphics libraries. ANGLE, Venus and the GBM
+wrapper still render on NVIDIA. Missing ANGLE mount filenames are created
+only in the worker's private overlay; source images remain unchanged.
+
+For this modern-image path the bridge enables
+`waydroid.anvil_gpu_copy_presentation=true`. It intercepts single-plane tiled
+NVIDIA DMA-BUF imports and uses the pinned Venus host copy protocol to present
+through three LINEAR destinations supported by the desktop compositor. The
+producer remains tiled on NVIDIA; presentation uses a GPU copy without EGL CPU
+readback. Copy occurs at surface commit, after the native HWC's acquire-fence
+wait. A destination is reused only after its Wayland buffer release.
+
+The image-native HWC may clear its buffer cache on geometry changes. A separate
+logical proxy lets the bridge retain physical presentation buffers until their
+real releases and cache the GPU setup by source device/inode plus full layout
+and display connection. Source FDs remain open to prevent allocation identity
+reuse. Idle retention is bounded to 32 allocations / 192 MiB; buffers still
+owned or read by the compositor are retained until safe to reclaim. Geometry
+restores reuse the last copied destination, including when a copy is skipped.
+
+Runtime status records `nvidia_composer` and
+`nvidia_presentation=image-native-venus-gpu-copy`. This adapter requires a
+single-plane 32-bit format with advertised LINEAR presentation support. Same-GPU
+NVIDIA desktops keep direct tiled imports. The Android 13 fork continues to use
+its native copy implementation. Live Android 16 measurements are recorded in
+`target/diagnostics/nvidia-presentation-20261017/REPORT.md`.

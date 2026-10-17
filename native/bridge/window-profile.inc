@@ -224,6 +224,21 @@ static int profile_unique(struct object *s) {
     if (o->app && o->app_id && !strcmp(o->app_id,s->app_id)) ++surfaces;
   return matches==1 && surfaces==1;
 }
+/* Keep the first parent buffer pending until its initial profile/layout is
+ * known. Child buffers may arrive normally; the parent commit maps them
+ * together. Never gate an already presented window or wait indefinitely if
+ * custom task metadata/profile IO cannot settle. */
+static int initial_layout_pending(struct object *s) {
+  if(!s || !s->app || s->full_ui || s->initial_presented ||
+     s->initial_wait_ticks>=20 || !profile_name(s->app_id,1) ||
+     game_fit_enabled(s) || s->profile_recreated || s->resize.dragging)return 0;
+  int matches=0,surfaces=0;
+  for(int i=0;i<task_count;++i)if(!strcmp(s->app_id,tasks[i].package))++matches;
+  for(struct object *o=objects;o;o=o->next)
+    if(o->app&&o->app_id&&!strcmp(o->app_id,s->app_id))++surfaces;
+  if(matches>1||surfaces>1)return 0; /* Ambiguous profiles cannot be restored. */
+  return !s->profile_loaded || s->resize.width || !window_fit_settled(s);
+}
 static void profile_poll(void) {
   char package[241], runtime[129];
   const char *id=getenv("ANVILDROID_RUNTIME_ID");
@@ -253,13 +268,13 @@ static void profile_poll(void) {
       s->profile_recreated=1;
       continue;
     }
-    /* 500ms of confirmed normal content, not a transient configure/drag. */
+    /* Load immediately; only writes need 500ms of stable normal content. */
     int host_w=window_fit_enabled(s)?s->fit_w:s->content_width;
     int host_h=window_fit_enabled(s)?s->fit_h:s->content_height;
     if (s->profile_width!=host_w || s->profile_height!=host_h) {
       s->profile_width=host_w; s->profile_height=host_h; s->profile_ticks=0;
     }
-    if (++s->profile_ticks<10) continue;
+    if (s->profile_loaded && ++s->profile_ticks<10) continue;
     if (!s->profile_token) s->profile_token=++profile_next_token;
     token=s->profile_token; loading=!s->profile_loaded;
     w=host_w; h=host_h;
@@ -308,7 +323,10 @@ static void profile_poll(void) {
       if(window_fit_enabled(s)) {
         saved_w=window_layout_width(s,saved_w);
       }
-      s->resize.width=saved_w; s->resize.height=saved_h; s->resize.dirty=1; s->resize.quiet_ticks=0;
+      /* Restoring a new window is not an interactive drag. Submit on the
+       * next worker turn rather than showing the old layout for 300ms. */
+      s->resize.width=saved_w; s->resize.height=saved_h;
+      s->resize.dirty=0; s->resize.quiet_ticks=RESIZE_QUIET_TICKS;
       if (s->csd) {s->csd->restore_width=saved_w;s->csd->restore_height=saved_h;}
       if(window_fit_enabled(s)) {s->fit_w=saved_w;s->fit_h=saved_h;}
       else {s->preview_width=saved_w;s->preview_height=saved_h;}

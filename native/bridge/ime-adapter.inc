@@ -202,7 +202,17 @@ static void ime_create(void) {
 static void ime_global(void *data, struct proxy *registry, uint32_t name,
                        const char *interface, uint32_t version) {
   struct object *o = data;
-  if (!strcmp(interface,"wl_data_device_manager") && clip_manager_i && clip_device_i && clip_source_i && clip_user_data) {
+  /* Image-native HWC cannot copy NVIDIA tiled buffers for an AMD/Intel
+   * compositor. Select its existing EGL-to-SHM presentation path instead
+   * of issuing create_immed with an unsupported DMA-BUF modifier. Android
+   * application rendering stays on NVIDIA; only presentation reads back. */
+  if (!strcmp(interface, "zwp_linux_dmabuf_v1")) {
+    int (*get)(const char *, char *) = dlsym((void *)0, "__system_property_get");
+    char value[92] = "";
+    if (get && get("waydroid.anvil_shm_presentation", value) > 0 && !strcmp(value, "true"))
+      return;
+  }
+  if (!strcmp(interface,"wl_data_device_manager") && clip_manager_i && clip_device_i && clip_source_i) {
     pthread_mutex_lock(mutex);
     if(!clip_manager){
       union argument a[4]={{.u=name},{.s=interface},{.u=1},{.o=0}};

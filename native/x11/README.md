@@ -58,6 +58,8 @@ This does not provide drag and drop or the X11 PRIMARY selection.
 
 XI2 supplies multitouch with stable contact IDs, surface-local coordinates,
 client cancellation and suppression of duplicate touch-emulated pointer events.
+Wheel buttons synthesized by XI2 scroll valuators retain vertical/horizontal
+scroll events; they are not discarded with touch-emulated motion and clicks.
 Relative-pointer and pointer-constraints globals require XI2, XFixes and Shape.
 Locked/confined pointers support one-shot/persistent lifetime, committed regions,
 release hints and focus/surface teardown. Confinement shape is refreshed only

@@ -7,8 +7,15 @@ VERSION=${3:?workspace version required}
 case "$FORMAT" in
   deb)
     export DEBIAN_FRONTEND=noninteractive
+    # dpkg can preserve permissions of an existing directory. Exercise the
+    # legacy 0775 install on both first installation and reinstallation.
+    install -d -o root -g root -m 0775 /usr/local/lib/anvildroid-controller
     apt-get update
     apt-get install -y --no-install-recommends "$PACKAGE_FILE" xvfb xauth dbus-x11
+    test "$(stat -c %a /usr/local/lib/anvildroid-controller)" = 755
+    chmod 0775 /usr/local/lib/anvildroid-controller
+    dpkg --install "$PACKAGE_FILE"
+    test "$(stat -c %a /usr/local/lib/anvildroid-controller)" = 755
     dpkg-query -W anvildroid-controller
     ;;
   rpm)

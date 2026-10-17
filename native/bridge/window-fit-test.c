@@ -92,6 +92,11 @@ int main(void) {
   geometry(&root);
   queue_open_size(&root);
   assert(root.fit_w==448&&root.fit_h==704&&snap_resize_protected(&root));
+  root.resize.cooldown=0;
+  root.resize.dragging=1;
+  assert(!resize_due(&root.resize));
+  root.resize.dragging=0;
+  assert(resize_due(&root.resize)); /* Initial layout has no 300ms debounce. */
   state=0;configure(&top,0,448,704,&states);geometry(&root);
   for(int tick=0;tick<RESIZE_QUIET_TICKS+2;++tick)resize_due(&root.resize);
   assert(root.resize.width==448&&root.resize.height==704);

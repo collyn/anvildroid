@@ -110,6 +110,50 @@ fn launch_with(
     }
 }
 
+/// Wait for the exact accepted install job, without following a later action.
+pub fn install(id: &str, path: &std::path::Path) -> Result<(), AnvilError> {
+    let mut job = controller::install(id, path).map_err(AnvilError::BackendFailed)?;
+    let job_id = job["id"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| AnvilError::BackendFailed("Missing installation job ID".into()))?
+        .to_owned();
+    let deadline = Instant::now() + Duration::from_secs(360);
+    loop {
+        if job["id"] != job_id || job["runtime_id"] != id || job["action"] != "install" {
+            return Err(AnvilError::BackendFailed(
+                "Installation job changed; check this runtime in Settings before retrying.".into(),
+            ));
+        }
+        match job["status"].as_str() {
+            Some("Succeeded") => return Ok(()),
+            Some("Running") => {}
+            Some("Failed") => {
+                return Err(AnvilError::BackendFailed(
+                    job["error"]
+                        .as_str()
+                        .unwrap_or("Installation failed")
+                        .into(),
+                ))
+            }
+            _ => {
+                return Err(AnvilError::BackendFailed(
+                    "Invalid installation status".into(),
+                ))
+            }
+        }
+        if Instant::now() >= deadline {
+            return Err(AnvilError::Timeout(
+                "Installation result is unknown. Check this runtime in Settings before retrying."
+                    .into(),
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(500));
+        job = controller::request(Request::AppJob { id: id.into() })
+            .map_err(AnvilError::BackendFailed)?;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -173,49 +217,5 @@ mod tests {
         )
         .unwrap_err()
         .contains("job changed"));
-    }
-}
-
-/// Wait for the exact accepted install job, without following a later action.
-pub fn install(id: &str, path: &std::path::Path) -> Result<(), AnvilError> {
-    let mut job = controller::install(id, path).map_err(AnvilError::BackendFailed)?;
-    let job_id = job["id"]
-        .as_str()
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| AnvilError::BackendFailed("Missing installation job ID".into()))?
-        .to_owned();
-    let deadline = Instant::now() + Duration::from_secs(360);
-    loop {
-        if job["id"] != job_id || job["runtime_id"] != id || job["action"] != "install" {
-            return Err(AnvilError::BackendFailed(
-                "Installation job changed; check this runtime in Settings before retrying.".into(),
-            ));
-        }
-        match job["status"].as_str() {
-            Some("Succeeded") => return Ok(()),
-            Some("Running") => {}
-            Some("Failed") => {
-                return Err(AnvilError::BackendFailed(
-                    job["error"]
-                        .as_str()
-                        .unwrap_or("Installation failed")
-                        .into(),
-                ))
-            }
-            _ => {
-                return Err(AnvilError::BackendFailed(
-                    "Invalid installation status".into(),
-                ))
-            }
-        }
-        if Instant::now() >= deadline {
-            return Err(AnvilError::Timeout(
-                "Installation result is unknown. Check this runtime in Settings before retrying."
-                    .into(),
-            ));
-        }
-        std::thread::sleep(Duration::from_millis(500));
-        job = controller::request(Request::AppJob { id: id.into() })
-            .map_err(AnvilError::BackendFailed)?;
     }
 }

@@ -51,7 +51,7 @@ class Integration(unittest.TestCase):
             path = root / 'support/compatibility.json'
             with patch.object(x11, 'load_payload', return_value=({}, 'verified')) as verify:
                 path.write_text('{"sdk":36}')
-                with self.assertRaisesRegex(RuntimeError, 'NVIDIA/Venus requires SDK 33'):
+                with self.assertRaisesRegex(RuntimeError, 'NVIDIA/Venus requires the Waydroid'):
                     x11.preflight(root, True)
                 path.write_text('{"sdk":33}')
                 with self.assertRaisesRegex(RuntimeError, 'composer contract'):
@@ -70,9 +70,8 @@ class Integration(unittest.TestCase):
             path.write_text(json.dumps(report))
             with patch.object(x11, 'load_payload', return_value=({}, 'verified')) as verify:
                 self.assertEqual(x11.preflight(root, False), ({}, 'verified'))
-                with self.assertRaisesRegex(RuntimeError, 'NVIDIA/Venus requires SDK 33'):
-                    x11.preflight(root, True)
-                verify.assert_called_once()
+                self.assertEqual(x11.preflight(root, True), ({}, 'verified'))
+                self.assertEqual(verify.call_count, 2)
                 report['desktop_bridge'] = 'native-wayland'
                 path.write_text(json.dumps(report))
                 with self.assertRaisesRegex(RuntimeError, 'composer contract'):
@@ -155,21 +154,39 @@ class AppInventory(unittest.TestCase):
         for package in ('com.example.game', 'com.example.new', 'com.android.setting'):
             self.assertEqual(self.worker.freeform_launch_arguments(tasks, package), ['--windowingMode', '5'])
 
-    def test_x11_power_timeout_is_restored_when_switching_backend(self):
+    def test_desktop_power_timeout_is_restored_when_switching_headless(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             shell = Mock(return_value='30000')
-            self.worker.configure_x11_power(root, shell, True)
+            self.worker.configure_desktop_power(root, shell, True)
             shell.assert_any_call('settings', '--user', '0', 'put', 'system', 'screen_off_timeout', '2147483647')
             # Repeated setup must keep the original timeout.
             shell.return_value = '2147483647'
-            self.worker.configure_x11_power(root, shell, True)
-            self.worker.configure_x11_power(root, shell, False)
+            self.worker.configure_desktop_power(root, shell, True)
+            self.worker.configure_desktop_power(root, shell, False)
             shell.assert_called_with('settings', '--user', '0', 'put', 'system', 'screen_off_timeout', '30000')
             self.assertFalse((root / 'x11-screen-timeout.json').exists())
             shell.reset_mock()
-            self.worker.configure_x11_power(root, shell, False)
+            self.worker.configure_desktop_power(root, shell, False)
             shell.assert_not_called()
+
+    def test_input_recovery_does_not_touch_normal_app_focus(self):
+        lxc = Mock(return_value='mCurrentFocus=Window{123 u0 com.example.app/.Main}')
+        state = {}
+        self.worker.recover_desktop_input(lxc, 'runtime-test', state)
+        self.assertEqual(lxc.call_count, 1)
+        self.assertEqual(state, {})
+
+    def test_input_recovery_reports_only_verified_build_warning(self):
+        for result, warned in [('ANVILDROID_BUILD_WARNING_ACKNOWLEDGED\n', True),
+                               ('ANVILDROID_INPUT_NO_BUILD_WARNING\n', False)]:
+            lxc = Mock(side_effect=['mCurrentFocus=Window{123 u0 Android System}', result])
+            state = {}
+            with patch.object(self.worker, 'shutdown_environment', return_value=['--clear-env']):
+                self.worker.recover_desktop_input(lxc, 'runtime-test', state)
+            self.assertEqual('desktop_input_warning' in state, warned)
+            self.assertIn('acknowledge-build-warning', lxc.call_args.args)
+            self.assertEqual(lxc.call_args.kwargs['timeout'], 8)
 
     def test_wayland_single_display_inventory_is_unchanged(self):
         with patch.object(self.worker, 'run') as run:

@@ -220,11 +220,17 @@ def prepare_loop_devices(directory, sysfs=Path('/sys/class/block')):
     still provide /dev/block/loopN for devices the host kernel already knows.
     These are private inodes: Android cannot change host device permissions.
     """
+    require(not directory.is_symlink(), 'Invalid private block directory')
     directory.mkdir(mode=0o755, exist_ok=True)
     directory.chmod(0o755)
     for entry in directory.iterdir():
-        require(re.fullmatch(r'loop[0-9]+', entry.name), 'Unexpected private loop device')
-        entry.unlink()
+        # This directory is Android's writable /dev/block. ueventd/vold may
+        # leave directories, aliases and non-loop nodes behind after shutdown.
+        # Remove private entries without following aliases into other trees.
+        if entry.is_dir() and not entry.is_symlink():
+            shutil.rmtree(entry)
+        else:
+            entry.unlink()
     for entry in sorted(sysfs.glob('loop[0-9]*')):
         require(re.fullmatch(r'loop[0-9]+', entry.name), 'Invalid loop device name')
         device = entry.joinpath('dev').read_text().strip()
@@ -879,8 +885,29 @@ def single_display_properties(props):
         key + '=' + str(value) for key, value in sizes.items()] + ['waydroid.anvil_single_display=true']
 
 
-def configure_x11_power(instance, shell, enabled):
+def recover_desktop_input(lxc, identifier, state):
+    """A known image build warning must not invisibly eat desktop input."""
+    windows = lxc('lxc-attach', identifier, '--', '/system/bin/sh', '-c',
+                  "dumpsys window displays | sed -n '/mCurrentFocus=/{p;q;}'",
+                  timeout=2, bounded_output=True)
+    if not re.search(r'mCurrentFocus=Window\{[^\n}]* u0 Android System\}', windows):
+        return
+    environment = shutdown_environment(lxc, identifier)
+    output = lxc('lxc-attach', identifier, *environment, '-u', '2000', '-g', '2000',
+                 '--set-var', 'CLASSPATH=/data/local/tmp/anvildroid-shutdown.jar', '--',
+                 '/system/bin/app_process', '/system/bin', 'org.anvildroid.runtime.RuntimeInput',
+                 'acknowledge-build-warning', timeout=8, bounded_output=True)
+    if 'ANVILDROID_BUILD_WARNING_ACKNOWLEDGED' in output.splitlines():
+        warning = ('Android reported an internal image build compatibility warning. '
+                   'Acknowledged its startup dialog to restore desktop input; check the system/vendor image pair.')
+        state['desktop_input_warning'] = warning
+        print('Desktop input warning: ' + warning, flush=True)
+
+
+def configure_desktop_power(instance, shell, enabled):
     """Keep native desktop windows drawn; restore the Android timeout on switch."""
+    # Retain the old marker name so existing X11 runtimes restore the original
+    # preference when switching to headless operation.
     marker = instance / 'x11-screen-timeout.json'
     if not enabled and not marker.exists(): return
     current = shell('settings', '--user', '0', 'get', 'system', 'screen_off_timeout').strip()
@@ -1106,7 +1133,7 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
         Only write the flags when needed; existing runtimes with completed
         setup keep their original state.
         """
-        configure_x11_power(instance, shell, native and compatibility.get('sdk', 0) >= 36)
+        configure_desktop_power(instance, shell, bool(desktop) and compatibility.get('sdk', 0) >= 36)
         # One-time migration from the replaced framebuffer X11 backend.
         shell('sh', '-c', native_x11.DISPLAY_RESTORE)
         user_ready = shell('settings', '--user', '0', 'get', 'secure', 'user_setup_complete').strip()
@@ -1232,7 +1259,9 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
             pass
         native_wayland = compatibility.get('desktop_bridge') == 'native-wayland'
         software_compatibility = compatibility.get('software_renderer') == 'angle-pastel'
-        native_app_windows = native and compatibility.get('app_window_contract') == 'waydroid-hidl'
+        # The verified SF/composer contract belongs to the image, not the
+        # host presentation backend. Wayland must retain per-app windows too.
+        native_app_windows = compatibility.get('app_window_contract') == 'waydroid-hidl'
         # Custom images frequently ship a vendor composer with a different
         # ABI. Keep the untouched stock path only when the image does not
         # advertise the native Wayland contract; native-wayland images need
@@ -1316,7 +1345,14 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
                 software_backend = gpu.detect_software(fs, software_backend)
                 state['software_renderer'] = software_backend
             if nvidia_rendering:
-                for source, target in gpu.nvidia.image_mounts(fs):
+                for source, target in gpu.nvidia.image_mounts(fs, native_composer=bool(
+                        desktop and native_app_windows and not native_wayland and not custom_stock_hwc),
+                        allow_missing_angle=True):
+                    # Mesa-only vendor images omit ANGLE filenames. Create
+                    # regular placeholders only in this worker's overlay;
+                    # image_mounts has already rejected redirected paths.
+                    if not target.exists():
+                        target.touch(mode=0o644)
                     mount('--bind', source, target)
                     run('mount', '-o', 'remount,bind,ro', target)
                 venus = gpu.nvidia.Renderer()
@@ -1324,6 +1360,8 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
                 logfiles.append(renderer_log)
                 venus.start(desktop[1], renderer_log)
                 state['graphics_backend'] = 'nvidia-venus'
+                state['nvidia_composer'] = ('image-native' if compatibility.get('sdk', 0) > 33
+                                            else 'pinned-android13')
                 state['nvidia_renderer'] = {'pid': venus.process.pid, 'version': gpu.nvidia.UPSTREAM_VERSION}
             if software_compatibility:
                 # WayDroidATV vendor init reads this file after boot and can
@@ -1341,12 +1379,25 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
                 props += [key + '=' + value for key, value in arm_props.items()]
             props = [p for p in props if not p.startswith('ro.adb.secure=')] + ['ro.adb.secure=1']
             props = managed_session_properties(props)
-            if native and compatibility.get('sdk', 0) >= 36:
+            props = [p for p in props if not p.startswith((
+                'waydroid.anvil_shm_presentation=', 'waydroid.anvil_gpu_copy_presentation='))]
+            if nvidia_rendering and compatibility.get('sdk', 0) > 33:
+                props.append('waydroid.anvil_gpu_copy_presentation=true')
+                state['nvidia_presentation'] = 'image-native-venus-gpu-copy'
+            # Android 16's stock CursorInputMapper accelerates the HWC's REL
+            # deltas instead of honoring its ABS coordinates. Route app-window
+            # mouse input through the existing absolute control receiver.
+            props = [p for p in props if not p.startswith('waydroid.anvil_absolute_pointer=')]
+            if desktop and native_app_windows and compatibility.get('sdk', 0) >= 36:
+                props.append('waydroid.anvil_absolute_pointer=true')
+            if compatibility.get('sdk', 0) >= 36:
                 # LXC supplies the devices below. Replaying host device add
                 # events during Android coldboot reaches the host udev/Xorg
                 # too (including GPUs Android does not use). Keep ueventd's
                 # live listener for new APEX/loop devices, without replaying
-                # the host's entire hardware inventory.
+                # the host's entire hardware inventory. This also applies on
+                # Wayland/headless: uevents reach the host regardless of the
+                # presentation backend.
                 props = [p for p in props if not p.startswith('ro.cold_boot_done=')]
                 props.append('ro.cold_boot_done=true')
             init = fs / 'system/etc/init/init.waydroid.rc'
@@ -1507,7 +1558,7 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
                        'lxc.mount.entry = none dev/pts devpts defaults,mode=644,ptmxmode=666,create=dir 0 0']
             if venus:
                 config.append(f'lxc.mount.entry = {venus.directory} dev/venus none bind,ro,create=dir 0 0')
-            if native and compatibility.get('sdk', 0) >= 36:
+            if compatibility.get('sdk', 0) >= 36:
                 loop_devices = prepare_loop_devices(work / 'loop-block')
                 config.append(f'lxc.mount.entry = {loop_devices} dev/block none bind,dev,create=dir 0 0')
             if not uplink: config.append(f'lxc.net.0.ipv4.address = 192.0.2.{index}/24')
@@ -1690,6 +1741,12 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
             if desktop and helper.exists() and not single_display:
                 presentation_action(instance, identifier, 'recover', '0' * 32)
             configure_host_desktop(instance, shell, bool(desktop))
+            if desktop and helper.exists() and not single_display:
+                try:
+                    recover_desktop_input(lxc, identifier, state)
+                except (RuntimeError, OSError, subprocess.TimeoutExpired) as error:
+                    state['desktop_input_warning'] = 'Could not inspect Android startup input blocker: ' + str(error)[-512:]
+                    print(state['desktop_input_warning'], flush=True)
             state['boot_wait'] = 'Configuring desktop keyboard'
             try:
                 configure_desktop_ime(instance, loc(identifier), shell, bool(desktop))
@@ -1963,6 +2020,15 @@ def main(instance, identifier, generation, original_mnt, original_net, desktop=N
                             require(request['generation'] == generation, 'Worker generation changed; action refused')
                             idle.resume()
                             require(state['state'] == 'Running' and not stopping.is_set(), 'Android is not running')
+                            # Some images post their build warning after boot
+                            # provisioning. Recheck on explicit app entry too.
+                            if (desktop and state.get('presentation_mode') == 'app-windows' and
+                                    request['action'] in ('launch', 'keymap_edit')):
+                                def input_lxc(tool, name, *args, timeout=2, bounded_output=False):
+                                    return linux.run_bounded(tool, '-P', instance / 'android', '-n', name,
+                                                             *args, timeout=timeout, full_output=True,
+                                                             operation='Android desktop input check')
+                                recover_desktop_input(input_lxc, identifier, state)
                             response['app_result'] = app_action(instance, identifier, request['action'], request['package'], desktop=bool(desktop), generation=generation,
                                                                single_display=state.get('presentation_mode') == 'android-display', activation_token=request.get('activation_token'))
                         except (RuntimeError, OSError, subprocess.TimeoutExpired) as error:

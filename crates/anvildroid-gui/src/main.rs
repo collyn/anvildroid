@@ -1342,6 +1342,31 @@ fn icon_package(path: &str) -> Option<&str> {
         .filter(|p| backend::valid_package(p))
 }
 
+fn percent_decode(input: &str) -> String {
+    let mut result = String::with_capacity(input.len());
+    let mut chars = input.bytes();
+    while let Some(b) = chars.next() {
+        if b == b'%' {
+            let hi = chars.next().unwrap_or(b'0');
+            let lo = chars.next().unwrap_or(b'0');
+            let val = hex_val(hi) * 16 + hex_val(lo);
+            result.push(val as char);
+        } else {
+            result.push(b as char);
+        }
+    }
+    result
+}
+
+fn hex_val(b: u8) -> u8 {
+    match b {
+        b'0'..=b'9' => b - b'0',
+        b'a'..=b'f' => b - b'a' + 10,
+        b'A'..=b'F' => b - b'A' + 10,
+        _ => 0,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1439,30 +1464,5 @@ mod tests {
         assert!(icon_package("/second/com.example.game.png").is_none());
         assert!(icon_package("/com.example.game.png").is_none());
         assert!(icon_package("/default/../../secret.png").is_none());
-    }
-}
-
-fn percent_decode(input: &str) -> String {
-    let mut result = String::with_capacity(input.len());
-    let mut chars = input.bytes();
-    while let Some(b) = chars.next() {
-        if b == b'%' {
-            let hi = chars.next().unwrap_or(b'0');
-            let lo = chars.next().unwrap_or(b'0');
-            let val = hex_val(hi) * 16 + hex_val(lo);
-            result.push(val as char);
-        } else {
-            result.push(b as char);
-        }
-    }
-    result
-}
-
-fn hex_val(b: u8) -> u8 {
-    match b {
-        b'0'..=b'9' => b - b'0',
-        b'a'..=b'f' => b - b'a' + 10,
-        b'A'..=b'F' => b - b'A' + 10,
-        _ => 0,
     }
 }

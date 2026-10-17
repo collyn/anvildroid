@@ -256,12 +256,25 @@ def properties(props):
             and not p.startswith('gralloc.')] + [k + '=' + v for k, v in overrides.items()]
 
 
-def image_mounts(root):
-    # Preserve the image's SurfaceFlinger. Only the Android 13 native Waydroid
-    # ABI is enabled initially; SDK alone does not prove HWC compatibility.
+def image_mounts(root, *, native_composer=False, allow_missing_angle=False):
+    # Preserve SurfaceFlinger. New images require the per-app HIDL contract
+    # and their own composer, not merely a matching SDK number. Replacing a
+    # modern composer with the Android 13 binary crosses private libui and
+    # HWC2On1Adapter C++ ABIs, even when all HIDL sonames are present.
     build = (root / 'system/build.prop').read_text()
-    if not re.search(r'^ro.build.version.sdk=33\s*$', build, re.M):
-        raise RuntimeError('NVIDIA experimental currently requires an Android 13 Waydroid image')
+    match = re.search(r'^ro.build.version.sdk=(\d+)\s*$', build, re.M)
+    sdk = int(match[1]) if match else None
+    if sdk not in (33, 34, 35, 36):
+        raise RuntimeError('NVIDIA Venus supports Waydroid SDK 33-36 images')
+    if sdk != 33:
+        if not native_composer:
+            raise RuntimeError('NVIDIA on SDK 34-36 requires the verified native Waydroid composer')
+        sf = (root / 'system/bin/surfaceflinger').read_bytes()
+        composer = (root / 'vendor/lib64/hw/hwcomposer.waydroid.so').read_bytes()
+        if (b'vendor.waydroid.display@1.0' not in sf or not all(token in composer for token in (
+                b'vendor.waydroid.display@1.0', b'vendor.waydroid.window@1.0',
+                b'persist.waydroid.multi_windows', b'wl_shm', b'zwp_linux_dmabuf_v1'))):
+            raise RuntimeError('Image lacks the native Waydroid per-app composer ABI required by NVIDIA')
     required = ('vendor/lib64/hw/gralloc.minigbm_gbm_mesa.so',
                 'vendor/lib64/vendor.waydroid.display@1.0.so',
                 'vendor/lib64/vendor.waydroid.window@1.2.so')
@@ -270,8 +283,14 @@ def image_mounts(root):
     mounts = []
     for group in ('guest32', 'guest64'):
         for relative in PAYLOAD_FILES[group]:
+            # The pinned composer is built against Android 13's private C++
+            # ABI. Modern images retain their native composer and adapter.
+            if sdk != 33 and relative == 'vendor/lib64/hw/hwcomposer.waydroid.so':
+                continue
             target = root / relative
-            if not target.is_file() or target.resolve() != target:
+            missing_angle = (allow_missing_angle and '/egl/' in relative
+                             and not target.exists() and target.parent.is_dir())
+            if (not target.is_file() and not missing_angle) or target.resolve() != target:
                 raise RuntimeError('Missing or unsafe NVIDIA guest mount target: ' + relative)
             mounts.append((PAYLOAD_ROOT / 'guest' / relative, target))
     return mounts

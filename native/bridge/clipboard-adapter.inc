@@ -6,7 +6,6 @@
 extern int pipe2(int *, int);
 extern int *__errno(void);
 extern int *__errno_location(void);
-static void *(*clip_user_data)(struct proxy *);
 extern int fcntl(int, int, ...);
 extern long read(int, void *, size_t);
 extern long write(int, const void *, size_t);
@@ -59,6 +58,7 @@ struct clip_source {
 struct clip_offer {
   struct proxy *p;
   int mime;
+  struct clip_offer *next;
 };
 struct clip_io {
   int fd, sending;
@@ -70,7 +70,7 @@ struct clip_io {
 static const struct interface *clip_manager_i, *clip_source_i, *clip_device_i;
 static struct proxy *clip_manager, *clip_device;
 static struct clip_source *clip_sources;
-static struct clip_offer *clip_offer;
+static struct clip_offer *clip_offer, *clip_offers;
 static struct clip_io *clip_ios;
 static uint32_t clip_serial, clip_manager_name;
 static unsigned char *clip_current, *clip_pending, *clip_receiving,
@@ -170,6 +170,9 @@ static void clip_device_offer(void *data, struct proxy *p,
                               struct proxy *offer) {
   (void)data;
   (void)p;
+  unsigned count=0;
+  for(struct clip_offer *at=clip_offers;at;at=at->next)++count;
+  if(count>=16) {wayland_send(offer,2,0);real_destroy(offer);return;}
   struct clip_offer *o = calloc(1, sizeof(*o));
   if (!o) {
     wayland_send(offer, 2, 0);
@@ -177,6 +180,7 @@ static void clip_device_offer(void *data, struct proxy *p,
     return;
   }
   o->p = offer;
+  o->next=clip_offers;clip_offers=o;
   real_listen(offer, clip_offer_listener, o);
 }
 static void clip_device_selection(void *data, struct proxy *p,
@@ -203,15 +207,19 @@ static void clip_device_selection(void *data, struct proxy *p,
     clip_pending_clear = 1;
     clip_outgoing = clip_pending != 0;
   }
-  if (clip_offer) {
+  if (clip_offer && clip_offer->p!=offer) {
+    struct clip_offer **at=&clip_offers;
+    while(*at&&*at!=clip_offer)at=&(*at)->next;
+    if(*at)*at=clip_offer->next;
     wayland_send(clip_offer->p, 2, 0);
     real_destroy(clip_offer->p);
     free(clip_offer);
     clip_offer = 0;
   }
   if (offer) {
-    /* Listener data is ours even though bridge does not track this proxy. */
-    struct clip_offer *o = clip_user_data ? clip_user_data(offer) : 0;
+    /* Own the lookup: custom composers may hide wl_proxy_get_user_data. */
+    struct clip_offer *o=clip_offers;
+    while(o&&o->p!=offer)o=o->next;
     clip_offer = o;
     if (o && o->mime) {
       int fds[2];
@@ -478,11 +486,12 @@ static int clipboard_next(char *value, size_t capacity) {
   return 0;
 }
 static void clipboard_disconnect(void) {
-  if (clip_offer) {
-    wayland_send(clip_offer->p, 2, 0);
-    real_destroy(clip_offer->p);
-    free(clip_offer);
-    clip_offer = 0;
+  clip_offer=0;
+  while (clip_offers) {
+    struct clip_offer *offer=clip_offers;clip_offers=offer->next;
+    wayland_send(offer->p, 2, 0);
+    real_destroy(offer->p);
+    free(offer);
   }
   while (clip_sources) {
     struct clip_source *s = clip_sources;

@@ -37,10 +37,20 @@ int main(void) {
     .fit_delivered_w=512,.fit_delivered_h=704,.resize={.ready=1}};
   tasks[0].id=13;tasks[0].width=512;tasks[0].height=704;
   viewport.height=640; /* Current background must not clamp the saved host. */
-  objects=&fresh;settle();
+  objects=&fresh;
+  assert(initial_layout_pending(&fresh));
+  profile_poll(); /* Initial read must not wait 500ms for persistence debounce. */
+  assert(fresh.profile_loaded&&initial_layout_pending(&fresh));
   assert(fresh.resize.width==448&&fresh.resize.height==701&&fresh.profile_restoring);
+  assert(resize_due(&fresh.resize)); /* Profile restore skips drag debounce. */
   assert(fresh.fit_w==448&&fresh.fit_h==701&&!fresh.preview_width);
   assert(frame.restore_width==448&&frame.restore_height==701);
+  fresh.initial_presented=1;
+  assert(!initial_layout_pending(&fresh));
+  fresh.initial_presented=0;fresh.initial_wait_ticks=20;
+  assert(!initial_layout_pending(&fresh)); /* Bounded fallback. */
+  fresh.initial_wait_ticks=0;fresh.resize.dragging=1;
+  assert(!initial_layout_pending(&fresh));
   objects=0;
   assert(!unlinkat(dir,"com.fitted",0));close(dir);assert(!rmdir(profile_root));
   while(profile_seen){struct profile_task_seen *next=profile_seen->next;free(profile_seen);profile_seen=next;}

@@ -2,6 +2,22 @@
 # No host root daemon. Android's shell UID reads ActivityManager state.
 umask 007
 cd /data/waydroid_tmp/anvildroid || exit 1
+# Android mksh can wait on a private FIFO without launching toybox sleep on
+# every 50 ms tick. Keep a portable fallback for alternate shells.
+tick_ready=0
+if [ -n "${KSH_VERSION:-}" ]; then
+    tick_dir=$(mktemp -d /data/local/tmp/anvil-task-tick-XXXXXX)
+    if [ -n "$tick_dir" ] && mkfifo "$tick_dir/tick" && { exec 9<>"$tick_dir/tick"; }; then
+        tick_ready=1
+    fi
+    # The open descriptor holds the FIFO alive; no pathname or exit trap is
+    # needed while processing queue jobs in subshells.
+    if [ -n "$tick_dir" ]; then rm -f "$tick_dir/tick"; rmdir "$tick_dir"; fi
+fi
+wait_tick() {
+    if [ "$tick_ready" -eq 1 ]; then IFS= read -r -t "$1" tick <&9 || :
+    else sleep "$1"; fi
+}
 # Close only a root stack containing exactly the requested task/package. Never
 # force-stop a package or remove a shared/home stack to emulate a window close.
 close_one_task() {
@@ -47,7 +63,7 @@ full_ui_active() {
 publish_display_state() {
     dumpsys display > display-dump.tmp || return 1
     viewport=$(sed -n '/mViewports=/{p;q;}' display-dump.tmp)
-    values=$(printf '%s\n' "$viewport" | sed -n 's/.*orientation=0, logicalFrame=Rect(0, 0 - \([0-9]*\), \([0-9]*\)), physicalFrame=Rect(\([0-9]*\), \([0-9]*\) - \([0-9]*\), \([0-9]*\)), deviceWidth=\([0-9]*\), deviceHeight=\([0-9]*\).*/\1 \2 \3 \4 \5 \6 \7 \8/p')
+    values=$(printf '%s\n' "$viewport" | sed -n 's/.*orientation=0, .*logicalFrame=Rect(0, 0 - \([0-9]*\), \([0-9]*\)), physicalFrame=Rect(\([0-9]*\), \([0-9]*\) - \([0-9]*\), \([0-9]*\)), deviceWidth=\([0-9]*\), deviceHeight=\([0-9]*\).*/\1 \2 \3 \4 \5 \6 \7 \8/p')
     [ -n "$values" ] || return 1
     requested_w=$1 requested_h=$2
     set -- $values
@@ -83,6 +99,45 @@ resize_display() {
     return 1
 }
 
+bootstrap_display() {
+    if [ "$(getprop waydroid.anvil_single_display)" = true ]; then
+        if [ ! -f display-state ] && [ ! -f display-size ]; then resize_display 1280 720 canvas; fi
+    elif ! full_ui_active; then
+        # wm overrides survive restarts in /data. Per-task host frames use
+        # Android task coordinates, so an old single-display projection
+        # must not scale the content independently of those frames.
+        wm size reset && wm scaling auto || return 1
+        rm -f display-state
+    fi
+}
+
+# Android 16 applies desktop launch placement when bounds overlap the status
+# bar. In particular a portrait -> landscape resize at (0,0) can restore the
+# old portrait bounds. Keep the task's acknowledged origin; host placement is
+# independent of these Android canvas coordinates.
+resize_app_task() {
+    task=$1 width=$2 height=$3
+    left=0 top=0
+    if [ "$(getprop ro.build.version.sdk)" -ge 36 ] 2>/dev/null; then
+        origin=$(sed -n "s/^  taskId=$task: .* bounds=\[\([0-9]*\),\([0-9]*\)\].*/\1 \2/p" tasks)
+        set -- $origin
+        [ "$#" -eq 2 ] || return 1
+        left=$1 top=$2
+    fi
+    cmd activity task resize "$task" "$left" "$top" "$((left+width))" "$((top+height))"
+}
+
+publish_task_snapshot() {
+    snapshot=$(cmd activity stack list) || return 1
+    # Keep the same inode when bounds are unchanged, allowing the bridge to
+    # consume notifications without reparsing the task list on every tick.
+    if [ "$snapshot_published" -eq 0 ] || [ "$snapshot" != "$last_snapshot" ] || [ ! -f tasks ]; then
+        printf '%s\n' "$snapshot" > tasks.tmp && mv tasks.tmp tasks || return 1
+        last_snapshot=$snapshot
+        snapshot_published=1
+    fi
+}
+
 # Fresh capability token on each helper/framework lifetime. Old requests must
 # not close a recycled task ID after Android restarts.
 close_epoch= close_server=
@@ -98,9 +153,9 @@ refresh_close_epoch() {
     fi
 }
 refresh_close_epoch
-display_bootstrap=1
-[ "$(getprop waydroid.anvil_single_display)" = true ] && display_bootstrap=0
+display_bootstrap=0
 snapshot_ticks=0
+last_snapshot= snapshot_published=0
 while true; do
     if [ -f close ] && [ ! -L close ]; then
         mv close close.processing
@@ -124,15 +179,15 @@ while true; do
         rm -f close.processing
         snapshot_ticks=0
     fi
-    if [ -f resize ]; then
+    if [ -f resize ] && [ ! -L resize ]; then
         mv resize resize.processing
         read -r task width height extra < resize.processing
         case "$task:$width:$height" in
-            *[!0-9:]*|::*|:*|*:) ;;
+            *[!0-9:]*|*::*|:*|*:|0:*) ;;
             *)
                 if [ -z "$extra" ] && [ -z "$(getprop waydroid.anvil_full_ui)" ] && [ "$width" -ge 64 ] && [ "$height" -ge 64 ] &&
                    [ "$width" -le 8192 ] && [ "$height" -le 8192 ]; then
-                    cmd activity task resize "$task" 0 0 "$width" "$height"
+                    resize_app_task "$task" "$width" "$height"
                     snapshot_ticks=0
                 fi
                 ;;
@@ -140,8 +195,7 @@ while true; do
         rm -f resize.processing
     fi
     if [ "$display_bootstrap" -eq 0 ] && [ "$(getprop sys.boot_completed)" = 1 ]; then
-        display_bootstrap=1
-        if [ ! -f display-state ] && [ ! -f display-size ]; then resize_display 1280 720 canvas; fi
+        bootstrap_display && display_bootstrap=1
     fi
     if [ -f display-size ] && [ ! -L display-size ]; then
         mv display-size display-size.processing
@@ -167,11 +221,9 @@ while true; do
     # snapshot at about 250 ms when idle. Refresh immediately after a resize.
     if [ "$snapshot_ticks" -eq 0 ]; then
         refresh_close_epoch
-        if cmd activity stack list > tasks.tmp; then
-            mv tasks.tmp tasks
-        fi
+        publish_task_snapshot
         snapshot_ticks=5
     fi
     snapshot_ticks=$((snapshot_ticks - 1))
-    sleep 0.05
+    wait_tick 0.05
 done

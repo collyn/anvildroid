@@ -151,6 +151,23 @@ int main(int argc, char **argv) {
   XSync(x, False);
   pump(c, 5);
   assert(pointer_surface == a.surface && keyboard_surface == a.surface);
+  auto before_buttons = buttons;
+  scroll_axes.clear();
+  for (int button = 4; button <= 7; ++button) {
+    XTestFakeButtonEvent(x, button, True, CurrentTime);
+    XTestFakeButtonEvent(x, button, False, CurrentTime);
+  }
+  XSync(x, False);
+  wait_for(c, [] { return scroll_axes.size() >= 4; });
+  pump(c, 5);
+  const std::vector<std::pair<uint32_t, wl_fixed_t>> expected_scroll = {
+      {WL_POINTER_AXIS_VERTICAL_SCROLL, wl_fixed_from_int(-10)},
+      {WL_POINTER_AXIS_VERTICAL_SCROLL, wl_fixed_from_int(10)},
+      {WL_POINTER_AXIS_HORIZONTAL_SCROLL, wl_fixed_from_int(-10)},
+      {WL_POINTER_AXIS_HORIZONTAL_SCROLL, wl_fixed_from_int(10)}};
+  assert(scroll_axes == expected_scroll && buttons == before_buttons);
+  puts("PASS real XInput wheel up/down/left/right reaches guest pointer once "
+       "per notch with correct direction");
   auto *region = wl_compositor_create_region(c.compositor);
   wl_region_add(region, 30, 30, 50, 50);
   auto *confine = zwp_pointer_constraints_v1_confine_pointer(

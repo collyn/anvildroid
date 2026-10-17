@@ -5,7 +5,6 @@ The first report is a snapshot at request time. After an action a second probe
 is required to verify the asynchronous configure/commit has completed.
 """
 import json
-import os
 from pathlib import Path
 import subprocess
 import tempfile
