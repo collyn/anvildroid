@@ -27,6 +27,9 @@ test_*.py
 *.test.js
 *.spec.js
 /crates/*/examples/
+!/crates/anvildroid-core/examples/
+/crates/anvildroid-core/examples/*
+!/crates/anvildroid-core/examples/acceptance-diagnostics.rs
 /scripts/test-*
 /scripts/smoke-*
 /scripts/prototype-*
@@ -45,6 +48,7 @@ test_*.py
 !/tests/keymap-storage.c
 !/tests/scrcpy-mapping.c
 !/tests/keymap-overlay.c
+!/tests/keymap-hints.c
 !/tests/boot-canvas.c
 !/tests/test_runtime_keymaps.py
 !/tests/test_runtime_keymap_receiver.py
@@ -54,6 +58,9 @@ test_*.py
 !/tests/acceptance/live-android.py
 !/tests/acceptance/probe-android-shares.py
 !/tests/acceptance/probe-android-controls.py
+!/tests/acceptance/test-controls-harness.py
+!/tests/acceptance/default-android.py
+!/tests/acceptance/test-default-harness.py
 !/tests/acceptance/README.md
 !/tests/acceptance/DEFAULT-ISOLATION.md
 /scripts/build-arm-probes.sh

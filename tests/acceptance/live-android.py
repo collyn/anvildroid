@@ -20,6 +20,7 @@ import json
 import os
 from pathlib import Path
 import secrets
+import socket
 import shutil
 import subprocess
 import sys
@@ -93,6 +94,85 @@ def assets(root, package):
         fresh.rename(staged); marker.write_text(digest + '\n')
     return staged / 'usr/local/lib/anvildroid-controller'
 
+def close_displays(processes):
+    for child in reversed(processes):
+        if child.poll() is None: child.terminate()
+        try: child.wait(timeout=5)
+        except subprocess.TimeoutExpired: child.kill(); child.wait(timeout=5)
+
+def nested_wayland(root, owner_uid, generation):
+    """Only private Xvfb → UID-owned Weston; never touch host input devices."""
+    validate_root(root)
+    require(os.readlink('/proc/self/ns/mnt') != os.readlink('/proc/1/ns/mnt'), 'Private inner mount namespace required')
+    account = pwd.getpwuid(owner_uid)
+    require(owner_uid > 0, 'Non-root Weston owner required')
+    authority = root / ('nested-authority-' + generation)
+    authority.touch(mode=0o600); os.chown(authority, owner_uid, account.pw_gid)
+    subprocess.run(['xauth', '-f', str(authority), 'add', ':77', '.', secrets.token_hex(16)], check=True, timeout=5)
+    # Weston cannot traverse the root-only fixture directory. Pin the private
+    # authority into the already masked, UID-owned runtime directory instead.
+    user_run = Path('/run/user') / str(owner_uid)
+    user_authority = user_run / 'nested-authority'
+    shutil.copyfile(authority, user_authority); os.chown(user_authority, owner_uid, account.pw_gid); user_authority.chmod(0o600)
+    subprocess.run(['mount', '-t', 'tmpfs', '-o', 'mode=1777', 'tmpfs', '/tmp/.X11-unix'], check=True)
+    processes = []
+    display = 'wayland-anvil-' + generation
+    env = {'PATH': os.environ['PATH'], 'XDG_RUNTIME_DIR': str(user_run), 'HOME': str(user_run),
+           'LIBGL_ALWAYS_SOFTWARE': '1', 'GALLIUM_DRIVER': 'llvmpipe', 'DISPLAY': ':77', 'XAUTHORITY': str(user_authority)}
+    try:
+        with (root / 'nested-xvfb.log').open('a') as log:
+            processes.append(subprocess.Popen(['Xvfb', ':77', '-nolock', '-screen', '0', '1700x1100x24',
+                '-nolisten', 'tcp', '-noreset', '-auth', str(authority)], stdout=log, stderr=log))
+        deadline = time.monotonic() + 10
+        while not Path('/tmp/.X11-unix/X77').exists():
+            require(processes[0].poll() is None and time.monotonic() < deadline, 'Private Xvfb failed')
+            time.sleep(.1)
+        with (root / 'nested-weston.log').open('a') as log:
+            processes.append(subprocess.Popen(['weston', '--backend=x11', '--renderer=gl', '--no-config',
+                '--socket=' + display, '--width=1600', '--height=1000', '--idle-time=0', '--debug'],
+                env=env, cwd='/', user=owner_uid, group=account.pw_gid, extra_groups=[], stdout=log, stderr=log))
+        deadline = time.monotonic() + 15
+        while not (user_run / display).exists():
+            require(processes[-1].poll() is None and time.monotonic() < deadline, 'Private nested Weston failed')
+            time.sleep(.1)
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
+            probe.settimeout(3); probe.connect(str(user_run / display))
+            protocols = module('runtime-desktop').registry_protocols(probe)
+        require(protocols.get('wl_seat'), 'Nested Weston must expose an input seat')
+        extensions = subprocess.run(['xdpyinfo', '-queryExtensions'], env=env, capture_output=True, text=True, check=True, timeout=5).stdout
+        require('XTEST' in extensions, 'Private Xvfb must support XTest')
+        deadline=time.monotonic()+5
+        while True:
+            tree=subprocess.run(['xwininfo','-root','-tree'],env=env,capture_output=True,text=True,check=True,timeout=5).stdout
+            (root/'nested-x11-tree.txt').write_text(tree)
+            windows = subprocess.run(['xdotool', 'search', '--onlyvisible', '--class', 'weston'],
+                env=env, capture_output=True, text=True, timeout=5).stdout.splitlines()
+            if len(windows)==1: break
+            require(time.monotonic()<deadline,'Expected exactly one private Weston X11 output: '+tree)
+            time.sleep(.1)
+        return processes, dict(kind='nested-weston-x11', x11_display=':77', authority=str(user_authority),
+            wayland_display=display, compositor_namespace_pid=processes[-1].pid, x11_window=windows[0],
+            compositor_mount_namespace=os.readlink('/proc/self/ns/mnt'),
+            compositor_pid_namespace=os.readlink('/proc/self/ns/pid'), protocols=protocols)
+    except BaseException:
+        close_displays(processes); raise
+
+def preflight_wayland_input(root, owner_uid):
+    require(not root.exists(), 'Preflight requires a new disposable root')
+    root.mkdir(mode=0o700)
+    account = pwd.getpwuid(owner_uid); require(owner_uid > 0, 'Non-root Weston owner required')
+    private = root / 'private-user-run'; private.mkdir(mode=0o700); os.chown(private, owner_uid, account.pw_gid)
+    subprocess.run(['mount', '--bind', str(private), '/run/user/' + str(owner_uid)], check=True)
+    processes, result = nested_wayland(root, owner_uid, uuid.uuid4().hex)
+    try:
+        result.update(android_started=False, host_input_devices_used=False)
+    finally:
+        close_displays(processes)
+    require(all(child.poll() is not None for child in processes), 'Private displays did not exit')
+    result['cleanup_verified'] = True
+    (root / 'input-preflight.json').write_text(json.dumps(result, indent=2))
+    print(json.dumps(result, indent=2), flush=True)
+
 def prepare(root, package, owner_uid, image_source, flavor):
     require(owner_uid > 0, 'A non-root registered desktop owner is required')
     pwd.getpwuid(owner_uid)
@@ -116,7 +196,8 @@ def prepare(root, package, owner_uid, image_source, flavor):
     (root / 'acceptance.json').write_text(json.dumps(value, indent=2))
     print(json.dumps(value), flush=True)
 
-def start(root, package, x11, wayland=False):
+def start(root, package, x11, wayland=False, wayland_x11=False):
+    wayland = wayland or wayland_x11
     metadata = read_metadata(root); instance = Path(metadata['instance'])
     owner_uid = metadata.get('owner_uid', metadata.get('desktop_uid'))
     require(type(owner_uid) is int and owner_uid > 0, 'Missing desktop owner')
@@ -139,6 +220,7 @@ def start(root, package, x11, wayland=False):
                '/usr/local/lib/anvildroid-controller/runtime-worker.py', '--instance', str(instance), '--id', metadata['id'],
                '--generation', metadata['generation'], '--namespaces', os.readlink('/proc/self/ns/mnt'), os.readlink('/proc/self/ns/net')]
     xserver = None
+    nested_processes = []
     if x11 or wayland:
         provision = module('runtime-provision'); provision.ASSETS = payload
         if wayland:
@@ -162,6 +244,12 @@ def start(root, package, x11, wayland=False):
         command += ['--desktop-display', 'x11::77', '--desktop-uid', str(owner_uid)]
     elif wayland:
         (instance / 'display-backend.json').write_text(json.dumps({'backend': 'legacy', 'presenter': 'amd'}))
+        if wayland_x11:
+            nested_processes, transport = nested_wayland(root, owner_uid, metadata['generation'])
+            metadata.update(wayland_display=transport['wayland_display'], desktop_uid=owner_uid, input_transport=transport)
+            (root / 'acceptance.json').write_text(json.dumps(metadata, indent=2))
+            command += ['--desktop-display', transport['wayland_display'], '--desktop-uid', str(owner_uid)]
+    if wayland and not wayland_x11:
         env = {'PATH': os.environ['PATH'], 'XDG_RUNTIME_DIR': '/run/user/' + str(owner_uid),
                'HOME': '/run/user/' + str(owner_uid), 'LIBGL_ALWAYS_SOFTWARE': '1', 'GALLIUM_DRIVER': 'llvmpipe'}
         with (root / 'wayland-weston.log').open('a') as log:
@@ -176,13 +264,14 @@ def start(root, package, x11, wayland=False):
         metadata.update(wayland_display='wayland-anvil-acceptance', desktop_uid=owner_uid)
         (root / 'acceptance.json').write_text(json.dumps(metadata, indent=2))
         command += ['--desktop-display', 'wayland-anvil-acceptance', '--desktop-uid', str(owner_uid)]
-    else:
+    elif not x11 and not wayland:
         (instance / 'display-backend.json').write_text(json.dumps({'backend': 'legacy', 'presenter': 'amd'}))
     os.close(lock)  # Production worker takes this same lock; no other launcher is authorized.
     try:
         with (instance / 'worker.log').open('a') as log:
             return subprocess.call(command, stdout=log, stderr=subprocess.STDOUT)
     finally:
+        close_displays(nested_processes)
         if xserver is not None: xserver.terminate(); xserver.wait(timeout=5)
 
 def main():
@@ -190,9 +279,11 @@ def main():
     parser.add_argument('root', type=Path)
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument('--prepare', action='store_true'); mode.add_argument('--start', action='store_true')
+    mode.add_argument('--preflight-wayland-input', action='store_true', help='Isolated display/input fixture only; never starts Android')
     display = parser.add_mutually_exclusive_group()
     display.add_argument('--x11', action='store_true')
     display.add_argument('--wayland', action='store_true', help='Private software Weston desktop acceptance')
+    display.add_argument('--wayland-x11', action='store_true', help='Guest Wayland with private Xvfb/Weston X11 input transport')
     parser.add_argument('--image-source', type=Path, default=Path('/var/lib/waydroid/images'))
     parser.add_argument('--flavor', choices=('VANILLA','GAPPS'), default='VANILLA')
     parser.add_argument('--owner-uid', type=int, default=int(os.environ.get('SUDO_UID', '0')))
@@ -212,9 +303,10 @@ def main():
         require(os.readlink('/proc/self/ns/mnt') != os.readlink('/proc/1/ns/mnt'), 'Private inner mount namespace required')
         require(os.readlink('/proc/self/ns/net') != os.readlink('/proc/1/ns/net'), 'Private inner network namespace required')
         subprocess.run(['mount', '--make-rprivate', '/'], check=True)
-        return prepare(args.root, args.package, args.owner_uid, args.image_source, args.flavor) if args.prepare else start(args.root, args.package, args.x11, args.wayland)
+        if args.preflight_wayland_input: return preflight_wayland_input(args.root, args.owner_uid)
+        return prepare(args.root, args.package, args.owner_uid, args.image_source, args.flavor) if args.prepare else start(args.root, args.package, args.x11, args.wayland, args.wayland_x11)
     command = [sys.executable, str(SCRIPT), str(args.root), '--inside', '--package', str(args.package),
-               '--prepare' if args.prepare else '--start', '--owner-uid', str(args.owner_uid), '--image-source', str(args.image_source), '--flavor', args.flavor] + (['--x11'] if args.x11 else []) + (['--wayland'] if args.wayland else [])
+               '--preflight-wayland-input' if args.preflight_wayland_input else '--prepare' if args.prepare else '--start', '--owner-uid', str(args.owner_uid), '--image-source', str(args.image_source), '--flavor', args.flavor] + (['--x11'] if args.x11 else []) + (['--wayland'] if args.wayland else []) + (['--wayland-x11'] if args.wayland_x11 else [])
     # Give the inner setup a second network namespace as well as mountns.
     command = isolate(['unshare', '--net', *command])
     if args.start:
