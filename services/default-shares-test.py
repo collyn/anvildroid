@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Default grant/lifecycle fixtures; --mount-test uses a disposable namespace."""
 import importlib.util
+import io
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -130,6 +132,40 @@ class DefaultSharesTests(unittest.TestCase):
         self.assertTrue(context.active)
         with self.assertRaises(BlockingIOError):default.lifecycle_lock(self.store)
         context.close(True);self.assertFalse(context.active)
+    def test_fuse_wait_never_claims_raw_share_is_app_visible(self):
+        context=default.SessionMounts(self.store,self.runtime,self.state,'mnt:[1]')
+        context.lock=default.lifecycle_lock(self.store)
+        context.container_pid=os.getpid();context.fuse_deadline=default.time.monotonic()+300
+        context.mounted={'Docs':{'mounted':False,'raw_mounted':True,'error':'Waiting for Android FUSE sharing readiness'}}
+        context.session_record={'shares':context.mounted,'container_start_time':default.process_start(os.getpid())}
+        with patch.object(default.shares,'_walk',side_effect=FileNotFoundError),patch.object(default.linux,'run_bounded') as run:
+            context.reconcile()
+            run.assert_not_called()
+        self.assertFalse(context.mounted['Docs']['mounted'])
+        context.fuse_deadline=0
+        context.reconcile()
+        self.assertIn('300 seconds',context.mounted['Docs']['error'])
+        self.assertTrue(context.fuse_complete)
+        os.close(context.lock);context.lock=None
+    def test_empty_backend_directory_does_not_consume_retry_before_real_mount(self):
+        context=default.SessionMounts(self.store,self.runtime,self.state,'mnt:[1]')
+        context.lock=default.lifecycle_lock(self.store);context.container_pid=os.getpid()
+        context.fuse_deadline=default.time.monotonic()+300
+        context.mounted={'Docs':{'mounted':False,'error':'Waiting for Android FUSE sharing readiness'}}
+        context.session_record={'shares':context.mounted,'container_start_time':default.process_start(os.getpid())}
+        media=self.root/'media';media.mkdir();stub=self.root/'backend-stub';stub.mkdir()
+        valid=False
+        def walk(root,parts):
+            path=media if parts==('data','media') or valid else stub
+            return os.open(path,os.O_RDONLY|os.O_DIRECTORY)
+        with patch.object(default.shares,'_walk',side_effect=walk),patch('builtins.open',side_effect=lambda *a,**k:io.StringIO('1 2 0:1 / /mnt/pass_through/0/emulated rw - tmpfs tmpfs rw\n')),patch.object(default.linux,'run_bounded',return_value='{"Docs":{"mounted":true,"error":null}}') as run:
+            context.reconcile();context.reconcile();context.reconcile();context.reconcile()
+            self.assertEqual(context.fuse_attempts,0);self.assertFalse(context.fuse_complete);run.assert_not_called()
+            valid=True
+            context.reconcile()
+            self.assertEqual(context.fuse_attempts,1);self.assertTrue(context.fuse_complete)
+            self.assertTrue(context.mounted['Docs']['mounted']);run.assert_called_once()
+        os.close(context.lock);context.lock=None
     def test_failed_namespace_open_releases_startup_lock(self):
         context=default.SessionMounts(self.store,self.runtime,self.state,'mnt:[1]')
         original_open=os.open
@@ -282,6 +318,10 @@ def mount_child(original):
             child=os.fork()
             if child==0:
                 os.close(write_fd);os.close(ready_read)
+                os.unshare(os.CLONE_NEWNS)
+                subprocess.run(['mount','--make-rprivate','/'],check=True)
+                backend=context.stage/'mnt/pass_through/0/emulated';backend.mkdir(parents=True)
+                subprocess.run(['mount','--bind',str(context.stage/'data/media'),str(backend)],check=True)
                 os.chroot(context.stage);os.chdir('/')
                 os.write(ready_write,b'1');os.close(ready_write)
                 os.read(read_fd,1);os._exit(0)
@@ -292,6 +332,17 @@ def mount_child(original):
                 context.started(child)
                 runtime.current='RUNNING';runtime.session=session
                 marker={'pid':os.getpid(),'start_time':default.process_start(os.getpid()),'mount_namespace':context.namespace}
+                default.storage.atomic(state/'integration.json',marker)
+                with patch.object(default,'integration_status',return_value=marker):
+                    pending=adapter.get(UID)
+                assert not pending['shares'][0]['mounted'] and 'Waiting for Android FUSE' in pending['shares'][0]['error'],pending
+                # Fixture service is this test process, so only its stock
+                # command-line inventory check is synthesized. Session files,
+                # PID/starttime, namespace, ownership and mounts remain real.
+                code = ("import importlib.util,json,pathlib; p=pathlib.Path("+repr(str(Path(default.__file__)))+"); s=importlib.util.spec_from_file_location('d',p);d=importlib.util.module_from_spec(s);s.loader.exec_module(d); state=pathlib.Path("+repr(str(state))+"); d.integration_status=lambda state:d.read_json(state/'integration.json'); print(json.dumps(d.reconcile_session(state)))")
+                result=subprocess.run([sys.executable,'-c',code],capture_output=True,text=True,check=True,timeout=5)
+                context.mounted=json.loads(result.stdout);context.session_record['shares']=context.mounted
+                default.storage.atomic(state/'shares-session.json',context.session_record)
                 with patch.object(default,'integration_status',return_value=marker):
                     live=adapter.get(UID)
                 assert live['shares'][0]['mounted'] and not live['editable'],live

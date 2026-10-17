@@ -1603,6 +1603,9 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
                 state['shared_folders_mounted'] = shares_module.apply_preboot(
                     instance, work / 'data', share_owner, mounts.append, original_mnt=original_mnt)
             data_bind = 'rbind' if any(item.get('mounted') for item in state.get('shared_folders_mounted', {}).values()) else 'bind'
+            for share in state.get('shared_folders_mounted', {}).values():
+                if share.get('mounted'):
+                    share.update(mounted=False, raw_mounted=True, error='Waiting for Android FUSE sharing readiness')
             config += [f'lxc.rootfs.path = dir:{fs}', f'lxc.uts.name = anvil-{name}',
                        'lxc.autodev = 0', 'lxc.console.path = none',
                        # Allow Android's uid-mapped processes to open the
@@ -1731,6 +1734,7 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
             names.append(name)
             lxc('lxc-start', name, '-d', '-l', 'ERROR', '-o', work / 'lxc.log')
             init_pid = int(lxc('lxc-info', name, '-pH'))
+            init_start = shares_module.process_start(init_pid)
             resources.verify_container(init_pid, identifier, generation)
             if private_pid_limit:
                 try:
@@ -1826,6 +1830,19 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
                     require(time.monotonic() < ready_deadline, 'Native X11 protocol endpoint startup timed out')
                     if stopping.wait(.1): return
                 state['x11_status'] = x11_session.state
+            if state.get('shared_folders_mounted'):
+                try:
+                    require(shares_module.process_start(init_pid) == init_start, 'Android process changed before sharing reconciliation')
+                    resources.verify_container(init_pid, identifier, generation)
+                    result = linux.run_bounded(sys.executable, shares_module.__file__, '--reconcile',
+                        instance, work / 'data', init_pid, init_start, generation, original_mnt,
+                        timeout=15, full_output=True, output_limit=16384, operation='Android FUSE sharing reconciliation')
+                    require(shares_module.process_start(init_pid) == init_start, 'Android process changed during sharing reconciliation')
+                    resources.verify_container(init_pid, identifier, generation)
+                    state['shared_folders_mounted'] = json.loads(result)
+                except (RuntimeError, OSError, ValueError) as error:
+                    state['shared_folders_mounted'] = {name: {'mounted': False, 'error': 'Android FUSE sharing unavailable: ' + str(error)[:400]}
+                        for name in state['shared_folders_mounted']}
             state.update(state='Running', error=None, android_id=android_id)
             state.pop('boot_wait', None)
             state['network'] = 'private_uplink' if uplink else 'isolated'

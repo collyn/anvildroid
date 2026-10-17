@@ -50,6 +50,8 @@ jobs:
         run: sudo python3 services/share-identities-test.py --mount-test
       - name: Test Android overlays in a private PID1 mount namespace
         run: sudo python3 services/overlay-test.py --mount-test
+      - name: Test Android FUSE sharing and existing slave namespaces
+        run: sudo python3 services/shares-fuse-test.py --mount-test
       - name: Test preparation without initialized Waydroid host
         run: python3 services/provision-support-test.py
       - name: Test legacy Debian installation permissions

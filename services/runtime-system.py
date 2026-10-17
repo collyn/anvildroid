@@ -189,6 +189,8 @@ class Integration:
                 self.timer = None
                 self.stop(self.args)
                 return False
+            if self.sharing and self.sharing.active:
+                self.sharing.reconcile()
             if self.renderer and not self.snapshots_disabled:
                 result = existing.linux.run_bounded('lxc-attach', '-P', '/var/lib/waydroid/lxc', '-n', 'waydroid',
                     '--', '/system/bin/getprop', 'sys.boot_completed', timeout=2, full_output=True,

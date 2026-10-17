@@ -15,6 +15,8 @@ import subprocess
 import tempfile
 import threading
 import time
+import sys
+import types
 
 
 def module(name):
@@ -173,13 +175,25 @@ class DefaultShares:
                         if not observed.get('mounted'):
                             mounted[item['name']] = observed
                             continue
-                        target = walk_target(data, item['name'])
+                        root = os.open(f'/proc/{pid}/root', os.O_RDONLY | os.O_DIRECTORY)
+                        backend = media = None
+                        try:
+                            backend = shares._walk(root, ('mnt', 'pass_through', '0', 'emulated'))
+                            media = shares._walk(data, ('media',))
+                            first, second = os.fstat(backend), os.fstat(media)
+                            require((first.st_dev, first.st_ino) == (second.st_dev, second.st_ino), 'Default Android FUSE backend changed')
+                            target = shares._walk(backend, ('0', 'AnvilDroid', item['name']))
+                        finally:
+                            for descriptor in (root, backend, media):
+                                if descriptor is not None: os.close(descriptor)
                         try:
                             info = os.fstat(target); flags = os.fstatvfs(target).f_flag
                             require((info.st_dev, info.st_ino) == (item['device'], item['inode']) and
-                                    bool(flags & os.ST_RDONLY) == item['read_only'], 'Default guest share mount changed')
+                                    bool(flags & os.ST_RDONLY) == item['read_only'] and
+                                    all(flags & flag for flag in (os.ST_NOSUID, os.ST_NODEV, os.ST_NOEXEC)), 'Default guest FUSE share mount changed')
                             mounted[item['name']] = {'mounted': True, 'error': None}
                         finally: os.close(target)
+                    require(status['container_start_time'] == process_start(pid), 'Default Android process changed during share readback')
                 finally: os.close(data)
             except (OSError, ValueError, KeyError, TypeError, RuntimeError) as error:
                 mounted = {item['name']: {'mounted': False, 'error': str(error)} for item in entries['shares']}
@@ -230,6 +244,7 @@ class SessionMounts:
         self.owner_thread = threading.get_native_id()
         self.namespace = None; self.stage = None; self.owner = None; self.session = None
         self.mounted = {}; self.saved = None
+        self.container_pid = None; self.fuse_complete = False; self.fuse_attempts = 0
 
     @property
     def active(self): return self.lock is not None
@@ -342,12 +357,55 @@ class SessionMounts:
                                 'Default Android did not inherit the verified shared-folder mount')
                     finally: os.close(target)
             finally: os.close(data)
+        self.container_pid = container_pid
+        self.fuse_complete = not bool(self.mounted); self.fuse_attempts = 0
+        self.fuse_deadline = time.monotonic() + 300
+        for item in self.mounted.values():
+            if item.get('mounted'): item.update(mounted=False, raw_mounted=True, error='Waiting for Android FUSE sharing readiness')
         value = {'pid': os.getpid(), 'start_time': process_start(os.getpid()), 'mount_namespace': self.namespace,
                  'owner_uid': self.owner, 'session_pid': self.session.get('pid'),
                  'data_identity': self.saved.get('data_identity'), 'container_pid': container_pid,
-                 'container_start_time': process_start(container_pid), 'shares': self.mounted}
+                 'container_start_time': process_start(container_pid), 'shares': self.mounted,
+                 'store_root': str(self.store_root), 'original_mnt': self.original_mnt}
+        self.session_record = value
         storage.atomic(self.state_dir / 'shares-session.json', value)
         self.publish()
+
+    def reconcile(self):
+        """GLib watch: bounded retries once vold has created its backend."""
+        self.check_thread()
+        if not self.active or self.container_pid is None or self.fuse_complete: return
+        if time.monotonic() < self.fuse_deadline:
+            root = backend = media = None
+            try:
+                require(process_start(self.container_pid) == self.session_record['container_start_time'], 'Default Android sharing process changed')
+                root = os.open(f'/proc/{self.container_pid}/root', os.O_RDONLY | os.O_DIRECTORY)
+                media = shares._walk(root, ('data', 'media'))
+                backend = shares._walk(root, ('mnt', 'pass_through', '0', 'emulated'))
+                first, second = os.fstat(media), os.fstat(backend)
+                require((first.st_dev, first.st_ino) == (second.st_dev, second.st_ino), 'Default Android FUSE backend is not ready')
+                with open(f'/proc/{self.container_pid}/mountinfo') as stream:
+                    require(any(line.split()[4] == '/mnt/pass_through/0/emulated' for line in stream), 'Default Android FUSE backend is not mounted')
+                require(process_start(self.container_pid) == self.session_record['container_start_time'], 'Default Android sharing process changed')
+            except (OSError, RuntimeError): return
+            finally:
+                for fd in (root, backend, media):
+                    if fd is not None: os.close(fd)
+            self.fuse_attempts += 1
+            try:
+                result = linux.run_bounded(sys.executable, __file__, '--reconcile', self.state_dir,
+                    timeout=3, full_output=True, output_limit=16384, operation='Default Android FUSE sharing')
+                self.mounted = json.loads(result)
+                self.fuse_complete = all(item.get('mounted') for item in self.mounted.values())
+            except (OSError, RuntimeError, ValueError) as error:
+                self.mounted = {name: {'mounted': False, 'error': 'Default Android FUSE sharing unavailable: ' + str(error)[:400]}
+                                for name in self.mounted}
+            if self.fuse_attempts >= 3: self.fuse_complete = True
+        else:
+            self.mounted = {name: {'mounted': False, 'error': 'Android FUSE sharing backend did not become ready within 300 seconds'} for name in self.mounted}
+            self.fuse_complete = True
+        self.session_record['shares'] = self.mounted
+        storage.atomic(self.state_dir / 'shares-session.json', self.session_record)
 
     def namespace_holders(self):
         """Do not discard a session still referenced by a helper or thread."""
@@ -392,4 +450,46 @@ class SessionMounts:
         (self.state_dir / 'shares-session.json').unlink(missing_ok=True)
         os.close(self.lock); self.lock = None
         self.owner = self.session = self.saved = None; self.mounted = {}
+        self.container_pid = None; self.fuse_complete = False
         self.publish()
+
+
+def reconcile_session(state_dir):
+    """Exec-child authentication for Default's root-private live session."""
+    state_dir = Path(state_dir)
+    private_directory(state_dir)
+    status = read_json(state_dir / 'shares-session.json')
+    marker = integration_status(state_dir)
+    require(all(status.get(key) == marker.get(key) for key in ('pid', 'start_time', 'mount_namespace')), 'Default sharing service identity changed')
+    owner = status['owner_uid']; require(type(owner) is int and owner > 0, 'Invalid Default sharing owner')
+    store = Path(status['store_root'])
+    private_directory(store)
+    directory = grant_directory(store, owner)
+    entries = shares._config(directory)
+    require(all(item['owner_uid'] == owner for item in entries), 'Default sharing owner changed')
+    binding_record = read_json(directory / 'data.json')
+    require(binding_record.get('data_identity') == status['data_identity'] and binding_record.get('owner_uid') == owner, 'Default sharing userdata binding changed')
+    proc = os.open('/proc', os.O_RDONLY | os.O_DIRECTORY)
+    state = os.open(state_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    def read_state(name):
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=state)
+        with os.fdopen(fd) as stream:
+            info = os.fstat(stream.fileno())
+            require(stat.S_ISREG(info.st_mode) and info.st_uid == 0 and not info.st_mode & 0o077, 'Unsafe Default sharing state')
+            return json.load(stream)
+    def start(pid):
+        fd = os.open(str(pid) + '/stat', os.O_RDONLY, dir_fd=proc)
+        with os.fdopen(fd) as stream: return stream.read().rsplit(')', 1)[1].split()[19]
+    def identity():
+        require(read_state('shares-session.json') == status and read_state('integration.json') == marker, 'Default sharing session changed')
+        require(start(status['pid']) == status['start_time'] and start(status['container_pid']) == status['container_start_time'], 'Default sharing process changed')
+        require(os.readlink(str(status['pid']) + '/ns/mnt', dir_fd=proc) == status['mount_namespace'], 'Default sharing namespace changed')
+    try:
+        expected = types.SimpleNamespace(st_dev=status['data_identity']['device'], st_ino=status['data_identity']['inode'])
+        return shares.reconcile_verified(entries, expected, status['container_pid'], status['container_start_time'], status['original_mnt'], identity, proc, timeout=0)
+    finally: os.close(proc); os.close(state)
+
+
+if __name__ == '__main__':
+    require(len(sys.argv) == 3 and sys.argv[1] == '--reconcile', 'Invalid Default sharing reconciliation invocation')
+    print(json.dumps(reconcile_session(sys.argv[2])))

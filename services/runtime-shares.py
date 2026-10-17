@@ -4,6 +4,7 @@ The controller serializes configuration with runtime start/stop. No host mounts
 are performed here: apply_preboot requires the worker's private mount namespace.
 """
 import array
+import ctypes
 import json
 import os
 from pathlib import Path
@@ -19,6 +20,7 @@ SCHEMA = 1
 FILE = 'shared-folders.json'
 NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9_-]{0,47}\Z')
 RESERVED = {'.ssh', '.gnupg', '.aws', '.config', '.local', '.codex', '.agents', '.mozilla', '.git'}
+LIBC = ctypes.CDLL(None, use_errno=True)
 
 
 def require(ok, message):
@@ -234,3 +236,141 @@ def apply_preboot(instance, data_root, owner_uid, mount, *, original_mnt):
                 if fd is not None:
                     os.close(fd)
     return result
+
+
+def process_start(pid):
+    require(type(pid) is int and pid > 0, 'Invalid Android process')
+    return Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()[19]
+
+
+def _walk(directory, components):
+    fd = os.dup(directory)
+    try:
+        for component in components:
+            child = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd); fd = child
+        return fd
+    except BaseException:
+        os.close(fd); raise
+
+
+def clone_bind(source, target):
+    """Attach a nonrecursive clone using pinned FDs, preserving mount flags.
+
+    The exec child is not visible in Android's procfs after setns; /proc/PID/fd
+    paths cannot safely address its descriptors. Linux's mount FD API avoids
+    both pathname races and accidental remounts of an underlying mount.
+    """
+    tree = LIBC.syscall(428, source, ctypes.c_char_p(b''), 1 | 0x80000 | 0x1000)
+    if tree < 0:
+        code = ctypes.get_errno(); raise OSError(code, os.strerror(code))
+    try:
+        if LIBC.syscall(429, tree, ctypes.c_char_p(b''), target, ctypes.c_char_p(b''), 0x4 | 0x40) < 0:
+            code = ctypes.get_errno(); raise OSError(code, os.strerror(code))
+    finally: os.close(tree)
+
+
+def reconcile_guest(instance, data_root, pid, start, generation, original_mnt, timeout=10):
+    """One exec-child per managed generation; never switch a worker thread's NS.
+
+    Vold nonrecursively binds /data/media for its FUSE backend, omitting shares
+    mounted before Android boot. Mirror only verified grants into that backend.
+    Guest shutdown disposes these mounts; no guest-renamable unmount paths.
+    """
+    import time
+    instance = Path(instance)
+    info = instance.lstat()
+    require(stat.S_ISDIR(info.st_mode) and info.st_uid == 0 and not info.st_mode & 0o077 and instance.resolve() == instance,
+            'Unsafe sharing runtime directory')
+    proc = os.open('/proc', os.O_RDONLY | os.O_DIRECTORY)
+    instance_fd = os.open(instance, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    def identity():
+        fd = os.open('worker-identity.json', os.O_RDONLY | os.O_NOFOLLOW, dir_fd=instance_fd)
+        with os.fdopen(fd) as stream:
+            metadata = os.fstat(stream.fileno())
+            require(metadata.st_uid == 0 and not metadata.st_mode & 0o077 and stat.S_ISREG(metadata.st_mode), 'Unsafe sharing generation')
+            current = json.load(stream)
+        require(current == {'runtime_id': instance.name, 'generation': generation}, 'Sharing runtime generation changed')
+        fd = os.open(str(pid) + '/stat', os.O_RDONLY, dir_fd=proc)
+        with os.fdopen(fd) as stream:
+            observed_start = stream.read().rsplit(')', 1)[1].split()[19]
+        require(observed_start == start, 'Android sharing process changed')
+    identity()
+    entries = _config(instance)
+    require(Path(data_root) == instance / 'android' / instance.name / 'data', 'Sharing userdata must belong to this runtime')
+    expected = os.stat(data_root, follow_symlinks=False)
+    require(stat.S_ISDIR(expected.st_mode), 'Invalid sharing userdata')
+    try:
+        return reconcile_verified(entries, expected, pid, start, original_mnt, identity, proc, timeout)
+    finally:
+        os.close(proc); os.close(instance_fd)
+
+
+def reconcile_verified(entries, expected, pid, start, original_mnt, identity, proc, timeout=10):
+    """Shared FD-only child core; caller pins and authenticates lifecycle state."""
+    import time
+    identity()
+    namespace = os.open(f'/proc/{pid}/ns/mnt', os.O_RDONLY)
+    guest = os.open(f'/proc/{pid}/root', os.O_RDONLY | os.O_DIRECTORY)
+    data = media = None
+    result = {}
+    try:
+        token = os.readlink(f'/proc/self/fd/{namespace}')
+        require(token not in (original_mnt, os.readlink('/proc/self/ns/mnt')), 'Sharing requires a distinct Android mount namespace')
+        data = _walk(guest, ('data',))
+        observed = os.fstat(data)
+        require((observed.st_dev, observed.st_ino) == (expected.st_dev, expected.st_ino), 'Android sharing userdata identity changed')
+        media = _walk(data, ('media',))
+        media_info = os.fstat(media)
+        identity()
+        os.setns(namespace, os.CLONE_NEWNS)
+        require(os.readlink('self/ns/mnt', dir_fd=proc) == token, 'Android sharing namespace changed')
+        deadline = time.monotonic() + timeout
+        backend = None
+        while backend is None:
+            identity()
+            try:
+                candidate = _walk(guest, ('mnt', 'pass_through', '0', 'emulated'))
+                observed = os.fstat(candidate)
+                require((observed.st_dev, observed.st_ino) == (media_info.st_dev, media_info.st_ino), 'Android FUSE backend is not verified userdata media')
+                fd = os.open(str(pid) + '/mountinfo', os.O_RDONLY, dir_fd=proc)
+                with os.fdopen(fd) as stream:
+                    require(any(line.split()[4] == '/mnt/pass_through/0/emulated' for line in stream), 'Android FUSE backend is not a mount')
+                backend = candidate
+            except (OSError, RuntimeError) as error:
+                if 'candidate' in locals() and candidate is not None: os.close(candidate); candidate = None
+                require(time.monotonic() < deadline, 'Android FUSE backend unavailable: ' + str(error))
+                time.sleep(.2)
+        try:
+            for item in entries:
+                source = parent = target = observed_fd = None
+                try:
+                    source = _walk(data, ('media', '0', 'AnvilDroid', item['name']))
+                    observed = os.fstat(source); flags = os.fstatvfs(source).f_flag
+                    require((observed.st_dev, observed.st_ino) == (item['device'], item['inode']), 'Raw Android share identity changed')
+                    require(bool(flags & os.ST_RDONLY) == item['read_only'] and all(flags & f for f in (os.ST_NOSUID, os.ST_NODEV, os.ST_NOEXEC)), 'Raw Android share mode changed')
+                    parent = _walk(backend, ('0', 'AnvilDroid'))
+                    target = os.open(item['name'], os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+                    clone_bind(source, target)
+                    observed_fd = _walk(backend, ('0', 'AnvilDroid', item['name']))
+                    observed = os.fstat(observed_fd); flags = os.fstatvfs(observed_fd).f_flag
+                    require((observed.st_dev, observed.st_ino) == (item['device'], item['inode']) and bool(flags & os.ST_RDONLY) == item['read_only'] and all(flags & f for f in (os.ST_NOSUID, os.ST_NODEV, os.ST_NOEXEC)), 'Android FUSE share readback changed')
+                    result[item['name']] = {'mounted': True, 'error': None}
+                except Exception as error:
+                    result[item['name']] = {'mounted': False, 'error': 'Android FUSE share unavailable: ' + str(error)[:400]}
+                finally:
+                    for fd in (source, parent, target, observed_fd):
+                        if fd is not None: os.close(fd)
+        finally: os.close(backend)
+        identity()
+        return result
+    finally:
+        for fd in (namespace, guest, data, media):
+            if fd is not None: os.close(fd)
+
+
+if __name__ == '__main__':
+    import sys
+    require(len(sys.argv) == 8 and sys.argv[1] == '--reconcile', 'Invalid sharing reconciliation invocation')
+    _, _, instance, data, pid, start, generation, original_mnt = sys.argv
+    print(json.dumps(reconcile_guest(instance, data, int(pid), start, generation, original_mnt)))
