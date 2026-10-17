@@ -5,6 +5,7 @@ Guest NVIDIA libraries are read-only bind mounts for one container session.
 """
 import atexit
 import ctypes
+import gc
 import importlib.util
 import json
 import logging
@@ -179,6 +180,9 @@ class Integration:
         self.dri = None
         self.dri_node = None
         self.snapshots_disabled = False
+        self.stopping = False
+        self.stop_timer = None
+        self.session_token = None
         self.original_mnt = original_mnt
         self.sharing = (default_shares.SessionMounts(
             Path('/var/lib/anvildroid-controller'),
@@ -204,10 +208,51 @@ class Integration:
         self.tools.actions.container_manager.stop = self.stop
         self.tools.helpers.images.mount_rootfs = self.mount
         self.tools.helpers.images.make_prop = self.props
+        self.install_hardware_callbacks()
+        self.install_stop_manager()
+
+    def install_hardware_callbacks(self):
+        hardware = self.tools.services.hardware_manager.IHardware
+        original = hardware.add_service
+
+        def add_service(args, enableNFC, enableBluetooth, suspend, reboot, upgrade):
+            token = self.session_token
+
+            def gate(callback):
+                def invoke(*values, **keywords):
+                    # Deferred Binder transactions may run after stock Stop
+                    # joins its Python helper. They must not restart Android
+                    # or replace images while cleanup yields to GLib, nor act
+                    # on a later session.
+                    if token is None or token is not self.session_token or self.stopping:
+                        return 0
+                    return callback(*values, **keywords)
+                return invoke
+
+            return original(args, *(gate(callback) for callback in
+                                   (enableNFC, enableBluetooth, suspend, reboot, upgrade)))
+
+        hardware.add_service = add_service
+
+    def install_stop_manager(self):
+        import dbus.service
+        integration = self
+
+        class ContainerManager(self.tools.actions.container_manager.DbusContainerManager):
+            @dbus.service.method('id.waydro.ContainerManager', in_signature='b', out_signature='',
+                                 async_callbacks=('reply', 'error'))
+            def Stop(self, quit_session, reply, error):
+                integration.stop_async(self.args, quit_session, reply, error)
+
+        self.tools.actions.container_manager.DbusContainerManager = ContainerManager
 
     def start(self, args, session):
+        if self.stopping:
+            raise RuntimeError('Default is still stopping; wait for shared-folder cleanup')
         # Do not tear down an already-running session on a duplicate Start.
         if 'session' in args: return self.original_start(args, session)
+        if self.sharing and self.sharing.active:
+            raise RuntimeError('Default sharing cleanup is incomplete; retry Stop before starting')
         self.args = args
         cfg = self.tools.config.load(args)
         for name in configured_binder_nodes(self.tools, args):
@@ -220,6 +265,7 @@ class Integration:
         if self.sharing and self.tools.helpers.lxc.status(args) != 'STOPPED':
             raise RuntimeError('Stop the existing Default container before creating a private sharing session')
         try:
+            self.session_token = object()
             # Updating the installed GUI alone used to leave Default's bridge
             # stale, causing its CSD plus KDE's SSD to appear together.
             # The system D-Bus service outlives container restarts and package
@@ -251,6 +297,7 @@ class Integration:
             if self.renderer or self.sharing:
                 self.timer = self.glib.timeout_add(1000, self.watch)
         except Exception:
+            self.session_token = None
             try: self.original_stop(args)
             finally: self.close()
             raise
@@ -315,6 +362,7 @@ class Integration:
         return self.dri
 
     def watch(self):
+        if self.stopping: return True
         try:
             if self.renderer: self.renderer.check()
             if self.tools.helpers.lxc.status(self.args) == 'STOPPED':
@@ -353,10 +401,71 @@ class Integration:
         return self.original_freeze(args)
 
     def stop(self, args, quit_session=True):
+        if self.stopping:
+            raise RuntimeError('Default is already stopping')
+        self.session_token = None
         try: return self.original_stop(args, quit_session)
         finally: self.close()
 
-    def close(self):
+    def stop_async(self, args, quit_session, reply, error):
+        if self.stopping:
+            error(RuntimeError('Default is already stopping'))
+            return
+        try:
+            if self.sharing and self.sharing.active: self.sharing.check_thread()
+        except Exception as failure:
+            error(failure)
+            return
+        self.stopping = True
+        self.session_token = None
+        stop_error = None
+        try:
+            self.original_stop(args, quit_session)
+        except Exception as failure:
+            stop_error = failure
+        deadline = time.monotonic() + 3
+        completed = False
+
+        def finish(failure=None):
+            nonlocal completed
+            if completed: return
+            completed = True
+            removal_error = None
+            if self.stop_timer is not None:
+                try: self.glib.source_remove(self.stop_timer)
+                except Exception as caught: removal_error = caught
+                finally: self.stop_timer = None
+            self.stopping = False
+            failure = stop_error or failure or removal_error
+            if failure is None: reply()
+            else: error(failure)
+
+        def poll():
+            if completed: return False
+            try:
+                # Let the ordinary GLib loop release deferred native Binder
+                # references between attempts; never dispatch a nested loop.
+                # Every attempt retains the same owner/STOPPED/helper checks.
+                self.close(wait=False)
+            except default_shares.NamespaceBusy as failure:
+                if time.monotonic() < deadline: return True
+                finish(failure)
+            except Exception as failure:
+                finish(failure)
+            else:
+                finish()
+            return False
+
+        if poll():
+            try:
+                self.stop_timer = self.glib.timeout_add(50, poll)
+                if not self.stop_timer:
+                    self.stop_timer = None
+                    raise RuntimeError('Cannot schedule Default sharing cleanup')
+            except Exception as failure:
+                finish(failure)
+
+    def close(self, wait=True):
         if self.sharing and self.sharing.active:
             self.sharing.check_thread()
             # Stock hardware_manager owns an inherited namespace and can issue
@@ -370,6 +479,11 @@ class Integration:
                     raise RuntimeError('Default hardware callbacks did not stop; retaining shared-folder namespace')
             if self.tools.helpers.lxc.status(self.args) != 'STOPPED':
                 raise RuntimeError('Default Android is still active; retaining shared-folder namespace')
+            # Stock hardware LocalObject handlers form a Python reference
+            # cycle. After their owning thread and Android stop, release those
+            # unreachable wrappers so their native Binder loopers can exit.
+            # The holder guard below still rejects any surviving helper.
+            gc.collect()
         if self.timer is not None:
             self.glib.source_remove(self.timer)
             self.timer = None
@@ -391,7 +505,9 @@ class Integration:
             self.dri = None
         self.dri_node = None
         self.nvidia = self.snapshots_disabled = False
-        if self.sharing and self.sharing.active: self.sharing.close(True)
+        if self.sharing and self.sharing.active:
+            if wait: self.sharing.close(True)
+            else: self.sharing.close(True, wait=False)
 
 
 def main():

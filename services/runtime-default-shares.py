@@ -36,6 +36,10 @@ def require(value, message):
     if not value: raise RuntimeError(message)
 
 
+class NamespaceBusy(RuntimeError):
+    """A stopped session still has live namespace holders; keep its lock."""
+
+
 def private_directory(path, create=False):
     path = Path(path)
     if create: path.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -426,13 +430,14 @@ class SessionMounts:
             except (FileNotFoundError, ProcessLookupError): pass
         return holders
 
-    def close(self, stopped):
+    def close(self, stopped, wait=True):
         self.check_thread()
         if not self.active: return
         require(stopped, 'Default Android is still active; retaining sharing namespace and configuration lock')
         deadline = time.monotonic() + 3
         while self.namespace_holders():
-            require(time.monotonic() < deadline, 'Default helpers still retain the sharing namespace; retaining configuration lock')
+            if not wait or time.monotonic() >= deadline:
+                raise NamespaceBusy('Default helpers still retain the sharing namespace; retaining configuration lock')
             time.sleep(0.05)
         # No lazy pathname unmount: guest/desktop may rename targets. Returning
         # to the baseline discards this session's mount namespace wholesale.

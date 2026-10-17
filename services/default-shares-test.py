@@ -263,12 +263,15 @@ class DefaultSystemHookTests(unittest.TestCase):
         self.integration.sharing.begin.assert_not_called()
         self.integration.original_stop.assert_not_called()
     def test_untracked_live_container_is_not_stopped_by_start(self):
+        self.integration.sharing.active=False
         self.tools.helpers.lxc.status.return_value='RUNNING'
         with patch.object(self.system.gpu,'is_nvidia',return_value=False),self.assertRaises(RuntimeError):
             self.integration.start({}, {'user_id':'1000'})
         self.integration.original_stop.assert_not_called()
         self.integration.sharing.begin.assert_not_called()
     def test_failed_start_stops_then_discards_session(self):
+        self.integration.sharing.active=False
+        self.integration.sharing.begin.side_effect=lambda _session:setattr(self.integration.sharing,'active',True)
         runtime=Mock()
         module=types.SimpleNamespace(ExistingRuntime=Mock(return_value=runtime))
         self.integration.original_start.side_effect=RuntimeError('boot failed')

@@ -4,7 +4,7 @@
 set -eu
 ROOT=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
-for suite in compatibility shares default-shares default-binder default-native-pool components diagnostics features overlay portable-packaging; do
+for suite in compatibility shares default-shares default-binder default-native-pool default-stop components diagnostics features overlay portable-packaging; do
   python3 "services/$suite-test.py"
 done
 for suite in compatibility shares runtime-actions; do
