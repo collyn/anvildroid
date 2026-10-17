@@ -1,74 +1,126 @@
-# Proposed disposable Default integration acceptance
+# Disposable stock Default acceptance
 
-Status: design only. Do not invoke stock `do_start` until the launcher and its
-isolation checks have been reviewed. Existing managed acceptance is a separate
-runtime and must be stopped before this experiment to avoid resource pressure.
+The maintained launcher is `default-android.py`; its inert safety regressions
+are `test-default-harness.py`. `--prepare` copies only official image bytes and
+a digest-pinned controller package into a new `/tmp/anvil-default-*` fixture.
+`--preflight` starts private support services and exercises stock image/network
+setup, but never sends Android Start. `--run` requires the exact reviewed
+preflight digest and unchanged harness, package, extracted payload, image and
+probe APK identities. See `README.md` for build and invocation commands.
 
-1. Validate a new absolute `/tmp/anvil-default-*` directory, root-owned 0700,
-   without symlink components. Extract the freshly staged controller package
-   here and record its digest. Copy image bytes into a fresh work tree; generate
-   new Default configuration and LXC configuration against those copies. Do not
-   copy personal userdata, active LXC state, host runtime ownership records, or
-   the installed service's live `/run` state.
-2. Assign a unique transient systemd resource scope *before* hiding `/run`.
-   Use bounded memory/CPU and an explicitly delegated child cgroup. Record the
-   scope, launcher PID/starttime and namespace identities. Use a PID1 supervisor
-   with `--kill-child`, private mount/network/PID/IPC/UTS namespaces, and make
-   `/` recursively private before mounting anything. Verify all identities
-   differ from the host and fail before creating a service if they do not.
-3. Overlay `/run` with a private tmpfs. This masks host systemd's private
-   control socket, host DBus, network/sensor PID files, and personal session
-   sockets. Do not bind host `/run/systemd/private` or host system/session DBus
-   back into the fixture. Start a private `dbus-daemon` with an explicit local
-   configuration and no host service-activation directories. Export its system
-   bus address to both service and test clients.
-4. Mount a private `/dev` tmpfs. Before covering `/dev`, record only required
-   device numbers. Reuse `runtime-worker.private_device_node` to create new
-   inodes for ordinary required devices, never bind original device inodes
-   that stock Waydroid chmods. Mount a **new BinderFS instance**, allocate only
-   fixture binder/vndbinder/hwbinder with the existing binder-control ioctl,
-   and give stock configuration those names. Require binder support already
-   loaded. Drop `CAP_SYS_MODULE` from the bounding set; do not invoke the managed
-   `ensure_binder_filesystem` helper because it runs modprobe. Hide optional GPU,
-   framebuffer, camera and DMA-heap devices; use software rendering initially.
-   Stock ashmem probing may attempt modprobe, but the dropped capability must
-   make it incapable of changing the host. Prefer a private failing modprobe
-   executable bind too, with an explicit logged refusal.
-5. Hide host `/sys` writable interfaces with recursively read-only mounts.
-   Permit only the recorded delegated cgroup subtree to be writable, with no
-   host-root cgroup administration. Use private procfs for the new PID namespace;
-   mask global `/proc/sys` writes while allowing only private network sysctls
-   required by `waydroid-net.sh`. Never write host pid_max or inotify limits.
-   Preflight must prove the host `/run` control sockets are unreachable and
-   representative original device inode/mode values are unchanged.
-6. Bind fresh work, controller store, controller package assets, and service
-   state into their conventional paths **inside this namespace only**:
-   `/var/lib/waydroid`, `/var/lib/anvildroid-controller`,
-   `/usr/local/lib/anvildroid-controller`, `/run/anvildroid-system`. Also provide
-   a task-specific desktop home/profile and source grant owned by a numeric
-   test UID. Configure a synthetic desktop session on the private DBus. All
-   identity/readback functions must see the same private work and bus.
-7. Start the repository `runtime-system.py` with the original outer namespace
-   token. It should create its own private baseline/session namespaces using
-   production hooks. Before sending Start, verify the actual service cgroup,
-   bus address, package digest and work/device inode identities. Stock code
-   must not see host systemd sockets or host Default work. Reject any escape;
-   do not patch out lifecycle checks or replace production start/stop hooks.
-8. Exercise management claim, RO grant, full stock Start, actual Android
-   raw-data/FUSE/app read and refused write; stock Stop and verify revocation;
-   RW reconfigure/restart and verify guest-to-host bytes; remove/restart and
-   verify absence. Observe configured-vs-mounted status while Running/Frozen.
-   Record Default service marker/session PID/starttime and namespace identity.
-   Stop retry after a deliberately retained helper must keep the lifecycle
-   lock until that fixture helper exits. Release helper and repeat Stop.
-9. Teardown through private DBus, confirm Android STOPPED and service returned
-   to baseline, then stop private service/bus. Confirm delegated scope empty
-   before PID1 exits. Namespace disposal revokes mounts. Remove only the new
-   fixture tree after no holders remain; no host pathname unmounts, recursive
-   chmod, module unloads, host service calls, or personal-runtime operations.
+## Isolation actually implemented
 
-Open implementation question: stock LXC's cgroup setup must be shown to stay
-within the delegated fixture subtree on this distribution. Merely placing its
-parent service in a scope is not proof. The launcher must inspect generated LXC
-configuration and actual init PID cgroup before this can count as a safe real
-Default acceptance run.
+- The unsymlinked fixture root is root-owned 0700; work, controller store,
+  userdata, synthetic desktop home and sharing source are fresh. Personal
+  userdata, configuration, ownership records and live service state are never
+  copied. Images are copied and hashed; packaged runtime payload bytes are
+  checked against the pinned Debian archive before launch.
+- A unique delegated systemd scope bounds memory to 6 GiB, swap to zero, CPU to
+  four cores, and tasks to 2048. A private cgroup namespace exposes only that
+  scope; its processes move into a supervisor leaf before controller delegation.
+  The actual Android init PID/starttime and cgroup are read after every Start.
+  `/supervisor/android/lxc.payload.waydroid` has been observed and accepted by
+  the strict descendant oracle; merely checking the service scope is insufficient.
+- A PID1 supervisor uses private mount, network, PID, IPC and UTS namespaces.
+  All inherited mounts become recursively private and read-only. Private tmpfs
+  mounts cover `/run`, `/dev`, `/tmp`, `/home`, `/var/lib`, `/var/log` and `/root`.
+  Pinned file descriptors restore only the fixture root and delegated cgroup
+  subtree; device/inode equality is checked after each bind.
+- A fresh read-only sysfs belongs to the private network namespace. Its bridge
+  ifindex must match `ip -j link`. A fresh procfs must identify this namespace's
+  PID1. Numeric process files remain writable for normal LSM attach; every
+  nonnumeric global entry receives a separate recursive read-only bind.
+  `self`, `thread-self`, `net -> self/net` and `mounts -> self/mounts` are validated
+  process-local aliases. Protected entries are re-enumerated at preflight and
+  the final LXC pre-start hook. Global kernel controls remain read-only/masked.
+- Writable network settings are limited to the exact private IPv4 forwarding
+  file and private `/proc/sys/net/ipv6/conf` subtree. Stock LXC needs the latter
+  for dynamically created veth interfaces. A real create/write/read/delete
+  veth probe runs before Android. Host all/default/interface `disable_ipv6`
+  values are recorded before and after and must match exactly.
+- Ordinary devices are new inodes, not host device bind mounts. BinderFS and
+  devpts are private new instances. Only copied system/vendor images receive
+  task-owned read-only loops. A scope-root cgroup-device BPF filter permits
+  exact required device identities, those two loops, the fixture Binder nodes,
+  and private devpts. Global loop-control and unrelated block opens must fail.
+  Exact character 1:11 permits **MKNOD only** because actual Android init creates
+  kmsg nodes; all read/write and combined operation bits remain denied. A real
+  private-inode probe proves creation succeeds and RDONLY/WRONLY/RDWR opens fail.
+  No host kernel log device is exposed. Capability bounds drop module loading,
+  raw I/O, host boot and host time changes; a private failing modprobe bind also
+  prevents accidental stock module calls.
+- Stock discovery-name aliases point to the same three private Binder devices.
+  A real installed `probeBinderDriver` call must leave the BinderFS/control/node
+  identities unchanged, preventing stock from stacking another BinderFS mount.
+- Private DBus has no activation directories. The actual packaged service and
+  controller use conventional paths inside the fixture, including
+  `/run/anvildroid/control.sock`. Desktop, bus, SSH, PipeWire and Pulse endpoint
+  environment variables are cleared. Weston uses explicit headless/software
+  arguments and `--no-config`; actual PipeWire/Pulse use minimal explicit Unix
+  socket configurations with no device discovery, session manager or network
+  listeners. Their owner UID and processes remain inside the bounded scope.
+  A synthetic resolver replaces the conventional resolver symlink's private
+  `/run` target; no host resolver socket is restored.
+- The installed stock generators create fresh MAINLINE properties/configuration;
+  explicit fixture software properties select the image's ANGLE/Pastel pair.
+  Original stock lifecycle hooks and actual packaged integration remain in use.
+  A final pre-start audit rejects external includes/hooks/namespaces, escaping
+  cgroup paths and unapproved mount sources/targets after production rewrites.
+
+## Lifecycle and evidence
+
+The normal runner boots without a grant, claims Default through the production
+controller as the actual desktop UID, and requires a complete stock Stop before
+configuring shares. It then exercises RO, RW and removal across full stock
+restarts. Each active grant requires production `mounted` readback, raw-data and
+Android FUSE probes, and the maintained SDK28 Android Activity running under a
+real app UID with granted storage permissions. RW writes must match exact host
+fixture bytes; RO/removal must leave the fixture source unchanged.
+
+A real helper retaining the production session mount namespace is used to
+verify Stop/configuration stay locked until that helper exits, followed by an
+actual retry. The maintained Rust core diagnostic exporter runs as the desktop
+UID while Stopped and Running and checks opt-in logs, mode 0600 and overwrite
+refusal. These are acceptance gates, not claims inferred from root shell probes.
+
+Boot polling has a fixed 180-second deadline and tolerates early attach/mount
+readiness errors only while init PID/starttime, private mount namespace, cgroup
+and stock RUNNING status remain authenticated. Timeout captures bounded actual
+properties, logcat and process state before teardown. Stop exceptions capture
+matching process and service-thread namespace identities without exempting or
+killing unknown holders.
+
+Current recorded result: an uninstrumented real stock Default boot reached
+`sys.boot_completed=1` in about 18 seconds and the production desktop-owner
+claim succeeded. The following stock Stop correctly failed closed because
+persistent service threads named `pool-spawner` and `Thread-3 (servi...)` retained
+the session mount namespace. A subsequent package moved the GLib pool spawner
+to the baseline namespace; an ordinary rerun still found the second holder.
+A separate bounded, read-only GDB diagnostic identified that holder's native
+stack as a libgbinder polling thread. Its backtrace and original file metadata
+are preserved under `native-gbinder-backtrace/`; the diagnostic detached and
+teardown positively confirmed an empty scope and detached task loops. This
+instrumented attempt is diagnostic evidence only. A further ordinary package
+with unreachable Binder-wrapper collection booted in 12 seconds but still hit
+the strict Stop holder deadline. Its post-error snapshot contained only the
+service owner thread, which that guard excludes; the exact holder at the
+deadline is therefore unresolved, and teardown again confirmed an empty scope
+and detached loops. No RO/RW/removal or Default diagnostic gate is
+claimed complete until that production lifecycle issue is resolved and the
+entire normal run passes. Evidence is under the ignored
+`target/feature-verification-20261017/default-shares/` directory.
+
+Earlier failed fixture attempts and bounded syscall traces are retained as
+diagnostic evidence. Tracing proved Android's exact kmsg MKNOD requirement;
+the later traced run advanced into second stage but inherited diagnostic file
+size limits caused SIGXFSZ and cannot establish an acceptance result. Tracing,
+wrappers and those limits have been removed from the maintained normal runner.
+
+Every completed attempt has verified an empty task scope, authenticated detach
+of only its own copied-image loops, unchanged original device metadata and
+unchanged host IPv6 values. Forced namespace disposal is reported as containment
+cleanup; it does not substitute for the successful stock Stop acceptance gate.
+The launcher never stops/restarts the personal Default runtime, writes host
+sysctls, loads/unloads modules, or changes host services. One disposable guest
+slot is used at a time. Real audio, gameplay/performance, user desktop/GPU and
+provider compatibility acceptance remain separate work.

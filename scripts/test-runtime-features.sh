@@ -12,6 +12,8 @@ for suite in compatibility shares runtime-actions; do
 done
 node --test tests/test_*.cjs
 python3 -m unittest discover -s tests -p 'test_runtime_keymap*.py'
+python3 tests/acceptance/test-controls-harness.py
+python3 tests/acceptance/test-default-harness.py
 native_checks=$(mktemp -d /tmp/anvil-feature-native.XXXXXX)
 trap 'rm -rf "$native_checks"' EXIT HUP INT TERM
 for suite in keymap-advanced keymap-storage scrcpy-mapping keymap-overlay keymap-hints boot-canvas; do

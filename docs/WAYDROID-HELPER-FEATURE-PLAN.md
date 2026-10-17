@@ -394,7 +394,7 @@ sockets; software rendering is the tested renderer.
 | ARM and GAPPS | Actual ARM32/ARM64 JNI executes with libndk and Houdini. Invalid archive selection preserves the working configuration; restart works; disable rejects both fresh ARM-only APK installs. A separate GAPPS guest draws the unauthenticated Play Store; GSF ID is null/uninitialized. ARM configuration used production functions under the stopped worker lock, not graphical panel navigation. No online account/Integrity claim. See [ARM/GAPPS acceptance](GAPPS-ARM-ACCEPTANCE.md). |
 | Diagnostic export | Real controller/core exports from managed X11 Starting, Running, Frozen, inactive Error and true Stopped states, plus Wayland Running, verify 0600 desktop-owned files, no overwrite, logs opt-in, current-session selection and invalidation on identity change. Frozen collection leaves the runtime asleep and marks live components unavailable. True Stopped reports collect no previous-session log text. |
 | Shared-folder identity/ACL fixture | Real numeric UIDs 61001/61002 pass owner/grant separation, ancestor access, named ACL, actual RO denial, RW writeback and revoke for managed and Default adapters. This fixture does not boot Android. |
-| Actual Android shared folders | Packaged RO, RW and removal/restart pass through raw data, Android FUSE and an SDK28 app with granted storage permissions. RO writes fail with EROFS; all three RW marker writes reach the chosen host source. Revoked access stays unavailable after restart and the source remains unchanged. All three stops verify Stopped, cleanup complete, quiescence and absent scope. Per-cycle package hashes are retained; all 34 runtime Python modules match the staged package. See [sharing support](SHARED-FOLDERS.md). |
+| Actual managed Android shared folders | Packaged managed RO, RW and removal/restart pass through raw data, Android FUSE and an SDK28 app with granted storage permissions. RO writes fail with EROFS; all three RW marker writes reach the chosen host source. Revoked access stays unavailable after restart and the source remains unchanged. All three stops verify Stopped, cleanup complete, quiescence and absent scope. Per-cycle package hashes are retained; all 34 runtime Python modules match the staged package. See [sharing support](SHARED-FOLDERS.md). |
 | FUSE reconciliation regression | Vold's nonrecursive backend bind hid preboot shares from apps. A bounded per-generation child now clones only verified grants using pinned mount FDs and preserves RO/nosuid/nodev/noexec. Default reuses the same core with authenticated session state and delayed readiness checks. The privileged fixture proves propagation into an already existing slave namespace and refuses a stale generation. Raw-only binds are not reported as mounted. |
 | Headless and Wayland rendering | Canvas reservation is now scoped to desktop runtimes. A separate correction honors strict maximized/fullscreen xdg-shell geometry while retaining Android allocation capacity. Headless boot/clean stop passed on package `aa292460…`; desktop Wayland passed on final `5416f46d…`, including app install/launch, mapped content/CSD, diagnostic export and clean stop without geometry protocol errors. Private Weston exposes no seat/input-injection protocol, so actual Wayland input remains untested. |
 | Shutdown harness | Early inactive Error results came from the disposable PID1 holder failing to reap adopted Android zombies. The harness now reaps them; no production shutdown workaround was added. Later X11, sharing, GAPPS, headless and Wayland runs reach true Stopped with verified cleanup. Early Error exits remain recorded as failures. |
@@ -583,11 +583,24 @@ assertions still require zero touches during held-key suppression and exactly
 two fresh finger gestures. Earlier failing runs and protocol traces are retained
 under `target/feature-verification-20261017/live-controls-wayland-*`.
 
+Native X11 was repeated on the same final `29700b0b…` package and also passes
+all ten scenarios. The final summaries are `live-controls-wayland-verified` and
+`live-controls-x11-focus-verified` in that verification directory. Both fixtures
+reached authenticated Stopped, complete cleanup and quiescence, empty scopes,
+and no remaining owned worker/display processes or host mounts before their
+disposable roots were removed. Live editor, resize/app replacement, representative
+gameplay, GNOME/KDE and physical-input acceptance remain separate gates.
+
 The maintained feature runner passes **169 Python tests**, all 19 frontend
 files, dedicated frontend cases, **seven native suites** and staged-module
 imports. It now retains the hints and focus-transition regressions. The full
 local native suite and focused ASan/UBSan focus tests also pass. Independent
 review checked same-owner transitions, actual blur and queue/mutex ordering.
+Sixteen inert acceptance-harness checks also pass and are now included in the
+maintained runner. The real core diagnostic exporter is retained as the
+`acceptance-diagnostics` Cargo example; its build, formatting and Clippy checks
+pass. This replaces a dated, generated exporter prerequisite in the Default
+harness.
 
 Current development artifacts (AppImage remains deferred):
 
