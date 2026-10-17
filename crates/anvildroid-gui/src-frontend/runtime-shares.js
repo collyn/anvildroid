@@ -1,12 +1,11 @@
 /* Explicit runtime directory grants; original MIT implementation. */
 (function(root) {
   function create({request, document, toast = () => {}, chooseDirectory}) {
-    const dialog = document.createElement('dialog');
-    dialog.id = 'runtime-shares-dialog';
-    const title = document.createElement('h2'); title.textContent = 'Shared folders';
-    title.id = 'runtime-shares-title'; title.tabIndex = -1;
-    dialog.setAttribute('aria-labelledby', title.id);
+    const panel = document.createElement('section');
+    panel.className = 'runtime-inline-feature runtime-shares';
+    const title = document.createElement('h4'); title.textContent = 'Shared folders';
     const note = document.createElement('p');
+    note.className = 'hint';
     note.textContent = 'Stop this runtime before changing shares. Choose a non-sensitive folder inside your home. Android receives access to everything in that folder. Shares appear under /sdcard/AnvilDroid after the next start.';
     const list = document.createElement('div');
     const form = document.createElement('form');
@@ -18,12 +17,11 @@
     label.append(ro, document.createTextNode(' Read only'));
     const save = document.createElement('button'); save.type = 'submit'; save.textContent = 'Save share';
     const notice = document.createElement('p'); notice.setAttribute('role', 'status'); notice.setAttribute('aria-live', 'polite');
-    const close = document.createElement('button'); close.type = 'button'; close.textContent = 'Close';
     const refresh = document.createElement('button'); refresh.type = 'button'; refresh.textContent = 'Refresh';
-    form.append(name, source, pick, label, save); dialog.append(title, note, list, form, notice, refresh, close); document.body.append(dialog);
+    form.append(name, source, pick, label, save); panel.append(title, note, list, form, notice, refresh);
     let identity = null, epoch = 0, view = 0, busy = false, editable = false, removeButtons = [];
     const validName = /^[A-Za-z0-9][A-Za-z0-9_-]{0,47}$/;
-    for (const button of [pick,save,close,refresh]) button.className = 'btn';
+    for (const button of [pick,save,refresh]) button.className = 'btn';
     function lock(value) {
       busy = value; refresh.disabled = value;
       for (const item of [save,pick,name,source,ro,...removeButtons]) item.disabled = value || !editable;
@@ -49,7 +47,7 @@
       return value;
     }
     function render(value) {
-      invalidate(); editable = value.editable;
+      invalidate(); editable = value.editable && ['Prepared','Stopped'].includes(identity.state);
       const rendered = view, current = epoch, runtimeId = identity.id;
       for (const share of value.shares) {
         const row = document.createElement('p');
@@ -69,13 +67,13 @@
         'Changes are unavailable. Stop the runtime completely, then refresh.');
     }
     async function load(operation = 'shares_get', payload = {}) {
-      if (!identity || busy || (operation !== 'shares_get' && !editable)) return;
+      if (!identity || identity.id === 'default' || busy || (operation !== 'shares_get' && !editable)) return;
       const runtime = identity, current = epoch;
       // A prior snapshot cannot authorize more mutations during or after failure.
       lock(true); invalidate(); notice.textContent = operation === 'shares_get' ? 'Loading shared folders…' : 'Saving shared folders…';
       try {
         const response = validate(await request({op:operation, ...payload, id:runtime.id}), runtime);
-        if (current === epoch) { render(response); dialog.scrollTop = 0; }
+        if (current === epoch) render(response);
       } catch (error) {
         if (current === epoch) { invalidate(); notice.textContent = `${String(error.message || error)} Refresh before retrying.`; }
       } finally { if (current === epoch) lock(false); }
@@ -102,18 +100,30 @@
       if (!validName.test(name.value)) { notice.textContent = 'Use a short alphanumeric share name.'; return; }
       return mutate('shares_set', {name:name.value,source:source.value,read_only:ro.checked});
     });
-    function closed() { epoch++; identity = null; invalidate(); lock(false); }
-    close.addEventListener('click', () => { closed(); dialog.close(); });
     refresh.addEventListener('click', () => load());
-    dialog.addEventListener('close', () => { if (!dialog.open) closed(); });
     lock(false);
-    return {open(runtime) {
-      epoch++; identity = {id:runtime.id}; source.value = ''; name.value = ''; ro.checked = true;
-      busy = false; invalidate(); lock(false);
-      if (!dialog.open) dialog.showModal();
-      title.focus();
-      return load();
-    }};
+    return {
+      mount(host, runtime) {
+        if (panel.parentNode !== host) host.append(panel);
+        if (identity?.id === runtime.id && identity.state === runtime.state) return;
+        const changed = identity?.id !== runtime.id;
+        epoch++; identity = {id:runtime.id, state:runtime.state};
+        panel.dataset.runtimeId = runtime.id; panel.dataset.runtimeState = runtime.state;
+        if (changed) { source.value = ''; name.value = ''; ro.checked = true; }
+        busy = false; invalidate(); lock(false);
+        if (runtime.id === 'default') {
+          refresh.disabled = true;
+          notice.textContent = 'Shared folders require a managed runtime with isolated storage.';
+          return;
+        }
+        return load();
+      },
+      deactivate() {
+        if (identity) epoch++;
+        identity = null; invalidate(); lock(false); panel.remove();
+      },
+      refresh:() => load(),
+    };
   }
   root.AnvilRuntimeShares = {create};
   if (typeof module !== 'undefined') module.exports = {create};

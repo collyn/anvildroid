@@ -104,16 +104,16 @@ packaging and CI; the controls agent verified the native build and profile UI.
 
 1. App context-menu Compatibility dialog, exact package checks, Fake Wi-Fi and
    mouse-as-touch property transactions with readback, revision and rollback.
-2. Runtime Settings Shared folders dialog, explicit per-runtime grants, enforced
+2. Shared folders embedded in Runtime Settings → Storage, explicit per-runtime grants, enforced
    RO/RW mounts before boot in the worker namespace, status and stopped removal.
    Only managed runtimes own the required mount lifecycle.
 3. V2 native profiles/editor with V1 reads, WASD, swipe, repeat, skill, finite
    two-point macros and bounded absolute aim/fire. Relative unlimited FPS mouse
    capture and an arbitrary macro scripting language are outside this delivery.
-4. Components dialog over verified ARM and GAPPS workflows, versions/requirements/
-   conflicts/digests and separate cache/configuration/readback states. MicroG,
-   SmartDock and Magisk remain explicitly unavailable without verified installers.
-5. Explicit private JSON export, partial diagnostic sections, optional bounded
+4. Existing ARM translation settings enriched with versions/requirements/
+   conflicts/digests and separate cache/configuration states. Existing Google Play
+   retains the GAPPS workflow; diagnostic catalogs keep unavailable extensions truthful.
+5. Export report embedded in Diagnostics, partial diagnostic sections, optional bounded
    controller logs, best-effort redaction and desktop-user file creation.
 
 Owner authorization precedes paths, requests have exact typed fields, and managed
@@ -122,7 +122,7 @@ legacy GUI operation guard. All five service modules are in installed packages
 and portable/AppImage staging; release preparation runs the focused feature suite
 and an isolated privileged share mount check.
 
-### Automated verification (2026-10-17)
+### Initial implementation verification (2026-10-17)
 
 | Command/check | Result |
 | --- | --- |
@@ -148,6 +148,35 @@ were rerun outside the sandbox. No source changes were made to hide those failur
 Local detailed logs/screenshots are in `target/feature-verification-20261017/`
 (ignored). The focused suite and its required tests are committed for CI;
 historical ignored experiments are not imported wholesale.
+
+### Settings consolidation follow-up (2026-10-17)
+
+User feedback: extend existing settings instead of adding duplicate tools.
+The Components toolbar/dialog was removed. ARM package details now extend the
+existing ARM translation section and installer; Google Play keeps its existing
+flow. Shared folders is inline in Storage and Export report is inline in
+Diagnostics. Default's ARM section only toggles/restores installed libraries;
+its report now explicitly indicates whether saved restore properties exist.
+
+The primary agent handled modules, integration, metadata, documentation and real
+WebKit checks. The compatibility agent adapted sharing tests, the controls agent
+adapted diagnostic/ARM/integration tests, and the sharing agent independently
+reviewed lifecycle behavior. Panels retain stable DOM nodes and pending actions
+on same-runtime rerenders, load only while their section is visible, and
+invalidate late replies on target/state changes, collapse or navigation.
+
+| Follow-up check | Result |
+| --- | --- |
+| `sh scripts/test-runtime-features.sh` | 88 Python tests, 70 frontend tests and four native suites pass; complete module staging/import passes |
+| Existing `tests/test_runtime_settings.cjs` | Pass; retained stop/apply/restart and failure handling |
+| Real WebKitGTK, actual index/main with inert IPC | Seven scenarios pass at 900×700 and 640×700: collapsed/inert groups, inline Storage, drafts/focus/reparent, running-state lock, diagnostic picker/save, navigation cancellation, and Default restore/export; screenshots inspected |
+| `cargo test --workspace --locked` outside sandbox | One unrelated shortcut monitor test fails because host inotify quota is exhausted (`No space left on device`); no source changes to bypass it |
+| Remaining Rust workspace tests, with that exact test filtered | 79 pass, one existing live native-panel test ignored, one filtered |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | Pass |
+| Independent lifecycle review and `git diff --check` | Pass |
+
+Detailed follow-up logs and screenshots use the `settings-*` prefix in the local
+ignored verification directory. No installed runtime or controller was modified.
 
 ### Remaining live acceptance gates
 

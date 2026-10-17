@@ -41,6 +41,7 @@ function navigatePage(target, refresh = true) {
   });
   pages.forEach(p => p.classList.remove('active'));
   document.getElementById(`page-${target}`).classList.add('active');
+  syncRuntimeSettingsFeatures();
   if (refresh) pageLoads.schedule(target, () => currentPage === target, async () => {
     if (target === 'apps') {
       if (!appLibraryStarted) await initializeAppLibrary();
@@ -1599,6 +1600,7 @@ document.addEventListener('toggle', event => {
   const key = event.target.dataset?.settingsKey;
   if (!key || !event.target.isConnected) return;
   event.target.open ? runtimeSettingsOpen.add(key) : runtimeSettingsOpen.delete(key);
+  syncRuntimeSettingsFeatures();
 }, true);
 const runtimeArmDraft = new Map();
 const runtimeGpuDraft = new Map();
@@ -1690,28 +1692,23 @@ function featureTools() {
       compatibility: AnvilAppCompatibility.create({request:controllerRequest, document, toast:showAppToast}),
       shares: AnvilRuntimeShares.create({request:controllerRequest, document, toast:showAppToast,
         chooseDirectory:() => window.__TAURI__.dialog.open({directory:true, multiple:false, title:'Choose a folder to share with Android'})}),
-      tools: AnvilRuntimeTools.create({request:controllerRequest, invoke:tauriInvoke, document, toast:showAppToast,
-        chooseReport:defaultPath => window.__TAURI__.dialog.save({defaultPath, title:'Save diagnostic report', filters:[{name:'Diagnostic JSON report', extensions:['json']}]}),
-        confirm:(message, options) => AppDialog.confirm(message, options),
-        openImages:kind => {
-          if (kind === 'arm') {
-            navigatePage('settings', false);
-            refreshArmSources().then(() => document.getElementById('arm-source-panel')?.scrollIntoView({block:'center'}))
-              .catch(error => showAppToast(String(error.message || error), 'error'));
-          } else navigatePage('images', false);
-        }, refreshRuntime:() => refreshController()})
+      tools: AnvilRuntimeTools.create({invoke:tauriInvoke, document, toast:showAppToast,
+        chooseReport:defaultPath => window.__TAURI__.dialog.save({defaultPath, title:'Save diagnostic report', filters:[{name:'Diagnostic JSON report', extensions:['json']}]})})
     };
   }
   return runtimeFeatureTools;
 }
-for (const [id, kind] of [['runtime-components-open','components'], ['runtime-shares-open','shares'], ['runtime-diagnostics-open','diagnostics']]) {
-  document.getElementById(id).addEventListener('click', () => {
-    const record = runtimeRecord(runtimeSettingsId);
-    if (!record) { showAppToast('Refresh this runtime before opening its tools.', 'info'); return; }
-    if (kind === 'shares') featureTools().shares.open(record);
-    else featureTools().tools[kind](record);
-  });
+function syncRuntimeSettingsFeatures() {
+  const record = currentPage === 'runtime-settings' ? runtimeRecord(runtimeSettingsId) : null;
+  const available = record && !record.unavailable && !record.refreshError && !record.detailsLoading && !record.deletion_pending;
+  const page = document.getElementById('page-runtime-settings');
+  for (const [kind, attribute] of [['shares','runtime-shares'], ['tools','runtime-diagnostics']]) {
+    const host = available ? page.querySelector(`[data-${attribute}="${record.id}"]`) : null;
+    if (host?.closest('details[data-settings-key]')?.open) featureTools()[kind].mount(host, record);
+    else runtimeFeatureTools?.[kind].deactivate();
+  }
 }
+
 let existingRuntime = null, existingRuntimeError = '', existingRuntimeLoading = false;
 function runtimeRecord(id) {
   return id === 'default' ? existingRuntime : controllerRecords.find(record => record.id === id);
@@ -1771,12 +1768,12 @@ function renderExistingRuntime() {
   const markup = `${existingRuntimeError ? `<p class="runtime-blocked">${escapeHtml(existingRuntimeError)}</p>` : ''}<div class="runtime-actions runtime-settings-actions">${!record.managed ? `<p class="hint">Start Default runtime, then enable management once to keep its settings available after stopping. App data stays in place.</p>${button('existing_claim','Enable management',controllerMutation || record.unavailable || record.state !== 'Running')}` : `${button('rename','Rename…',controllerMutation || record.unavailable)}${button('reinstall','Reinstall runtime…',busy || !['Stopped','Running','Frozen'].includes(record.state))}`}</div>
     <details class="runtime-settings-group" data-settings-key="${escapeHtml(record.id)}:gpu" ${runtimeSettingsOpen.has(record.id + ':gpu') ? 'open' : ''}><summary>Graphics</summary><div class="runtime-gpu-panel runtime-primary-setting" id="runtime-gpu-default">${renderGpuControls(record,busy)}<div class="runtime-actions">${button('gpu_check','Check GPU',controllerMutation)}</div>${renderRuntimeGraphics('default')}</div></details>
     <div class="runtime-config-grid">
-      <details class="runtime-settings-group" data-settings-key="${escapeHtml(record.id)}:storage" ${runtimeSettingsOpen.has(record.id + ':storage') ? 'open' : ''}><summary>Storage</summary><div class="runtime-storage-panel"><p class="runtime-storage-path">${escapeHtml(record.storage?.path || record.storageError || 'Unavailable')}</p>${record.storage ? `<p>Disk free: ${(record.storage.free_bytes / 1024**3).toFixed(2)} / ${(record.storage.total_bytes / 1024**3).toFixed(2)} GiB</p>` : ''}<p class="hint">Shared filesystem; no disk quota.</p></div></details>
+      <details class="runtime-settings-group" data-settings-key="${escapeHtml(record.id)}:storage" ${runtimeSettingsOpen.has(record.id + ':storage') ? 'open' : ''}><summary>Storage</summary><div class="runtime-storage-panel"><p class="runtime-storage-path">${escapeHtml(record.storage?.path || record.storageError || 'Unavailable')}</p>${record.storage ? `<p>Disk free: ${(record.storage.free_bytes / 1024**3).toFixed(2)} / ${(record.storage.total_bytes / 1024**3).toFixed(2)} GiB</p>` : ''}<p class="hint">Shared filesystem; no disk quota.</p><p class="hint">Shared folders require a managed runtime with isolated storage.</p></div></details>
       <details class="runtime-settings-group" data-settings-key="${escapeHtml(record.id)}:arm" ${runtimeSettingsOpen.has(record.id + ':arm') ? 'open' : ''}><summary>ARM translation</summary><div class="runtime-arm-panel">${renderRuntimeArm(record,busy)}</div></details>
       <div class="runtime-settings-list runtime-settings-visible">
         <details class="runtime-setting-row" data-settings-key="${escapeHtml(record.id)}:resources" ${runtimeSettingsOpen.has(record.id + ':resources') ? 'open' : ''}><summary><span><strong>Performance</strong><small>RAM and CPU limits</small></span></summary><div class="runtime-setting-body"><div class="runtime-resources-panel">${renderResourceControls(record,busy)}</div></div></details>
         <details class="runtime-setting-row" data-settings-key="${escapeHtml(record.id)}:google" ${runtimeSettingsOpen.has(record.id + ':google') ? 'open' : ''}><summary><span><strong>Google Play</strong></span></summary><div class="runtime-setting-body"><div class="runtime-google-panel">${renderRuntimeGoogle(record)}</div></div></details>
-        <details class="runtime-setting-row" data-settings-key="${escapeHtml(record.id)}:health" ${runtimeSettingsOpen.has(record.id + ':health') ? 'open' : ''}><summary><span><strong>Diagnostics</strong></span></summary><div class="runtime-setting-body"><div class="runtime-health-panel">${button('health','Check health',controllerMutation)}${renderRuntimeHealth('default')}</div></div></details>
+        <details class="runtime-setting-row" data-settings-key="${escapeHtml(record.id)}:health" ${runtimeSettingsOpen.has(record.id + ':health') ? 'open' : ''}><summary><span><strong>Diagnostics</strong></span></summary><div class="runtime-setting-body"><div class="runtime-health-panel">${button('health','Check health',controllerMutation)}${renderRuntimeHealth('default')}</div><div data-runtime-diagnostics="default"></div></div></details>
         <details class="runtime-setting-row" data-settings-key="${escapeHtml(record.id)}:import" ${runtimeSettingsOpen.has(record.id + ':import') ? 'open' : ''}><summary><span><strong>Managed copy</strong><small>Import existing Android data</small></span></summary><div class="runtime-setting-body"><div class="runtime-import-panel"><h4>Full isolated management</h4><p class="hint">Copy images, apps and data to a separate runtime. Stop this runtime first; the original is kept.</p>${button('existing_import','Import managed copy…',busy || record.state !== 'Stopped')}</div></div></details>
       </div>
     </div>`;
@@ -2461,6 +2458,11 @@ function renderController() {
   // while focused (including keyboard selection and an in-flight poll reply).
   // Data still refreshes; the next render after focus leaves catches up.
   if (document.activeElement?.dataset?.gpuSelect || document.activeElement?.dataset?.resourceField || document.activeElement?.dataset?.armSelect || document.activeElement?.dataset?.armEngine) return;
+  const inline = document.activeElement?.closest?.('.runtime-inline-feature');
+  const focusedRecord = runtimeRecord(runtimeSettingsId);
+  if (inline && currentPage === 'runtime-settings' && inline.dataset.runtimeId === focusedRecord?.id &&
+      inline.dataset.runtimeState === focusedRecord.state && !focusedRecord.unavailable && !focusedRecord.refreshError &&
+      !focusedRecord.detailsLoading && !focusedRecord.deletion_pending) return;
   renderExistingRuntime();
   renderRuntimeBatchSelection();
   const focusedRuntime = document.activeElement?.dataset?.runtimeSelect;
@@ -2580,6 +2582,7 @@ function renderController() {
         ${needsImages && canMoveState ? '<p class="hint">Choose a storage location before Prepare.</p>' : ''}
         ${record.storage?.previous_path ? `<p class="hint">Retained copy: ${escapeHtml(record.storage.previous_path)}. Verify the runtime at its new location before removing this copy to reclaim space. Moving alone does not free space on the original disk.</p>` : ''}
         ${record.storage?.job?.error || record.storage?.error ? `<p class="runtime-feedback error" role="alert">${escapeHtml(record.storage.error || record.storage.job.error)}</p>` : ''}
+        <div data-runtime-shares="${escapeHtml(record.id)}"></div>
       </div></details>
       <details class="runtime-settings-group" data-settings-key="${escapeHtml(record.id)}:arm" ${runtimeSettingsOpen.has(record.id + ':arm') ? 'open' : ''}><summary>ARM translation</summary><div class="runtime-arm-panel">${renderRuntimeArm(record, busy)}</div></details>
       <div class="runtime-settings-list runtime-settings-visible">
@@ -2595,7 +2598,7 @@ function renderController() {
       ${record.state === 'Running' ? '<p class="hint">Changing mode restarts Android.</p>' : ''}${record.displayError ? `<p class="runtime-feedback error">${escapeHtml(record.displayError)}</p>` : ''}</div></div></details>
 
       <details class="runtime-setting-row" data-settings-key="${escapeHtml(record.id)}:resources" ${runtimeSettingsOpen.has(record.id + ':resources') ? 'open' : ''}><summary><span><strong>Performance</strong><small>RAM and CPU limits</small></span></summary><div class="runtime-setting-body"><div class="runtime-resources-panel">${renderResourceControls(record, busy)}</div></div></details>
-      <details class="runtime-setting-row" data-settings-key="${escapeHtml(record.id)}:health" ${runtimeSettingsOpen.has(record.id + ':health') ? 'open' : ''}><summary><span><strong>Diagnostics</strong></span></summary><div class="runtime-setting-body"><div class="runtime-health-panel"><div class="runtime-actions">${button('health', runtimeHealth.get(record.id)?.loading ? 'Checking health…' : 'Check health', !runtimeHealth.get(record.id)?.loading, 'btn-quiet')}</div>${renderRuntimeHealth(record.id)}</div></div></details>
+      <details class="runtime-setting-row" data-settings-key="${escapeHtml(record.id)}:health" ${runtimeSettingsOpen.has(record.id + ':health') ? 'open' : ''}><summary><span><strong>Diagnostics</strong></span></summary><div class="runtime-setting-body"><div class="runtime-health-panel"><div class="runtime-actions">${button('health', runtimeHealth.get(record.id)?.loading ? 'Checking health…' : 'Check health', !runtimeHealth.get(record.id)?.loading, 'btn-quiet')}</div>${renderRuntimeHealth(record.id)}</div><div data-runtime-diagnostics="${escapeHtml(record.id)}"></div></div></details>
       </div></div>${record.compatibility?.status === 'experimental' ? `<p class="runtime-feedback warning">Android SDK ${escapeHtml(String(record.compatibility.sdk))} · Experimental compatibility. Verify boot, app controls and desktop behavior with this image.</p>` : ''}<details class="runtime-details"><summary>Runtime details</summary><p>ID: ${escapeHtml(record.id)}</p>${record.compatibility?.caption_detail ? `<p>${escapeHtml(record.compatibility.caption_detail)}</p>` : ''}${record.job ? `<p>Last operation: ${escapeHtml(record.job.operation)} · ${escapeHtml(record.job.status)}</p><p>Job: ${escapeHtml(record.job.id || '')}</p>` : ''}</details>
       </article>`;
     if (runtimeSettingsId === record.id) settingsMarkup = detail;
@@ -2615,6 +2618,7 @@ function renderController() {
   if (focusedRuntime) document.querySelectorAll('button.runtime-select').forEach(button => {
     if (button.dataset.runtimeSelect === focusedRuntime) button.focus({preventScroll:true});
   });
+  syncRuntimeSettingsFeatures();
 }
 function beginReinstall(id) {
   const record = id === 'default' ? existingRuntime : controllerRecords.find(item => item.id === id);
@@ -2945,9 +2949,6 @@ function openRuntimeSettings(id) {
   for (const key of ['gpu', 'resources', 'arm', 'display']) runtimeSettingsOpen.add(id + ':' + key);
   runtimeSettingsId = id;
   selectedRuntimeId = id;
-  const shareButton = document.getElementById('runtime-shares-open');
-  shareButton.disabled = id === 'default';
-  shareButton.title = id === 'default' ? 'Shared folders use the isolated mount lifecycle of managed runtimes.' : '';
   renderController();
   navigatePage('runtime-settings', false);
   controllerRefreshDone.then(() => {
@@ -3540,12 +3541,20 @@ async function toggleManagedFavorite(pkg, runtimeId) {
 const ARM_BUILTIN_SHA = 'a142d1586c9eafb5edf62277110f2128bc03066179a6783bcaa33ee322e1cbd0';
 function runtimeArmSources(arm) {
   const sources = [...(arm.sources || [])];
-  if (!sources.some(source => source.sha256 === ARM_BUILTIN_SHA)) sources.unshift({engine:'libndk', version:'0.2.3', sha256:ARM_BUILTIN_SHA, installed:Boolean(arm.available), label:'libndk_translation 0.2.3'});
+  if (!sources.some(source => source.sha256 === ARM_BUILTIN_SHA)) sources.unshift({engine:'libndk', version:'0.2.3', android:'Android 13', sha256:ARM_BUILTIN_SHA, installed:Boolean(arm.available), label:'libndk_translation 0.2.3'});
   return sources;
 }
 function renderRuntimeArm(record, busy) {
   const arm = record.arm;
   if (!arm) return `<p class="hint">${escapeHtml(record.armError || 'Loading ARM configuration…')}</p>`;
+  if (record.id === 'default') {
+    const canConfigure = ['Stopped','Running','Frozen'].includes(record.state);
+    const disabled = busy || !canConfigure || !arm.supported || (!arm.enabled && !arm.restore_available);
+    return `<p class="arm-provider-status">Saved configuration: <strong>${escapeHtml(arm.enabled ? arm.provider : 'Disabled')}</strong></p>
+      <p class="hint">Uses existing system libraries. Version and archive checksum are unknown; saved configuration does not verify ARM app compatibility.</p>
+      <div class="runtime-actions"><button class="btn btn-primary" data-controller-op="arm_set" data-controller-id="default" ${disabled ? 'disabled' : ''}>${arm.enabled ? 'Disable translation' : 'Restore translation'}${['Running','Frozen'].includes(record.state) ? ' & restart' : ''}</button></div>
+      <p class="hint">${!arm.supported ? escapeHtml(arm.detail || 'This provider cannot be changed here.') : !arm.enabled && !arm.restore_available ? 'No saved ARM configuration to restore. Import a managed copy for verified package installation.' : ['Running','Frozen'].includes(record.state) ? 'Applying restarts Android; apps will close.' : 'Applies on next start.'}</p>`;
+  }
   if (arm.inherited && !arm.supported) return '<p class="hint">ARM translation is provided by this image. Imported system copies retain their installed bridge.</p>';
   if (arm.default_enabled && !arm.supported && ['Allocated', 'Provisioning', 'Error'].includes(record.state)) return '<p class="hint">ARM32 / ARM64 translation will be enabled automatically during Prepare. Choose another engine or version after preparation.</p>';
   const sources = runtimeArmSources(arm);
@@ -3557,17 +3566,19 @@ function renderRuntimeArm(record, busy) {
   const canConfigure = stopped || ['Running', 'Frozen'].includes(record.state);
   const disabled = busy || !canConfigure || !arm.supported || armInstallBusy;
   const needsDownload = selected && selected.installed === false;
-  return `<p class="arm-provider-status">Current: <strong>${escapeHtml(arm.enabled ? arm.provider : 'Disabled')}</strong></p>
+  return `<p class="arm-provider-status">Saved configuration: <strong>${escapeHtml(arm.enabled ? arm.provider : 'Disabled')}</strong>${arm.enabled ? ` · Version: ${escapeHtml(current?.version || 'unknown')}` : ''}</p>
     <div class="arm-provider-fields"><label>Engine<select data-arm-engine="${escapeHtml(record.id)}" ${disabled ? 'disabled' : ''}>
       ${[['none','None'],['libndk','libndk_translation'],['libhoudini','libhoudini']].map(([value,label]) => `<option value="${value}" ${draft.engine === value ? 'selected' : ''}>${label}</option>`).join('')}
     </select></label><label>Version<select data-arm-select="${escapeHtml(record.id)}" ${disabled || draft.engine === 'none' || !versions.length ? 'disabled' : ''}>
       ${draft.engine === 'none' ? '<option value="none">No translation</option>' : versions.map(source => `<option value="${escapeHtml(source.sha256)}" ${source === selected ? 'selected' : ''}>${escapeHtml(source.version || source.label)}</option>`).join('')}
     </select></label></div>
+    ${draft.engine !== 'none' && selected ? `<p class="hint arm-package-details">Selected version: ${escapeHtml(selected.version || selected.label || 'unknown')} · x86_64 host${selected.android ? ` · ${escapeHtml(selected.android)}` : ''}<br>SHA-256: <code>${escapeHtml(selected.sha256)}</code><br>${needsDownload ? 'Download required' : 'Cached archive'}; checksum verified on installation. Enabling this provider replaces the other ARM provider.</p>` : ''}
     <div class="runtime-actions"><button class="btn btn-primary" data-controller-op="arm_set" data-controller-id="${escapeHtml(record.id)}" ${disabled || (draft.engine !== 'none' && !selected) ? 'disabled' : ''}>${armInstallBusy === record.id ? 'Installing…' : draft.engine === 'none' ? 'Disable translation' : needsDownload ? 'Download & install' : 'Install selected version'}${['Running', 'Frozen'].includes(record.state) ? ' & restart' : ''}</button>
     <button class="btn btn-quiet" data-controller-op="arm_sources" data-controller-id="${escapeHtml(record.id)}">Import another version…</button></div>
     <p class="hint">${!arm.supported ? escapeHtml(arm.detail || 'Prepare an x86_64 Android image first.') : ['Running', 'Frozen'].includes(record.state) ? 'Applying restarts Android; apps will close.' : !stopped ? 'Stop this runtime before changing ARM support.' : 'Applies on next start.'}</p>
+    <p class="hint">Cached archives are separate from saved runtime configuration. Verify ARM app compatibility after starting Android.</p>
     ${selected?.android ? `<details class="arm-compatibility"><summary>Compatibility notes</summary><p class="hint">${escapeHtml(selected.android)}. Compatibility with other Android versions and individual apps is unverified.</p></details>` : ''}
-    ${!arm.available && !(arm.sources || []).some(source => source.installed) ? '<p class="hint">ARM translation package is not installed. Download a version to continue.</p>' : ''}
+    ${!arm.available && !(arm.sources || []).some(source => source.installed) ? '<p class="hint">No ARM archive is cached. Download a version to continue.</p>' : ''}
     `;
 }
 let armInstallBusy = null;
@@ -3575,6 +3586,11 @@ async function installRuntimeArm(id) {
   if (armInstallBusy || controllerMutation) return;
   const record = runtimeRecord(id);
   if (!record?.arm) return;
+  if (id === 'default') {
+    if (!record.arm.supported || (!record.arm.enabled && !record.arm.restore_available)) return;
+    await mutateController({op:'arm_set',id,enabled:!record.arm.enabled});
+    return;
+  }
   const engine = document.querySelector(`[data-arm-engine="${id}"]`)?.value;
   const digest = document.querySelector(`[data-arm-select="${id}"]`)?.value;
   if (!engine || !digest) return;

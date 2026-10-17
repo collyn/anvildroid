@@ -36,13 +36,6 @@ body dialog input, body dialog select {
   border: 1px solid var(--dialog-border); border-radius: 8px; font: inherit;
 }
 body dialog input[type="checkbox"] { width: auto; padding: 0; margin-right: 8px; accent-color: var(--accent); }
-#runtime-components-dialog, #runtime-shares-dialog { --dialog-width: 720px; }
-#runtime-components-dialog .runtime-card { display: block; margin: 16px 0; padding: 16px; }
-#runtime-components-dialog .runtime-card button { margin: 10px 8px 0 0; }
-#runtime-components-dialog > button, #runtime-diagnostics-dialog > button { margin: 8px 8px 0 0; }
-#runtime-shares-dialog form { display: grid; gap: 12px; margin: 20px 0; }
-#runtime-shares-dialog button { margin: 6px 8px 6px 0; }
-.runtime-feature-actions { margin-bottom: 18px; }
 body dialog :is(input, select, button):focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 body dialog :is(.runtime-actions, .detail-actions, .dialog-actions) {
   display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 10px;

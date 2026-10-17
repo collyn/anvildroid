@@ -55,9 +55,9 @@ compatibility across custom images, desktops and games is still being developed.
 - Advanced native game controls: WASD joystick, swipe, repeated clicks, pointer
   skill casting, finite two-point macros and bounded absolute aim/fire. The
   editor preserves V1 profiles; see [controls and limits](docs/GAME-CONTROLS.md).
-- Runtime Components view separates cached ARM downloads from saved installation
-  state and links GAPPS to image creation. MicroG, SmartDock and Magisk remain
-  unavailable. See [components](docs/RUNTIME-TOOLS.md).
+- Runtime ARM translation settings show version, checksum, requirements and cache
+  status alongside the existing installer. Google Play keeps its image-creation
+  workflow. See [runtime settings](docs/RUNTIME-TOOLS.md).
 - Local JSON diagnostic export with optional bounded logs and best-effort
   redaction. Reports are saved privately and never uploaded automatically.
 - GPU diagnostics and per-runtime RAM/CPU/GPU settings.
@@ -189,8 +189,8 @@ Apps page while the selected runtime is running.
 Use **Images** to download/import images, the runtime Settings button to adjust
 its configuration, and **Settings** for GUI preferences, runtime start on boot
 and ARM packages. **Open Waydroid** opens the selected runtime's full Android UI.
-Runtime Settings also contains **Components**, **Shared folders** and
-**Export diagnostics**. In the app context menu, **Compatibility** opens the
+Runtime Settings includes **Shared folders** inside **Storage** and
+**Export report** inside **Diagnostics**. In the app context menu, **Compatibility** opens the
 per-app settings; see [app compatibility](docs/APP-COMPATIBILITY.md).
 
 For CLI commands and their supported runtime scope, run `anvildroid --help`.

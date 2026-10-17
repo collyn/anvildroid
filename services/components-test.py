@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 import importlib.util
+import json
 from pathlib import Path
+import tempfile
 import unittest
 
 spec=importlib.util.spec_from_file_location('components',Path(__file__).with_name('runtime-components.py'))
@@ -75,4 +77,30 @@ class ComponentsTests(unittest.TestCase):
                 self.assertEqual(components.arm_action(report,'libndk',True),{'op':'arm_set','id':'default','enabled':True})
             else:
                 with self.assertRaises(ValueError):components.arm_action(report,'libndk',True)
+    def test_default_arm_info_reports_real_saved_restore_configuration(self):
+        spec = importlib.util.spec_from_file_location('default_arm_fixture', Path(__file__).with_name('runtime-existing.py'))
+        existing = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(existing)
+        with tempfile.TemporaryDirectory(prefix='anvil-default-arm-') as folder:
+            root = Path(folder)
+            work = root / 'work'
+            work.mkdir()
+            for library in ('lib', 'lib64'):
+                directory = work / 'overlay/system' / library
+                directory.mkdir(parents=True)
+                (directory / 'libndk_translation.so').touch()
+            runtime = existing.ExistingRuntime(root, work)
+            # This fixture tests reporting, independently of the host ancestor
+            # ownership policy enforced by the adapter's read boundary.
+            runtime.read = lambda path: path.read_text()
+            for provider in ('libndk_translation.so', '0', 'unknown.so'):
+                (work / 'waydroid.prop').write_text('ro.dalvik.vm.native.bridge=' + provider + '\n')
+                runtime.metadata.unlink(missing_ok=True)
+                report = runtime.arm_info()
+                self.assertFalse(report['restore_available'])
+                self.assertEqual(report['enabled'], provider != '0')
+                self.assertEqual(report['supported'], provider != 'unknown.so')
+                for saved in ({}, {'ro.dalvik.vm.native.bridge':'libndk_translation.so'}):
+                    runtime.metadata.write_text(json.dumps({'owner_uid':1000, 'arm_properties':saved}))
+                    self.assertEqual(runtime.arm_info()['restore_available'], bool(saved))
 if __name__=='__main__':unittest.main()

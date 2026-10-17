@@ -5,7 +5,8 @@ must be owned by the runtime's desktop owner and be non-sensitive subdirectories
 of their home. Home itself, symlinked path components and reserved credentials or
 application configuration directories are rejected. No folder is shared by default.
 
-Stop the runtime, choose a source, name it, and select read only (the default) or
+Open **Runtime Settings → Storage → Shared folders**. Stop the runtime,
+choose a source, name it, and select read only (the default) or
 read/write. Start the runtime to activate the grant at
 `/sdcard/AnvilDroid/<name>`. Android storage permission and image media/FUSE
 behavior still govern whether an app can browse this location. Read/write also
