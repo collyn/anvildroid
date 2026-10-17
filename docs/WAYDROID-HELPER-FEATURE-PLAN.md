@@ -178,6 +178,110 @@ invalidate late replies on target/state changes, collapse or navigation.
 Detailed follow-up logs and screenshots use the `settings-*` prefix in the local
 ignored verification directory. No installed runtime or controller was modified.
 
+## Remaining completion plan
+
+The user confirmed that Default folder sharing and actual X11 validation are
+missing. Treat them as completion work for this branch. The implementation
+above remains the current state; the checklist below is pending, not verified.
+Keep all additions inside the existing Storage, ARM translation, Google Play,
+Diagnostics and per-app settings flows.
+
+### 1. Default shared-folder lifecycle — highest priority
+
+Owner: shared-folders agent; primary agent owns shared controller/frontend wiring.
+
+- [ ] Trace the system Waydroid startup, LXC mounts and teardown hooks; design a
+  Default adapter that works with normal system-service starts as well as GUI
+  starts. Do not bypass the existing private-mount guard to enable the UI.
+- [ ] Reuse explicit owner-scoped grants and path/descriptor checks. Serialize
+  share edits against start/stop and verify the active Default owner/session.
+- [ ] Implement RO/RW mounting, saved/configured/mounted/error reporting, cleanup
+  on stop/restart/failure, and recovery after controller/service restart.
+- [ ] Extend Storage's existing Shared folders panel to supported managed Default
+  installations; show a concrete missing prerequisite when integration is absent.
+- [ ] Verify two desktop users, replaced sources, symlinks, missing directories,
+  read-only write denial, read/write writeback, revocation and failed boot/cleanup.
+
+Exit: an Android app in a disposable Default installation reads the chosen
+folder, ordinary writes obey RO/RW, removal remains revoked after restart, and
+no mount affects another runtime or the host session unintentionally.
+
+### 2. Live X11/Wayland acceptance matrix
+
+Owner: game-controls agent; shared-folders agent assists mount investigation.
+
+- [ ] Record Default/managed × X11/Wayland results on each actually supported
+  backend/image combination. Record explicit unsupported reasons for others.
+- [ ] Check Android file-manager/app access to shares, media/FUSE discovery,
+  storage permission prompts, host Unix permissions, stop/restart and removal.
+- [ ] Exercise Basic/WASD/swipe/repeat/skill/macro/aim-fire in Android apps on both
+  display backends. Verify editor/save/reload, independent marker visibility,
+  focus loss, window resize, app replacement, disconnect and restart cancellation.
+- [ ] Verify runtime/package isolation with simultaneous windows and runtimes.
+
+Exit: every supported matrix row has reproducible app-level evidence; no stuck
+contacts, unintended cross-window input or false mounted status. Advanced input
+must be exercised through the actual Android sink, not only a deterministic one.
+
+### 3. Live app compatibility, ARM and Google Play
+
+Owner: compatibility agent; primary agent reviews existing settings integration.
+
+- [ ] Test Fake Wi-Fi and mouse-as-touch with representative Android apps after
+  app restart; verify reset and independent settings for the same package in two
+  runtimes. Record unsupported image behavior without claiming activation.
+- [ ] Install/disable/switch verified ARM providers through the existing settings;
+  execute an ARM probe/app and verify failure recovery. Verify Default's existing
+  provider disable/restore separately; Default archive installation is not added
+  implicitly by this completion plan.
+- [ ] Create a separate GAPPS test runtime, check Play Store/services/GSF ID and
+  registration help. Keep user confirmation separate from verified readback.
+
+Exit: configuration readback and observed app behavior are recorded separately;
+failed changes preserve a usable prior configuration and app data.
+
+### 4. Diagnostics and regression gates
+
+Owner: primary agent; agents provide feature-specific reproduction fixtures.
+
+- [ ] Export reports from real Default and managed test installations on X11 and
+  Wayland, including unavailable sections and opt-in current-generation logs.
+  Inspect redaction, stale-session handling, permissions and existing-file refusal.
+- [ ] Repair the three known stale frontend test fixtures so the full frontend
+  run provides a clean regression signal. Fix any real implementation defects
+  exposed by those repairs instead of changing expectations to hide them.
+- [ ] Run the complete Rust suite on a host with available inotify resources;
+  run display/session-dependent checks in the proper test session. Record every
+  remaining skip explicitly.
+- [ ] Add maintained regressions for Default lifecycle failures and live findings;
+  run feature, native, sanitizer, isolation, Rust and Clippy checks as appropriate.
+
+Exit: required automated checks pass, environment-dependent gates have actual
+results, and no skipped live check is represented as successful validation.
+
+### 5. Package acceptance and final delivery
+
+Owner: primary agent; shared-folders agent reviews system-hook packaging.
+
+- [ ] Build and verify Debian, portable and AppImage artifacts with all new system
+  integration pieces. Exercise clean installation and upgrade in disposable
+  supported test environments, including hook availability and runtime ownership.
+- [ ] Repeat a short app/share/settings/export smoke test using packaged binaries.
+- [ ] Update support limitations, instructions and the matrix with observed
+  results; remove Default's unsupported statement only once its acceptance passes.
+- [ ] Review changes and commit/push on `dev/waydroid-helper-features`.
+
+Execution order: Default design/adapter and test-environment preparation first;
+app/controls acceptance and regression-fixture repair can proceed in parallel;
+final packaging follows integrated acceptance. Continue with `gpt-6.1-sol` for
+all delegated work. Installed personal runtimes are not test targets: use a
+disposable test installation/VM and named test runtimes for lifecycle changes.
+
+MicroG/SmartDock/Magisk installers, arbitrary macro scripting and unlimited
+relative FPS mouse capture remain separate feature scope, not completion gates
+for these five agreed recommendations. Publishing a release or merging remains
+outside this branch's delivery.
+
 ### Remaining live acceptance gates
 
 - Wi-Fi-only apps and mouse-as-touch behavior on actual supported Android images.
