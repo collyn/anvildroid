@@ -4,6 +4,7 @@ The distribution's Waydroid modules and Android images remain untouched.
 Guest NVIDIA libraries are read-only bind mounts for one container session.
 """
 import atexit
+import ctypes
 import importlib.util
 import json
 import logging
@@ -137,6 +138,35 @@ def host_binder_child():
 
 def available():
     return gpu.nvidia.system_integration_available()
+
+
+def prepare_native_thread_pool():
+    """Create GLib's shared pool spawner in the private service baseline.
+
+    libgbinder creates a nonexclusive pool on first hardware-service use.
+    GLib's process-wide spawner and its later workers otherwise inherit that
+    Android session's mounts and prevent verified teardown after stock Stop.
+    This empty pool runs no task or Binder callback. Keep the normal holder
+    guard: different GLib implementations must still fail closed on teardown.
+    """
+    glib = ctypes.CDLL('libglib-2.0.so.0')
+    function = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_void_p)
+    callback = function(lambda _data, _user_data: None)
+    glib.g_thread_pool_new.argtypes = [function, ctypes.c_void_p, ctypes.c_int,
+                                      ctypes.c_int, ctypes.POINTER(ctypes.c_void_p)]
+    glib.g_thread_pool_new.restype = ctypes.c_void_p
+    glib.g_thread_pool_free.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
+    glib.g_thread_pool_free.restype = None
+    glib.g_error_free.argtypes = [ctypes.c_void_p]
+    glib.g_error_free.restype = None
+    error = ctypes.c_void_p()
+    pool = glib.g_thread_pool_new(callback, None, 1, False, ctypes.byref(error))
+    try:
+        if error.value or not pool:
+            raise RuntimeError('Cannot initialize the Default native thread pool before starting a session')
+    finally:
+        if pool: glib.g_thread_pool_free(pool, True, True)
+        if error.value: glib.g_error_free(error)
 
 
 class Integration:
@@ -378,6 +408,7 @@ def main():
     subprocess.run(['mount', '--make-rprivate', '/'], check=True, capture_output=True)
     if os.readlink('/proc/self/ns/mnt') == original_mnt:
         raise RuntimeError('System Waydroid needs a private mount namespace')
+    prepare_native_thread_pool()
     launcher = Path('/usr/bin/waydroid').resolve(strict=True)
     sys.path.insert(0, str(launcher.parent))
     import tools

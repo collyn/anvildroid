@@ -46,6 +46,8 @@ jobs:
         run: sudo python3 services/shares-test.py --mount-test
       - name: Test Default shared-folder lifecycle in a private PID1 mount namespace
         run: sudo python3 services/default-shares-test.py --mount-test
+      - name: Test Default native thread pools across private mount namespaces
+        run: sudo python3 services/default-native-pool-test.py --mount-test
       - name: Test sharing ownership and ACLs with two real desktop UIDs
         run: sudo python3 services/share-identities-test.py --mount-test
       - name: Test Android overlays in a private PID1 mount namespace
