@@ -13,11 +13,42 @@ import android.view.View;
 import java.util.ArrayDeque;
 import java.util.Locale;
 
-/** No permissions, injection or IPC. Observe only events delivered to this app. */
+/** Observe input/network APIs and run an explicitly requested test-share probe. */
 public final class MainActivity extends Activity {
+    private static String toolName(int type) {
+        switch (type) {
+            case MotionEvent.TOOL_TYPE_FINGER: return "FINGER";
+            case MotionEvent.TOOL_TYPE_STYLUS: return "STYLUS";
+            case MotionEvent.TOOL_TYPE_MOUSE: return "MOUSE";
+            case MotionEvent.TOOL_TYPE_ERASER: return "ERASER";
+            default: return "UNKNOWN";
+        }
+    }
+    private ProbeView probe;
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
-        setContentView(new ProbeView());
+        probe = new ProbeView();
+        setContentView(probe);
+        reportShare();
+    }
+
+    @Override protected void onNewIntent(android.content.Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        reportShare();
+    }
+
+    private void reportShare() {
+        ShareProbe.report(getIntent(), new ShareProbe.Reporter() {
+            @Override public void log(String message) { probe.log(message); }
+        });
+    }
+
+    @Override public void onResume() {
+        super.onResume();
+        NetworkProbe.report(this, new NetworkProbe.Reporter() {
+            @Override public void log(String message) { probe.log(message); }
+        });
     }
 
     private final class ProbeView extends View {
@@ -71,7 +102,8 @@ public final class MainActivity extends Activity {
                 int id = event.getPointerId(i);
                 float x=event.getX(i), y=event.getY(i);
                 points.put(id, new float[]{x,y});
-                row.append(String.format(Locale.ROOT," id=%d(%.1f,%.1f)",id,x,y));
+                row.append(String.format(Locale.ROOT," id=%d(%.1f,%.1f) tool=%s(%d)",
+                    id,x,y,toolName(event.getToolType(i)),event.getToolType(i)));
             }
             if (action == MotionEvent.ACTION_POINTER_UP)
                 points.remove(event.getPointerId(event.getActionIndex()));

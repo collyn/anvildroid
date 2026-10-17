@@ -45,9 +45,17 @@ test_*.py
 !/tests/keymap-storage.c
 !/tests/scrcpy-mapping.c
 !/tests/keymap-overlay.c
+!/tests/boot-canvas.c
 !/tests/test_runtime_keymaps.py
 !/tests/test_runtime_keymap_receiver.py
 !/tests/test_keymap_library.cjs
+!/tests/acceptance/
+/tests/acceptance/*
+!/tests/acceptance/live-android.py
+!/tests/acceptance/probe-android-shares.py
+!/tests/acceptance/probe-android-controls.py
+!/tests/acceptance/README.md
+!/tests/acceptance/DEFAULT-ISOLATION.md
 /scripts/build-arm-probes.sh
 /scripts/build-p52-fixture.py
 /scripts/make-media-fixture.sh

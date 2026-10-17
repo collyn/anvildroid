@@ -105,8 +105,10 @@ packaging and CI; the controls agent verified the native build and profile UI.
 1. App context-menu Compatibility dialog, exact package checks, Fake Wi-Fi and
    mouse-as-touch property transactions with readback, revision and rollback.
 2. Shared folders embedded in Runtime Settings → Storage, explicit per-runtime grants, enforced
-   RO/RW mounts before boot in the worker namespace, status and stopped removal.
-   Only managed runtimes own the required mount lifecycle.
+   RO/RW mounts before boot plus verified Android FUSE reconciliation, status
+   and stopped removal.
+   Default uses its integrated system-service adapter; managed runtimes use the
+   worker's private mount lifecycle.
 3. V2 native profiles/editor with V1 reads, WASD, swipe, repeat, skill, finite
    two-point macros and bounded absolute aim/fire. Relative unlimited FPS mouse
    capture and an arbitrary macro scripting language are outside this delivery.
@@ -199,8 +201,12 @@ Owner: shared-folders agent; primary agent owns shared controller/frontend wirin
   on stop/restart/failure, and recovery after controller/service restart.
 - [x] Extend Storage's existing Shared folders panel to supported managed Default
   installations; show a concrete missing prerequisite when integration is absent.
-- [ ] Verify two desktop users, replaced sources, symlinks, missing directories,
-  read-only write denial, read/write writeback, revocation and failed boot/cleanup.
+- [x] Verify two real numeric desktop UIDs, host ancestor permissions and POSIX
+  ACLs, owner-scoped grants, RO denial, RW writeback and namespace revocation
+  for managed and Default. Existing fixtures cover replaced sources, symlinks,
+  missing directories and failed boot/cleanup.
+- [ ] Verify these lifecycle rules through Android app/media/FUSE access in a
+  disposable Default installation; host bind-mount fixtures alone do not cover it.
 
 Exit: an Android app in a disposable Default installation reads the chosen
 folder, ordinary writes obey RO/RW, removal remains revoked after restart, and
@@ -212,12 +218,18 @@ Owner: game-controls agent; shared-folders agent assists mount investigation.
 
 - [ ] Record Default/managed × X11/Wayland results on each actually supported
   backend/image combination. Record explicit unsupported reasons for others.
-- [ ] Check Android file-manager/app access to shares, media/FUSE discovery,
-  storage permission prompts, host Unix permissions, stop/restart and removal.
+- [x] Check packaged managed Android 13 raw/FUSE/app access, granted SDK28 storage
+  permissions, RO/RW, clean stop and removal/restart. Permission/ACL fixtures use
+  two real numeric UIDs. Other images and modern scoped-storage apps remain open.
 - [ ] Exercise Basic/WASD/swipe/repeat/skill/macro/aim-fire in Android apps on both
   display backends. Verify editor/save/reload, independent marker visibility,
   focus loss, window resize, app replacement, disconnect and restart cancellation.
-- [ ] Verify runtime/package isolation with simultaneous windows and runtimes.
+- [x] Exercise all ten maintained delivery scenarios on actual managed VANILLA
+  Android 13 through native X11, the production bridge and scrcpy Android sink;
+  verify finger MotionEvents, finite macros, multiple contacts and blur release.
+- [x] Observe the same diagnostic package in two simultaneously running guests
+  with independent compatibility settings and real mouse input on private X11
+  displays. This does not establish simultaneous gameplay/control-map isolation.
 
 Exit: every supported matrix row has reproducible app-level evidence; no stuck
 contacts, unintended cross-window input or false mounted status. Advanced input
@@ -227,15 +239,23 @@ must be exercised through the actual Android sink, not only a deterministic one.
 
 Owner: compatibility agent; primary agent reviews existing settings integration.
 
-- [ ] Test Fake Wi-Fi and mouse-as-touch with representative Android apps after
-  app restart; verify reset and independent settings for the same package in two
-  runtimes. Record unsupported image behavior without claiming activation.
+- [x] Observe Fake Wi-Fi and mouse-as-touch through actual diagnostic app APIs
+  and MotionEvents, reset, app/Android restart persistence and the same package
+  in two simultaneous runtimes. Mouse source changes; tool type remains MOUSE.
+- [ ] Test representative Wi-Fi-only apps and games across supported images;
+  the diagnostic probe does not establish their compatibility.
 - [ ] Install/disable/switch verified ARM providers through the existing settings;
   execute an ARM probe/app and verify failure recovery. Verify Default's existing
   provider disable/restore separately; Default archive installation is not added
   implicitly by this completion plan.
-- [ ] Create a separate GAPPS test runtime, check Play Store/services/GSF ID and
-  registration help. Keep user confirmation separate from verified readback.
+- [x] Exercise production stopped-runtime ARM configuration under its exclusive
+  lock: libndk and Houdini execute real ARM32/ARM64 JNI, invalid archive selection
+  retains the old working configuration, restart works, and disabling rejects
+  fresh ARM-only APK installs. This did not drive the graphical installer route.
+- [x] Boot a separate verified GAPPS image, detect Play Store/services/GSF and
+  observe the unauthenticated Play Store Activity drawn. GSF ID is uninitialized.
+- [ ] Verify online Google account/registration behavior and Default provider
+  disable/restore in a separate safely isolated installation.
 
 Exit: configuration readback and observed app behavior are recorded separately;
 failed changes preserve a usable prior configuration and app data.
@@ -247,6 +267,12 @@ Owner: primary agent; agents provide feature-specific reproduction fixtures.
 - [ ] Export reports from real Default and managed test installations on X11 and
   Wayland, including unavailable sections and opt-in current-generation logs.
   Inspect redaction, stale-session handling, permissions and existing-file refusal.
+- [x] Export through the real controller/core API from the managed X11 test guest
+  in Starting, Running and Frozen states; verify private files, no overwrite,
+  current-generation logs, unavailable fields and live state-change invalidation.
+- [x] Export from managed Wayland Running and true Stopped guests, verify log
+  opt-in and that stopped reports do not collect previous-session logs. Frozen
+  export keeps the runtime asleep and marks live component data unavailable.
 - [x] Repair the three known stale frontend test fixtures so the full frontend
   run provides a clean regression signal. Fix any real implementation defects
   exposed by those repairs instead of changing expectations to hide them.
@@ -265,9 +291,15 @@ Owner: primary agent; shared-folders agent reviews system-hook packaging.
 
 - [x] Build and verify Debian, Arch and portable artifacts with all new system
   integration pieces. AppImage is deferred by the user's instruction.
-- [ ] Exercise clean installation and upgrade in disposable supported test
-  environments, including hook availability and runtime ownership.
-- [ ] Repeat a short app/share/settings/export smoke test using packaged binaries.
+- [x] Exercise Debian clean installation, same-version reinstall, fully
+  configured 0.1.2 → 0.1.3 upgrade and removal in disposable Ubuntu 24.04 with
+  actual systemd PID 1. Verify controller lifecycle and the retained data marker.
+- [ ] Confirm installation/start on the user's Arch machine. The user will run
+  this acceptance later; no local namespace fixture establishes that result.
+- [x] Repeat live controls, shares, compatibility, ARM/GAPPS and diagnostic
+  acceptance with pinned package assets and recorded module parity. Latest X11
+  controls and Wayland use the final Debian build. Final Debian/Arch extracted
+  CLI/controller/GUI smoke and portable manifest/source/native parity pass.
 - [x] Update support limitations and instructions with observed results. Default
   support is conditional on verified system integration; app/FUSE acceptance is
   explicitly unverified.
@@ -296,9 +328,10 @@ missing service integration. See [shared folders](SHARED-FOLDERS.md).
 X11 testing found and fixed held/repeated key replay, stale-window forwarding,
 missing release events and unmap cancellation. Review also caught a synthetic
 XIM keycode-zero commit regression; real Fcitx CJK composition passes after its
-fix. Production mapping handlers are exercised through the real private X11
-adapter and Wayland seat; the Android task context and touch sink remain
-synthetic. This is not Android gameplay acceptance.
+fix. Production mapping handlers were initially exercised through the real
+private X11 adapter and a synthetic Android task/sink. The later live follow-up
+below adds actual Android delivery evidence; neither fixture certifies gameplay
+feel.
 
 Diagnostics pins both the desktop session and Android init PID/start time for
 live Default, or the authenticated worker generation for managed runtimes.
@@ -332,22 +365,88 @@ or reset as a fallback.
 Release preparation now runs the complete maintained frontend set, Default
 lifecycle tests, isolated managed/Default/OverlayFS mount tests and a private
 software-X11 input suite. The previously ignored frontend fixtures are tracked.
-AppImage was not rebuilt. Package-manager installation/upgrade, Android
-media/FUSE access, live app compatibility, ARM/GAPPS and actual gameplay on the
-Default/managed × X11/Wayland matrix remain acceptance gates. The available
-test environment has no Binder/KVM/GPU devices for a disposable Android boot;
-installed personal runtimes were not used as substitutes.
-
-### Remaining live acceptance gates
-
-- Wi-Fi-only apps and mouse-as-touch behavior on actual supported Android images.
-- Android media/FUSE discovery, app permissions and host Unix permission/ACL
-  access for shared folders. No ownership or permission changes are applied.
-- Real FPS/MOBA/ARM gameplay, aim feel and lifecycle recovery on Wayland and X11.
-- Actual ARM activation and GAPPS package behavior after a deliberately chosen
-  test runtime restart; saved configuration is not treated as observed execution.
-- Human review of diagnostic redaction before sharing reports with real logs.
+AppImage was not rebuilt. These were the pre-live results; the follow-up below
+records subsequent package lifecycle and actual Android acceptance. Initial
+device discovery was limited by the sandbox view. Host inspection then found
+KVM/GPU devices and a loadable Binder module, enabling disposable acceptance
+with copied images and fresh userdata. Installed personal runtimes are not
+substitutes for these test installations.
 
 No installed controller/runtime was replaced, restarted or modified, and no
 release or merge is part of this branch. The comparison used upstream design
 ideas; no GPL-licensed implementation source was copied.
+
+### Live acceptance follow-up — 2026-10-17
+
+All Android observations below use copied images, fresh userdata and private
+test stores. The installed controller and personal Android sessions are not
+test targets. Native-X11 runs use a private Xvfb server and masked user-session
+sockets; software rendering is the tested renderer.
+
+| Area | Observed result and practical limit |
+| --- | --- |
+| Debian lifecycle | Clean install, reinstall, configured 0.1.2 upgrade and removal pass with real systemd; the exact data marker survives. Permission migration and service removal defects found by these tests are fixed. See [Debian acceptance](DEBIAN-ACCEPTANCE.md). |
+| Actual Android input | Managed VANILLA Android 13 passes ten XTest → native-X11 → production mapper → scrcpy → APK scenarios: Basic, WASD diagonal, swipe, repeat, skill, bounded macro, aim/fire, simultaneous controls, blur cancellation and held-key suppression after refocus. Final active pointer count is zero. All ten passed again on final Debian `5416f46d…`. This does not certify gameplay feel or Wayland/Default. |
+| Actual app compatibility | Fake Wi-Fi changes observed legacy Android network APIs. Mouse-as-touch changes event source to touchscreen but retains tool type MOUSE. Enabled settings and reset persist across separate Android restarts. The same package in two simultaneous guests observes independent settings/input. See [app observations](APP-COMPATIBILITY-ACCEPTANCE.md). |
+| ARM and GAPPS | Actual ARM32/ARM64 JNI executes with libndk and Houdini. Invalid archive selection preserves the working configuration; restart works; disable rejects both fresh ARM-only APK installs. A separate GAPPS guest draws the unauthenticated Play Store; GSF ID is null/uninitialized. ARM configuration used production functions under the stopped worker lock, not graphical panel navigation. No online account/Integrity claim. See [ARM/GAPPS acceptance](GAPPS-ARM-ACCEPTANCE.md). |
+| Diagnostic export | Real controller/core exports from managed X11 Starting, Running, Frozen, inactive Error and true Stopped states, plus Wayland Running, verify 0600 desktop-owned files, no overwrite, logs opt-in, current-session selection and invalidation on identity change. Frozen collection leaves the runtime asleep and marks live components unavailable. True Stopped reports collect no previous-session log text. |
+| Shared-folder identity/ACL fixture | Real numeric UIDs 61001/61002 pass owner/grant separation, ancestor access, named ACL, actual RO denial, RW writeback and revoke for managed and Default adapters. This fixture does not boot Android. |
+| Actual Android shared folders | Packaged RO, RW and removal/restart pass through raw data, Android FUSE and an SDK28 app with granted storage permissions. RO writes fail with EROFS; all three RW marker writes reach the chosen host source. Revoked access stays unavailable after restart and the source remains unchanged. All three stops verify Stopped, cleanup complete, quiescence and absent scope. Per-cycle package hashes are retained; all 34 runtime Python modules match the staged package. See [sharing support](SHARED-FOLDERS.md). |
+| FUSE reconciliation regression | Vold's nonrecursive backend bind hid preboot shares from apps. A bounded per-generation child now clones only verified grants using pinned mount FDs and preserves RO/nosuid/nodev/noexec. Default reuses the same core with authenticated session state and delayed readiness checks. The privileged fixture proves propagation into an already existing slave namespace and refuses a stale generation. Raw-only binds are not reported as mounted. |
+| Headless and Wayland rendering | Canvas reservation is now scoped to desktop runtimes. A separate correction honors strict maximized/fullscreen xdg-shell geometry while retaining Android allocation capacity. Headless boot/clean stop passed on package `aa292460…`; desktop Wayland passed on final `5416f46d…`, including app install/launch, mapped content/CSD, diagnostic export and clean stop without geometry protocol errors. Private Weston exposes no seat/input-injection protocol, so actual Wayland input remains untested. |
+| Shutdown harness | Early inactive Error results came from the disposable PID1 holder failing to reap adopted Android zombies. The harness now reaps them; no production shutdown workaround was added. Later X11, sharing, GAPPS, headless and Wayland runs reach true Stopped with verified cleanup. Early Error exits remain recorded as failures. |
+
+### Final verification and artifacts
+
+- Final focused runner: **143 Python tests**, **42 dedicated frontend cases**,
+  all **19 full frontend files**, five native suites and complete module staging
+  pass. The boot-canvas suite covers property scoping, capacity and constrained
+  Wayland geometry. Native normal and ASan/UBSan checks pass; leak detection is
+  disabled where sandbox/ptrace prevents it.
+- Privileged managed/Default/two-UID/FUSE and OverlayFS fixtures pass in disposable
+  namespaces. Final independent FUSE lifecycle/FD/owner review found no blocker.
+- Final Debian and Arch extracted packages pass payload/dependency/CLI/image-tool
+  checks, private controller list/requirements and GUI frontend-frame smoke.
+  All runtime modules, CLI/GUI and native bridge bytes match the current build.
+  This is distinct from the earlier full Debian install/upgrade/removal run,
+  whose accepted hash is retained in [Debian acceptance](DEBIAN-ACCEPTANCE.md).
+- Portable manifest and module/native/binary parity pass. NVIDIA renderer
+  payload remains separately provisioned. No RPM or AppImage rebuild is claimed.
+
+| Final local artifact | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `target/releases/anvildroid-controller_0.1.3_amd64.deb` | 26,256,838 | `5416f46d5490011920c69f958244abcf02d96408ad608b6c320234ddad01b9c7` |
+| `target/releases/anvildroid-controller-0.1.3-1-x86_64.pkg.tar.zst` | 26,072,100 | `2ac908a09932c2e08542c306d0906277a8b3ca94737b6af48c5bb7c8d57faac5` |
+| `target/releases/waydroid-features-dev-20261017-final/` | directory | Per-file `SHA256SUMS` verified |
+
+Small generated records remain locally in
+`target/feature-verification-20261017/{live-shares,live-controls-package-final,wayland-final-small-records,live-diagnostics-*}`
+and `target/acceptance/`. Maintained reproduction helpers and their prerequisites
+are in [tests/acceptance](../tests/acceptance/README.md). Disposable Android stores,
+copied images, share fixtures and Debian containers were removed only after
+verified shutdown/quiescence; original images, caches and personal sessions remain.
+
+### Remaining manual acceptance
+
+- User's Arch installation/start, including the originally reported OverlayFS
+  failure. Use the Arch package above; no test here establishes that machine's
+  kernel/backing-filesystem result.
+- Full stock Default Android service lifecycle: app/FUSE RO/RW/removal, provider
+  restore and diagnostic export. Implementation and isolated fixtures pass.
+  A full stock launcher needs additional device/cgroup/system-bus isolation;
+  see [Default isolation design](../tests/acceptance/DEFAULT-ISOLATION.md).
+- Actual Wayland keyboard/mouse delivery and representative FPS/MOBA/ARM gameplay,
+  including simultaneous windows, capture feel and lifecycle recovery.
+- Other Android images, modern scoped-storage apps and representative Wi-Fi-only
+  apps; online Google sign-in/registration/Play Integrity and graphical ARM flow.
+- Human review of diagnostic redaction before sharing reports with real logs.
+
+These unchecked gates are not recorded as passes. No release or merge is made.
+
+On this host Android system_server initially exhausted the desktop UID's
+inotify watch budget. Live tests temporarily increased only the watch limit
+under a bounded guardian that restores the original value; no persistent
+sysctl configuration or personal desktop process was changed. The acceptance
+harness requires adequate resources and never adjusts host sysctls itself.
+All test-owned guests are stopped and the original inotify watch limit
+**65536** has been restored and read back. No persistent sysctl file was changed.

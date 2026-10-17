@@ -27,6 +27,15 @@ uses a nonrecursive bind, and remounts with nosuid,nodev,noexec plus actual ro o
 rw. Mount status is reported separately from configuration; failures never imply
 successful activation. Failure to mount one grant does not grant a broader source.
 
+Android's storage service can create a nonrecursive `/data/media` bind for its
+FUSE backend after boot, omitting existing child mounts. A bounded helper pins
+the Android process/starttime, runtime generation, userdata and share identities,
+then mirrors each verified grant into that backend. It uses Linux's `open_tree`
+and `move_mount` APIs (Linux 5.2 or later), with nonrecursive descriptor-based
+clones that preserve RO/nosuid/nodev/noexec flags. Unsupported APIs or a missing
+backend produce an activation error; no weaker fallback is attempted. Configured
+and raw preboot binds are not reported as mounted until backend readback succeeds.
+
 Default requires AnvilDroid management enabled for its desktop owner and the
 current system integration (`runtime-system.py`, integration version 2). After
 upgrading the package, stop Default and restart its container service before
@@ -40,7 +49,9 @@ Default grants are stored per desktop owner, bound to the verified userdata
 device/inode, and locked throughout startup and the active session. Userdata and
 share destinations are pinned with descriptors; generated LXC configuration
 contains only root-owned staging paths. Actual guest mount identity and flags
-are verified before reporting a share mounted. The source is never mounted into
+are verified before reporting a share mounted. Its service watch waits for the
+FUSE backend without blocking stock startup, with bounded reconciliation attempts
+and a 300-second readiness deadline. The source is never mounted into
 the host session's namespace.
 
 Stopping must verify that Android, hardware callbacks and namespace-holding
@@ -59,6 +70,16 @@ change mounts. The tested read-only guarantee applies to ordinary file writes
 through the configured mount.
 
 Automated tests exercise real isolated RO/RW mounts, recursive userdata bind
-inheritance, revocation, owner checks, source replacement and lifecycle failures.
-Android app access through media/FUSE and image-specific permission prompts
-still require acceptance on the selected image; these tests do not boot Android.
+inheritance, revocation, two numeric desktop UIDs, actual permission/ACL checks,
+source replacement and lifecycle failures. A real nonrecursive backend fixture
+also verifies reconciliation reaches an already existing slave mount namespace.
+Packaged managed-runtime acceptance on Android 13 verified raw and FUSE reads,
+RO writes rejected with EROFS, and RW writes reaching the host source. An SDK28
+diagnostic app with granted storage permissions independently verified the same
+behavior. Removing the grant while stopped and restarting denied app and FUSE
+access without changing the source; every acceptance stop completed cleanup.
+Per-cycle package hashes and runtime-module byte parity are recorded with the
+acceptance evidence. These results do not establish behavior for other images or
+scoped-storage apps. A complete real stock Default service lifecycle remains
+unverified; its isolated mount and lifecycle fixtures pass. Source permissions
+and ACLs still apply, and AnvilDroid does not chmod the selected source.
