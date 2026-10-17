@@ -141,6 +141,19 @@ substitute for visual validation with the user's desktop compositor. Neither tes
 starts Android or Weston, changes the desktop display mode, or connects to its X
 server. Local socket permissions are required. Test processes and displays are
 owned by the harness and cleaned up afterwards.
+
+The software run also sends real XTest keys/motion/buttons through the X11 seat
+into production guest bridge input handlers and a deterministic fake scrcpy
+sink. It checks WASD, swipe, repeated click, skill, finite macros, aim/fire,
+normal input fallback, blur/refocus and held-key repeat suppression. The native
+adapter drains missing button releases after a WM grab, blocks held keys until
+release after focus loss, rejects events for stale windows, and revokes input on
+unmap. Physical key repeat is handled by Wayland clients; opted-in XIM text
+continues receiving repeats. This fixture mocks Android/task inventory and the
+sink, so it does not establish Android input compatibility or FPS/MOBA gameplay
+acceptance. That requires a disposable booted Android 13 x86_64 runtime with the
+production guest bridge, shell-owned scrcpy control server, a visible unambiguous
+app task and a touch-test app/game, on each intended GPU/backend.
 The Default fixtures pin Waydroid to an inert executable. For the additional
 real-adapter check on a private Xvfb with llvmpipe (still no Android), run
 `ANVILDROID_DEFAULT_X11_SOFTWARE=1 python3 services/default-x11-test.py`.

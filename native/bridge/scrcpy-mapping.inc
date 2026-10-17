@@ -196,8 +196,8 @@ static int map_advanced_valid(struct map_advanced *a) {
   int tx,ty,tw,th;
   if(!found || !map_task(a->owner,&tx,&ty,&tw,&th))return 0;
   const char *package=keymap_package(a->owner);
-  if(!package)return 0;
-  if(!a->tw){snprintf(a->package,sizeof(a->package),"%s",package);a->tx=tx;a->ty=ty;a->tw=tw;a->th=th;}
+  if(!package||strlen(package)>240)return 0;
+  if(!a->tw){memcpy(a->package,package,strlen(package)+1);a->tx=tx;a->ty=ty;a->tw=tw;a->th=th;}
   return !strcmp(package,a->package) && tx==a->tx && ty==a->ty && tw==a->tw && th==a->th &&
     !a->owner->resize.dragging && keymap_task_owner(a->owner)==a->task &&
     !a->owner->overlay && !a->owner->keymap_disabled;

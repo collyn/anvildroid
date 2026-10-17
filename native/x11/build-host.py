@@ -54,10 +54,19 @@ def build():
                          '-o', str(OUT / 'host-client-check'), '-lwayland-client', '-lX11'], check=True)
     subprocess.run(cxx + ['-std=c++17', '-O2', '-g', '-Wall', '-Wextra', '-Werror',
                          *checked, '-I' + str(OUT), *flags, str(HERE / 'feature-state-check.cpp'),
-                         *objects, '-o', str(OUT / 'feature-state-check'), *libs], check=True)
+                         *objects, '-o', str(OUT / 'feature-state-check'), *libs, '-lXtst'], check=True)
     subprocess.run(cxx + ['-std=c++17', '-O2', '-g', '-Wall', '-Wextra', '-Werror',
                          *checked, '-I' + str(OUT), str(HERE / 'feature-client-check.cpp'), *objects,
                          '-o', str(OUT / 'feature-client-check'), '-lwayland-client', '-lX11', '-lXtst'], check=True)
+    mapper = OUT / 'keymap-x11-sink.o'
+    subprocess.run(cc + ['-O0', '-g', '-Wall', '-Wextra', '-Werror', *checked,
+                         '-c', str(ROOT / 'tests/keymap-x11-sink.c'), '-o', str(mapper)], check=True)
+    text_state = OUT / 'keymap-text-state.o'
+    subprocess.run(cc + ['-O2', '-g', *checked, '-c', str(ROOT / 'native/ime/text-state.c'), '-o', str(text_state)], check=True)
+    subprocess.run(cxx + ['-std=c++17', '-O2', '-g', '-Wall', '-Wextra', '-Werror',
+                         *checked, '-I' + str(OUT), str(HERE / 'keymap-client-check.cpp'), *objects,
+                         str(mapper), str(text_state),
+                         '-o', str(OUT / 'keymap-client-check'), '-lwayland-client', '-lX11', '-lXtst', '-ldl', '-pthread'], check=True)
     print(OUT / 'anvildroid-x11-host')
     (OUT / 'NOTICE').write_text('\n\n'.join(notices) + '\n')
     (OUT / 'source-manifest.json').write_text(json.dumps(dict(
