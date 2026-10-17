@@ -56,9 +56,10 @@ jobs:
         run: python3 services/provision-support-test.py
       - name: Test legacy Debian installation permissions
         run: python3 services/install-permissions-test.py
-      - name: Test Default NVIDIA session devices and shader warm-up
+      - name: Test Default Binder, NVIDIA session devices and shader warm-up
         run: |
           python3 services/default-gpu-test.py
+          python3 services/default-binder-test.py
           python3 services/surfaceflinger-cache-test.py
       - name: Test confirmed app removal without Android
         run: |

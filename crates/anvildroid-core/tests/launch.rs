@@ -35,6 +35,14 @@ fn launch_scenarios() {
         "remove_error",
         "remove_unconfirmed",
         "remove_query_error",
+        "full_ui_ok",
+        "full_ui_invalid_token",
+        "full_ui_inherited_token",
+        "full_ui_iplatform",
+        "full_ui_binder",
+        "full_ui_nonzero",
+        "full_ui_notready",
+        "full_ui_timeout",
     ] {
         let dir = std::env::temp_dir().join(format!(
             "anvildroid-launch-{}-{scenario}",
@@ -67,10 +75,14 @@ fn launch_scenarios() {
             .env("TEST_SCENARIO", scenario)
             .env_remove("DISPLAY")
             .env_remove("WAYLAND_DISPLAY")
+            .env_remove("XDG_ACTIVATION_TOKEN")
             .env("XDG_RUNTIME_DIR", &dir);
         let wayland_socket = dir.join("wayland-test");
         let _wayland = std::os::unix::net::UnixListener::bind(&wayland_socket).unwrap();
         command.env("WAYLAND_DISPLAY", &wayland_socket);
+        if scenario.starts_with("full_ui_") {
+            command.env("XDG_ACTIVATION_TOKEN", "stale-inherited-token");
+        }
         if matches!(scenario, "x11_start" | "x11_stale") {
             command.env("DISPLAY", ":123").env("XDG_RUNTIME_DIR", &dir);
             if scenario == "x11_stale" {
@@ -134,6 +146,37 @@ fn scenario_worker() {
     };
     let dir = PathBuf::from(std::env::var_os("TEST_FIXTURE").unwrap());
     match scenario.as_str() {
+        scenario if scenario.starts_with("full_ui_") => {
+            let started = Instant::now();
+            let token = if scenario == "full_ui_invalid_token" { "bad token\n" } else { "test-activation-token" };
+            let result = launch::open_full_ui(if scenario == "full_ui_inherited_token" { None } else { Some(token) });
+            let trace = fs::read_to_string(dir.join("trace")).unwrap();
+            match scenario {
+                "full_ui_ok" | "full_ui_invalid_token" | "full_ui_inherited_token" => {
+                    result.unwrap();
+                    assert_eq!(trace.lines().filter(|line| *line == "show-full-ui").count(), 1);
+                    assert!(trace.find("READY").unwrap() < trace.find("show-full-ui").unwrap());
+                    let token = fs::read_to_string(dir.join("activation-token")).unwrap();
+                    assert_eq!(token, if scenario == "full_ui_ok" { "test-activation-token" } else { "" });
+                }
+                "full_ui_timeout" => {
+                    assert_eq!(result.unwrap_err().code(), "TIMEOUT");
+                    assert!(started.elapsed() < Duration::from_secs(20));
+                }
+                _ => {
+                    let error=result.unwrap_err();
+                    assert_eq!(error.code(), "BACKEND_FAILED");
+                    let message=error.to_string();
+                    if scenario == "full_ui_binder" {
+                        assert!(message.contains("/dev/anbox-binder"));
+                        assert!(message.contains("Check Default runtime Binder preparation and device permissions"));
+                    }
+                    if scenario == "full_ui_iplatform" { assert!(message.contains("Failed to access IPlatform service")); }
+                    if scenario == "full_ui_nonzero" { assert!(message.contains("full-window refused")); }
+                    if scenario == "full_ui_notready" { assert!(!trace.contains("show-full-ui")); }
+                }
+            }
+        }
         "timeout" | "hung_probe" => {
             let started = Instant::now();
             let error = launch::ensure_ready(Duration::from_millis(300)).unwrap_err();
@@ -283,6 +326,7 @@ echo "$*" >> "$TEST_FIXTURE/trace"
 case "$1 $2" in
   '--version ') echo '1.6';;
   'status ')
+    if [ "$TEST_SCENARIO" = full_ui_notready ]; then echo 'Waydroid is not initialized' >&2; exit 1; fi
     if [ -f "$TEST_FIXTURE/owner" ] || [ "$TEST_SCENARIO" = lost ]; then
       echo 'Session: RUNNING'
       if [ "$TEST_SCENARIO" = frozen ]; then echo 'Container: FROZEN'; else echo 'Container: RUNNING'; fi
@@ -302,6 +346,12 @@ case "$1 $2" in
   'app launch')
     if [ "$TEST_SCENARIO" = launch_error ]; then echo 'Failed with code: -1' >&2; fi
     if [ "$TEST_SCENARIO" = nonzero ]; then echo 'launch refused' >&2; exit 9; fi;;
+  'show-full-ui ')
+    printf '%s' "$XDG_ACTIVATION_TOKEN" > "$TEST_FIXTURE/activation-token"
+    if [ "$TEST_SCENARIO" = full_ui_iplatform ]; then echo 'Failed to access IPlatform service' >&2; fi
+    if [ "$TEST_SCENARIO" = full_ui_binder ]; then echo "[gbinder] ERROR: Can't open /dev/anbox-binder: No such file or directory" >&2; fi
+    if [ "$TEST_SCENARIO" = full_ui_nonzero ]; then echo 'full-window refused' >&2; exit 9; fi
+    if [ "$TEST_SCENARIO" = full_ui_timeout ]; then exec /bin/sleep 60; fi;;
   'app intent') :;;
   'app list')
     if [ "$TEST_SCENARIO" = list_error ]; then echo 'WayDroid session is stopped' >&2

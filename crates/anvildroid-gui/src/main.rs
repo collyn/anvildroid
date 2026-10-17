@@ -1108,16 +1108,9 @@ async fn open_waydroid(activation_token: Option<String>, guard: State<'_, OpGuar
     Ok(blocking(move || {
         let Ok(_operation)=guard.try_lock() else {return busy_result();};
         if let Err(e)=scope::ensure_legacy("default") {return op_result_err(e);}
-        let mut command = std::process::Command::new("waydroid");
-        command.arg("show-full-ui");
-        if let Some(token) = activation_token.filter(|token| !token.is_empty() && token.len() <= 512 && token.bytes().all(|byte| byte > 32 && byte < 127)) {
-            command.env("XDG_ACTIVATION_TOKEN", token);
-        }
-        match command
-            .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null()).spawn() {
-            Ok(mut child)=>{std::thread::spawn(move || {let _=child.wait();});op_result_ok("Waydroid full-window launch requested for Default runtime.")},
-            Err(e)=>op_result_err(AnvilError::Io(e.to_string())),
+        match launch::open_full_ui(activation_token.as_deref()) {
+            Ok(())=>op_result_ok("Waydroid full-window launch requested for Default runtime."),
+            Err(e)=>op_result_err(e),
         }
     }).await)
 }

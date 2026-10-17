@@ -53,3 +53,14 @@ acceptance also used this final build. The complete package-manager lifecycle
 above was not repeated on its different bytes; its maintainer scripts are
 unchanged. See [feature plan](WAYDROID-HELPER-FEATURE-PLAN.md) for final results
 and remaining manual gates.
+
+
+The later Default Binder/full-window correction rebuilt the local Debian package
+again: **26,247,478 bytes**, SHA-256
+`38b2af777c78fd5eabbd870cfba72713b3732515ebe38c66057b2e48c965e8f8`.
+Its extracted payload/dependency/CLI/image-tool checks, private controller and GUI
+first-frame smoke pass; all 34 runtime modules and both binary bytes match the
+current sources/build. This is a separate verification from the full
+package-manager lifecycle above. No package was installed on the host; the
+existing Default window was recovered without a service restart. Details and
+remaining gates are in the [feature plan](WAYDROID-HELPER-FEATURE-PLAN.md).

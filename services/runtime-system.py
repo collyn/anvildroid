@@ -16,6 +16,7 @@ import threading
 import sys
 import tempfile
 import time
+import types
 
 
 BASE = Path(__file__).resolve().parent
@@ -36,6 +37,102 @@ gpu = module('runtime-gpu')
 existing = module('runtime-existing')
 workarea = module('runtime-workarea')
 default_shares = module('runtime-default-shares')
+
+
+def configured_binder_nodes(tools, args):
+    cfg = tools.config.load(args)['waydroid']
+    names = [cfg.get(key) for key in ('binder', 'vndbinder', 'hwbinder')]
+    if not any(names):
+        return []  # The service can run before first initialization.
+    if any(not isinstance(name, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,255}', name)
+           or name == 'binder-control' for name in names) or len(set(names)) != 3:
+        raise RuntimeError('Invalid configured Default Binder device names')
+    return names
+
+
+def prepare_host_binder(tools, args, dev=Path('/dev')):
+    """Prepare the shared stock Binder context before mount isolation.
+
+    Invoke the distribution's allocation API, without copying its driver code.
+    Never run its probe here: that probe may mount a new binderfs over an
+    existing context when only one configured node is missing.
+    """
+    names = configured_binder_nodes(tools, args)
+    def character(path):
+        try: return stat.S_ISCHR(path.stat().st_mode)
+        except FileNotFoundError: return False
+    if not names:
+        # First initialization selects devices before saving their names.
+        # Prepare its supported defaults in the host namespace now, so that
+        # the later D-Bus initializer does not create a private Binder context.
+        cfg = tools.config.load(args)['waydroid']
+        drivers = tools.helpers.drivers
+        names = []
+        for group in (drivers.BINDER_DRIVERS, drivers.VNDBINDER_DRIVERS, drivers.HWBINDER_DRIVERS):
+            candidates = group if cfg.get('vendor_type', 'MAINLINE') == 'MAINLINE' else group[:-1]
+            if not candidates: raise RuntimeError('Stock Waydroid has no supported Binder devices')
+            # Stock initialization selects the last existing supported device.
+            present = [name for name in candidates if character(dev / name)]
+            names.append(present[-1] if present else candidates[0])
+        if any(not re.fullmatch(r'[A-Za-z0-9_-]{1,255}', name) or name == 'binder-control'
+               for name in names) or len(set(names)) != 3:
+            raise RuntimeError('Invalid stock Default Binder device names')
+    missing = [name for name in names if not character(dev / name)]
+    if not missing: return
+    for name in missing:
+        target = dev / name
+        if target.exists() or target.is_symlink():
+            # The stock dangling alias is safe only at the exact fixed source.
+            if not target.is_symlink() or os.readlink(target) != str(dev / 'binderfs' / name):
+                raise RuntimeError('Refusing to replace existing Default Binder path: ' + str(target))
+    # An empty rcfile lets LXC positively report STOPPED before the first
+    # container config exists; its control identity still uses this path/name.
+    # Do not interpret a failed query as STOPPED.
+    status = existing.linux.run_bounded('lxc-info', '--rcfile=/dev/null', '-P', tools.config.defaults['lxc'],
+        '-n', 'waydroid', '-sH', timeout=3, full_output=True, output_limit=256,
+        operation='Default Binder context safety check').strip()
+    if status != 'STOPPED':
+        raise RuntimeError('Stop Default before preparing missing host Binder devices')
+    binderfs = dev / 'binderfs'
+    mounted = None
+    with open('/proc/self/mountinfo') as stream:
+        for line in stream:
+            fields = line.split()
+            if fields[4] == str(binderfs): mounted = fields[fields.index('-') + 1]
+    if mounted is not None and mounted != 'binder':
+        raise RuntimeError('Default Binder directory has an unrelated mount')
+    if mounted is None:
+        if binderfs.is_symlink() or binderfs.exists() and any(binderfs.iterdir()):
+            raise RuntimeError('Default Binder directory must be empty before mounting')
+        existing.linux.run_bounded('modprobe', 'binder_linux', timeout=10,
+                                  operation='Default Binder module preparation')
+        binderfs.mkdir(mode=0o755, exist_ok=True)
+        existing.linux.run_bounded('mount', '-t', 'binder', 'binder', binderfs, timeout=5,
+                                  operation='Default host Binder filesystem')
+    allocate = []
+    for name in missing:
+        source = binderfs / name
+        if not character(source):
+            if source.exists() or source.is_symlink():
+                raise RuntimeError('Invalid existing Default Binder source: ' + str(source))
+            allocate.append(name)
+    if allocate: tools.helpers.drivers.allocBinderNodes(args, allocate)
+    for name in missing:
+        source, target = binderfs / name, dev / name
+        if not character(source): raise RuntimeError('Default Binder allocation did not create ' + name)
+        if not target.is_symlink(): target.symlink_to(source)
+    if not all(character(dev / name) for name in names):
+        raise RuntimeError('Default host Binder devices are unavailable')
+
+
+def host_binder_child():
+    if os.geteuid() != 0: raise RuntimeError('Default Binder preparation requires root')
+    launcher = Path('/usr/bin/waydroid').resolve(strict=True)
+    sys.path.insert(0, str(launcher.parent))
+    import tools
+    args = types.SimpleNamespace()
+    tools.prep_args(args)
+    prepare_host_binder(tools, args)
 
 
 def available():
@@ -83,6 +180,11 @@ class Integration:
         if 'session' in args: return self.original_start(args, session)
         self.args = args
         cfg = self.tools.config.load(args)
+        for name in configured_binder_nodes(self.tools, args):
+            try: ready = stat.S_ISCHR((Path('/dev') / name).stat().st_mode)
+            except FileNotFoundError: ready = False
+            if not ready:
+                raise RuntimeError('Restart the Default container service to prepare host Binder devices')
         node = cfg['waydroid'].get('drm_device', 'auto')
         self.nvidia = gpu.is_nvidia(node)
         if self.sharing and self.tools.helpers.lxc.status(args) != 'STOPPED':
@@ -264,6 +366,11 @@ class Integration:
 
 def main():
     if os.geteuid() != 0: raise RuntimeError('Waydroid system integration requires root')
+    # Stock Binder is used by host clients as well as Android. Prepare it in
+    # this inherited namespace; a short exec child keeps stock imports/threads
+    # out of the parent until its private mount baseline exists.
+    existing.linux.run_bounded(sys.executable, __file__, '--prepare-host-binder',
+                              timeout=30, operation='Default host Binder preparation')
     # This must precede importing stock Waydroid (which may create threads).
     # All subsequent container sessions inherit only this private baseline.
     original_mnt = os.readlink('/proc/self/ns/mnt')
@@ -290,4 +397,7 @@ def main():
 
 
 if __name__ == '__main__':
-    sys.exit(main())
+    if sys.argv[1:] == ['--prepare-host-binder']:
+        host_binder_child()
+    else:
+        sys.exit(main())

@@ -396,7 +396,7 @@ sockets; software rendering is the tested renderer.
 | Headless and Wayland rendering | Canvas reservation is now scoped to desktop runtimes. A separate correction honors strict maximized/fullscreen xdg-shell geometry while retaining Android allocation capacity. Headless boot/clean stop passed on package `aa292460…`; desktop Wayland passed on final `5416f46d…`, including app install/launch, mapped content/CSD, diagnostic export and clean stop without geometry protocol errors. Private Weston exposes no seat/input-injection protocol, so actual Wayland input remains untested. |
 | Shutdown harness | Early inactive Error results came from the disposable PID1 holder failing to reap adopted Android zombies. The harness now reaps them; no production shutdown workaround was added. Later X11, sharing, GAPPS, headless and Wayland runs reach true Stopped with verified cleanup. Early Error exits remain recorded as failures. |
 
-### Final verification and artifacts
+### Verification and artifacts before Default window recovery
 
 - Final focused runner: **143 Python tests**, **42 dedicated frontend cases**,
   all **19 full frontend files**, five native suites and complete module staging
@@ -413,7 +413,7 @@ sockets; software rendering is the tested renderer.
 - Portable manifest and module/native/binary parity pass. NVIDIA renderer
   payload remains separately provisioned. No RPM or AppImage rebuild is claimed.
 
-| Final local artifact | Bytes | SHA-256 |
+| Prior local artifact (before Default window recovery) | Bytes | SHA-256 |
 | --- | ---: | --- |
 | `target/releases/anvildroid-controller_0.1.3_amd64.deb` | 26,256,838 | `5416f46d5490011920c69f958244abcf02d96408ad608b6c320234ddad01b9c7` |
 | `target/releases/anvildroid-controller-0.1.3-1-x86_64.pkg.tar.zst` | 26,072,100 | `2ac908a09932c2e08542c306d0906277a8b3ca94737b6af48c5bb7c8d57faac5` |
@@ -448,5 +448,90 @@ inotify watch budget. Live tests temporarily increased only the watch limit
 under a bounded guardian that restores the original value; no persistent
 sysctl configuration or personal desktop process was changed. The acceptance
 harness requires adequate resources and never adjusts host sysctls itself.
-All test-owned guests are stopped and the original inotify watch limit
-**65536** has been restored and read back. No persistent sysctl file was changed.
+At the end of disposable acceptance all test-owned guests were stopped and the
+original inotify watch limit **65536** was restored and read back. The subsequent
+personal-session recovery below required a new temporary increase. No persistent
+sysctl file was changed.
+
+
+### Default boot and full-window recovery — 2026-10-17
+
+This follow-up diagnoses the user's installed Default session after reports of a
+stuck boot and an Android window that would not open. It is separate from the
+disposable acceptance runs above.
+
+Two actual failures were identified:
+
+- Android system_server exhausted the desktop UID's 65,536 inotify watches. One
+  desktop terminal process held 65,144 watches. Raising only the live
+  `fs.inotify.max_user_watches` limit to **131072** allowed Android to boot;
+  `sys.boot_completed=1` and `dev.bootcomplete=1` were observed. This recovery
+  remains active until reboot; no persistent sysctl file was written.
+- The Default service's private mount namespace contained Binderfs while the
+  desktop's `/dev/anbox-binder` alias had no visible target. Desktop clients
+  repeatedly logged `Can't open /dev/anbox-binder`, although Android's Binder
+  services were alive. The same running Binderfs mount was imported into the
+  host namespace using a detached mount FD, preserving Android's exact device,
+  inode and Binder context. No service/container restart or image/userdata
+  change was needed. A fresh `waydroid show-full-ui` completed, an immediate
+  property read returned `waydroid.active_apps=Waydroid`, and KDE's window list
+  reported a Waydroid window with nonzero geometry, `hidden=false` and
+  `minimized=false`.
+
+The durable system helper now prepares host-visible Binder before isolating
+mounts, using the installed Waydroid allocation API. It preserves existing
+character devices and never stacks a Binderfs mount over an existing context.
+Missing-node preparation requires a positive LXC STOPPED result; first
+initialization uses stock supported device candidates before names are saved.
+Invalid names, unrelated paths/mounts and unknown/running state fail clearly.
+A later start refuses missing host devices instead of creating a private-only
+context. The actual CLI ran idempotently against the recovered Default session:
+all three device identities and Android init PID **58409** remained unchanged.
+
+The GUI's existing Open Waydroid action now checks session readiness and captures
+the full-window command's output with a 15-second command timeout. Binder and
+IPlatform failures propagate to the GUI even when stock Waydroid exits zero.
+Readiness retains its separate 90-second boot deadline. A successful response
+confirms the request; window visibility is established separately. Inherited
+activation tokens are cleared before accepting a validated fresh token.
+
+Validation for this correction:
+
+- **17 Binder**, **10 Default GPU**, **27 Default sharing** regression tests pass.
+  The maintained feature runner's existing Python/frontend/native checks pass.
+- A disposable mount test uses actual installed `tools.prep_args`, cold config
+  loading, LXC STOPPED lookup and Binder allocation with private `/dev` and
+  `/run`. It proves cold preparation and identical device/inode/rdev across
+  service namespace isolation. It does not restart a personal runtime.
+- Process-isolated Rust launch scenarios pass, including zero-exit Binder and
+  IPlatform errors, nonzero stderr, readiness refusal, an actual command timeout,
+  and absent/invalid/valid fresh tokens with a stale inherited token present.
+  GUI compilation, release build and Clippy with warnings denied pass.
+
+The repaired live session is running the previously installed service/GUI.
+The durable changes are included in the rebuilt development packages below;
+installation and the next safe service start load them. Full stock Default
+app/FUSE RO/RW/removal, diagnostic export and the user's Arch machine remain
+manual gates. Window recovery alone does not establish those passes.
+
+Local recovery and regression records are retained under
+`target/feature-verification-20261017/default-window-*` and
+`default-full-ui-token-tests.log`. AppImage remains deferred.
+
+
+Current development artifacts after Default recovery (package-manager lifecycle
+was not repeated; package scripts are unchanged):
+
+| Artifact | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `target/releases/anvildroid-controller_0.1.3_amd64.deb` | 26,247,478 | `38b2af777c78fd5eabbd870cfba72713b3732515ebe38c66057b2e48c965e8f8` |
+| `target/releases/anvildroid-controller-0.1.3-1-x86_64.pkg.tar.zst` | 26,059,177 | `09522f45496038f72c5a9d9f7da29c6f7175a94d7eec5ea166bc8e0674fb2359` |
+| `target/releases/waydroid-features-dev-20261017-default-window-final/` | directory | Per-file `SHA256SUMS` verified |
+
+Both extracted packages pass payload/dependency/CLI/image-tool checks and a
+private controller list/requirements plus GUI first-frame smoke on an isolated
+Xvfb/D-Bus session. All 34 runtime modules and both binaries match current
+source/build bytes; the final portable bundle passes manifest and source/binary
+parity. These checks do not establish Arch host startup or a full new Default
+service lifecycle. No package was installed and no live service was restarted
+for this follow-up.
