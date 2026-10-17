@@ -6,6 +6,17 @@
 static int boot_hint_width, boot_hint_height, boot_width, boot_height, boot_decided;
 typedef int (*property_get_fn)(const char *, char *, const char *);
 static property_get_fn boot_real_property_get;
+/* Reserved Android pixels are allocation capacity, not the maximized window's
+ * geometry. Strict xdg-shell compositors require the configured geometry even
+ * when its attached buffer is larger. App and full-UI surfaces own their size. */
+static void boot_canvas_geometry(struct object *o, union argument *a) {
+  struct object *s=o?o->surface:0;
+  if(!s||s->app||s->full_ui||boot_width<=0||boot_height<=0)return;
+  if(s->boot_geometry_w>0&&s->boot_geometry_h>0) {
+    a[0].i=a[1].i=0;
+    a[2].i=s->boot_geometry_w;a[3].i=s->boot_geometry_h;
+  }
+}
 int property_get(const char *key, char *value, const char *fallback) {
   property_get_fn get = __atomic_load_n(&boot_real_property_get, __ATOMIC_ACQUIRE);
   if (!get) {
@@ -16,6 +27,10 @@ int property_get(const char *key, char *value, const char *fallback) {
   }
   if (strcmp(key, "persist.waydroid.width") && strcmp(key, "persist.waydroid.height"))
     return get(key, value, fallback);
+  /* Desktop bridges reserve a larger canvas for independent app windows.
+   * A stock headless compositor instead requires its exact configured size. */
+  const char *runtime = getenv("ANVILDROID_RUNTIME_ID");
+  if (!runtime || !*runtime) return get(key, value, fallback);
   char existing[92];
   const char *explicit_keys[] = {"persist.waydroid.width", "persist.waydroid.height",
       "persist.waydroid.width_padding", "persist.waydroid.height_padding"};

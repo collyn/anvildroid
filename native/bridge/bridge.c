@@ -105,6 +105,7 @@ struct object {
   struct custom_size custom_size;
   int full_ui, full_w, full_h, full_canvas_w, full_canvas_h;
   int full_clip_x,full_clip_y;
+  int boot_geometry_w, boot_geometry_h;
   int window_configured, window_content, window_activated;
   int fit_w, fit_h, fit_x, fit_y, fit_sw, fit_sh, fit_bar_focus;
   int fit_delivered_w, fit_delivered_h;
@@ -587,6 +588,14 @@ static void configure(void *data, struct proxy *p, int32_t w, int32_t h,
   if (!o->surface || !o->surface->app) {
 #ifdef ANVIL_BOOT_CANVAS
     pthread_mutex_lock(mutex);
+    if (o->surface) {
+      struct boot_states { size_t size, alloc; uint32_t *data; } *a=states;
+      int constrained=0;
+      for(size_t i=0;a&&i<a->size/sizeof(uint32_t);++i)
+        if(a->data[i]==1||a->data[i]==2)constrained=1;
+      o->surface->boot_geometry_w=constrained&&w>0?w:0;
+      o->surface->boot_geometry_h=constrained&&h>0?h:0;
+    }
     if (!boot_decided && w > 1 && h > 1) {
       boot_hint_width = w;
       boot_hint_height = h;
@@ -1044,6 +1053,10 @@ static struct proxy *bridge_marshal(
   if (!strcmp(cls, "xdg_surface") && !strcmp(method, "set_window_geometry") &&
       o && o->surface && o->surface->has_bounds)
     skip = 1;
+#ifdef ANVIL_BOOT_CANVAS
+  if (!strcmp(cls, "xdg_surface") && !strcmp(method, "set_window_geometry"))
+    boot_canvas_geometry(o, a);
+#endif
 #ifdef ANVIL_DISPLAY_GROWTH_PROBE
   if (!strcmp(cls, "xdg_surface") && !strcmp(method, "set_window_geometry") &&
       o && o->surface && o->surface == display_probe_surface)
