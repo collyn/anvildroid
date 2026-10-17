@@ -1,6 +1,6 @@
 # Waydroid Helper feature implementation plan
 
-Date: 2026-10-17. Branch: `dev/waydroid-helper-features`.
+Last updated: 2026-10-18. Branch: `dev/waydroid-helper-features`.
 
 The user requested implementation of all five recommendations, parallel agent
 work, thorough testing, and commits on a development branch. Existing installed
@@ -8,6 +8,18 @@ Android runtimes and desktop sessions are not deployment targets for this work.
 Upstream reference: waydroid-helper commit
 `17f5f326de9facdbb3d9f6b02354a4dcb0f628fd`; use design observations and original
 implementation, preserving AnvilDroid's MIT source licensing.
+
+## Current completion status
+
+All five feature areas are implemented in the existing settings flows. Actual
+Android input passes on managed X11 and Wayland; the full disposable stock
+Default sharing and diagnostic lifecycle now passes as well. The final Default
+results and current package hashes are recorded at the end of this document.
+
+Remaining acceptance requires the user's Arch host, representative apps/games,
+physical desktop/editor interactions, Default ARM provider restore, and online
+Google account/Integrity checks. These gates remain unchecked below. AppImage
+is deferred; this branch is not a merge or published release.
 
 ## Work allocation
 
@@ -205,7 +217,7 @@ Owner: shared-folders agent; primary agent owns shared controller/frontend wirin
   ACLs, owner-scoped grants, RO denial, RW writeback and namespace revocation
   for managed and Default. Existing fixtures cover replaced sources, symlinks,
   missing directories and failed boot/cleanup.
-- [ ] Verify these lifecycle rules through Android app/media/FUSE access in a
+- [x] Verify these lifecycle rules through Android app/media/FUSE access in a
   disposable Default installation; host bind-mount fixtures alone do not cover it.
 
 Exit: an Android app in a disposable Default installation reads the chosen
@@ -267,8 +279,8 @@ failed changes preserve a usable prior configuration and app data.
 
 Owner: primary agent; agents provide feature-specific reproduction fixtures.
 
-- [ ] Export reports from real Default and managed test installations on X11 and
-  Wayland, including unavailable sections and opt-in current-generation logs.
+- [x] Export reports from stock Default in a private software/headless fixture
+  and managed X11/Wayland, including unavailable sections and opt-in logs.
   Inspect redaction, stale-session handling, permissions and existing-file refusal.
 - [x] Export through the real controller/core API from the managed X11 test guest
   in Starting, Running and Frozen states; verify private files, no overwrite,
@@ -304,8 +316,8 @@ Owner: primary agent; shared-folders agent reviews system-hook packaging.
   controls and Wayland use the final Debian build. Final Debian/Arch extracted
   CLI/controller/GUI smoke and portable manifest/source/native parity pass.
 - [x] Update support limitations and instructions with observed results. Default
-  support is conditional on verified system integration; app/FUSE acceptance is
-  explicitly unverified.
+  support requires verified system integration; stock Android 13 app/FUSE
+  acceptance now passes, while other images and scoped-storage apps remain open.
 - [x] Review changes and commit/push on `dev/waydroid-helper-features`.
 
 Execution order: Default design/adapter and test-environment preparation first;
@@ -432,12 +444,9 @@ verified shutdown/quiescence; original images, caches and personal sessions rema
 ### Remaining manual acceptance
 
 - User's Arch installation/start, including the originally reported OverlayFS
-  failure. Use the Arch package above; no test here establishes that machine's
+  failure. Use the latest Arch package at the end of this document; no test here establishes that machine's
   kernel/backing-filesystem result.
-- Full stock Default Android service lifecycle: app/FUSE RO/RW/removal, provider
-  restore and diagnostic export. Implementation and isolated fixtures pass.
-  A full stock launcher needs additional device/cgroup/system-bus isolation;
-  see [Default isolation design](../tests/acceptance/DEFAULT-ISOLATION.md).
+- Default ARM provider disable/restore in a separate isolated installation.
 - Representative FPS/MOBA/ARM gameplay, including simultaneous windows, capture
   feel, graphical editor lifecycle and recovery beyond the diagnostic scenarios.
 - Other Android images, modern scoped-storage apps and representative Wi-Fi-only
@@ -536,8 +545,9 @@ Validation for this correction:
 The repaired live session is running the previously installed service/GUI.
 The durable changes are included in the rebuilt development packages below;
 installation and the next safe service start load them. Full stock Default
-app/FUSE RO/RW/removal, diagnostic export and the user's Arch machine remain
-manual gates. Window recovery alone does not establish those passes.
+app/FUSE RO/RW/removal and diagnostic export were still pending at this stage;
+the stock acceptance follow-up below completes them. The user's Arch machine
+remains a separate gate. Window recovery alone does not establish those passes.
 
 Local recovery and regression records are retained under
 `target/feature-verification-20261017/default-window-*` and
@@ -602,7 +612,7 @@ maintained runner. The real core diagnostic exporter is retained as the
 pass. This replaces a dated, generated exporter prerequisite in the Default
 harness.
 
-Current development artifacts (AppImage remains deferred):
+Input-tested artifacts before the Default teardown follow-up (AppImage deferred):
 
 | Artifact | Bytes | SHA-256 |
 | --- | ---: | --- |
@@ -614,4 +624,78 @@ Both packages pass payload/dependency/CLI/image-tool checks, private controller
 and GUI smoke, and exact Python, binary and native-library parity. Portable
 manifest/source/native/binary parity passes. These artifacts have not been
 installed over the personal controller or Default service; Arch host startup
-and the separate Default app-level gates remain open.
+remains open. The Default app-level gates were completed by the follow-up below.
+
+### Default teardown and full stock acceptance — 2026-10-18
+
+Actual stock Stop exposed two native lifetime issues: GLib's pool spawner
+inherited the session namespace, and Binder references needed normal GLib
+dispatch to finish cleanup. An empty shared pool now initializes in the private
+service baseline before any session. After stock Stop, the adapter joins its
+hardware helper, positively checks Android STOPPED, and collects unreachable
+Python Binder wrappers. The D-Bus Stop reply waits through bounded GLib timer
+callbacks, allowing deferred native cleanup without a nested event loop.
+
+Every attempt retains owner-thread, Android-state and exact namespace-holder
+checks. Concurrent Start/Stop and stale hardware callbacks cannot restart or
+modify a session during teardown. Success is sent only after namespace return,
+session-marker removal and configuration-lock release. Timeout retains the
+lock and permits a later Stop retry; no holder is exempted or forcibly killed.
+
+The normal maintained launcher, SHA256
+`b34cf225026d0e0d9bb7e985cb81c8c244876fd1b486695bce62886e8f91b0b0`,
+completed the full lifecycle with the final Debian package below and fresh
+Android 13 x86_64 Vanilla userdata:
+
+- Stock boot, production desktop-owner claim and complete Stop.
+- RO and RW readback through raw media, Android FUSE and an actual SDK28 app
+  UID. RO writes fail with EROFS; all three RW marker writes reach the source.
+- A real retained namespace helper makes Stop and configuration changes fail;
+  releasing it permits a successful retry with baseline namespace and lock free.
+- Removal/restart leaves no configured grant or raw/backend/FUSE share mount.
+  Only empty nonsymlink userdata directories remain. The app probes using the
+  original source token: read fails with ENOENT and write with EACCES; exact
+  source bytes are unchanged.
+- Four real core diagnostic exports in Running/Stopped, logs off/on, verified
+  session, desktop-owned mode 0600 and overwrite refusal. Independent inspection
+  verifies sections, bounds and redaction. Default log sources report unavailable
+  rather than including unverified or previous-session text.
+- Final stock Stop, empty delegated scope, authenticated copied-loop detach,
+  unchanged host IPv6 and host namespace/device/sysctl/service baseline.
+
+The earlier removal oracle required the whole target directory to disappear.
+Production correctly leaves an empty persistent mountpoint. The corrected
+oracle verifies source revocation directly and rejects retained mounts, content,
+symlinks and unreadable directories. The initial failed run is retained; its
+RO/RW results were not substituted for the final complete run.
+
+The final feature runner passes **214 Python tests**, **313 frontend cases in
+all 19 files**, **42 dedicated frontend cases**, **seven native suites**, and
+complete module staging/import. Nineteen asynchronous Stop tests include real
+GLib scheduling/dispatch ownership, actual flock/marker retention, callback
+generation guards, concurrent requests, timeouts, recovery and inherited stock
+D-Bus Start authorization. The native pool's actual isolated three-session
+namespace test also passes. Rust and Android/native input code are unchanged;
+exact package comparison against input-tested `29700b0b…` finds only the two
+Default Python service modules changed.
+
+Current development artifacts; AppImage remains deferred:
+
+| Artifact | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `target/releases/anvildroid-controller_0.1.3_amd64.deb` | 26,250,762 | `f75c765369015cc0d35289ba3e4a84c52e9e9f1ffb9505323cc3d37930359caa` |
+| `target/releases/anvildroid-controller-0.1.3-1-x86_64.pkg.tar.zst` | 26,064,303 | `124da722f496e4f4ff90b7c5a584c84036cc68d5bcfafc7850b8f097985d934d` |
+| `target/releases/waydroid-features-dev-20261018-default-async/` | directory | Per-file `SHA256SUMS` verified |
+
+Debian and Arch payload/dependency/CLI/image-tool checks, private packaged
+controller and UID1000 Xvfb/D-Bus GUI smoke, and Python/native/binary parity all
+pass. Portable manifest and source/native/binary parity pass. The exact accepted
+Debian copy is retained as `completion-default-async.deb` in the ignored
+verification directory. No package was installed over personal services.
+
+Small evidence and original report ownership/mode/hash metadata remain under
+`target/feature-verification-20261017/default-shares/final-pass-f75c765/`.
+Both final disposable roots were removed only after archive verification,
+empty-scope/loop/mount checks and exclusive launch locks. Arch host acceptance,
+physical desktop/editor/gameplay, Default ARM restore and online Google checks
+remain manual as listed above. No merge or release was performed.

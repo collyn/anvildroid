@@ -56,11 +56,17 @@ the host session's namespace.
 
 Stopping must verify that Android, hardware callbacks and namespace-holding
 helpers have exited before discarding the session namespace and releasing its
-configuration lock. If cleanup cannot verify this within its bounded wait,
+configuration lock. Default waits for deferred Binder cleanup through the normal
+service event loop and reports success only after that lock is released.
+If cleanup cannot verify this within its bounded wait,
 changes remain locked; resolve the reported stop failure and retry Stop.
 Cross-thread OTA remount callbacks are rejected while this integration owns the
 mount lifecycle. Perform image upgrades with Default stopped. Failed mount
 verification never turns a configured grant into reported active access.
+
+Revocation removes access to the chosen source. An empty mountpoint directory
+may remain in Android's own userdata after removal; it does not retain the grant.
+The integration does not recursively delete Android files at that location.
 
 The source folder is a directory grant: explicitly choose a folder containing only
 files Android should receive, and avoid adding secrets to it later. This retains
@@ -80,6 +86,16 @@ behavior. Removing the grant while stopped and restarting denied app and FUSE
 access without changing the source; every acceptance stop completed cleanup.
 Per-cycle package hashes and runtime-module byte parity are recorded with the
 acceptance evidence. These results do not establish behavior for other images or
-scoped-storage apps. A complete real stock Default service lifecycle remains
-unverified; its isolated mount and lifecycle fixtures pass. Source permissions
-and ACLs still apply, and AnvilDroid does not chmod the selected source.
+scoped-storage apps.
+
+The complete stock Default lifecycle also passes on copied Android 13 x86_64
+Vanilla images and package `f75c7653…`: RO/RW through raw storage, FUSE and a real
+SDK28 app UID, removal/restart, and successful stock Stop with baseline namespace
+and unlocked configuration. A retained namespace helper correctly rejects Stop
+and edits until it exits; retry then completes. Removal leaves only an ordinary
+empty userdata directory: no source sentinel or share mount remains, app reads
+fail with ENOENT, app writes fail with EACCES, and the source stays unchanged.
+The isolated scope is empty and copied-image loops are detached after the run.
+See [Default acceptance](../tests/acceptance/DEFAULT-ISOLATION.md) for reproduction
+and the exact provenance. Source permissions and ACLs still apply, and
+AnvilDroid does not chmod the selected source.

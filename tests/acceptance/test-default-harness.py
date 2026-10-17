@@ -17,6 +17,25 @@ harness = importlib.util.module_from_spec(spec); spec.loader.exec_module(harness
 
 
 class DefaultAcceptanceTests(unittest.TestCase):
+    def test_removed_source_rejects_exact_mounts_including_backend(self):
+        for malformed in ('', '   ', '42 1 0:5 / /data rw', '42 1 0:5 / /data rw missing separator fields'):
+            with self.subTest(malformed=malformed), self.assertRaises(RuntimeError):
+                harness.verify_removed_mounts(malformed)
+        for target in harness.REMOVED_TARGETS:
+            with self.subTest(target=target), self.assertRaises(RuntimeError):
+                harness.verify_removed_mounts('42 1 0:5 / ' + target + ' rw - tmpfs source rw')
+        harness.verify_removed_mounts('42 1 0:5 / /data/media rw - tmpfs source rw')
+        harness.verify_removed_mounts('42 1 0:5 / /sdcard/AnvilDroid/Acceptance-other rw - tmpfs source rw')
+        # Decode mountinfo escapes before exact comparison, not substring matching.
+        with self.assertRaises(RuntimeError):
+            harness.verify_removed_mounts('42 1 0:5 / /sdcard/AnvilDroid/Acceptan\\143e rw - tmpfs source rw')
+    def test_removed_target_allows_only_absent_or_ordinary_empty_directory(self):
+        harness.verify_removed_target('absent', True, False)
+        harness.verify_removed_target('directory', True, False)
+        for kind, empty, sentinel in [('directory', False, False), ('symlink', True, False),
+                                     ('other', True, False), ('directory', True, True), ('absent', True, True)]:
+            with self.subTest(kind=kind, empty=empty, sentinel=sentinel), self.assertRaises(RuntimeError):
+                harness.verify_removed_target(kind, empty, sentinel)
     def test_roots_reject_personal_relative_and_symlink_paths(self):
         for path in ('/var/lib/waydroid', '/tmp/anvil-live-foo', '/tmp/anvil-default-', 'anvil-default-foo', '/tmp/a/../anvil-default-good', '/tmp/anvil-default-space name', '/tmp/anvil-default-x;cmd'):
             with self.subTest(path=path), self.assertRaises(RuntimeError): harness.validate_root(Path(path), False)

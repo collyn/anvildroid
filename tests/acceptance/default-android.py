@@ -681,6 +681,29 @@ def prepare_audio(root, value, processes):
             require(process.poll() is None and time.monotonic() < deadline, 'Private real audio server failed: ' + label); time.sleep(.1)
 
 
+REMOVED_TARGETS = ('/data/media/0/AnvilDroid/Acceptance',
+                   '/mnt/pass_through/0/emulated/0/AnvilDroid/Acceptance',
+                   '/sdcard/AnvilDroid/Acceptance')
+
+
+def verify_removed_mounts(mountinfo):
+    require(mountinfo.strip() and len(mountinfo) <= 1024 * 1024, 'Removal mountinfo empty or exceeds bound')
+    points = []
+    for line in mountinfo.splitlines():
+        fields = line.split()
+        require(len(fields) >= 10 and '-' in fields[6:], 'Malformed guest mountinfo')
+        point = re.sub(r'\\([0-7]{3})', lambda match: chr(int(match.group(1), 8)), fields[4])
+        require(point not in REMOVED_TARGETS, 'Removed source still mounted at ' + point)
+        points.append(point)
+    return points
+
+
+def verify_removed_target(kind, empty, sentinel):
+    require(not sentinel, 'Removed source sentinel remains visible')
+    require(kind == 'absent' or (kind == 'directory' and empty),
+            'Removed target must be absent or an ordinary empty directory')
+
+
 def run_lifecycle(root, value, proxy, service, processes, report):
     import tools
     spec = importlib.util.spec_from_file_location('acceptance_linux', ASSETS / 'runtime-linux.py')
@@ -777,10 +800,32 @@ def run_lifecycle(root, value, proxy, service, processes, report):
             require(time.monotonic() < deadline, 'Production share mounted readback timed out: ' + str(status)); time.sleep(2)
     def probe(phase, writable, absent=False):
         snapshot = {p.name: p.read_bytes() for p in (home / 'share').iterdir() if p.is_file()}
+        if absent:
+            removal = {'shares': request('shares_get'), 'targets': []}
+            write_json(root / 'removal-metadata.json', removal)
+            require(removal['shares'].get('shares') == [], 'Removed share still configured')
+            removal['mountinfo'] = android('cat /proc/self/mountinfo')
+            write_json(root / 'removal-metadata.json', removal)
+            verify_removed_mounts(removal['mountinfo'])
+            for target in REMOVED_TARGETS:
+                command = ('p=' + shlex.quote(target) + '; '
+                    'if [ -L "$p" ]; then echo symlink; elif [ -d "$p" ]; then echo directory; '
+                    'elif [ -e "$p" ]; then echo other; else echo absent; fi; '
+                    'if [ -d "$p" ]; then if entries=$(ls -A "$p"); then '
+                    'if [ -n "$entries" ]; then echo nonempty; else echo empty; fi; '
+                    'else echo read-error; fi; else echo empty; fi; '
+                    'if [ -e "$p/acceptance-read" ] || [ -L "$p/acceptance-read" ]; then echo sentinel; else echo no-sentinel; fi; '
+                    'ls -ldn "$p" 2>&1 || true')
+                output = android(command)
+                item = {'target': target, 'metadata': output[:4096]}
+                removal['targets'].append(item); write_json(root / 'removal-metadata.json', removal)
+                fields = output.splitlines(); require(len(fields) >= 3, 'Incomplete removal path metadata')
+                require(fields[1] in ('empty', 'nonempty'), 'Cannot read removed target directory')
+                verify_removed_target(fields[0], fields[1] == 'empty', fields[2] == 'sentinel')
         for kind, base in (('raw', '/data/media/0/AnvilDroid/Acceptance'), ('fuse', '/sdcard/AnvilDroid/Acceptance')):
             marker = 'acceptance-write-' + token + '-' + phase + '-' + kind
             script = 'p=' + shlex.quote(base) + '; '
-            if absent: script += 'test ! -e "$p/acceptance-read"; test ! -e "$p"'
+            if absent: script += 'test ! -e "$p/acceptance-read"; test ! -L "$p/acceptance-read"'
             else:
                 script += 'test "$(cat "$p/acceptance-read")" = ' + shlex.quote(token) + '; '
                 if writable: script += 'printf %s ' + shlex.quote(token) + ' > "$p/' + marker + '"'
@@ -793,7 +838,7 @@ def run_lifecycle(root, value, proxy, service, processes, report):
         details = android('dumpsys package org.anvildroid.touchprobe')
         require('targetSdk=28' in details, 'Probe does not use actual SDK28 app identity')
         android('pm grant org.anvildroid.touchprobe android.permission.READ_EXTERNAL_STORAGE; pm grant org.anvildroid.touchprobe android.permission.WRITE_EXTERNAL_STORAGE')
-        app_token = token if not absent else 'revoked-' + token
+        app_token = token  # Removal must detect the original source sentinel, too.
         android('logcat -c; am start -n org.anvildroid.touchprobe/.MainActivity -a org.anvildroid.touchprobe.SHARE_PROBE --es share Acceptance --es token ' + shlex.quote(app_token))
         deadline = time.monotonic() + 30
         while True:

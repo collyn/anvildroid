@@ -90,37 +90,34 @@ properties, logcat and process state before teardown. Stop exceptions capture
 matching process and service-thread namespace identities without exempting or
 killing unknown holders.
 
-Current recorded result: an uninstrumented real stock Default boot reached
-`sys.boot_completed=1` in about 18 seconds and the production desktop-owner
-claim succeeded. The following stock Stop correctly failed closed because
-persistent service threads named `pool-spawner` and `Thread-3 (servi...)` retained
-the session mount namespace. A subsequent package moved the GLib pool spawner
-to the baseline namespace; an ordinary rerun still found the second holder.
-A separate bounded, read-only GDB diagnostic identified that holder's native
-stack as a libgbinder polling thread. Its backtrace and original file metadata
-are preserved under `native-gbinder-backtrace/`; the diagnostic detached and
-teardown positively confirmed an empty scope and detached task loops. This
-instrumented attempt is diagnostic evidence only. A further ordinary package
-with unreachable Binder-wrapper collection booted in 12 seconds but still hit
-the strict Stop holder deadline. Its post-error snapshot contained only the
-service owner thread, which that guard excludes; the exact holder at the
-deadline is therefore unresolved, and teardown again confirmed an empty scope
-and detached loops. No RO/RW/removal or Default diagnostic gate is
-claimed complete until that production lifecycle issue is resolved and the
-entire normal run passes. Evidence is under the ignored
-`target/feature-verification-20261017/default-shares/` directory.
+Recorded final result: the normal full lifecycle passed on 2026-10-18 with
+launcher SHA256 `b34cf225026d0e0d9bb7e985cb81c8c244876fd1b486695bce62886e8f91b0b0`
+and Debian SHA256 `f75c765369015cc0d35289ba3e4a84c52e9e9f1ffb9505323cc3d37930359caa`.
+The production desktop-owner claim, RO and RW raw/FUSE/app probes, retained
+helper rejection/configuration lock, recovery, removal and every final stock
+Stop passed. All four real core exports passed independent content inspection,
+including Running/Stopped sections, log opt-in, redaction, owner UID, mode 0600
+and overwrite refusal. Final teardown positively confirmed an empty delegated
+scope and detached task loops. Small evidence, original ownership/mode/hash
+metadata and the exact launcher are archived under the ignored
+`target/feature-verification-20261017/default-shares/final-pass-f75c765/`.
 
-Earlier failed fixture attempts and bounded syscall traces are retained as
-diagnostic evidence. Tracing proved Android's exact kmsg MKNOD requirement;
-the later traced run advanced into second stage but inherited diagnostic file
-size limits caused SIGXFSZ and cannot establish an acceptance result. Tracing,
-wrappers and those limits have been removed from the maintained normal runner.
+Earlier real runs exposed GLib/Binder threads retaining a session namespace.
+The production fix releases unreachable Binder wrappers after stock Stop and
+uses asynchronous DBus completion to let the ordinary GLib loop finish native
+cleanup. It preserves the strict namespace-holder guard: the real retained
+helper still caused Stop and configuration changes to fail until it exited.
+No nested event loop or holder exemption was used.
 
-Every completed attempt has verified an empty task scope, authenticated detach
-of only its own copied-image loops, unchanged original device metadata and
-unchanged host IPv6 values. Forced namespace disposal is reported as containment
-cleanup; it does not substitute for the successful stock Stop acceptance gate.
-The launcher never stops/restarts the personal Default runtime, writes host
-sysctls, loads/unloads modules, or changes host services. One disposable guest
-slot is used at a time. Real audio, gameplay/performance, user desktop/GPU and
-provider compatibility acceptance remain separate work.
+Removal revokes source access; an ordinary empty target directory can persist
+in Android userdata. The final oracle requires an empty configured-share list,
+no exact raw/backend/FUSE target mounts, no sentinel, and targets absent or
+nonsymlink empty directories before the app probe. The app uses the original
+source token, preventing a false negative from a changed comparison token. Its
+real UID 10125 received ENOENT when reading the removed sentinel and EACCES
+when writing; exact source bytes remained unchanged. The initial stricter
+whole-directory-absence failure and its evidence remain archived separately.
+
+This verifies disposable stock Default sharing and diagnostic export with
+software rendering. It does not establish physical desktop input behavior or
+gameplay on Default.

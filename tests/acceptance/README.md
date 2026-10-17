@@ -218,3 +218,14 @@ separately; successful export alone does not establish valid live sections.
 `lifecycle.json` records each passed phase and emits `complete` only after all
 stock stops succeed. Teardown must show an empty scope and authenticated task
 loop detach even on failure. Preserve evidence before removing the test root.
+
+The full disposable Default lifecycle passed on 2026-10-18 using launcher
+`b34cf225026d0e0d9bb7e985cb81c8c244876fd1b486695bce62886e8f91b0b0`
+and Debian package
+`f75c765369015cc0d35289ba3e4a84c52e9e9f1ffb9505323cc3d37930359caa`.
+RO/RW app probes, strict retained-helper rejection/recovery, removal, all stock
+stops and four independently inspected core exports passed. Removal permits
+an empty persistent directory but requires no share mount or source sentinel;
+the app probes with the original token and must still fail both read and write.
+See [Default isolation](DEFAULT-ISOLATION.md) for evidence and scope. These
+checks do not establish physical desktop input or gameplay on Default.
