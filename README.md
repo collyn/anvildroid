@@ -14,7 +14,7 @@ GPU settings and desktop windows.
 
 ## Current status
 
-As of **2026-10-15**, AnvilDroid has a Tauri 2 desktop GUI, a Python runtime
+As of **2026-10-17**, AnvilDroid has a Tauri 2 desktop GUI, a Python runtime
 controller and isolated Android workers, plus native Wayland window and input
 integration. Managed runtimes can run concurrently with separate app data,
 namespaces, Binder devices and resource limits. Existing Waydroid installations
@@ -48,6 +48,18 @@ compatibility across custom images, desktops and games is still being developed.
   **Resize app layout** updates Android task bounds; **Keep resolution** changes
   the host window while preserving the Android rendering resolution.
 - ARM translation selection: libndk_translation and libhoudini catalogs.
+- Per-app Fake Wi-Fi and mouse-as-touch settings, with runtime-scoped readback,
+  reset and rollback. Image support and app behavior still need live validation.
+- Explicit shared folders for managed runtimes, with read-only or read/write
+  mounts activated at the next start. See [folder sharing](docs/SHARED-FOLDERS.md).
+- Advanced native game controls: WASD joystick, swipe, repeated clicks, pointer
+  skill casting, finite two-point macros and bounded absolute aim/fire. The
+  editor preserves V1 profiles; see [controls and limits](docs/GAME-CONTROLS.md).
+- Runtime Components view separates cached ARM downloads from saved installation
+  state and links GAPPS to image creation. MicroG, SmartDock and Magisk remain
+  unavailable. See [components](docs/RUNTIME-TOOLS.md).
+- Local JSON diagnostic export with optional bounded logs and best-effort
+  redaction. Reports are saved privately and never uploaded automatically.
 - GPU diagnostics and per-runtime RAM/CPU/GPU settings.
 - Experimental NVIDIA rendering through ANGLE/Venus, including hybrid display
   presentation and ASTC texture decoding support.
@@ -177,6 +189,9 @@ Apps page while the selected runtime is running.
 Use **Images** to download/import images, the runtime Settings button to adjust
 its configuration, and **Settings** for GUI preferences, runtime start on boot
 and ARM packages. **Open Waydroid** opens the selected runtime's full Android UI.
+Runtime Settings also contains **Components**, **Shared folders** and
+**Export diagnostics**. In the app context menu, **Compatibility** opens the
+per-app settings; see [app compatibility](docs/APP-COMPATIBILITY.md).
 
 For CLI commands and their supported runtime scope, run `anvildroid --help`.
 The CLI's source version follows the workspace version automatically.

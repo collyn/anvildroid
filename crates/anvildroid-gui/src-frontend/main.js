@@ -963,6 +963,7 @@ btnRefreshApps.addEventListener('click', refreshApps);
 let activeMenu = null;
 async function appMenuAction(action, pkg, label, blockReason, runtimeId = 'default') {
   if(probeInstallBusy)return;
+  if(action==='compatibility')return featureTools().compatibility.open(runtimeId,pkg,label);
   if(action==='keymap')return openKeymapOverlay(runtimeId,pkg);
   if (action === 'remove-shortcut') {
     if (pendingLaunch || pendingAppAction) return;
@@ -1055,6 +1056,7 @@ function showContextMenu(e, pkg, label, runtimeId = 'default') {
     ['details', 'App details'],
     ['favorite', library.favorites.includes(pkg) ? 'Remove favorite' : 'Add favorite'],
     ['info', 'Android App Info'],
+    ['compatibility', 'Compatibility…'],
     ['force-stop', blockReason ? 'Force-stop (protected component)' : 'Force-stop…'],
     ['shortcut', 'Create/update menu shortcut'],
     ['uninstall', blockReason ? 'Uninstall (protected component)' : 'Uninstall…'],
@@ -1681,6 +1683,35 @@ const controllerRequest = async request => {
   }
   return tauriInvoke('runtime_controller', { request });
 };
+let runtimeFeatureTools = null;
+function featureTools() {
+  if (!runtimeFeatureTools) {
+    runtimeFeatureTools = {
+      compatibility: AnvilAppCompatibility.create({request:controllerRequest, document, toast:showAppToast}),
+      shares: AnvilRuntimeShares.create({request:controllerRequest, document, toast:showAppToast,
+        chooseDirectory:() => window.__TAURI__.dialog.open({directory:true, multiple:false, title:'Choose a folder to share with Android'})}),
+      tools: AnvilRuntimeTools.create({request:controllerRequest, invoke:tauriInvoke, document, toast:showAppToast,
+        chooseReport:defaultPath => window.__TAURI__.dialog.save({defaultPath, title:'Save diagnostic report', filters:[{name:'Diagnostic JSON report', extensions:['json']}]}),
+        confirm:(message, options) => AppDialog.confirm(message, options),
+        openImages:kind => {
+          if (kind === 'arm') {
+            navigatePage('settings', false);
+            refreshArmSources().then(() => document.getElementById('arm-source-panel')?.scrollIntoView({block:'center'}))
+              .catch(error => showAppToast(String(error.message || error), 'error'));
+          } else navigatePage('images', false);
+        }, refreshRuntime:() => refreshController()})
+    };
+  }
+  return runtimeFeatureTools;
+}
+for (const [id, kind] of [['runtime-components-open','components'], ['runtime-shares-open','shares'], ['runtime-diagnostics-open','diagnostics']]) {
+  document.getElementById(id).addEventListener('click', () => {
+    const record = runtimeRecord(runtimeSettingsId);
+    if (!record) { showAppToast('Refresh this runtime before opening its tools.', 'info'); return; }
+    if (kind === 'shares') featureTools().shares.open(record);
+    else featureTools().tools[kind](record);
+  });
+}
 let existingRuntime = null, existingRuntimeError = '', existingRuntimeLoading = false;
 function runtimeRecord(id) {
   return id === 'default' ? existingRuntime : controllerRecords.find(record => record.id === id);
@@ -2914,6 +2945,9 @@ function openRuntimeSettings(id) {
   for (const key of ['gpu', 'resources', 'arm', 'display']) runtimeSettingsOpen.add(id + ':' + key);
   runtimeSettingsId = id;
   selectedRuntimeId = id;
+  const shareButton = document.getElementById('runtime-shares-open');
+  shareButton.disabled = id === 'default';
+  shareButton.title = id === 'default' ? 'Shared folders use the isolated mount lifecycle of managed runtimes.' : '';
   renderController();
   navigatePage('runtime-settings', false);
   controllerRefreshDone.then(() => {

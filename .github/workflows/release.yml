@@ -38,6 +38,12 @@ jobs:
             echo "rpm=$(python3 scripts/release-version.py --rpm)"
             case "$version" in *-*) echo 'prerelease=true';; *) echo 'prerelease=false';; esac
           } >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@v4
+        with: {node-version: '22'}
+      - name: Test runtime features without Android
+        run: sh scripts/test-runtime-features.sh
+      - name: Test shared folders in a private PID1 mount namespace
+        run: sudo python3 services/shares-test.py --mount-test
       - name: Test preparation without initialized Waydroid host
         run: python3 services/provision-support-test.py
       - name: Test legacy Debian installation permissions

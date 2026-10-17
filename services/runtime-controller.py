@@ -70,6 +70,10 @@ spec_existing = importlib.util.spec_from_file_location('runtime_existing', Path(
 existing_module = importlib.util.module_from_spec(spec_existing)
 spec_existing.loader.exec_module(existing_module)
 
+spec_features = importlib.util.spec_from_file_location('runtime_features', Path(__file__).with_name('runtime-features.py'))
+features_module = importlib.util.module_from_spec(spec_features)
+spec_features.loader.exec_module(features_module)
+
 class RequestError(Exception):
     def __init__(self, code, message):
         self.code, self.message = code, message
@@ -838,6 +842,11 @@ class Store:
     def _dispatch(self, request, uid, apk_fd=None):
         require(isinstance(request, dict), 'INVALID_REQUEST', 'Expected a JSON object')
         operation = request.get('op')
+        if isinstance(operation, str) and operation in features_module.FIELDS:
+            try:
+                return features_module.dispatch(self, request, uid, apk_fd)
+            except (OSError, RuntimeError, ValueError) as error:
+                raise RequestError('FEATURE', str(error)) from error
         selection = None
         if operation == 'existing_import':
             require(set(request) == {'op', 'id', 'name'} and request['id'] == 'default' and apk_fd is None,

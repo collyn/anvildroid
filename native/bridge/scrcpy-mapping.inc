@@ -1,3 +1,6 @@
+static void map_advanced_reset(void);
+static int map_advanced_motion(struct object *,int32_t,int32_t);
+static int map_advanced_button(struct object *,uint32_t,uint32_t);
 /* Experimental keymap sink. The runtime worker owns a control-only scrcpy
  * server at the fixed abstract name; network namespaces keep runtimes apart. */
 extern int socket(int, int, int);
@@ -45,6 +48,7 @@ static int absolute_pointer_packet(struct object *o,int action,int changed) {
   return 1;
 }
 static int absolute_pointer_update(struct object *o,int32_t x,int32_t y,int motion) {
+  if(motion&&map_advanced_motion(o,x,y))return 1;
   o->absolute_valid=0;
   if(!absolute_pointer_for(o))return 0;
   struct object *surface=find(o->pointer_surface),*s=game_fit_owner(surface);
@@ -68,6 +72,7 @@ static int absolute_pointer_update(struct object *o,int32_t x,int32_t y,int moti
   return 1;
 }
 static int absolute_pointer_button(struct object *o,uint32_t button,uint32_t state) {
+  if(map_advanced_button(o,button,state))return 1;
   if(!absolute_pointer_for(o))return 0;
   int bit=button==0x110?1:button==0x111?2:button==0x112?4:0;
   if(!bit)return 1;
@@ -76,6 +81,7 @@ static int absolute_pointer_button(struct object *o,uint32_t button,uint32_t sta
   return 1;
 }
 static void absolute_pointer_leave(struct object *o) {
+  scrcpy_mapping_cancel();
   int buttons=o->absolute_buttons;o->absolute_buttons=0;
   if(buttons)absolute_pointer_packet(o,1,buttons);
   o->absolute_valid=0;
@@ -125,6 +131,7 @@ static int map_connect(void) {
 static void map_disconnect(void) {
   if (map_fd >= 0) close(map_fd);
   map_fd = -1; map_broken = 0; map_count = 0;
+  map_advanced_reset();
   memset(map_points,0,sizeof(map_points));
 }
 static void scrcpy_mapping_cancel(void) {
@@ -132,7 +139,7 @@ static void scrcpy_mapping_cancel(void) {
     unsigned char packet[32]={2,3};
     if(send(map_fd,packet,sizeof(packet),0x4000)!=(long)sizeof(packet))map_disconnect();
   }
-  map_count=0;memset(map_points,0,sizeof(map_points));
+  map_count=0;memset(map_points,0,sizeof(map_points));map_advanced_reset();
 }
 static int map_task(struct object *s, int *x, int *y, int *w, int *h) {
   const char *package=keymap_package(s);
@@ -168,14 +175,186 @@ static int map_send(struct object *s, int action, int pointer, int x, int y) {
   __android_log_print(4,"AnvilKeymap","touch package=%s action=%d pointer=%d xy=%d,%d display=%dx%d",s->app_id,action,pointer,px,py,dw,dh);
   return 1;
 }
+/* Bounded state machine driven only under the bridge mutex. No worker threads,
+ * queued commands or retained overlay pointers. Each control owns one contact. */
+struct map_advanced {
+  struct object *owner;
+  struct keymap_point point;
+  char package[241];
+  int task, elapsed, total, down, phase, cycles, dx, dy;
+  int tx,ty,tw,th,lx,ly;
+  long started;
+};
+static struct map_advanced map_advanced[10];
+static int map_fire_slot=-1;
+static struct object *map_fire_pointer;
+static int map_fire_latched; /* Drain consumed mouse-up even after key release/cancel. */
+static void map_advanced_reset(void) { memset(map_advanced,0,sizeof(map_advanced));map_fire_slot=-1; }
+static int map_advanced_valid(struct map_advanced *a) {
+  int found=0;
+  for(struct object *s=objects;s;s=s->next)if(s==a->owner)found=1;
+  int tx,ty,tw,th;
+  if(!found || !map_task(a->owner,&tx,&ty,&tw,&th))return 0;
+  const char *package=keymap_package(a->owner);
+  if(!package)return 0;
+  if(!a->tw){snprintf(a->package,sizeof(a->package),"%s",package);a->tx=tx;a->ty=ty;a->tw=tw;a->th=th;}
+  return !strcmp(package,a->package) && tx==a->tx && ty==a->ty && tw==a->tw && th==a->th &&
+    !a->owner->resize.dragging && keymap_task_owner(a->owner)==a->task &&
+    !a->owner->overlay && !a->owner->keymap_disabled;
+}
+static int map_advanced_emit(int slot,int action,int x,int y) {
+  struct map_advanced *a=&map_advanced[slot];
+  if(!map_advanced_valid(a)||!map_send(a->owner,action,slot,x,y)) {
+    scrcpy_mapping_cancel();return 0;
+  }
+  a->down=action!=1;a->lx=x;a->ly=y;return 1;
+}
+static void map_advanced_end(int slot) {
+  if(map_advanced[slot].point.kind==KEYMAP_AIM && map_fire_slot>=0 && map_fire_slot!=slot) {
+    int fire=map_fire_slot;map_fire_slot=-1;map_advanced_end(fire);
+  }
+  struct map_advanced *a=&map_advanced[slot];
+  if(a->down&&!map_advanced_emit(slot,1,a->lx,a->ly))return;
+  memset(a,0,sizeof(*a));map_points[slot]=0;
+  if(map_count>0)--map_count;
+}
+static long map_monotonic_ms(void) {
+  struct { long sec,nsec; } stamp;
+  if(syscall(228,1,&stamp))return 0; /* Linux/Android x86_64 CLOCK_MONOTONIC */
+  return stamp.sec*1000+stamp.nsec/1000000;
+}
+static void map_advanced_advance(int milliseconds) {
+  for(int i=0;i<10;++i) {
+    struct map_advanced *a=&map_advanced[i];
+    if(!a->owner)continue;
+    if(!map_advanced_valid(a)){scrcpy_mapping_cancel();return;}
+    struct keymap_point *p=&a->point;
+    if(p->kind==KEYMAP_DPAD||p->kind==KEYMAP_AIM||p->kind==KEYMAP_SKILL)continue;
+    a->elapsed+=milliseconds;
+    if(p->kind==KEYMAP_MACRO)a->total+=milliseconds;
+    if(p->kind==KEYMAP_MACRO && a->total>=p->duration*(p->repeats*2-1)) {map_advanced_end(i);continue;}
+    if(p->kind==KEYMAP_SWIPE) {
+      int t=a->elapsed>p->duration?p->duration:a->elapsed;
+      int x=p->nx+(p->ex-p->nx)*t/p->duration;
+      int y=p->ny+(p->ey-p->ny)*t/p->duration;
+      if(!map_advanced_emit(i,2,x,y))return;
+      if(t==p->duration)map_advanced_end(i);
+    } else if(a->elapsed>=p->duration) {
+      a->elapsed=0;
+      if(a->down) {
+        if(!map_advanced_emit(i,1,a->lx,a->ly))return;
+        if(p->kind==KEYMAP_MACRO && ++a->cycles>=p->repeats){map_advanced_end(i);continue;}
+      } else {
+        /* Macro alternates the two authored points; repeat stays at origin. */
+        int end=p->kind==KEYMAP_MACRO&&(a->cycles&1);
+        if(!map_advanced_emit(i,0,end?p->ex:p->nx,end?p->ey:p->ny))return;
+      }
+    }
+  }
+}
+static void scrcpy_mapping_tick(void) {
+  long now=map_monotonic_ms();
+  for(int i=0;i<10;++i)if(map_advanced[i].owner) {
+    if(!map_advanced[i].started)map_advanced[i].started=now;
+    long delta=now-map_advanced[i].started;
+    if(delta<0){scrcpy_mapping_cancel();return;}
+    if(delta>10000)delta=10000;
+    /* Advance all controls by the shared poll interval, once. */
+    for(int j=0;j<10;++j)if(map_advanced[j].owner)map_advanced[j].started=now;
+    map_advanced_advance((int)delta);return;
+  }
+}
+static int map_advanced_key(struct object *s,struct keymap_overlay *h,int index,int key,int state) {
+  struct keymap_point p=h->model.points[index];
+  int slot=-1;
+  for(int i=0;i<10;++i)if(map_advanced[i].owner==s&&map_advanced[i].point.key==p.key)slot=i;
+  if(p.kind==KEYMAP_DPAD) {
+    if(!map_connect())return 1;
+    if(slot<0&&!state)return 1;
+    if(slot<0){for(int i=0;i<10;++i)if(!map_points[i]){slot=i;break;}}
+    if(slot<0)return 1;
+    struct map_advanced *a=&map_advanced[slot];
+    if(!a->owner){*a=(struct map_advanced){.owner=s,.point=p,.task=h->task};map_points[slot]=p.key;++map_count;}
+    int bit=key==17?1:key==30?2:key==31?4:8;
+    if(state)a->phase|=bit;else a->phase&=~bit;
+    a->dx=!!(a->phase&8)-!!(a->phase&2);a->dy=!!(a->phase&4)-!!(a->phase&1);
+    if(!a->phase){map_advanced_end(slot);return 1;}
+    int radius=p.ex-p.nx,vertical=p.ey-p.ny;
+    if(radius<0)radius=-radius;
+    if(vertical<0)vertical=-vertical;
+    if(vertical>radius)radius=vertical;
+    if(radius<1024)radius=1024;
+    if(radius>16384)radius=16384;
+    if(a->dx&&a->dy)radius=radius*46341/65536; /* normalized diagonal */
+    map_advanced_emit(slot,a->down?2:0,p.nx+a->dx*radius,p.ny+a->dy*radius);return 1;
+  }
+  if(!state){if(slot>=0)map_advanced_end(slot);return 1;}
+  if(slot>=0)return 1;
+  for(int i=0;i<10;++i)if(!map_points[i]){slot=i;break;}
+  if(slot<0)return 1;
+  map_advanced[slot]=(struct map_advanced){.owner=s,.point=p,.task=h->task};
+  /* Connect before registering state: a fresh connection clears contact slots. */
+  if(!map_connect()){map_advanced_reset();return 1;}
+  map_points[slot]=p.key;++map_count;
+  map_advanced[slot].started=map_monotonic_ms();
+  map_advanced_emit(slot,0,p.nx,p.ny);return 1;
+}
+/* Aim/skill use content-local pointer displacement while their key is held.
+ * Ownership ends immediately on key-up or the existing pointer-leave path. */
+static int map_advanced_motion(struct object *o,int32_t x,int32_t y) {
+  struct object *s=game_fit_owner(find(o->pointer_surface));
+  if(!s)return 0;
+  for(int i=0;i<10;++i){struct map_advanced *a=&map_advanced[i];
+    if(i==map_fire_slot||a->point.key==768||a->owner!=s||(a->point.kind!=KEYMAP_AIM&&a->point.kind!=KEYMAP_SKILL))continue;
+    int tx,ty,w,h;
+    if(!map_task(s,&tx,&ty,&w,&h)){scrcpy_mapping_cancel();return 1;}
+    int sx=0,sy=0;struct object *surface=find(o->pointer_surface);
+    if(surface!=s)for(struct object *sub=objects;sub;sub=sub->next)
+      if(sub->surface==surface&&sub->parent==s&&object_is(sub,"wl_subsurface")){sx=sub->x;sy=sub->y;break;}
+    int px=(int)(((int64_t)x+256LL*sx)*hwc_scale_120/(256*120))+s->frame_origin_x;
+    int py=(int)(((int64_t)y+256LL*sy)*hwc_scale_120/(256*120))+s->frame_origin_y;
+    int nx=keymap_normalize(px-tx,w),ny=keymap_normalize(py-ty,h);
+    if(a->point.kind==KEYMAP_SKILL){a->point.ex=nx;a->point.ey=ny;}
+    map_advanced_emit(i,2,nx,ny);return 1;
+  }
+  return 0;
+}
+
+static int map_advanced_button(struct object *o,uint32_t button,uint32_t state) {
+  if(button!=0x110)return 0;
+  if(map_fire_latched&&map_fire_pointer==o) {
+    if(state)return 1;
+    map_fire_latched=0;map_fire_pointer=0;
+    if(map_fire_slot>=0){int slot=map_fire_slot;map_fire_slot=-1;map_advanced_end(slot);}
+    return 1;
+  }
+  struct object *s=game_fit_owner(find(o->pointer_surface));
+  for(int i=0;i<10;++i)if(map_advanced[i].owner==s&&s&&map_advanced[i].point.kind==KEYMAP_AIM) {
+    if(!state){if(map_fire_slot>=0){int slot=map_fire_slot;map_fire_slot=-1;map_advanced_end(slot);}return 1;}
+    map_fire_latched=1;map_fire_pointer=o;
+    if(map_fire_slot>=0)return 1;
+    for(int j=0;j<10;++j)if(!map_points[j]) {
+      struct keymap_point p=map_advanced[i].point;
+      p.kind=KEYMAP_SKILL;p.key=768; /* fire stays stationary at authored endpoint */
+      map_advanced[j]=(struct map_advanced){.owner=s,.task=map_advanced[i].task,.point=p};
+      map_points[j]=768;++map_count;map_fire_slot=j;
+      map_advanced_emit(j,0,p.ex,p.ey);break;
+    }
+    return 1;
+  }
+  return 0;
+}
 static int scrcpy_mapping_key(struct object *s, struct keymap_overlay *h, int key, int state) {
   if(!s||!h||h->passive!=1||h->model.count<1||key<2||key>=768)return 0;
   int i=-1;for(int j=0;j<h->model.count;++j)if(h->model.points[j].key==key){i=j;break;}
+  if(i<0)for(int j=0;j<h->model.count;++j)
+    if(h->model.points[j].kind==KEYMAP_DPAD&&(key==17||key==30||key==31||key==32)){i=j;break;}
   if(i<0)return 0;
   if(!keymap_package(s)||strcmp(keymap_package(s),h->package)||keymap_task_owner(s)!=h->task) {
     scrcpy_mapping_cancel();return 1;
   }
   if(map_broken)return 1;
+  if(h->model.points[i].kind)return map_advanced_key(s,h,i,key,state);
   if(state){ if(map_count>=10)return 1; for(int j=0;j<10;++j)if(map_points[j]==key)return 1;
     int slot=0;while(slot<10&&map_points[slot])++slot;
     if(map_send(s,0,slot,h->model.points[i].nx,h->model.points[i].ny)) {

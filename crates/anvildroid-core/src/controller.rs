@@ -10,6 +10,24 @@ use std::time::Duration;
 #[serde(tag = "op", rename_all = "lowercase", deny_unknown_fields)]
 pub enum Request {
     List {},
+    #[serde(rename = "compatibility_get")]
+    CompatibilityGet { id: String, package: String },
+    #[serde(rename = "compatibility_set")]
+    CompatibilitySet { id: String, package: String, settings: CompatibilitySettings, revision: String },
+    #[serde(rename = "compatibility_reset")]
+    CompatibilityReset { id: String, package: String, revision: String },
+    #[serde(rename = "shares_get")]
+    SharesGet { id: String },
+    #[serde(rename = "shares_set")]
+    SharesSet { id: String, name: String, source: String, read_only: bool },
+    #[serde(rename = "shares_remove")]
+    SharesRemove { id: String, name: String },
+    #[serde(rename = "components_get")]
+    ComponentsGet { id: String },
+    #[serde(rename = "components_set")]
+    ComponentsSet { id: String, component_id: String, enabled: bool, archive_sha256: Option<String>, revision: String },
+    #[serde(rename = "diagnostics_collect")]
+    DiagnosticsCollect { id: String, include_logs: bool },
     #[serde(rename = "adb_info")]
     AdbInfo { id: String },
     #[serde(rename = "adb_set")]
@@ -197,6 +215,13 @@ pub enum Request {
     Refresh {
         id: String,
     },
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CompatibilitySettings {
+    pub fake_wifi: bool,
+    pub mouse_as_touch: bool,
 }
 
 fn display_basename(value: &str, uid: u32) -> Option<String> {
@@ -396,8 +421,13 @@ fn exchange_files(
         return Err("Refusing endpoint not owned by root".into());
     }
     // ARM staging fsyncs hundreds of library files before publishing a version.
-    let reply_timeout = if matches!(&request, Request::ArmImport {} | Request::ArmSet { .. }) {
+    let reply_timeout = if matches!(&request, Request::ArmImport {} | Request::ArmSet { .. } | Request::ComponentsSet { .. }) {
         180
+    } else if matches!(&request, Request::CompatibilityGet { .. } | Request::CompatibilitySet { .. }
+        | Request::CompatibilityReset { .. } | Request::DiagnosticsCollect { .. } | Request::ComponentsGet { .. }) {
+        120
+    } else if matches!(&request, Request::SharesSet { .. }) {
+        15
     } else if matches!(&request, Request::SystemIntegration { .. } | Request::BackendSet { .. }) {
         60
     } else if matches!(&request, Request::Reinstall { id, .. } if id == "default") {
@@ -485,6 +515,43 @@ fn decode(reader: impl BufRead) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn feature_requests_roundtrip_and_reject_caller_privileged_fields() {
+        let revision = "a".repeat(64);
+        for value in [
+            serde_json::json!({"op":"compatibility_get","id":"default","package":"com.example.app"}),
+            serde_json::json!({"op":"compatibility_set","id":"default","package":"com.example.app","settings":{"fake_wifi":true,"mouse_as_touch":false},"revision":revision}),
+            serde_json::json!({"op":"compatibility_reset","id":"default","package":"com.example.app","revision":revision}),
+            serde_json::json!({"op":"shares_get","id":"r-11111111111111111111111111111111"}),
+            serde_json::json!({"op":"shares_set","id":"r-11111111111111111111111111111111","name":"docs","source":"/home/user/docs","read_only":true}),
+            serde_json::json!({"op":"shares_remove","id":"r-11111111111111111111111111111111","name":"docs"}),
+            serde_json::json!({"op":"components_get","id":"default"}),
+            serde_json::json!({"op":"components_set","id":"default","component_id":"libndk","enabled":false,"archive_sha256":null,"revision":revision}),
+            serde_json::json!({"op":"diagnostics_collect","id":"default","include_logs":false}),
+        ] {
+            let request: Request = serde_json::from_value(value.clone()).unwrap();
+            assert_eq!(serde_json::to_value(request).unwrap(), value);
+            for (key, privileged) in [("uid", serde_json::json!(0)), ("socket", serde_json::json!("/tmp/fake")), ("command", serde_json::json!("id"))] {
+                let mut invalid = value.clone();
+                invalid[key] = privileged;
+                assert!(serde_json::from_value::<Request>(invalid).is_err());
+            }
+        }
+    }
+    #[test]
+    fn feature_boolean_and_compatibility_settings_types_are_strict() {
+        for value in [
+            serde_json::json!({"op":"compatibility_set","id":"default","package":"com.example.app","settings":{"fake_wifi":1,"mouse_as_touch":false},"revision":"revision"}),
+            serde_json::json!({"op":"compatibility_set","id":"default","package":"com.example.app","settings":{"fake_wifi":true},"revision":"revision"}),
+            serde_json::json!({"op":"compatibility_set","id":"default","package":"com.example.app","settings":{"fake_wifi":true,"mouse_as_touch":false,"property":"ro.foo"},"revision":"revision"}),
+            serde_json::json!({"op":"shares_set","id":"default","name":"docs","source":"/home/user/docs","read_only":"true"}),
+            serde_json::json!({"op":"components_set","id":"default","component_id":"libndk","enabled":"false","archive_sha256":null,"revision":"revision"}),
+            serde_json::json!({"op":"diagnostics_collect","id":"default","include_logs":"false"}),
+        ] {
+            assert!(serde_json::from_value::<Request>(value).is_err());
+        }
+    }
+
     #[test]
     fn window_activation_is_optional_and_preserved() {
         let base = serde_json::json!({"op":"app_action","id":"r-test","action":"full_ui","package":"org.anvildroid.desktop"});

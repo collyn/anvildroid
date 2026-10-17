@@ -159,24 +159,32 @@ static void keymap_editor_paint(uint32_t *p, int w, int h,
     int scale = keymap_text_width(label,2)>44?1:2;
     keymap_text_scaled(p, w, h, cx-keymap_text_width(label,scale)/2, cy - 7,
                        label, 0xfff3faff, scale);
-    if (q->hold)
-      keymap_text_scaled(p, w, h, cx-keymap_text_width("Hold",1)/2, cy + 12, "Hold", 0xff8cdbff, 1);
+    if (q->hold || q->kind)
+      keymap_text_scaled(p, w, h, cx-keymap_text_width(q->kind?keymap_kind_name(q->kind):"Hold",1)/2, cy + 12, q->kind?keymap_kind_name(q->kind):"Hold", 0xff8cdbff, 1);
     keymap_box(p, w, h, (struct keymap_rect){cx + 17, cy - 33, 18, 18}, 4,
                0xff243b50);
     keymap_text_scaled(p, w, h, cx+26-keymap_text_width("X",1)/2, cy-28, "X", 0xff8bd8ff, 1);
   }
   const char *hint = f->save_pending ? "Saving..."
                      : m->error == 1 ? "Key already used"
-                     : m->error == 2 ? "Assign every key"
+                     : m->error == 2 ? "Check keys and WASD"
                      : m->error == 3 ? "Save failed"
                      : m->placing    ? "Click to place a key"
-                     : selected      ? "Press a key or drag"
+                     : selected      ? "Key / F6 type / F7 end"
                                      : "Select or add a key";
   if (!f->panel_hidden) {
     keymap_box(p, w, h,
                (struct keymap_rect){12, 12, w < 360 ? w - 88 : 236, 48}, 8,
                0xee172331);
-    keymap_text_scaled(p, w, h, 24, 22, "Keyboard mapping", 0xffecf6ff, 1);
+    char title[64];
+    if(selected&&m->points[m->selected].kind==KEYMAP_MACRO)
+      snprintf(title,sizeof(title),"Macro %dms x%d F8/F9",m->points[m->selected].duration,m->points[m->selected].repeats);
+    else if(selected&&(m->points[m->selected].kind==KEYMAP_SWIPE||m->points[m->selected].kind==KEYMAP_REPEAT))
+      snprintf(title,sizeof(title),"%s %dms F8 interval",keymap_kind_name(m->points[m->selected].kind),m->points[m->selected].duration);
+    else if(selected&&m->points[m->selected].kind)
+      snprintf(title,sizeof(title),"%s F6 type / F7 target",keymap_kind_name(m->points[m->selected].kind));
+    else snprintf(title,sizeof(title),"Keyboard mapping");
+    keymap_text_scaled(p, w, h, 24, 22, title, 0xffecf6ff, 1);
     keymap_text_scaled(p, w, h, 24, 40, hint,
                        m->error ? 0xffffad99 : 0xff89d5ff, 1);
   }
@@ -195,9 +203,9 @@ static void keymap_editor_paint(uint32_t *p, int w, int h,
                          1);
       keymap_text_scaled(p, w, h, x + 16, 190, "Press behavior", 0xff8194aa, 1);
       if (h >= 470) {
-        keymap_text_scaled(p, w, h, x + 16, 322, "Drag to reposition",
+        keymap_text_scaled(p, w, h, x + 16, 322, "F8 interval / F9 count",
                            0xff9cadc0, 1);
-        keymap_text_scaled(p, w, h, x + 16, 339, "F2 / Esc cancels changes",
+        keymap_text_scaled(p, w, h, x + 16, 339, "F6 type / F7 endpoint",
                            0xff9cadc0, 1);
       }
       if (h >= 490) {
@@ -206,8 +214,10 @@ static void keymap_editor_paint(uint32_t *p, int w, int h,
         keymap_text_scaled(p, w, h, x + 16, h - 108,
                            "For this app window", 0xff8194aa, 1);
       }
-      char count[28];
-      snprintf(count, sizeof(count), "%d of 64 controls", m->count);
+      char count[48];
+      if(selected&&m->points[m->selected].kind)
+        snprintf(count,sizeof(count),"%s",keymap_kind_name(m->points[m->selected].kind));
+      else snprintf(count, sizeof(count), "%d of 64 controls", m->count);
       keymap_text_scaled(p, w, h, x + 16, h - 88, count, 0xff9cadc0, 1);
     }
     int hold = selected ? m->points[m->selected].hold : f->placement_hold;

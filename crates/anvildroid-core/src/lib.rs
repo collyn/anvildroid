@@ -18,3 +18,4 @@ pub mod scope;
 pub mod managed;
 
 pub mod adb;
+pub mod diagnostics;

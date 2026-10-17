@@ -240,6 +240,20 @@ async fn get_runtime_catalog() -> Result<anvildroid_core::registry::Catalog, Str
     blocking(|| anvildroid_core::registry::catalog().map_err(|e| e.to_string())).await
 }
 
+// Controller mutations of Default share the guard used by legacy app/boot actions.
+// The root controller cannot see this GUI process's in-flight legacy operations.
+fn requires_legacy_operation_guard(request: &anvildroid_core::controller::Request) -> bool {
+    use anvildroid_core::controller::Request;
+    match request {
+        Request::ResourcesSet { id, .. } | Request::GpuSet { id, .. }
+        | Request::ArmSet { id, .. } | Request::ExistingClaim { id } | Request::SystemIntegration { id }
+        | Request::ExistingImport { id, .. } | Request::Rename { id, .. }
+        | Request::CompatibilitySet { id, .. } | Request::CompatibilityReset { id, .. }
+        | Request::ComponentsSet { id, .. } => id == scope::LEGACY_ID,
+        _ => false,
+    }
+}
+
 #[tauri::command]
 async fn runtime_controller(
     mut request: anvildroid_core::controller::Request,
@@ -252,13 +266,7 @@ async fn runtime_controller(
     let guard = guard.0.clone();
     blocking(move || {
         use anvildroid_core::controller::Request;
-        let changes_existing = match &request {
-            Request::ResourcesSet { id, .. } | Request::GpuSet { id, .. }
-            | Request::ArmSet { id, .. } | Request::ExistingClaim { id } | Request::SystemIntegration { id }
-            | Request::ExistingImport { id, .. }
-            | Request::Rename { id, .. } => id == scope::LEGACY_ID,
-            _ => false,
-        };
+        let changes_existing = requires_legacy_operation_guard(&request);
         let _operation = if changes_existing {
             scope::ensure_legacy(scope::LEGACY_ID).map_err(|e| e.to_string())?;
             Some(guard.try_lock().map_err(|_| "Another operation is in progress.".to_string())?)
@@ -284,6 +292,11 @@ async fn runtime_controller(
         }
         anvildroid_core::controller::request(request)
     }).await
+}
+
+#[tauri::command]
+async fn export_runtime_diagnostics(id: String, path: String, include_logs: bool) -> Result<serde_json::Value, String> {
+    blocking(move || anvildroid_core::diagnostics::export(&id, std::path::Path::new(&path), include_logs)).await
 }
 
 #[tauri::command]
@@ -1290,6 +1303,7 @@ fn main() {
             get_library,
             get_runtime_catalog,
             runtime_controller,
+            export_runtime_diagnostics,
             adb_host_status,
             adb_host_action,
             start_runtime_controller,
@@ -1370,6 +1384,32 @@ fn hex_val(b: u8) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn new_default_mutations_share_the_legacy_operation_guard() {
+        use anvildroid_core::controller::Request;
+        let revision = "a".repeat(64);
+        for request in [
+            serde_json::json!({"op":"compatibility_set","id":"default","package":"com.example.app","settings":{"fake_wifi":true,"mouse_as_touch":false},"revision":revision}),
+            serde_json::json!({"op":"compatibility_reset","id":"default","package":"com.example.app","revision":revision}),
+            serde_json::json!({"op":"components_set","id":"default","component_id":"libndk","enabled":false,"archive_sha256":null,"revision":revision}),
+        ] {
+            let decoded: Request = serde_json::from_value(request.clone()).unwrap();
+            assert!(requires_legacy_operation_guard(&decoded));
+            let mut managed = request;
+            managed["id"] = serde_json::json!("r-11111111111111111111111111111111");
+            let decoded: Request = serde_json::from_value(managed).unwrap();
+            assert!(!requires_legacy_operation_guard(&decoded));
+        }
+        for request in [
+            serde_json::json!({"op":"compatibility_get","id":"default","package":"com.example.app"}),
+            serde_json::json!({"op":"components_get","id":"default"}),
+            serde_json::json!({"op":"diagnostics_collect","id":"default","include_logs":false}),
+        ] {
+            let decoded: Request = serde_json::from_value(request).unwrap();
+            assert!(!requires_legacy_operation_guard(&decoded));
+        }
+    }
+
     #[test]
     fn recent_history_requires_the_exact_successful_launch() {
         let good = serde_json::json!({"id":"job", "runtime_id":"r-one", "package":"com.example.app", "action":"launch", "status":"Succeeded"});

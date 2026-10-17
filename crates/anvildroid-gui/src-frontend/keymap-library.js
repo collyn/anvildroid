@@ -27,11 +27,26 @@
       packages.add(p.package);const keys=new Set();
       for(const b of p.bindings){
         if(!b||!Number.isInteger(b.evdev)||b.evdev<2||b.evdev>767||keys.has(b.evdev)||
-           !['tap','hold'].includes(b.kind)||!['nx','ny'].every(k=>Number.isInteger(b[k])&&b[k]>=0&&b[k]<=65535))throw new Error('Invalid keymap binding');
+           !['tap','hold','wasd','swipe','repeat','skill','macro','aim'].includes(b.kind)||!['nx','ny'].every(k=>Number.isInteger(b[k])&&b[k]>=0&&b[k]<=65535))throw new Error('Invalid keymap binding');
+        if(!['tap','hold'].includes(b.kind)&&
+           (!['end_nx','end_ny'].every(k=>Number.isInteger(b[k])&&b[k]>=0&&b[k]<=65535)||
+            !Number.isInteger(b.duration_ms)||b.duration_ms<50||b.duration_ms>5000||
+            !Number.isInteger(b.repeat_count)||b.repeat_count<1||b.repeat_count>20||
+            (b.kind==='macro'&&b.duration_ms*b.repeat_count*2>10000)||
+            (b.kind==='wasd'&&b.evdev!==17)))throw new Error('Invalid advanced keymap binding');
         keys.add(b.evdev);
       }
+      if(p.bindings.some(b=>b.kind==='wasd')&&[30,31,32].some(k=>keys.has(k)))throw new Error('Conflicting WASD keys');
       return {...p,source:'runtime'};
     });
+  }
+  function bindingTitle(b){
+    const titles={tap:'Tap',hold:'Hold',wasd:'WASD joystick',swipe:'Swipe',repeat:'Repeated click',skill:'Skill cast',macro:'Bounded macro',aim:'Aim / left-click fire'};
+    let title=titles[b.kind];
+    if(['swipe','repeat','macro'].includes(b.kind))title+=` · ${b.duration_ms} ms`;
+    if(b.kind==='macro')title+=` · ${b.repeat_count} clicks`;
+    if(['swipe','macro','aim'].includes(b.kind))title+=` · endpoint ${b.end_nx}, ${b.end_ny}`;
+    return title;
   }
   function available(r){return ['Running','Frozen'].includes(r?.state)&&!r.error;}
   function updateSelectors(){
@@ -75,7 +90,7 @@
         runtime.appendChild(node('span',r?.state||'Unavailable','controls-runtime-state'));
         if(r?.state!=='Running'&&r?.state!=='Frozen')runtime.title='Last loaded keymaps';
         const chips=node('div',undefined,'controls-key-chips');
-        for(const b of p.bindings){const chip=node('kbd',physicalLabel(b.evdev));chip.title=b.kind==='hold'?'Hold':'Tap';chips.appendChild(chip);}
+        for(const b of p.bindings){const chip=node('kbd',physicalLabel(b.evdev));chip.title=bindingTitle(b);chips.appendChild(chip);}
         if(!p.bindings.length)chips.appendChild(node('span','—','hint'));
         keys.appendChild(chips);
         const edit=node('button',undefined,'btn runtime-action-icon');edit.type='button';

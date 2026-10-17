@@ -12,6 +12,7 @@ REQUIRED = (
     'AppRun', 'AppRun.wrapped', 'usr/bin/anvildroid-gui', 'usr/bin/anvildroid',
     'scripts/bootstrap-appimage.py', 'scripts/start-runtime-controller.py', 'scripts/setup-waydroid.py',
     'scripts/install-runtime-controller.py', 'services/runtime-host.py',
+    'services/runtime-features.py', 'services/runtime-compatibility.py', 'services/runtime-shares.py', 'services/runtime-components.py', 'services/runtime-diagnostics.py',
     'target/native/libanvildroid-path-guard.so', 'target/native/libanvildroid-runtime-window.so', 'target/native/libanvildroid-window.so',
     'target/native/overlay-key.p12', 'target/ime/AnvilDroidIme.apk',
     'target/shutdown/anvildroid-shutdown.jar', 'native/overlay/AndroidManifest.xml',

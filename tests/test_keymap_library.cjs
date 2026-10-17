@@ -1,0 +1,107 @@
+const {test}=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
+const model=require('../crates/anvildroid-gui/src-frontend/keymap-drafts.js');
+const source=fs.readFileSync('crates/anvildroid-gui/src-frontend/keymap-library.js','utf8');
+class Element{
+  constructor(tag='div'){this.tag=tag;this.children=[];this.events={};this.attributes={};this.value='';this.disabled=false;this.text='';}
+  set textContent(value){this.text=String(value);this.children=[];}
+  get textContent(){return this.text+this.children.map(c=>c.textContent).join(' ');}
+  appendChild(child){if(child.tag==='#fragment')this.children.push(...child.children);else this.children.push(child);return child;}
+  replaceChildren(...children){this.children=[];this.text='';for(const child of children)this.appendChild(child);}
+  addEventListener(name,callback){this.events[name]=callback;}
+  setAttribute(name,value){this.attributes[name]=value;}
+}
+function setup(){
+  const elements=new Map(),calls=[],edits=[],states={managed:[],default:{id:'default',state:'Running'},profiles:new Map(),failList:false};
+  const el=id=>{if(!elements.has(id))elements.set(id,new Element());return elements.get(id);};
+  const invoke=async(command,{request})=>{
+    calls.push(request);
+    if(request.op==='list'){if(states.failList)throw new Error('Controller unavailable');return states.managed;}
+    if(request.op==='refresh')return states.default;
+    if(request.op==='keymaps'){const report=states.profiles.get(request.id);if(report instanceof Error)throw report;return report||{runtime_id:request.id,profiles:[],invalid_count:0};}
+    throw new Error('Unexpected operation');
+  };
+  const ctx=vm.createContext({window:{AnvilKeymapDrafts:model,AnvilKeymapActions:{open:async(...args)=>edits.push(args)},localStorage:{length:0},__TAURI__:{core:{invoke}},addEventListener(){}},document:{getElementById:el,createElement:tag=>new Element(tag),createDocumentFragment:()=>new Element('#fragment')}});
+  vm.runInContext(source,ctx);
+  return {el,calls,edits,states,api:ctx.window.AnvilKeymapLibrary};
+}
+function report(runtime,pkg='com.test.game'){
+  return {runtime_id:runtime,invalid_count:0,profiles:[{runtime,package:pkg,bindings:[{evdev:30,nx:100,ny:200,kind:'tap'}],source:'runtime'}]};
+}
+function descendants(element,tag){return element.children.flatMap(c=>[...(c.tag===tag?[c]:[]),...descendants(c,tag)]);}
+test('Controls entry stays library-only and diagnostics/shortcuts start collapsed',()=>{
+  const html=fs.readFileSync('crates/anvildroid-gui/src-frontend/index.html','utf8');
+  assert.doesNotMatch(html,/id="keymap-editor-development"|src="keymap-editor.js"|Refresh saved keymaps|not active/);
+  assert.match(html,/<details class="controls-details">\s*<summary>Touch diagnostics/);
+  const {calls,edits}=setup();assert.equal(calls.length,0);assert.equal(edits.length,0);
+});
+test('Default Frozen profiles load alongside managed profiles, with scoped editing and filter',async()=>{
+  const {api,el,states,calls,edits}=setup();states.default.state='Frozen';
+  states.managed=[{id:'r-one',name:'Gaming',state:'Running'}];
+  states.profiles.set('default',report('default'));states.profiles.set('r-one',report('r-one'));
+  await api.refresh();
+  assert.ok(calls.some(r=>r.op==='keymaps'&&r.id==='default'));
+  assert.match(el('keymap-saved-list').textContent,/Default runtime/);assert.match(el('keymap-saved-list').textContent,/Gaming/);
+  assert.doesNotMatch(el('keymap-saved-list').textContent,/not active|Legacy/);
+  assert.ok(el('probe-runtime').children.some(o=>o.value==='default'));
+  el('probe-runtime').value='default';el('probe-runtime').events.change();assert.equal(el('install-touch-probe').disabled,false);
+  el('keymap-runtime-filter').value='default';el('keymap-runtime-filter').events.change();
+  assert.doesNotMatch(el('keymap-saved-list').textContent,/Gaming/);
+  const edit=descendants(el('keymap-saved-list'),'button')[0];await edit.events.click();
+  assert.deepEqual(edits,[['default','com.test.game']]);
+});
+test('Managed inventory failure does not block Default, failed refresh retains profiles',async()=>{
+  const {api,el,states}=setup();states.failList=true;states.profiles.set('default',report('default'));
+  await api.refresh();assert.match(el('keymap-saved-list').textContent,/com.test.game/);
+  states.profiles.set('default',new Error('Read timed out'));await api.refresh();
+  assert.match(el('keymap-saved-list').textContent,/com.test.game/);assert.match(el('keymap-saved-list').textContent,/Read timed out/);
+  states.profiles.set('default',{runtime_id:'default',profiles:[],invalid_count:0});await api.refresh();
+  assert.doesNotMatch(el('keymap-saved-list').textContent,/com.test.game/);
+  assert.equal(el('keymap-list-refresh').disabled,false);assert.equal(el('keymap-saved-list').attributes['aria-busy'],'false');
+});
+test('Cached stopped profiles remain visible, but editing is disabled',async()=>{
+  const {api,el,states}=setup();states.profiles.set('default',report('default'));await api.refresh();
+  states.default.state='Stopped';await api.refresh();
+  assert.match(el('keymap-saved-list').textContent,/com.test.game/);
+  assert.equal(descendants(el('keymap-saved-list'),'button')[0].disabled,true);
+  assert.equal(el('install-touch-probe').disabled,true);
+});
+test('Invalid native scope, duplicate packages or bindings never replace cached profiles',async()=>{
+  const {api,el,states}=setup();states.profiles.set('default',report('default'));await api.refresh();
+  for(const mutate of [r=>r.runtime_id='r-other',r=>r.profiles[0].runtime='r-other',r=>r.profiles[0].bindings[0].nx=65536,r=>r.profiles.push(r.profiles[0])]){
+    const bad=report('default','com.bad.profile');mutate(bad);states.profiles.set('default',bad);await api.refresh();
+    assert.match(el('keymap-saved-list').textContent,/com.test.game/);assert.doesNotMatch(el('keymap-saved-list').textContent,/com.bad.profile/);
+  }
+});
+test('Late refresh cannot overwrite a newer runtime snapshot',async()=>{
+  const {api,el,states}=setup();let resolveOld;
+  states.profiles.set('default',report('default','com.old.app'));
+  // Hold only the first runtime inventory; the second refresh completes first.
+  const old=states.profiles.get('default');states.profiles.set('default',new Promise(resolve=>{resolveOld=resolve;}));
+  const first=api.refresh();await new Promise(resolve=>setImmediate(resolve));
+  states.profiles.set('default',report('default','com.new.app'));await api.refresh();
+  resolveOld(old);await first;
+  assert.match(el('keymap-saved-list').textContent,/com.new.app/);assert.doesNotMatch(el('keymap-saved-list').textContent,/com.old.app/);
+});
+
+test('Advanced runtime profiles validate and show truthful type and bounded parameters',async()=>{
+  const {api,el,states}=setup();
+  const result=report('default');
+  result.profiles[0].bindings=['wasd','swipe','repeat','skill','macro','aim'].map((kind,i)=>({
+    evdev:i===0?17:100+i,nx:100,ny:200,kind,end_nx:400,end_ny:500,duration_ms:250,repeat_count:3}));
+  states.profiles.set('default',result);await api.refresh();
+  const titles=descendants(el('keymap-saved-list'),'kbd').map(c=>c.title);
+  assert.deepEqual(titles,['WASD joystick','Swipe · 250 ms · endpoint 400, 500','Repeated click · 250 ms',
+    'Skill cast','Bounded macro · 250 ms · 3 clicks · endpoint 400, 500','Aim / left-click fire · endpoint 400, 500']);
+  for(const mutate of [b=>b.kind='unknown',b=>b.duration_ms=49,b=>b.duration_ms=NaN,
+                      b=>b.repeat_count=21,b=>b.end_nx=65536,b=>b.duration_ms=5000]){
+    const bad=report('default','com.bad.advanced');
+    bad.profiles[0].bindings=[{evdev:100,nx:0,ny:0,kind:'macro',end_nx:0,end_ny:0,duration_ms:250,repeat_count:3}];
+    mutate(bad.profiles[0].bindings[0]);states.profiles.set('default',bad);await api.refresh();
+    assert.doesNotMatch(el('keymap-saved-list').textContent,/com.bad.advanced/);
+    assert.match(el('keymap-saved-list').textContent,/com.test.game/);
+  }
+  const conflict=report('default','com.bad.advanced');conflict.profiles[0].bindings.push({
+    evdev:17,nx:0,ny:0,kind:'wasd',end_nx:100,end_ny:100,duration_ms:250,repeat_count:3});
+  states.profiles.set('default',conflict);await api.refresh();
+  assert.doesNotMatch(el('keymap-saved-list').textContent,/com.bad.advanced/);
+});

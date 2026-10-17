@@ -197,6 +197,7 @@ struct task {
 struct keymap_overlay;
 static int scrcpy_mapping_key(struct object *, struct keymap_overlay *, int, int);
 static void scrcpy_mapping_cancel(void);
+static void scrcpy_mapping_tick(void);
 static struct task tasks[128];
 static int task_count;
 #include "media-layer.inc"

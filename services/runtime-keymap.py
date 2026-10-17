@@ -71,15 +71,26 @@ def parse_keymaps(output, identifier):
     for block in output.split('BEGIN\n')[1:]:
         try:
             lines=block.splitlines(); header=lines[0].split()
-            require(len(header)==5 and header[:2]==['ANVIL_KEYMAP','1'] and header[2]==identifier, 'Invalid keymap scope')
+            require(len(header)==5 and header[0]=='ANVIL_KEYMAP' and header[1] in ('1','2') and header[2]==identifier, 'Invalid keymap scope')
             package=header[3]; count=int(header[4])
             require(re.fullmatch(r'[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)+',package) and len(package)<=240 and 0<=count<=64, 'Invalid keymap')
             require(len(lines)==count+2 and lines[-1]=='END', 'Incomplete keymap')
             bindings=[];keys=set()
             for index,line in enumerate(lines[1:-1]):
-                key,x,y,hold=map(int,line.split())
+                values=list(map(int,line.split()))
+                require(len(values)==(4 if header[1]=='1' else 9), 'Invalid binding fields')
+                key,x,y,hold=values[:4]
+                kind,ex,ey,duration,repeats=values[4:] if header[1]=='2' else (0,0,0,0,0)
+                require(0<=kind<=6 and 0<=ex<=65535 and 0<=ey<=65535 and
+                        0<=duration<=5000 and 0<=repeats<=20 and
+                        (kind==0 or 50<=duration<=5000 and 1<=repeats<=20) and
+                        (kind!=5 or duration*repeats*2<=10000) and
+                        (kind!=1 or key==17), 'Invalid advanced control')
                 require(2<=key<=767 and key not in keys and 0<=x<=65535 and 0<=y<=65535 and hold in (0,1), 'Invalid binding')
-                keys.add(key);bindings.append({'id':f'point-{index}','evdev':key,'nx':x,'ny':y,'kind':'hold' if hold else 'tap'})
+                keys.add(key);bindings.append({'id':f'point-{index}','evdev':key,'nx':x,'ny':y,
+                    'kind':('hold' if hold else 'tap') if not kind else ('wasd','swipe','repeat','skill','macro','aim')[kind-1],
+                    **({'end_nx':ex,'end_ny':ey,'duration_ms':duration,'repeat_count':repeats} if kind else {})})
+            require(not any(b['kind']=='wasd' for b in bindings) or not keys.intersection({30,31,32}), 'Conflicting WASD keys')
             profiles.append({'runtime':identifier,'package':package,'bindings':bindings,'source':'runtime','active':False})
         except (ValueError,RuntimeError,IndexError): errors+=1
     return {'runtime_id':identifier,'profiles':profiles,'invalid_count':errors}

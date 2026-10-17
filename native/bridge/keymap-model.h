@@ -4,12 +4,19 @@
 #define KEYMAP_POINTS 64
 struct keymap_point {
   int key, nx, ny, hold;
+  int kind, ex, ey, duration, repeats;
 };
 struct keymap_model {
   struct keymap_point points[KEYMAP_POINTS];
   int count, selected, placing, dirty, error;
 };
 
+enum { KEYMAP_BASIC, KEYMAP_DPAD, KEYMAP_SWIPE, KEYMAP_REPEAT,
+       KEYMAP_SKILL, KEYMAP_MACRO, KEYMAP_AIM };
+static const char * __attribute__((unused)) keymap_kind_name(int kind) {
+  static const char *names[]={"Basic","WASD","Swipe","Repeat","Skill","Macro","Aim"};
+  return kind>=0&&kind<=KEYMAP_AIM?names[kind]:"Invalid";
+}
 static int keymap_valid(const struct keymap_model *m, int assigned) {
   if (m->count < 0 || m->count > KEYMAP_POINTS)
     return 0;
@@ -17,8 +24,16 @@ static int keymap_valid(const struct keymap_model *m, int assigned) {
     const struct keymap_point *p = &m->points[i];
     if (p->key < 0 || p->key > 767 || (assigned && !p->key) || p->key == 1 ||
         p->nx < 0 || p->nx > 65535 || p->ny < 0 || p->ny > 65535 ||
-        (p->hold != 0 && p->hold != 1))
+        (p->hold != 0 && p->hold != 1) || p->kind<0 || p->kind>KEYMAP_AIM ||
+        p->ex<0 || p->ex>65535 || p->ey<0 || p->ey>65535 ||
+        p->duration<0 || p->duration>5000 || p->repeats<0 || p->repeats>20 ||
+        (p->kind && (p->duration<50 || p->duration>5000 || p->repeats<1 || p->repeats>20)))
       return 0;
+    if (p->kind==KEYMAP_MACRO && p->duration*p->repeats*2>10000) return 0;
+    if (p->kind==KEYMAP_DPAD && p->key!=17) return 0;
+    for (int j = 0; j < m->count; ++j)
+      if (i!=j && p->kind==KEYMAP_DPAD &&
+          (m->points[j].key==17 || m->points[j].key==30 || m->points[j].key==31 || m->points[j].key==32)) return 0;
     for (int j = 0; j < i; ++j)
       if (p->key && p->key == m->points[j].key)
         return 0;
@@ -34,6 +49,7 @@ static int __attribute__((unused))
 keymap_bindings(const struct keymap_model *m, struct mapping_binding *out,
                 int capacity) {
   if (!m || !out || capacity < m->count || !keymap_valid(m, 1)) return 0;
+  for (int i = 0; i < m->count; ++i) if(m->points[i].kind) return 0;
   for (int i = 0; i < m->count; ++i) {
     out[i].key = (uint16_t)m->points[i].key;
     out[i].nx = (uint16_t)m->points[i].nx;
@@ -73,7 +89,9 @@ static int keymap_assign(struct keymap_model *m, int key) {
       (key >= 60 && key <= 62))
     return 0;
   for (int i = 0; i < m->count; ++i)
-    if (i != m->selected && m->points[i].key == key) {
+    if ((m->points[m->selected].kind==KEYMAP_DPAD && key!=17) ||
+        (i != m->selected && (m->points[i].key == key ||
+          (m->points[i].kind==KEYMAP_DPAD && (key==17||key==30||key==31||key==32))))) {
       m->error = 1;
       return 0;
     }

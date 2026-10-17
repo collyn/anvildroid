@@ -75,6 +75,13 @@ spec = importlib.util.spec_from_file_location('runtime_x11', Path(__file__).with
 native_x11 = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(native_x11)
 
+spec = importlib.util.spec_from_file_location('runtime_compatibility', Path(__file__).with_name('runtime-compatibility.py'))
+compatibility_module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(compatibility_module)
+spec = importlib.util.spec_from_file_location('runtime_shares', Path(__file__).with_name('runtime-shares.py'))
+shares_module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(shares_module)
+
 
 def atomic(path, value):
     temp = path.with_suffix('.tmp')
@@ -1102,7 +1109,7 @@ def stop_android(lxc, identifier, boot_completed):
     return result
 
 
-def boot(instance, identifier, generation, state, stopping, done, desktop=None, host_net_fd=None):
+def boot(instance, identifier, generation, state, stopping, done, desktop=None, host_net_fd=None, original_mnt=None):
     root = instance / 'android'
     root.mkdir(mode=0o700, exist_ok=True)
     mounts, names, compositors, logfiles = [], [], [], []
@@ -1540,6 +1547,12 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
             except RuntimeError as error:
                 private_pid_limit = False
                 print('Android private PID limit unavailable:', error, flush=True)
+            share_owner = shares_module.configured_owner(instance)
+            if share_owner is not None:
+                require(not desktop or share_owner == desktop[1], 'Shared-folder owner differs from desktop owner')
+                state['shared_folders_mounted'] = shares_module.apply_preboot(
+                    instance, work / 'data', share_owner, mounts.append, original_mnt=original_mnt)
+            data_bind = 'rbind' if any(item.get('mounted') for item in state.get('shared_folders_mounted', {}).values()) else 'bind'
             config += [f'lxc.rootfs.path = dir:{fs}', f'lxc.uts.name = anvil-{name}',
                        'lxc.autodev = 0', 'lxc.console.path = none',
                        # Allow Android's uid-mapped processes to open the
@@ -1655,8 +1668,8 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
             for directory in ('mnt_extra', 'tmp', 'var', 'run'):
                 config.append(f'lxc.mount.entry = tmpfs {directory} tmpfs nodev,create=dir 0 0')
             config += [f'lxc.mount.entry = {xdg} run/xdg none bind,create=dir 0 0',
-                       f'lxc.mount.entry = {work}/data data none bind,create=dir 0 0',
-                       f'lxc.mount.entry = {work}/data anvil-data none bind,create=dir 0 0']
+                       f'lxc.mount.entry = {work}/data data none {data_bind},create=dir 0 0',
+                       f'lxc.mount.entry = {work}/data anvil-data none {data_bind},create=dir 0 0']
             # LXC's directory bind is not recursive. Pin the endpoint again
             # inside Android or its socket submount becomes an empty file.
             if native or (desktop and not x11['display']):
@@ -1851,6 +1864,9 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
                     errors.append(str(error))
         if errors: state.update(state='Error', error='; '.join(errors)[-1024:])
         elif state['state'] != 'Error': state.update(state='Stopped', error=None)
+        if not errors:
+            for share in state.get('shared_folders_mounted', {}).values():
+                share['mounted'] = False
         state['cleanup_complete'] = not errors
         atomic(instance / 'worker-result.json', dict(state))
         done.set()
@@ -1867,7 +1883,7 @@ def main(instance, identifier, generation, original_mnt, original_net, desktop=N
     endpoint = instance / 'worker.sock'
     endpoint.unlink(missing_ok=True)
     state = dict(runtime_id=identifier, generation=generation, state='Starting', error=None, display_mode='desktop' if desktop else 'headless', capabilities=['graphics', 'apps', 'app_actions', 'uninstall_app', 'install_apk', 'google_services'])
-    state['capabilities'].extend(['app_states', 'adb'])
+    state['capabilities'].extend(['app_states', 'adb', 'app_compatibility', 'shared_folders'])
     if desktop: state['capabilities'].extend(['keymap_editor', 'full_ui', 'window_activation'])
     atomic(instance / 'worker-identity.json', dict(runtime_id=identifier, generation=generation))
     (instance / 'worker-result.json').unlink(missing_ok=True)
@@ -1878,7 +1894,7 @@ def main(instance, identifier, generation, original_mnt, original_net, desktop=N
     os.chmod(endpoint, 0o600)
     server.listen(4)
     server.settimeout(.5)
-    thread = threading.Thread(target=boot, args=(instance, identifier, generation, state, stopping, done, desktop, host_net_fd))
+    thread = threading.Thread(target=boot, args=(instance, identifier, generation, state, stopping, done, desktop, host_net_fd, original_mnt))
     thread.start()
     idle = IdleSuspend(instance, identifier, state, stopping)
     adb_relay = None
@@ -1948,6 +1964,19 @@ def main(instance, identifier, generation, original_mnt, original_net, desktop=N
                                 except (RuntimeError, OSError, NameError, subprocess.TimeoutExpired): pass
                             response['app_error'] = str(error)[-1024:]
                         connection.sendall(json.dumps(dict(response, state=state['state'], adb_enabled=state.get('adb_enabled', False))).encode() + b'\n')
+                        continue
+                    elif isinstance(request, dict) and request.get('op') == 'compatibility':
+                        response = dict(state)
+                        try:
+                            idle.resume()
+                            require(state['state'] == 'Running' and not stopping.is_set(), 'Start this runtime before configuring app compatibility')
+                            def compatibility_android(*args):
+                                return linux.run_bounded('lxc-attach', '-P', instance / 'android', '-n', identifier,
+                                    '--', *args, timeout=3, full_output=True, operation='App compatibility')
+                            response['compatibility'] = compatibility_module.dispatch(compatibility_android, request, identifier, generation)
+                        except (RuntimeError, OSError, ValueError, subprocess.TimeoutExpired) as error:
+                            response['app_error'] = str(error)[-1024:]
+                        connection.sendall(json.dumps(dict(response, state=state['state'])).encode() + b'\n')
                         continue
                     elif request == {'op': 'graphics'}:
                         response = dict(state)
