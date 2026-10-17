@@ -810,7 +810,57 @@ def pin_audio_socket(uid):
 def android_overlay_options(lower, upper, work):
     # Bionic Android 13 realpath stores ino_t in 32 bits in 32-bit HALs.
     # Overlay xino synthesizes high inode bits and makes real files fail ENOENT.
-    return f'lowerdir={lower},upperdir={upper},workdir={work},xino=off'
+    # Arch and other kernels can enable index/metadata copy-up/redirects by
+    # default. Android layers do not need those features, and not all image
+    # lower filesystems expose the export handles they require. Pin the whole
+    # compatibility policy instead of inheriting the host kernel's defaults.
+    metacopy, redirect = overlay_upper_features(upper)
+    # Existing metadata-only inodes require metacopy at lookup time; mounting
+    # with it disabled can succeed and then return EPERM on ordinary reads.
+    # Metacopy also requires redirects to be enabled on supported kernels.
+    return (f'lowerdir={lower},upperdir={upper},workdir={work},xino=off,'
+            f'index=off,metacopy={"on" if metacopy else "off"},'
+            f'redirect_dir={"on" if metacopy or redirect else "off"},nfs_export=off')
+
+
+def overlay_upper_features(upper):
+    """Inspect legacy upper inodes without following guest-created symlinks."""
+    metacopy = redirect = False
+    try:
+        root = os.open(upper, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return False, False
+    def scan_error(error):
+        raise RuntimeError('Cannot inspect existing Android overlay features: ' + str(error)) from error
+    try:
+        for _, _, files, directory in os.fwalk('.', dir_fd=root, follow_symlinks=False, onerror=scan_error):
+            attrs = os.listxattr(directory)
+            redirect |= 'trusted.overlay.redirect' in attrs
+            for name in files:
+                info = os.stat(name, dir_fd=directory, follow_symlinks=False)
+                if not stat.S_ISREG(info.st_mode): continue
+                fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+                try:
+                    attrs = os.listxattr(fd)
+                    metacopy |= 'trusted.overlay.metacopy' in attrs
+                    redirect |= 'trusted.overlay.redirect' in attrs
+                finally: os.close(fd)
+    finally: os.close(root)
+    return metacopy, redirect
+
+
+def mount_android_overlay(lower, upper, work, target, mount):
+    options = android_overlay_options(lower, upper, work)
+    try:
+        mount('-t', 'overlay', 'overlay', '-o', options, target)
+    except RuntimeError as error:
+        # Keep the failing layer and exact policy in the controller error. Do
+        # not retry with fewer protections or discard a runtime's upper layer.
+        raise RuntimeError(f'Android OverlayFS mount failed at {target}: {error}\n'
+                           f'Overlay options: {options}\n'
+                           'Check the latest OverlayFS messages with sudo dmesg; '
+                           'the upper/work directories must share a local filesystem '
+                           'with extended attributes and directory entry types.') from error
 
 
 def desktop_gpu(instance, desktop):
@@ -1322,8 +1372,8 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
             fs = work / 'rootfs'
             mount(*image_format.mount_options(instance / 'prepared/system.img'), instance / 'prepared/system.img', work / 'system-lower')
             mount(*image_format.mount_options(instance / 'prepared/vendor.img'), instance / 'prepared/vendor.img', work / 'vendor-lower')
-            mount('-t', 'overlay', 'overlay', '-o', android_overlay_options(f'{system_patches}:{work}/system-lower', work / 'system-upper', work / 'system-work'), fs)
-            mount('-t', 'overlay', 'overlay', '-o', android_overlay_options(f'{patches}/vendor:{work}/vendor-lower', work / 'vendor-upper', work / 'vendor-work'), fs / 'vendor')
+            mount_android_overlay(f'{system_patches}:{work}/system-lower', work / 'system-upper', work / 'system-work', fs, mount)
+            mount_android_overlay(f'{patches}/vendor:{work}/vendor-lower', work / 'vendor-upper', work / 'vendor-work', fs / 'vendor', mount)
             if 'presentation_mode' not in compatibility and not custom_stock_hwc:
                 single_display = b'vendor.waydroid.display@' not in (fs / 'system/bin/surfaceflinger').read_bytes()
                 state['presentation_mode'] = 'android-display' if single_display else 'app-windows'
