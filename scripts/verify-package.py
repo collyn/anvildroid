@@ -251,6 +251,9 @@ def extract(package, destination, version):
         assert run(['rpm', '-qp', '--qf', '%{ARCH}', str(package)]).stdout == 'x86_64'
         dependencies = run(['rpm', '-qp', '--requires', str(package)]).stdout
         assert not re.search(r'lib(c|dl|m)\.so\(|libc\+\+\.so|liblog\.so', dependencies), dependencies
+        for library in ('libwayland-client.so.0()(64bit)', 'libwayland-server.so.0()(64bit)'):
+            assert library in dependencies.splitlines(), f'Missing Wayland runtime dependency: {library}'
+        assert 'wayland-libs' not in dependencies.splitlines(), 'Use Wayland ABI dependencies for Fedora'
         archive = subprocess.run(['rpm2cpio', str(package)], check=True, capture_output=True, timeout=120)
         subprocess.run(['cpio', '-idm', '--quiet', '--no-absolute-filenames'], cwd=destination,
                        input=archive.stdout, check=True, capture_output=True, timeout=120, umask=0o022)

@@ -27,7 +27,10 @@ URL: https://github.com/collyn/anvildroid
 BuildArch: x86_64
 Requires: python3, weston, iproute, nftables, slirp4netns, lxc, kmod, curl, systemd, patchelf >= 0.18
 Requires: java-headless >= 1:17
-Requires: glibc >= 2.39, libepoxy, libdrm, mesa-libgbm, libX11, libXcursor, libXi, libXfixes, libXext, libxcb, mesa-libEGL, mesa-libGLES, wayland-libs, libxkbcommon, libstdc++, libgcc, expat, vulkan-loader, util-linux
+Requires: glibc >= 2.39, libepoxy, libdrm, mesa-libgbm, libX11, libXcursor, libXi, libXfixes, libXext, libxcb, mesa-libEGL, mesa-libGLES, libxkbcommon, libstdc++, libgcc, expat, vulkan-loader, util-linux
+# Fedora splits Wayland libraries; require their ABI instead of an umbrella package.
+# The private X11 host is excluded from automatic dependency discovery above.
+Requires: libwayland-client.so.0()(64bit), libwayland-server.so.0()(64bit)
 Requires: webkit2gtk4.1, gtk3, glib2, javascriptcoregtk4.1, libsoup3, pango, cairo, gdk-pixbuf2
 Requires(post): systemd
 Requires(preun): systemd
