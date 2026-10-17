@@ -24,7 +24,7 @@ class DiagnosticsTests(unittest.TestCase):
     def tail(self,name='worker.log'):
         with patch.object(diag.os,'fstat',side_effect=self.root_stat):return diag.log_tail(self.root,name)
     def test_bounded_invalid_encoding_and_tail(self):
-        self.log(b'old'+b'a'*(diag.MAX_LOG+100)+b'\xffEND')
+        self.log(b'old'+b'a'*(diag.MAX_LOG+100)+b'\n\xffEND')
         result=self.tail();self.assertTrue(result['truncated']);self.assertLessEqual(len(result['text']),diag.MAX_LOG)
         self.assertTrue(result['text'].endswith('\ufffdEND'));self.assertFalse(result['changed_during_read'])
     def test_symlink_fifo_hardlink_and_writeable_files_rejected(self):
@@ -73,6 +73,105 @@ class DiagnosticsTests(unittest.TestCase):
     def test_json_log_credentials(self):
         result=diag.redact_text('{"password":"HUNTER2", "api_key": "SECRET3", "authorization": "Bearer TOKEN4"}')
         for secret in ['HUNTER2','SECRET3','TOKEN4']:self.assertNotIn(secret,result)
+    def test_escaped_quotes_and_authentication_headers(self):
+        source = r'''{"password":"prefix\"QUOTED_SECRET", "token":'prefix\'SINGLE_SECRET'}'''
+        source += '\nAuthorization: Digest username="AUTH_USER", nonce="AUTH_NONCE", response="AUTH_RESPONSE"'
+        result = diag.redact_text(source)
+        for secret in ('QUOTED_SECRET', 'SINGLE_SECRET', 'AUTH_USER', 'AUTH_NONCE', 'AUTH_RESPONSE'):
+            self.assertNotIn(secret, result)
+    def test_unterminated_quoted_credentials_consume_the_partial_line(self):
+        for source in ('password="first PRIVATE_SUFFIX WITH SPACES',
+                       "token='first PRIVATE_SUFFIX WITH SPACES\nstate=Running",
+                       'password="first PRIVATE_SUFFIX WITH SPACES\\'):
+            with self.subTest(source=source):
+                result = diag.redact_text(source)
+                self.assertNotIn('PRIVATE_SUFFIX', result)
+                self.assertNotIn('WITH SPACES', result)
+                if '\nstate=Running' in source: self.assertIn('state=Running', result)
+        self.assertIn('state=Running', diag.redact_text('password="secret" state=Running'))
+    def test_key_sensitivity_is_checked_before_identifying_path_is_masked(self):
+        for key in ('/home/password/file', r'/home/passw\u006frd/file',
+                    '/home/pass\u200bword/file', 'passw\\u006frd'):
+            with self.subTest(key=key):
+                result = diag.redact({key: 'PRIVATE_VALUE'})
+                self.assertNotIn('PRIVATE_VALUE', json.dumps(result))
+                self.assertIn('<redacted>', result.values())
+    def test_private_key_blocks_and_truncated_pem_prefix(self):
+        for source in ('before\n-----BEGIN OPENSSH PRIVATE KEY-----\nPRIVATE_BODY\n-----END OPENSSH PRIVATE KEY-----\nafter',
+                       '-----BEGIN PRIVATE KEY-----\nUNFINISHED_BODY',
+                       'TAIL_BODY\n-----END RSA PRIVATE KEY-----\nafter'):
+            with self.subTest(source=source):
+                result = diag.redact_text(source)
+                for secret in ('PRIVATE_BODY', 'UNFINISHED_BODY', 'TAIL_BODY'):
+                    self.assertNotIn(secret, result)
+        self.assertIn('after', diag.redact_text(source))
+    def test_identifying_fields_paths_and_dictionary_keys(self):
+        source = ('hostname=PRIVATE_HOST SSID="PRIVATE_WIFI" gsf_id=PRIVATE_GSF '
+                  '/run/user/1001/private.sock /mnt/PRIVATE_DRIVE/project '
+                  '/media/PRIVATE_USER/disk C:\\Users\\PRIVATE_WINDOWS\\file '
+                  'ssh://PRIVATE_LOGIN:PRIVATE_PASSWORD@remote.example/path')
+        result = diag.redact_text(source)
+        for secret in ('PRIVATE_', '/run/user/1001', '/mnt/', '/media/', 'C:\\Users\\'):
+            self.assertNotIn(secret, result)
+        result = diag.redact({'/home/PRIVATE_PERSON/file': 'kept',
+                              'PRIVATE_EMAIL@example.org': 'kept', '10.21.32.43': 'kept'})
+        encoded = json.dumps(result)
+        for secret in ('PRIVATE_', '10.21.32.43'):
+            self.assertNotIn(secret, encoded)
+        self.assertIn('kept', encoded)
+    def test_common_serialized_and_terminal_encodings(self):
+        sources = [r'passw\u006frd\u003dENCODED_SECRET',
+                   r'peer=10\u002e21\u002e32\u002e43',
+                   r'passw\\u006frd\\u003dDOUBLE_SECRET',
+                   r'passw\x6frd=HEX_SECRET',
+                   'pass\x1b[31mword=ANSI_SECRET',
+                   'pass\u200bword=INVISIBLE_SECRET',
+                   '\x00'.join('password=UTF16_SECRET')]
+        for source in sources:
+            with self.subTest(source=source):
+                result = diag.redact_text(source)
+                for secret in ('ENCODED_SECRET', 'DOUBLE_SECRET', 'HEX_SECRET', 'ANSI_SECRET',
+                               'INVISIBLE_SECRET', 'UTF16_SECRET', '10.21.32.43'):
+                    self.assertNotIn(secret, result)
+                self.assertIn('<ip-address>' if source.startswith('peer=') else '<redacted>', result)
+    def test_serialized_surrogates_remain_literal_and_utf8_safe(self):
+        for source in (r'partial=\uD800', r'partial=\uDFFF', r'pair=\uD83D\uDE00',
+                       r'nested=\\uD800', r'scalar=\U0001F600'):
+            with self.subTest(source=source):
+                report = diag.collect('default', {'health': lambda: {'detail': source}})
+                text = report['sections']['health']['data']['detail']
+                self.assertFalse(any(0xd800 <= ord(char) <= 0xdfff for char in text))
+                encoded = json.dumps(report, ensure_ascii=False).encode('utf-8')
+                self.assertEqual(json.loads(encoded), report)
+                # Default ASCII JSON also retains backslashes as literal text,
+                # rather than emitting the lone JSON surrogate serde rejects.
+                if source.startswith('scalar='):
+                    self.assertEqual(text, 'scalar=\U0001f600')
+                else:
+                    self.assertNotRegex(json.dumps(report), r'(?<!\\)(?:\\\\)*\\u[dD][89a-fA-F][0-9a-fA-F]{2}')
+    def test_truncated_tail_discards_partial_credential_line(self):
+        self.log(b'password=' + b'SENSITIVE' * (diag.MAX_LOG // 8 + 10) + b'\nready=true\n')
+        result = self.tail()
+        self.assertTrue(result['truncated'])
+        self.assertFalse('SENSITIVE' in result['text'], 'Partial credential line survived tailing')
+        self.assertIn('ready=true', result['text'])
+    def test_runtime_like_report_keeps_operational_fields(self):
+        report = diag.collect('r-'+'1'*32, {'runtime': lambda: {
+            'state': 'Running', 'generation': 'a'*32, 'cleanup_complete': False,
+            'display_backend': 'native-x11', 'network': 'isolated',
+            'error': r'Binder device /dev/anbox-binder failed; password="safe\"PRIVATE_SUFFIX"',
+            'nested': {'owner_uid': 1001, 'ssid': 'PRIVATE_WIFI', 'gpu_node': '/dev/dri/renderD128'},
+        }})
+        data = report['sections']['runtime']['data']
+        self.assertEqual(data['state'], 'Running')
+        self.assertEqual(data['generation'], 'a'*32)
+        self.assertEqual(data['display_backend'], 'native-x11')
+        self.assertEqual(data['network'], 'isolated')
+        self.assertIs(data['cleanup_complete'], False)
+        self.assertEqual(data['nested']['gpu_node'], '/dev/dri/renderD128')
+        self.assertIn('/dev/anbox-binder', data['error'])
+        self.assertNotIn('PRIVATE_', json.dumps(report))
+        self.assertEqual(report['privacy']['redaction'], 'best_effort')
     def test_limits_and_validation(self):
         report=diag.collect('default',{'runtime':lambda:{'value':'a'*(256*1024)}})
         self.assertEqual(report['sections']['runtime']['status'],'unavailable')

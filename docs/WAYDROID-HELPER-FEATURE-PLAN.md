@@ -443,6 +443,28 @@ verified shutdown/quiescence; original images, caches and personal sessions rema
 
 These unchecked gates are not recorded as passes. No release or merge is made.
 
+### Completion regression follow-up — 2026-10-17
+
+The full Rust workspace now passes **80 tests** with no filtered test. Its one
+normally ignored GTK/WebKit native-panel lifecycle test also passes separately
+under private Xvfb/D-Bus, for **81 exercised tests**. This supersedes the earlier
+inotify-limited run; the personal Default runtime is not restarted for testing.
+
+Diagnostic hardening adds maintained cases for escaped and unfinished quoted
+credentials, authorization/cookie headers, private-key blocks and truncated
+tails, identifying paths/keys, common serialized escapes and terminal controls.
+Sensitive dictionary keys are classified before their identifying paths are
+masked. Lone serialized surrogates remain literal text so UTF-8/JSON export
+stays valid. Bounded log tails discard an incomplete leading line that could
+otherwise expose a credential suffix. Operational state, generation, backend,
+Binder and GPU device details remain available. **23 diagnostic tests** pass;
+redaction remains best effort and exported real logs still need human review.
+The maintained feature runner also passes, including all 19 frontend files,
+five native suites and complete staged-module imports.
+
+Live Wayland input and disposable stock Default acceptance continue separately;
+preflight success is not an Android app acceptance result.
+
 On this host Android system_server initially exhausted the desktop UID's
 inotify watch budget. Live tests temporarily increased only the watch limit
 under a bounded guardian that restores the original value; no persistent

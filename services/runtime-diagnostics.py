@@ -6,23 +6,55 @@ import platform
 from pathlib import Path
 import re
 import stat
+import unicodedata
 
 SCHEMA = 1
 MAX_LOG = 64 * 1024
 MAX_REPORT = 1024 * 1024
 LOG_NAMES = ('worker.log', 'nvidia-renderer.log', 'console.log')
-SECRET_KEY = re.compile(r'(?:password|passwd|secret|token|credential|cookie|authorization|api[_-]?key|access[_-]?key|private[_-]?key|android_id|gsf|serial|hostname|owner_uid|data_path|storage_path|source_path|endpoint|address)', re.I)
-ASSIGNMENT = re.compile(r'''(?ix)\b([\w-]*(?:password|passwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|authorization|cookie|credential|android[_-]?id|serial)[\w-]*)\b(["']?\s*[:=]\s*|\s+)(?:"[^"\n]*"|'[^'\n]*'|[^\s,;}]+)''')
+SENSITIVE_FIELD = r'(?:password|passwd|secret|token|credential|cookie|authorization|api[_-]?key|access[_-]?key|private[_-]?key|android[_-]?id|gsf|serial|host[_-]?name|ssid|owner_uid|data_path|storage_path|source_path|endpoint|address)'
+SECRET_KEY = re.compile(SENSITIVE_FIELD, re.I)
+# A quoted value may itself contain escaped quotes. Stopping at the first quote
+# exports the rest of that same credential.
+QUOTED_VALUE = r'''(?:"(?:\\[^\r\n]|[^"\\\r\n])*(?:"|\\?(?=[\r\n]|\Z))|'(?:\\[^\r\n]|[^'\\\r\n])*(?:'|\\?(?=[\r\n]|\Z)))'''
+ASSIGNMENT = re.compile(r'\b([\w-]*' + SENSITIVE_FIELD + r'''[\w-]*)\b(["']?\s*[:=]\s*|\s+)(?:'''
+                        + QUOTED_VALUE + r'|[^\s,;}]+)', re.I)
+AUTH_HEADER = re.compile(r'''\b((?:proxy[_-]?)?authorization|(?:set[_-]?)?cookie)(["']?\s*[:=]\s*)(?:'''
+                         + QUOTED_VALUE + r'|[^\r\n]+)', re.I)
+LOG_ESCAPE = re.compile(r'''\\(?:[\\/"']|[nrt]|u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8}|x[0-9a-fA-F]{2})''')
 
 
-def redact_text(value):
-    value = value[:256 * 1024]
+def log_unescape(match):
+    escape = match[0][1:]
+    if escape[0] in 'uxU':
+        number = int(escape[1:], 16)
+        return chr(number) if number <= 0x10ffff and not 0xd800 <= number <= 0xdfff else match[0]
+    return {'n': '\n', 'r': '\r', 't': '\t'}.get(escape, escape)
+
+
+def visible_log_text(value):
+    # Keep line boundaries and ordinary Unicode, but remove presentation/control
+    # characters that can split a sensitive field name without changing its text.
+    value = re.sub(r'\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)', '', value)
+    value = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', value)
+    return ''.join(char for char in value if char in '\r\n\t' or
+                   (ord(char) >= 32 and ord(char) != 127 and unicodedata.category(char) != 'Cf'))
+
+
+def redact_plain_text(value):
+    value = visible_log_text(value)
+    value = re.sub(r'-----BEGIN ([A-Z ]*PRIVATE KEY)-----.*?(?:-----END \1-----|\Z)',
+                   '<redacted-private-key>', value, flags=re.S)
+    # A bounded tail can begin inside a PEM block, with only its END marker left.
+    value = re.sub(r'\A.*?-----END [A-Z ]*PRIVATE KEY-----', '<redacted-private-key>', value, flags=re.S)
+    value = AUTH_HEADER.sub(lambda match: match[1] + match[2] + '<redacted>', value)
     value = re.sub(r'(?i)\b(?:bearer|basic)\s+[A-Za-z0-9+/=._-]+', '<redacted-auth>', value)
-    value = re.sub(r'\b(https?://)[^\s/@:]+:[^\s/@]+@', r'\1<redacted>@', value)
+    value = re.sub(r'(?i)\b([a-z][a-z0-9+.-]*://)[^\s/@]+@', r'\1<redacted>@', value)
     value = re.sub(r'(?i)([?&](?:token|key|secret|password|auth)=)[^&\s]+', r'\1<redacted>', value)
     value = ASSIGNMENT.sub(lambda match: match[1] + match[2] + '<redacted>', value)
     value = re.sub(r'\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b', '<redacted-jwt>', value)
-    value = re.sub(r'/(?:home|Users)/[^\s/"\']+(?:/[^\s"\']*)?', '<user-path>', value)
+    value = re.sub(r'/(?:home|Users|media|mnt|run/user)/[^\s/"\']+(?:/[^\s"\']*)?', '<user-path>', value)
+    value = re.sub(r'''(?i)\b[A-Z]:\\(?:Users|Documents and Settings)\\[^\r\n"']*''', '<user-path>', value)
     value = re.sub(r'(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?(?![\w.])', '<ip-address>', value)
     value = re.sub(r'(?i)(?<![\w:])(?:[0-9a-f]{0,4}:){2,}[0-9a-f:]{0,39}(?:%[\w-]+)?', '<ip-address>', value)
     value = re.sub(r'(?i)\b(?:[0-9a-f]{2}:){5}[0-9a-f]{2}\b', '<mac-address>', value)
@@ -30,11 +62,40 @@ def redact_text(value):
     return value
 
 
+def redact_text(value):
+    value = value[:256 * 1024]
+    # Logs commonly contain JSON/Python string escapes. Redact before decoding
+    # so an escaped quote in a credential cannot turn into a false value end.
+    # Three rounds cover nested log serialization without parsing arbitrary data.
+    for _ in range(3):
+        value = redact_plain_text(value)
+        decoded = LOG_ESCAPE.sub(log_unescape, value)
+        if decoded == value:
+            return value
+        value = decoded
+    return redact_plain_text(value)
+
+
+def sensitive_key(value):
+    # Decide whether to hide the value before masking an identifying key path.
+    # Otherwise /home/password/file becomes <user-path> and loses its meaning.
+    value = value[:256 * 1024]
+    for _ in range(3):
+        value = visible_log_text(value)
+        if SECRET_KEY.search(value):
+            return True
+        decoded = LOG_ESCAPE.sub(log_unescape, value)
+        if decoded == value:
+            return False
+        value = decoded
+    return bool(SECRET_KEY.search(visible_log_text(value)))
+
+
 def redact(value, depth=0):
     if depth > 12:
         return '<depth-limit>'
     if isinstance(value, dict):
-        return {str(key)[:160]: '<redacted>' if SECRET_KEY.search(str(key)) else redact(item, depth + 1)
+        return {redact_text(str(key))[:160]: '<redacted>' if sensitive_key(str(key)) else redact(item, depth + 1)
                 for key, item in list(value.items())[:256]}
     if isinstance(value, (list, tuple)):
         return [redact(item, depth + 1) for item in value[:256]]
@@ -74,7 +135,12 @@ def log_tail(directory, name):
             if (not stat.S_ISREG(before.st_mode) or before.st_uid != 0 or
                     before.st_mode & 0o022 or before.st_nlink != 1):
                 raise ValueError('Unsafe diagnostic log file')
-            data = os.pread(descriptor, MAX_LOG, max(0, before.st_size - MAX_LOG))
+            offset = max(0, before.st_size - MAX_LOG)
+            data = os.pread(descriptor, MAX_LOG, offset)
+            if offset and os.pread(descriptor, 1, offset - 1) != b'\n':
+                # A partial line can contain the tail of a secret without its
+                # identifying key. Keep only complete lines from bounded tails.
+                data = data.partition(b'\n')[2]
             after = os.fstat(descriptor)
             return {'status': 'collected', 'text': redact_text(data.decode('utf-8', 'replace')),
                     'truncated': before.st_size > MAX_LOG,
