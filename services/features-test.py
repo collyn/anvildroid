@@ -398,6 +398,34 @@ class FeatureDispatchTest(unittest.TestCase):
         self.assertEqual(report['logs'], {})
         tail.assert_not_called()
 
+    def test_diagnostics_frozen_managed_does_not_resume_for_component_checks(self):
+        self.diagnostics_ready()
+        status = self.store.android.status
+        def frozen(identifier, operation='status', payload=None):
+            self.assertEqual(operation, 'status', 'diagnostics entered a frozen Android guest')
+            return dict(status(identifier, operation, payload), state='Frozen')
+        with patch.object(self.store.android, 'status', side_effect=frozen), \
+                patch.object(features, 'component_report') as components:
+            report = self.diagnostics()
+        components.assert_not_called()
+        self.assertEqual(report['session']['status'], 'verified')
+        self.assertEqual(report['sections']['health']['status'], 'collected')
+        self.assertEqual(report['sections']['components']['status'], 'unavailable')
+        self.assertIn('keep it asleep', report['sections']['components']['error'])
+        self.assertFalse(any(call[0]=='dispatch' and call[1]['op']=='google_services'
+                             for call in self.store.calls))
+
+    def test_diagnostics_frozen_default_skips_live_component_queries(self):
+        with patch.object(self.store.existing, 'state', return_value='FROZEN'), \
+                patch.object(features.diagnostics, 'process_start', return_value='start'), \
+                patch.object(features.linux, 'run_bounded', return_value='101'), \
+                patch.object(features, 'component_report') as components:
+            report = self.diagnostics('default')
+        components.assert_not_called()
+        self.assertEqual(report['session']['status'], 'verified')
+        self.assertEqual(report['sections']['components']['status'], 'unavailable')
+        self.assertFalse(any(call[0]=='default-android' for call in self.store.calls))
+
     def test_diagnostics_restart_inside_section_invalidates_every_section_and_skips_logs(self):
         self.diagnostics_ready()
         dispatch = self.store._dispatch

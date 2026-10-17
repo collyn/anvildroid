@@ -181,13 +181,23 @@ def dispatch(store, request, uid, descriptor=None):
                       'health': lambda: store._dispatch({'op': 'health', 'id': identifier}, uid),
                       'resources': lambda: store._dispatch({'op': 'resources_info', 'id': identifier}, uid),
                       'display': lambda: store._dispatch({'op': 'display_info', 'id': identifier}, uid),
-                      'components': lambda: component_report(store, identifier, uid),
+                      'components': lambda: collect_components(),
                       'image': lambda: store.selections.get(identifier) or {'source': 'system_waydroid'}}
         session, session_error = None, None
         try:
             session = diagnostic_session(store, identifier, uid)
         except Exception as error:
             session_error = str(error)
+
+        def collect_components():
+            # The ordinary Google-services action resumes an idle runtime.
+            # Diagnostics must keep a suspended guest asleep, or that action
+            # invalidates its own pinned session halfway through collection.
+            frozen = session is not None and (session[1] == 'FROZEN' if identifier == 'default'
+                                               else session[2] == 'Frozen')
+            if frozen:
+                raise RuntimeError('Runtime is suspended; live component checks were skipped to keep it asleep')
+            return component_report(store, identifier, uid)
 
         def verify_session():
             if session is None:
