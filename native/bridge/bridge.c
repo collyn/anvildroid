@@ -102,6 +102,7 @@ struct object {
   struct wl_display *display;
   struct proxy *pointer_surface;
   int absolute_x, absolute_y, absolute_valid, absolute_buttons;
+  uint32_t focus_blocked_button;
   struct custom_size custom_size;
   int full_ui, full_w, full_h, full_canvas_w, full_canvas_h;
   int full_clip_x,full_clip_y;
@@ -145,6 +146,8 @@ struct object {
   struct object *overlay_focus;
   int overlay_dismissed, overlay_pressed;
   struct object *keyboard_focus;
+  int keyboard_leave_pending;
+  struct proxy *keyboard_leave_surface;
   uint32_t keymap_blocked_keys[24];
   int keymap_touch_ids[32];
   struct proxy *touch_surfaces[32];

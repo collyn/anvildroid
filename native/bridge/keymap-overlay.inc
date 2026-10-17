@@ -607,7 +607,7 @@ static struct object *keymap_owner(struct proxy *p) {
     return s;
   for (struct object *o = objects; o; o = o->next)
     if (o->surface == s && o->parent && (o->parent->app||o->parent->full_ui) &&
-        !strcmp(o->p->interface->name, "wl_subsurface"))
+        object_is(o,"wl_subsurface"))
       return o->parent;
   return 0;
 }
@@ -617,13 +617,49 @@ static void keymap_kmap(void *data, struct proxy *p, uint32_t format,
   ((void (*)(void *, struct proxy *, uint32_t, int32_t,
              uint32_t))o->listener[0])(o->listener_data, p, format, fd, size);
 }
+static void keymap_finish_keyboard_leave(struct object *o) {
+  if(!o->keyboard_leave_pending)return;
+  o->keyboard_leave_pending=0;
+  o->keyboard_leave_surface=0;
+  keymap_shortcut_task=0;
+  if(o->keyboard_focus&&o->keyboard_focus->csd&&o->keyboard_focus->csd->menu_open)
+    csd_menu_close(o->keyboard_focus->csd);
+  keymap_hints_clear(o->keyboard_focus);
+  o->keyboard_focus=0;
+  for(int i=0;i<24;++i)o->keymap_blocked_keys[i]=0;
+}
+/* Weston may transfer keyboard focus from an app root to one of its child
+ * surfaces immediately before a click. Resolve that leave/enter pair by app
+ * owner within one dispatch batch; an unmatched leave still cancels before
+ * dispatch returns, without a timer or a grace period for real focus loss. */
+static void keymap_finish_keyboard_leaves(struct wl_display *display) {
+  for(struct object *o=objects;o;o=o->next)
+    if(o->display==display)keymap_finish_keyboard_leave(o);
+}
 static void keymap_kenter(void *data, struct proxy *p, uint32_t serial,
                           struct proxy *surface, void *keys) {
   struct object *o = data;
   pthread_mutex_lock(mutex);
   clipboard_input(serial);
-  keymap_hints_clear(o->keyboard_focus);
-  o->keyboard_focus = keymap_owner(surface);
+  struct object *owner=keymap_owner(surface);
+  if(o->keyboard_leave_pending&&o->keyboard_focus==owner&&owner&&
+     o->keyboard_leave_surface!=surface) {
+    o->keyboard_leave_pending=0;
+    o->keyboard_leave_surface=0;
+  } else {
+    keymap_finish_keyboard_leave(o);
+    keymap_hints_clear(o->keyboard_focus);
+    /* wl_keyboard.enter lists keys already down. After a real blur they
+     * must be released before a mapped key can start another contact. */
+    struct { size_t size,alloc;void *data; } *held=keys;
+    if(held&&held->data&&held->size<=768*sizeof(uint32_t)&&
+       !(held->size%sizeof(uint32_t)))
+      for(size_t i=0;i<held->size/sizeof(uint32_t);++i) {
+        uint32_t key=((uint32_t *)held->data)[i];
+        if(key<768)o->keymap_blocked_keys[key/32]|=1u<<(key%32);
+      }
+  }
+  o->keyboard_focus=owner;
   pthread_mutex_unlock(mutex);
   ((void (*)(void *, struct proxy *, uint32_t, struct proxy *,
              void *))o->listener[1])(o->listener_data, p, serial, surface,
@@ -633,12 +669,8 @@ static void keymap_kleave(void *data, struct proxy *p, uint32_t serial,
                           struct proxy *surface) {
   struct object *o = data;
   pthread_mutex_lock(mutex);
-  keymap_shortcut_task = 0;
-  if(o->keyboard_focus&&o->keyboard_focus->csd&&o->keyboard_focus->csd->menu_open)csd_menu_close(o->keyboard_focus->csd);
-  keymap_hints_clear(o->keyboard_focus);
-  o->keyboard_focus = 0;
-  for (int i = 0; i < 24; ++i)
-    o->keymap_blocked_keys[i] = 0;
+  o->keyboard_leave_pending=1;
+  o->keyboard_leave_surface=surface;
   pthread_mutex_unlock(mutex);
   ((void (*)(void *, struct proxy *, uint32_t, struct proxy *))o->listener[2])(
       o->listener_data, p, serial, surface);
@@ -648,6 +680,7 @@ static void keymap_key(void *data, struct proxy *p, uint32_t serial,
   struct object *o = data;
   pthread_mutex_lock(mutex);
   clipboard_input(serial);
+  keymap_finish_keyboard_leave(o);
   if(csd_menu_key(o,key,state)){pthread_mutex_unlock(mutex);return;}
   struct keymap_overlay *f = o->keyboard_focus ? o->keyboard_focus->overlay : 0;
   int blocked =

@@ -227,6 +227,9 @@ Owner: game-controls agent; shared-folders agent assists mount investigation.
 - [x] Exercise all ten maintained delivery scenarios on actual managed VANILLA
   Android 13 through native X11, the production bridge and scrcpy Android sink;
   verify finger MotionEvents, finite macros, multiple contacts and blur release.
+- [x] Exercise the same ten scenarios through the production Wayland backend,
+  with an input-capable private Weston and actual Android MotionEvents. Retain
+  failed attempts and distinguish ordinary app activation from mapped fingers.
 - [x] Observe the same diagnostic package in two simultaneously running guests
   with independent compatibility settings and real mouse input on private X11
   displays. This does not establish simultaneous gameplay/control-map isolation.
@@ -435,8 +438,8 @@ verified shutdown/quiescence; original images, caches and personal sessions rema
   restore and diagnostic export. Implementation and isolated fixtures pass.
   A full stock launcher needs additional device/cgroup/system-bus isolation;
   see [Default isolation design](../tests/acceptance/DEFAULT-ISOLATION.md).
-- Actual Wayland keyboard/mouse delivery and representative FPS/MOBA/ARM gameplay,
-  including simultaneous windows, capture feel and lifecycle recovery.
+- Representative FPS/MOBA/ARM gameplay, including simultaneous windows, capture
+  feel, graphical editor lifecycle and recovery beyond the diagnostic scenarios.
 - Other Android images, modern scoped-storage apps and representative Wi-Fi-only
   apps; online Google sign-in/registration/Play Integrity and graphical ARM flow.
 - Human review of diagnostic redaction before sharing reports with real logs.
@@ -541,7 +544,7 @@ Local recovery and regression records are retained under
 `default-full-ui-token-tests.log`. AppImage remains deferred.
 
 
-Current development artifacts after Default recovery (package-manager lifecycle
+Earlier development artifacts after Default recovery (package-manager lifecycle
 was not repeated; package scripts are unchanged):
 
 | Artifact | Bytes | SHA-256 |
@@ -557,3 +560,45 @@ source/build bytes; the final portable bundle passes manifest and source/binary
 parity. These checks do not establish Arch host startup or a full new Default
 service lifecycle. No package was installed and no live service was restarted
 for this follow-up.
+
+### Wayland focus and input acceptance — 2026-10-17
+
+The input-capable private compositor exposed a real defect: Weston can transfer
+keyboard focus between the root and a content subsurface of the same app just
+before a click. Treating that pair as a full blur canceled held aim and let a
+legacy mouse click cancel the injected finger gesture. Keyboard leave/enter is
+now resolved within the current dispatch batch for the same app owner on
+different raw surfaces. True blur, same-surface refocus, app replacement,
+pointer leave and connection failure still cancel; held keys require release
+before a fresh activation. Input arriving before a pending leave is resolved
+is consumed safely. No focus grace timer is used.
+
+All **ten maintained Android input scenarios pass through actual Wayland** on
+Debian package `29700b0b…`, including aim/fire, multiple fingers and blur/repeat
+suppression. Private Xvfb supplies XTest input to Weston's X11 output; the guest
+and production bridge use Wayland. Refocusing that output does not itself
+activate a Wayland app, so the final scenario uses an explicit app click. Its
+one ordinary mouse down/up pair is verified separately; the mapped-finger
+assertions still require zero touches during held-key suppression and exactly
+two fresh finger gestures. Earlier failing runs and protocol traces are retained
+under `target/feature-verification-20261017/live-controls-wayland-*`.
+
+The maintained feature runner passes **169 Python tests**, all 19 frontend
+files, dedicated frontend cases, **seven native suites** and staged-module
+imports. It now retains the hints and focus-transition regressions. The full
+local native suite and focused ASan/UBSan focus tests also pass. Independent
+review checked same-owner transitions, actual blur and queue/mutex ordering.
+
+Current development artifacts (AppImage remains deferred):
+
+| Artifact | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `target/releases/anvildroid-controller_0.1.3_amd64.deb` | 26,248,678 | `29700b0b769308e924aa2b4eac269b36df275f2476f5b1e11fa6ca8d633ef36a` |
+| `target/releases/anvildroid-controller-0.1.3-1-x86_64.pkg.tar.zst` | 26,063,061 | `1a8b147adf2e445068ba7d375f6f95b865c46282019607f2325e354fc7a835a5` |
+| `target/releases/waydroid-features-dev-20261017-wayland-focus/` | directory | Per-file `SHA256SUMS` verified |
+
+Both packages pass payload/dependency/CLI/image-tool checks, private controller
+and GUI smoke, and exact Python, binary and native-library parity. Portable
+manifest/source/native/binary parity passes. These artifacts have not been
+installed over the personal controller or Default service; Arch host startup
+and the separate Default app-level gates remain open.

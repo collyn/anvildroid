@@ -48,6 +48,10 @@ static int absolute_pointer_packet(struct object *o,int action,int changed) {
   return 1;
 }
 static int absolute_pointer_update(struct object *o,int32_t x,int32_t y,int motion) {
+  /* Do not emit old-owner motion between keyboard leave and its matching
+   * enter. The dispatch boundary resolves a genuine unmatched blur. */
+  if(motion)for(struct object *keyboard=objects;keyboard;keyboard=keyboard->next)
+    if(keyboard->display==o->display&&keyboard->keyboard_leave_pending)return 1;
   if(motion&&map_advanced_motion(o,x,y))return 1;
   o->absolute_valid=0;
   if(!absolute_pointer_for(o))return 0;
@@ -72,6 +76,16 @@ static int absolute_pointer_update(struct object *o,int32_t x,int32_t y,int moti
   return 1;
 }
 static int absolute_pointer_button(struct object *o,uint32_t button,uint32_t state) {
+  if(o->focus_blocked_button==button) {
+    if(!state)o->focus_blocked_button=0;
+    return 1;
+  }
+  for(struct object *keyboard=objects;keyboard;keyboard=keyboard->next)
+    if(keyboard->display==o->display&&keyboard->keyboard_leave_pending) {
+      keymap_finish_keyboard_leaves(o->display);
+      if(state)o->focus_blocked_button=button;
+      return 1;
+    }
   if(map_advanced_button(o,button,state))return 1;
   if(!absolute_pointer_for(o))return 0;
   int bit=button==0x110?1:button==0x111?2:button==0x112?4:0;

@@ -5,6 +5,7 @@
  */
 struct wl_display;
 struct wl_event_queue;
+static void keymap_finish_keyboard_leaves(struct wl_display *);
 static struct wl_display *(*real_display_connect)(const char *);
 static struct wl_display *(*real_display_connect_fd)(int);
 static void (*real_display_disconnect)(struct wl_display *);
@@ -209,6 +210,22 @@ static void keymap_dispatch_queued(struct wl_display *display) {
       pthread_mutex_unlock(mutex);
     }
   }
+  pthread_mutex_lock(mutex);
+  keymap_finish_keyboard_leaves(display);
+  pthread_mutex_unlock(mutex);
+  pthread_mutex_unlock(keymap_queue_gate);
+}
+static void keymap_dispatch_finished(struct wl_display *display,int result) {
+  if(result>=0){keymap_dispatch_queued(display);return;}
+  pthread_mutex_lock(keymap_queue_gate);
+  pthread_mutex_lock(mutex);
+  keymap_finish_keyboard_leaves(display);
+  if(display==keymap_display) {
+    keymap_cancel_callback();
+    keymap_connection_lost();
+    keymap_display_blocked=1;
+  }
+  pthread_mutex_unlock(mutex);
   pthread_mutex_unlock(keymap_queue_gate);
 }
 int wl_display_dispatch(struct wl_display *display) {
@@ -220,8 +237,7 @@ int wl_display_dispatch(struct wl_display *display) {
   ++keymap_dispatch_depth;
   int result = real_dispatch ? real_dispatch(display) : -1;
   --keymap_dispatch_depth;
-  if (!keymap_dispatch_depth && result >= 0)
-    keymap_dispatch_queued(display);
+  if (!keymap_dispatch_depth)keymap_dispatch_finished(display,result);
   return result;
 }
 int wl_display_dispatch_pending(struct wl_display *display) {
@@ -233,8 +249,7 @@ int wl_display_dispatch_pending(struct wl_display *display) {
   ++keymap_dispatch_depth;
   int result = real_dispatch_pending ? real_dispatch_pending(display) : -1;
   --keymap_dispatch_depth;
-  if (!keymap_dispatch_depth && result >= 0)
-    keymap_dispatch_queued(display);
+  if (!keymap_dispatch_depth)keymap_dispatch_finished(display,result);
   return result;
 }
 int wl_display_dispatch_queue(struct wl_display *display,
@@ -247,8 +262,7 @@ int wl_display_dispatch_queue(struct wl_display *display,
   ++keymap_dispatch_depth;
   int result = real_dispatch_queue ? real_dispatch_queue(display, queue) : -1;
   --keymap_dispatch_depth;
-  if (!keymap_dispatch_depth && result >= 0)
-    keymap_dispatch_queued(display);
+  if (!keymap_dispatch_depth)keymap_dispatch_finished(display,result);
   return result;
 }
 int wl_display_dispatch_queue_pending(struct wl_display *display,
@@ -263,7 +277,6 @@ int wl_display_dispatch_queue_pending(struct wl_display *display,
                    ? real_dispatch_queue_pending(display, queue)
                    : -1;
   --keymap_dispatch_depth;
-  if (!keymap_dispatch_depth && result >= 0)
-    keymap_dispatch_queued(display);
+  if (!keymap_dispatch_depth)keymap_dispatch_finished(display,result);
   return result;
 }

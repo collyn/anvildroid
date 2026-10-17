@@ -14,11 +14,14 @@ node --test tests/test_*.cjs
 python3 -m unittest discover -s tests -p 'test_runtime_keymap*.py'
 native_checks=$(mktemp -d /tmp/anvil-feature-native.XXXXXX)
 trap 'rm -rf "$native_checks"' EXIT HUP INT TERM
-for suite in keymap-advanced keymap-storage scrcpy-mapping keymap-overlay boot-canvas; do
+for suite in keymap-advanced keymap-storage scrcpy-mapping keymap-overlay keymap-hints boot-canvas; do
   cc -Wall -Wextra -Werror "tests/$suite.c" native/ime/text-state.c -ldl -pthread -o "$native_checks/$suite"
   "$native_checks/$suite"
   printf 'Native %s: PASS\n' "$suite"
 done
+cc -Wall -Wextra -Werror -rdynamic native/bridge/absolute-pointer-test.c native/ime/text-state.c -ldl -pthread -o "$native_checks/absolute-pointer"
+"$native_checks/absolute-pointer"
+printf 'Native absolute-pointer: PASS\n'
 python3 - <<'PY'
 import ast
 from pathlib import Path
