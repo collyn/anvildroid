@@ -50,7 +50,7 @@ compatibility across custom images, desktops and games is still being developed.
 - ARM translation selection: libndk_translation and libhoudini catalogs.
 - Per-app Fake Wi-Fi and mouse-as-touch settings, with runtime-scoped readback,
   reset and rollback. Image support and app behavior still need live validation.
-- Explicit shared folders for managed runtimes, with read-only or read/write
+- Explicit shared folders for managed runtimes and integrated Default, with read-only or read/write
   mounts activated at the next start. See [folder sharing](docs/SHARED-FOLDERS.md).
 - Advanced native game controls: WASD joystick, swipe, repeated clicks, pointer
   skill casting, finite two-point macros and bounded absolute aim/fire. The

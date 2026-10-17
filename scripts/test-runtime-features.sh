@@ -4,14 +4,13 @@
 set -eu
 ROOT=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
-for suite in compatibility shares components diagnostics features; do
+for suite in compatibility shares default-shares components diagnostics features overlay portable-packaging; do
   python3 "services/$suite-test.py"
 done
 for suite in compatibility shares runtime-actions; do
   node "crates/anvildroid-gui/$suite-check.cjs"
 done
-node tests/test_runtime_tools.cjs
-node tests/test_keymap_library.cjs
+node --test tests/test_*.cjs
 python3 -m unittest discover -s tests -p 'test_runtime_keymap*.py'
 native_checks=$(mktemp -d /tmp/anvil-feature-native.XXXXXX)
 trap 'rm -rf "$native_checks"' EXIT HUP INT TERM
@@ -26,7 +25,7 @@ from pathlib import Path
 import tempfile
 
 root = Path.cwd()
-features = {'runtime-features.py', 'runtime-compatibility.py', 'runtime-shares.py',
+features = {'runtime-features.py', 'runtime-compatibility.py', 'runtime-shares.py', 'runtime-default-shares.py',
             'runtime-components.py', 'runtime-diagnostics.py'}
 installer = ast.parse((root / 'scripts/install-runtime-controller.py').read_text())
 modules = next(ast.literal_eval(node.value) for node in installer.body

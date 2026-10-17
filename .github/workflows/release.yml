@@ -44,6 +44,10 @@ jobs:
         run: sh scripts/test-runtime-features.sh
       - name: Test shared folders in a private PID1 mount namespace
         run: sudo python3 services/shares-test.py --mount-test
+      - name: Test Default shared-folder lifecycle in a private PID1 mount namespace
+        run: sudo python3 services/default-shares-test.py --mount-test
+      - name: Test Android overlays in a private PID1 mount namespace
+        run: sudo python3 services/overlay-test.py --mount-test
       - name: Test preparation without initialized Waydroid host
         run: python3 services/provision-support-test.py
       - name: Test legacy Debian installation permissions
@@ -71,7 +75,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends e2fsprogs unzip curl patch \
             build-essential pkg-config git cmake flex bison libssl-dev libjsoncpp-dev \
             libxcb1-dev libx11-dev libvulkan-dev libwayland-dev wayland-protocols \
-            libegl1-mesa-dev libgles2-mesa-dev libxkbcommon-dev libxcursor-dev libxi-dev libxfixes-dev libxext-dev libxtst-dev aapt apksigner
+            libegl1-mesa-dev libgles2-mesa-dev libgl1-mesa-dri libxkbcommon-dev libxcursor-dev libxi-dev libxfixes-dev libxext-dev libxtst-dev xvfb xauth aapt apksigner
           command -v sdkmanager >/dev/null
           yes | sdkmanager --licenses >/dev/null || true
           sdkmanager 'platforms;android-23' 'platforms;android-35' 'build-tools;35.0.0' 'ndk;26.3.11579264'
@@ -85,6 +89,8 @@ jobs:
           python3 scripts/build-x11-payload.py
       - name: Test native X11 protocols without a display
         run: python3 native/x11/host-check.py
+      - name: Test native X11 input through a private software display
+        run: python3 native/x11/host-check.py --software-x11
       - name: Prepare pinned NVIDIA archives
         env:
           GH_TOKEN: ${{ secrets.NVIDIA_ARTIFACT_TOKEN || github.token }}

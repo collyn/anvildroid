@@ -70,3 +70,11 @@ those outcomes. Both native Wayland and X11 adapters use the same guest Wayland 
 its keymap editor/sink. The X11 adapter forwards its host input through this
 shared protocol path; live advanced gameplay acceptance remains unverified on
 both backends.
+
+The X11 suite additionally uses a private Xvfb/XTest display, the real X11
+adapter and Wayland seat, and production keyboard/pointer mapping handlers with
+a synthetic Android sink. It covers advanced controls, repeated/held keys,
+focus changes, unmap cancellation and unmapped fallback. Real Fcitx Pinyin
+composition and normal text input are checked separately through the same
+adapter. Normal and ASan/UBSan variants pass; these checks still do not certify
+Android app behavior or real GPU presentation.

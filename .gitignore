@@ -38,6 +38,9 @@ test_*.py
 !/tests/
 /tests/*
 !/tests/test_runtime_tools.cjs
+!/tests/test_runtime_worker.py
+!/tests/test_*.cjs
+!/tests/keymap-x11-sink.c
 !/tests/keymap-advanced.c
 !/tests/keymap-storage.c
 !/tests/scrcpy-mapping.c

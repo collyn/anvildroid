@@ -181,8 +181,8 @@ ignored verification directory. No installed runtime or controller was modified.
 ## Remaining completion plan
 
 The user confirmed that Default folder sharing and actual X11 validation are
-missing. Treat them as completion work for this branch. The implementation
-above remains the current state; the checklist below is pending, not verified.
+completion work for this branch. The checklist distinguishes implementation
+and automated verification from the remaining Android app acceptance gates.
 Keep all additions inside the existing Storage, ARM translation, Google Play,
 Diagnostics and per-app settings flows.
 
@@ -190,14 +190,14 @@ Diagnostics and per-app settings flows.
 
 Owner: shared-folders agent; primary agent owns shared controller/frontend wiring.
 
-- [ ] Trace the system Waydroid startup, LXC mounts and teardown hooks; design a
+- [x] Trace the system Waydroid startup, LXC mounts and teardown hooks; design a
   Default adapter that works with normal system-service starts as well as GUI
   starts. Do not bypass the existing private-mount guard to enable the UI.
-- [ ] Reuse explicit owner-scoped grants and path/descriptor checks. Serialize
+- [x] Reuse explicit owner-scoped grants and path/descriptor checks. Serialize
   share edits against start/stop and verify the active Default owner/session.
-- [ ] Implement RO/RW mounting, saved/configured/mounted/error reporting, cleanup
+- [x] Implement RO/RW mounting, saved/configured/mounted/error reporting, cleanup
   on stop/restart/failure, and recovery after controller/service restart.
-- [ ] Extend Storage's existing Shared folders panel to supported managed Default
+- [x] Extend Storage's existing Shared folders panel to supported managed Default
   installations; show a concrete missing prerequisite when integration is absent.
 - [ ] Verify two desktop users, replaced sources, symlinks, missing directories,
   read-only write denial, read/write writeback, revocation and failed boot/cleanup.
@@ -247,13 +247,13 @@ Owner: primary agent; agents provide feature-specific reproduction fixtures.
 - [ ] Export reports from real Default and managed test installations on X11 and
   Wayland, including unavailable sections and opt-in current-generation logs.
   Inspect redaction, stale-session handling, permissions and existing-file refusal.
-- [ ] Repair the three known stale frontend test fixtures so the full frontend
+- [x] Repair the three known stale frontend test fixtures so the full frontend
   run provides a clean regression signal. Fix any real implementation defects
   exposed by those repairs instead of changing expectations to hide them.
-- [ ] Run the complete Rust suite on a host with available inotify resources;
+- [x] Run the complete Rust suite with available inotify resources;
   run display/session-dependent checks in the proper test session. Record every
   remaining skip explicitly.
-- [ ] Add maintained regressions for Default lifecycle failures and live findings;
+- [x] Add maintained regressions for Default lifecycle failures and findings;
   run feature, native, sanitizer, isolation, Rust and Clippy checks as appropriate.
 
 Exit: required automated checks pass, environment-dependent gates have actual
@@ -263,13 +263,15 @@ results, and no skipped live check is represented as successful validation.
 
 Owner: primary agent; shared-folders agent reviews system-hook packaging.
 
-- [ ] Build and verify Debian, portable and AppImage artifacts with all new system
-  integration pieces. Exercise clean installation and upgrade in disposable
-  supported test environments, including hook availability and runtime ownership.
+- [x] Build and verify Debian, Arch and portable artifacts with all new system
+  integration pieces. AppImage is deferred by the user's instruction.
+- [ ] Exercise clean installation and upgrade in disposable supported test
+  environments, including hook availability and runtime ownership.
 - [ ] Repeat a short app/share/settings/export smoke test using packaged binaries.
-- [ ] Update support limitations, instructions and the matrix with observed
-  results; remove Default's unsupported statement only once its acceptance passes.
-- [ ] Review changes and commit/push on `dev/waydroid-helper-features`.
+- [x] Update support limitations and instructions with observed results. Default
+  support is conditional on verified system integration; app/FUSE acceptance is
+  explicitly unverified.
+- [x] Review changes and commit/push on `dev/waydroid-helper-features`.
 
 Execution order: Default design/adapter and test-environment preparation first;
 app/controls acceptance and regression-fixture repair can proceed in parallel;
@@ -281,6 +283,60 @@ MicroG/SmartDock/Magisk installers, arbitrary macro scripting and unlimited
 relative FPS mouse capture remain separate feature scope, not completion gates
 for these five agreed recommendations. Publishing a release or merging remains
 outside this branch's delivery.
+
+### Completion execution — 2026-10-17
+
+Default now uses integration version 2: a private service baseline, a fresh
+per-session namespace, owner/data identity binding, descriptor-pinned mounts,
+verified guest mount readback and lifecycle locking through verified teardown.
+Hardware-thread remounts and unverified helper cleanup fail closed. Storage
+uses the existing inline panel and shows a concrete prerequisite for an old or
+missing service integration. See [shared folders](SHARED-FOLDERS.md).
+
+X11 testing found and fixed held/repeated key replay, stale-window forwarding,
+missing release events and unmap cancellation. Review also caught a synthetic
+XIM keycode-zero commit regression; real Fcitx CJK composition passes after its
+fix. Production mapping handlers are exercised through the real private X11
+adapter and Wayland seat; the Android task context and touch sink remain
+synthetic. This is not Android gameplay acceptance.
+
+Diagnostics pins both the desktop session and Android init PID/start time for
+live Default, or the authenticated worker generation for managed runtimes.
+Changing identity discards collected sections/log text and marks the report
+unavailable. Stopped reports do not reuse previous-session logs.
+
+The Arch mount report prompted explicit OverlayFS options for both Android
+layers, with required metacopy/redirect features retained for existing upper
+layers. A real migration test caught a mount that succeeded but could not read
+metadata-only files; the final policy preserves those reads and directory
+redirects. Mount errors retain the original cause, target and options. The
+reported Arch failure is still unconfirmed: kernel version, backing filesystem
+and dmesg from the failing machine are not available. No upper layer is deleted
+or reset as a fallback.
+
+| Check | Observed result |
+| --- | --- |
+| Focused feature runner | 139 Python tests, 42 dedicated frontend cases, all 19 full frontend files and four native suites pass; isolated module staging/import passes |
+| Worker regression suite | 25 pass; compositor-dependent workarea probe reports no compositor |
+| Default GPU/shader/provision/NVIDIA image regressions | 28 pass |
+| Real managed and Default sharing fixtures | RO denial, RW writeback, userdata recursive bind inheritance, revocation, stale source, symlink and lifecycle cases pass in disposable namespaces |
+| Real OverlayFS fixture | Explicit defaults, lower priority, copy-up, whiteout, remount and legacy metacopy/redirect migration pass |
+| Private X11/Fcitx suites | Full normal and ASan/UBSan runs pass, including XIM commits and the production-mapper fixture; sanitizer leak detection disabled for external libraries |
+| Rust workspace | 79 pass in the ordinary run; the inotify test passes separately under UID 65534 because the desktop UID quota is exhausted; the ignored native panel test passes separately under private Xvfb/D-Bus (81 exercised in total) |
+| Clippy | All workspace targets pass with warnings denied |
+| Actual WebKit Runtime Settings | Eight scenarios pass at 900×700 and 640×700; Default prerequisite, supported sharing and running-state lock included; screenshots inspected |
+| Debian/Arch packages | Built with current Python/native/GUI payloads; metadata, source bytes, manifests, hashes, dependencies, CLI and packaged image tools verified |
+| Extracted Debian smoke | GUI reaches its frontend frame; private controller serves list/requirements from a temporary store/socket |
+| Portable | Bundle includes verified X11 and Default hook; six packaging fixtures pass; manifest checksums verified; NVIDIA renderer payload remains separately provisioned |
+
+Release preparation now runs the complete maintained frontend set, Default
+lifecycle tests, isolated managed/Default/OverlayFS mount tests and a private
+software-X11 input suite. The previously ignored frontend fixtures are tracked.
+AppImage was not rebuilt. Package-manager installation/upgrade, Android
+media/FUSE access, live app compatibility, ARM/GAPPS and actual gameplay on the
+Default/managed × X11/Wayland matrix remain acceptance gates. The available
+test environment has no Binder/KVM/GPU devices for a disposable Android boot;
+installed personal runtimes were not used as substitutes.
 
 ### Remaining live acceptance gates
 

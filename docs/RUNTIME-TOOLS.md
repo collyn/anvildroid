@@ -45,6 +45,10 @@ they do not prevent the remaining report from being useful.
 
 Logs are unchecked by default. Opt-in collection permits only controller-owned
 worker, renderer, console and current-generation X11 logs, at most 64 KiB each.
+Collection verifies the authorized runtime session before and after every
+section and log. If the session changes, the report discards its collected data
+and marks those sections unavailable. Stopped runtimes can export configuration;
+logs from a previous session are excluded.
 There is a 128 KiB section limit and a 1 MiB service report limit. Symlink,
 hardlink, special-file and unsafe-permission log inputs are rejected. The service
 does not receive the chosen export path: the desktop Rust process writes the
