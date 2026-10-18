@@ -16,9 +16,13 @@ Android input passes on managed X11 and Wayland; the full disposable stock
 Default sharing and diagnostic lifecycle now passes as well. The final Default
 results and current package hashes are recorded at the end of this document.
 
-Remaining acceptance requires the user's Arch host, representative apps/games,
-physical desktop/editor interactions, Default ARM provider restore, and online
-Google account/Integrity checks. These gates remain unchecked below. AppImage
+Arch installation, boot, restart and GPU checks pass on CachyOS; the user also
+confirmed the runtime works after the OverlayFS/BinderFS fixes.
+Remaining acceptance requires representative apps/games,
+physical desktop/editor interactions, the graphical managed ARM workflow, and
+online Google account/Integrity checks. Disposable Default ARM disable/restore
+and managed X11/Wayland editor/playback cancellation now pass. The remaining
+gates stay unchecked below. AppImage
 is deferred; this branch is not a merge or published release.
 
 ## Work allocation
@@ -242,6 +246,10 @@ Owner: game-controls agent; shared-folders agent assists mount investigation.
 - [x] Exercise the same ten scenarios through the production Wayland backend,
   with an input-capable private Weston and actual Android MotionEvents. Retain
   failed attempts and distinguish ordinary app activation from mapped fingers.
+- [x] Verify actual Android contact cancellation when F2 opens the editor or
+  F3 disables playback, suppression while disabled/editing, and fresh-press
+  recovery on managed X11 and Wayland. F4 input preserves an ongoing gesture;
+  this does not independently verify marker visibility or editor Save/Cancel.
 - [x] Observe the same diagnostic package in two simultaneously running guests
   with independent compatibility settings and real mouse input on private X11
   displays. This does not establish simultaneous gameplay/control-map isolation.
@@ -260,17 +268,19 @@ Owner: compatibility agent; primary agent reviews existing settings integration.
 - [ ] Test representative Wi-Fi-only apps and games across supported images;
   the diagnostic probe does not establish their compatibility.
 - [ ] Install/disable/switch verified ARM providers through the existing settings;
-  execute an ARM probe/app and verify failure recovery. Verify Default's existing
-  provider disable/restore separately; Default archive installation is not added
-  implicitly by this completion plan.
+  execute an ARM probe/app and verify failure recovery. Default archive
+  installation is not added implicitly by this completion plan.
 - [x] Exercise production stopped-runtime ARM configuration under its exclusive
   lock: libndk and Houdini execute real ARM32/ARM64 JNI, invalid archive selection
   retains the old working configuration, restart works, and disabling rejects
   fresh ARM-only APK installs. This did not drive the graphical installer route.
 - [x] Boot a separate verified GAPPS image, detect Play Store/services/GSF and
   observe the unauthenticated Play Store Activity drawn. GSF ID is uninitialized.
-- [ ] Verify online Google account/registration behavior and Default provider
-  disable/restore in a separate safely isolated installation.
+- [x] Verify Default's existing provider disable/restore in a separate isolated
+  installation, including real ARM32/ARM64 JNI before/after, disabled ARM-only
+  installation rejection, exact property restoration and retained app data.
+- [ ] Verify online Google account/registration behavior in a separate safely
+  isolated installation.
 
 Exit: configuration readback and observed app behavior are recorded separately;
 failed changes preserve a usable prior configuration and app data.
@@ -444,10 +454,6 @@ verified shutdown/quiescence; original images, caches and personal sessions rema
 
 ### Remaining manual acceptance
 
-- User's Arch installation/start, including the originally reported OverlayFS
-  failure. Use the latest Arch package at the end of this document; no test here establishes that machine's
-  kernel/backing-filesystem result.
-- Default ARM provider disable/restore in a separate isolated installation.
 - Representative FPS/MOBA/ARM gameplay, including simultaneous windows, capture
   feel, graphical editor lifecycle and recovery beyond the diagnostic scenarios.
 - Other Android images, modern scoped-storage apps and representative Wi-Fi-only
@@ -764,3 +770,62 @@ personal services. Evidence is under
 Wayland startup and app launch, while other Arch kernels, Arch X11, gameplay,
 physical input/editor feel, Default ARM restore and online Google checks retain
 their separate acceptance scope. AppImage remains deferred.
+
+### Acceptance completion follow-up — 2026-10-18
+
+The user confirmed the CachyOS runtime now works. Delegated implementation and
+review used `gpt-6.1-sol`; no personal runtime or desktop service was restarted.
+
+- **Managed X11 and Wayland: 13/13 actual Android input scenarios each.** The
+  added F2 and F3 cases observe cancellation of a held contact, no mapped input
+  while editing/disabled, then exactly one fresh gesture after re-enabling.
+  F4 input preserves one uninterrupted gesture; marker visibility itself is
+  not an observed result. Blur/refocus now waits for actual Android DOWN and
+  terminal acknowledgments instead of racing immediately queued focus changes.
+  Failed attempts and stage logs remain alongside the passing evidence.
+- **Disposable stock Default ARM: pass.** A fixture-only installed-provider
+  setup uses the production-pinned libndk archive, fresh userdata and maintained
+  ARM-only probe APKs. Real ARM32/ARM64 JNI succeeds before and after the actual
+  controller's stopped-runtime disable/restore. While disabled, bridge is `0`,
+  no ARM ABI is advertised and a fresh ARM32 APK is rejected. Exact ARM and
+  unrelated properties/configuration match after the final restored boot/Stop;
+  an in-guest test-app marker survives. The test exports no app-private data.
+- **Long runtime paths exposed a real Wayland watchdog defect.** The fixture's
+  `instance/android/desktop-socket` is 109 bytes, exceeding AF_UNIX's pathname
+  limit. The watchdog now connects to its existing authenticated private alias
+  `/run/anvil-xdg/wayland-probe`. The same long-path fixture boots, passes all
+  input cases and stops cleanly using the rebuilt package. Timeout and genuine
+  compositor-disconnect failures remain enforced.
+- The managed launcher masks `/run`, `/tmp`, `/home` and both installed runtime
+  stores, keeps only the exact fixture root by a verified FD bind, and clears
+  inherited desktop/bus/audio/agent environment. Default imports cannot create
+  bytecode caches inside its checksum-pinned package. All fixtures reached
+  quiescence/empty scopes; Default task loops were positively detached before
+  their test stores were deleted.
+- **251 Python tests, 326 frontend cases, 42 dedicated frontend cases and seven
+  native suites pass**, with complete packaged-module imports. The 39 runtime
+  Settings cases include 13 new ARM provider/download/failure/restore/serialization
+  regressions. Both rebuilt packages pass extracted source/native/binary parity,
+  CLI/image tools, isolated controller IPC and private UID1000 GUI first frame.
+  The ARM probe build checks actual ARM/AArch64 ELF/JNI, signatures and APK ABI
+  metadata. The ordinary sandbox cannot create the required Unix/display
+  sockets; the final worker/display regression results use private namespaces.
+
+Evidence is retained in `target/plan-completion-20261018/`: `default-arm/`,
+`controls-x11-synchronized/`, `controls-wayland/`, `regressions-final.log` and
+`packages-smoke.log`. Default ARM and X11 input used Debian SHA256
+`7ce769516c5c763d531cea74f13f75f7758ebf21f49832ab4b95fde51a7939a3`;
+Wayland uses the new Debian below. This source change affects only the managed
+non-native desktop watchdog; stock Default and native X11 use other paths.
+
+| Current artifact | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `target/releases/plan-completion-20261018/anvildroid-controller_0.1.3_amd64.deb` | 26,250,924 | `a58fd676546494e3e1c994166a22d6af339e50e53fd94fc5694c4b83603972d8` |
+| `target/releases/plan-completion-20261018/anvildroid-controller-0.1.3-1-x86_64.pkg.tar.zst` | 26,069,748 | `254dae14d00fcd30cf651d8ce8c2261f437be3ebcd70a3ab5e41ad7f3e05308e` |
+
+Neither new package was installed over the user's personal services in this
+follow-up. No new Arch-host deployment is claimed. Remaining gates are the
+physical desktop/Default input matrix, full graphical editor Save/Cancel and
+resize/replacement behavior, actual graphical managed ARM provider changes,
+representative games/Wi-Fi-only/scoped-storage apps and online Google account
+checks. AppImage remains deferred; no merge or published release is made.

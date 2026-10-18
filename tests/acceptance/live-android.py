@@ -12,6 +12,7 @@ Stop through acceptance.json's root-only worker_endpoint. Data is retained.
 No fixture or Starting state constitutes Android/input acceptance.
 """
 import argparse
+import ctypes
 import fcntl
 import hashlib
 import pwd
@@ -100,6 +101,45 @@ def close_displays(processes):
         try: child.wait(timeout=5)
         except subprocess.TimeoutExpired: child.kill(); child.wait(timeout=5)
 
+def isolate_session(root, owner_uid):
+    """Mask desktop/control endpoints before starting any disposable helpers."""
+    validate_root(root)
+    require(os.readlink('/proc/self/ns/mnt') != os.readlink('/proc/1/ns/mnt'), 'Private inner mount namespace required')
+    account = pwd.getpwuid(owner_uid)
+    require(owner_uid > 0 and Path(account.pw_dir).parent == Path('/home'), 'Conventional non-root desktop owner required')
+    descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    expected = os.fstat(descriptor)
+    try:
+        for target, mode in (('/run', '755'), ('/tmp', '1777'), ('/home', '755'),
+                             ('/var/lib/waydroid', '700'), ('/var/lib/anvildroid-controller', '700')):
+            subprocess.run(['mount', '-t', 'tmpfs', '-o', 'mode=' + mode, 'anvil-acceptance', target], check=True)
+        root.mkdir(mode=0o700)
+        bind_fixture_descriptor(descriptor, root)
+        observed = root.stat()
+        require((expected.st_dev, expected.st_ino) == (observed.st_dev, observed.st_ino), 'Disposable root bind identity changed')
+    finally:
+        os.close(descriptor)
+    for directory, mode in ((Path(account.pw_dir), 0o700), (Path('/run/user') / str(owner_uid), 0o700)):
+        directory.mkdir(mode=mode, parents=True)
+        os.chown(directory, owner_uid, account.pw_gid)
+    Path('/tmp/.X11-unix').mkdir(mode=0o1777)
+    # Whitelist rather than inherit expired bus/audio/display or agent sockets.
+    os.environ.clear()
+    os.environ.update(PATH='/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+                      HOME=account.pw_dir, LANG='C.UTF-8', TMPDIR='/tmp',
+                      XDG_RUNTIME_DIR='/run/user/' + str(owner_uid),
+                      DBUS_SYSTEM_BUS_ADDRESS='unix:path=/run/no-system-bus',
+                      DBUS_SESSION_BUS_ADDRESS='unix:path=/run/no-session-bus',
+                      LIBGL_ALWAYS_SOFTWARE='1', PYTHONDONTWRITEBYTECODE='1')
+
+def bind_fixture_descriptor(descriptor, root):
+    # libmount canonicalization resolves a covered proc-FD source to the new
+    # empty target. Use the descriptor directly, just as the Default harness.
+    libc = ctypes.CDLL(None, use_errno=True)
+    libc.mount.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_ulong, ctypes.c_void_p]
+    if libc.mount(os.fsencode('/proc/self/fd/' + str(descriptor)), os.fsencode(root), None, 4096, None) < 0:
+        raise OSError(ctypes.get_errno(), 'Disposable fixture descriptor bind failed')
+
 def nested_wayland(root, owner_uid, generation):
     """Only private Xvfb → UID-owned Weston; never touch host input devices."""
     validate_root(root)
@@ -160,6 +200,7 @@ def nested_wayland(root, owner_uid, generation):
 def preflight_wayland_input(root, owner_uid):
     require(not root.exists(), 'Preflight requires a new disposable root')
     root.mkdir(mode=0o700)
+    isolate_session(root, owner_uid)
     account = pwd.getpwuid(owner_uid); require(owner_uid > 0, 'Non-root Weston owner required')
     private = root / 'private-user-run'; private.mkdir(mode=0o700); os.chown(private, owner_uid, account.pw_gid)
     subprocess.run(['mount', '--bind', str(private), '/run/user/' + str(owner_uid)], check=True)
@@ -202,6 +243,7 @@ def start(root, package, x11, wayland=False, wayland_x11=False):
     owner_uid = metadata.get('owner_uid', metadata.get('desktop_uid'))
     require(type(owner_uid) is int and owner_uid > 0, 'Missing desktop owner')
     account = pwd.getpwuid(owner_uid)
+    isolate_session(root, owner_uid)
     lock = os.open(instance / 'worker.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     payload = assets(root, package)

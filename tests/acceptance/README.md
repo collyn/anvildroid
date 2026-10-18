@@ -10,7 +10,10 @@ Use a new task-specific directory under `/tmp`, copied Android images and
 fresh userdata. The live harness never contacts the installed controller. It
 starts its own bounded systemd scope, private mount/network/PID namespaces,
 private display sockets and copied package assets. The worker executes from
-the pinned extracted package. User session sockets are masked. The input and
+the pinned extracted package. Before managed display/worker startup, `/run`,
+`/tmp`, `/home` and both installed runtime stores are masked; an inode-checked
+FD bind preserves only this fixture root. The environment is whitelisted, so
+custom desktop/bus/audio/agent endpoints are not inherited. The input and
 sharing probes verify the selected private worker
 before changing its diagnostic app or writing inside its selected test share.
 
@@ -128,6 +131,15 @@ separate from actual Android acceptance. No game was played here: joystick
 tuning, sustained FPS/MOBA gameplay, ARM game compatibility, end-to-end input
 latency percentiles and CPU/performance under game load remain open.
 
+The 2026-10-18 follow-up extends both routes to **13/13 actual Android input
+scenarios**. F2 editor entry and F3 playback disable cancel held contacts,
+suppress mapping until re-enabled, and accept a fresh press afterwards. F4
+input leaves an ongoing gesture uninterrupted; the oracle does not observe
+marker visibility. Blur/refocus stages now wait for real Android event
+acknowledgments and retain failed-stage logs. These results do not close the
+editor Save/Cancel, resize or gameplay gates above. Evidence is under
+`target/plan-completion-20261018/controls-{x11-synchronized,wayland}/`.
+
 Shared-folder checks require a test-owned source with the sentinel
 `acceptance-read` containing TOKEN, configured through production shared-folder
 APIs while stopped. Use a new runtime generation after each RO/RW/remove change:
@@ -229,3 +241,37 @@ an empty persistent directory but requires no share mount or source sentinel;
 the app probes with the original token and must still fail both read and write.
 See [Default isolation](DEFAULT-ISOLATION.md) for evidence and scope. These
 checks do not establish physical desktop input or gameplay on Default.
+
+## Default installed ARM provider disable/restore
+
+Build the maintained ARM-only arithmetic JNI probes from source (cached Android
+SDK, pinned R8, Java, clang/lld, binutils, aapt and apksigner are required):
+
+```sh
+sh scripts/build-arm-probes.sh
+```
+
+Use a fresh Default fixture and supply all three optional inputs during
+preparation. The archive must match the packaged production libndk checksum;
+no archive installer is added to Default's product API.
+
+```sh
+sudo python3 tests/acceptance/default-android.py /tmp/anvil-default-arm-local --prepare --owner-uid "$(id -u)" --package /absolute/package.deb --expected-package-sha256 PACKAGE_SHA256 --arm-archive /absolute/verified-libndk.zip --arm-probe32 "$PWD/target/arm-probe/arm32.apk" --arm-probe64 "$PWD/target/arm-probe/arm64.apk"
+sudo python3 tests/acceptance/default-android.py /tmp/anvil-default-arm-local --preflight
+```
+
+Review that preflight and teardown exactly as for the stock share fixture,
+including ARM input hashes and the overlay manifest, then pass its exact digest
+to `--run --reviewed-preflight PREFLIGHT_SHA256`. This optional mode performs
+the owner claim and ARM lifecycle instead of the share/diagnostic lifecycle.
+It observes actual ARM32/64 JNI before/after stopped-controller disable/restore,
+no advertised ARM ABI and rejected fresh ARM APK while disabled, exact ARM and
+unrelated configuration after the final restored boot/Stop, and a retained
+fixture-app marker checked only inside Android. APK/archive/payload changes
+invalidate the reviewed preflight. It does not drive the graphical installer.
+
+This lifecycle passed on 2026-10-18 using launcher SHA256
+`650deb81c1fb96b6c3bdb29414c68fbbbcdf53a87cd98e1898d266e59ac066c1`.
+Evidence and positive scope/loop teardown are retained in
+`target/plan-completion-20261018/default-arm/`. The probes' JNI results establish
+actual ARM code execution, not representative ARM game compatibility.

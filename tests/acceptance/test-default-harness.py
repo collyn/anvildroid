@@ -17,6 +17,82 @@ harness = importlib.util.module_from_spec(spec); spec.loader.exec_module(harness
 
 
 class DefaultAcceptanceTests(unittest.TestCase):
+    def test_arm_inputs_are_all_or_none(self):
+        from itertools import product
+        for flags in product((None, Path('/tmp/input')), repeat=3):
+            args = SimpleNamespace(arm_archive=flags[0], arm_probe32=flags[1], arm_probe64=flags[2])
+            if any(flags) and not all(flags):
+                with self.assertRaisesRegex(RuntimeError, 'required together'): harness.arm_inputs(args)
+            else: self.assertEqual(harness.arm_inputs(args), flags if all(flags) else None)
+
+    def test_arm_provenance_pins_archive_and_each_private_regular_copy(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            expected = {}
+            for name in ('arm.zip', 'arm32.apk', 'arm64.apk'):
+                (root / name).write_bytes(name.encode()); (root / name).chmod(0o600)
+                expected[name] = harness.digest(root / name)
+            arm = SimpleNamespace(SHA256=expected['arm.zip'])
+            original = Path.lstat
+            def root_owned(path, *args, **kwargs):
+                result = list(original(path, *args, **kwargs)); result[4] = 0
+                return os.stat_result(result)
+            with patch.object(harness, 'load_module', return_value=arm), patch.object(Path, 'lstat', root_owned):
+                self.assertEqual(harness.verify_arm_inputs(root, {'arm_inputs': expected}), expected)
+                self.assertIsNone(harness.verify_arm_inputs(root, {}))
+                with self.assertRaisesRegex(RuntimeError, 'Incomplete'):
+                    harness.verify_arm_inputs(root, {'arm_inputs': {'arm.zip': expected['arm.zip']}})
+                with self.assertRaisesRegex(RuntimeError, 'production-pinned'):
+                    harness.verify_arm_inputs(root, {'arm_inputs': {**expected, 'arm.zip': '0' * 64}})
+                for name in expected:
+                    path = root / name
+                    path.write_bytes(b'tampered')
+                    with self.assertRaisesRegex(RuntimeError, 'changed'): harness.verify_arm_inputs(root, {'arm_inputs': expected})
+                    path.write_bytes(name.encode()); path.chmod(0o644)
+                    with self.assertRaisesRegex(RuntimeError, 'Unsafe'): harness.verify_arm_inputs(root, {'arm_inputs': expected})
+                    path.chmod(0o600); os.link(path, root / 'alias')
+                    with self.assertRaisesRegex(RuntimeError, 'Unsafe'): harness.verify_arm_inputs(root, {'arm_inputs': expected})
+                    (root / 'alias').unlink()
+                path = root / 'arm32.apk'; path.unlink(); path.symlink_to(root / 'arm64.apk')
+                with self.assertRaisesRegex(RuntimeError, 'Unsafe'): harness.verify_arm_inputs(root, {'arm_inputs': expected})
+
+    def test_arm_staging_copies_only_explicit_inputs_and_refuses_unpinned_archive(self):
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp); root = directory / 'fixture'; root.mkdir()
+            sources = []
+            for name in ('source.zip', 'source32.apk', 'source64.apk'):
+                path = directory / name; path.write_bytes(name.encode()); sources.append(path)
+            args = SimpleNamespace(arm_archive=sources[0], arm_probe32=sources[1], arm_probe64=sources[2])
+            with patch.object(harness, 'load_module', return_value=SimpleNamespace(SHA256='wrong')):
+                with self.assertRaisesRegex(RuntimeError, 'production-pinned'): harness.stage_arm_inputs(root, {}, args)
+            self.assertEqual(list(root.iterdir()), [])
+            with patch.object(harness, 'load_module', return_value=SimpleNamespace(SHA256=harness.digest(sources[0]))):
+                value = {}; harness.stage_arm_inputs(root, value, args)
+            for name, source in zip(('arm.zip', 'arm32.apk', 'arm64.apk'), sources):
+                self.assertEqual((root / name).read_bytes(), source.read_bytes())
+                self.assertNotEqual((root / name).stat().st_ino, source.stat().st_ino)
+                self.assertEqual((root / name).stat().st_mode & 0o777, 0o600)
+            self.assertEqual(set(value['arm_inputs']), {'arm.zip', 'arm32.apk', 'arm64.apk'})
+
+    def test_arm_overlay_verifies_installed_bytes_against_verified_payload(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp); target = root / 'work/overlay/system/lib/bridge.so'
+            target.parent.mkdir(parents=True); target.write_bytes(b'verified'); target.chmod(0o644)
+            manifest = {'files': {'system/lib/bridge.so': harness.digest(target)}}
+            arm = SimpleNamespace(SHA256='pinned', verify=lambda *args: manifest)
+            original = Path.lstat
+            def root_owned(path, *args, **kwargs):
+                result = list(original(path, *args, **kwargs)); result[4] = 0
+                return os.stat_result(result)
+            with patch.object(harness, 'load_module', return_value=arm), patch.object(Path, 'lstat', root_owned):
+                checksum = harness.verify_arm_overlay(root, {'arm_inputs': True})
+                self.assertEqual(len(checksum), 64)
+                self.assertIsNone(harness.verify_arm_overlay(root, {}))
+                target.write_bytes(b'changed')
+                with self.assertRaisesRegex(RuntimeError, 'overlay changed'): harness.verify_arm_overlay(root, {'arm_inputs': True})
+                target.chmod(0o666)
+                with self.assertRaisesRegex(RuntimeError, 'Unsafe'): harness.verify_arm_overlay(root, {'arm_inputs': True})
+
     def test_removed_source_rejects_exact_mounts_including_backend(self):
         for malformed in ('', '   ', '42 1 0:5 / /data rw', '42 1 0:5 / /data rw missing separator fields'):
             with self.subTest(malformed=malformed), self.assertRaises(RuntimeError):

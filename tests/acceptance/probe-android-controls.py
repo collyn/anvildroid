@@ -49,6 +49,30 @@ def scene_rectangle(scene, runtime_id):
     require(right<=1600 and bottom<=1000,'Wayland surface outside private output')
     return x,y
 
+def touch_events(lines):
+    """Require complete balanced Android gestures, not merely a final zero."""
+    require(not any('WARNING' in row for row in lines),'Observer detected stale contacts')
+    events=[row for row in lines if 'AnvilTouchProbe:' in row and ' ACTION_' in row]
+    active=0
+    for row in events:
+        require(re.search(r' source=0x1002(?:$|\s)',row) is not None and
+                re.findall(r'tool=([^ ]+)',row) and
+                all(tool=='FINGER(1)' for tool in re.findall(r'tool=([^ ]+)',row)),
+                'Not actual finger touch delivery')
+        match=re.search(r' ACTION_(DOWN|UP|MOVE|CANCEL|POINTER_DOWN|POINTER_UP)(?:\(\d+\))? ',row)
+        count=re.search(r' activeAfter=(\d+)(?:$|\s)',row)
+        require(match is not None and count is not None,'Malformed Android touch event')
+        action=match[1];after=int(count[1])
+        if action=='DOWN':require(active==0 and after==1,'Unbalanced DOWN')
+        elif action=='POINTER_DOWN':require(active>0 and after==active+1,'Unbalanced POINTER_DOWN')
+        elif action=='POINTER_UP':require(active>1 and after==active-1,'Unbalanced POINTER_UP')
+        elif action=='MOVE':require(active>0 and after==active,'Unbalanced MOVE')
+        elif action=='UP':require(active==1 and after==0,'Unbalanced UP')
+        else:require(active>0 and after==0,'Unbalanced CANCEL')
+        active=after
+    require(events and active==0,'Android contact remained held or no touch delivered')
+    return events
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('metadata',type=Path);parser.add_argument('worker_pid',type=int);parser.add_argument('output',type=Path)
@@ -176,36 +200,77 @@ def main():
                 if value=='mousemove':
                     sequence[index+3]=str(int(sequence[index+3])+offset[0]);sequence[index+4]=str(int(sequence[index+4])+offset[1])
         verify_worker()
-        activation=[]
-        if nested and name=='held-refocus':
-            # X output focus does not select a Wayland client in Weston.
-            # Keep the real click-to-focus input separate from mapped touch
-            # assertions; never count that ordinary mouse click as a finger.
-            activate=['windowfocus','--sync',window,'mousemove','--window',window,
-                      str(220+offset[0]),str(320+offset[1]),'click','1']
-            run(x+activate);time.sleep(.1);before=logs()
-            run(x+['keydown','w','windowfocus',root_window[1],'sleep','.1'])
-            blurred=logs();require(blurred[:len(before)]==before,'Android log buffer rotated')
-            run(x+activate);time.sleep(.1);focused=logs()
-            require(focused[:len(blurred)]==blurred,'Android log buffer rotated')
-            activation=focused[len(blurred):]
-            require(not any('AnvilKeymap:' in v and 'touch package=' in v for v in activation),
-                    'Refocus activation unexpectedly restarted mapped contact')
-            clicks=[v for v in activation if 'AnvilTouchProbe:' in v and ' ACTION_' in v]
-            require(len(clicks)==2 and ' ACTION_DOWN ' in clicks[0] and
-                    ' ACTION_UP ' in clicks[-1] and 'activeAfter=0' in clicks[-1] and
-                    all('source=0x2002' in v and 'tool=MOUSE(3)' in v for v in clicks),
-                    'Refocus activation was not one ordinary mouse click')
-            run(x+['keydown','w','sleep','.15']);held=logs()
-            require(held[:len(focused)]==focused,'Android log buffer rotated')
-            require(not any(' ACTION_DOWN ' in v for v in held[len(focused):]),
-                    'Held key resumed on Wayland refocus before release')
-            run(x+['keyup','w','sleep','.1','keydown','w','sleep','.15','keyup','w'])
-            time.sleep(.2);after=logs()
-            require(after[:len(focused)]==focused,'Android log buffer rotated')
-            lines=blurred[len(before):]+after[len(focused):]
-            (args.output/'held-refocus-activation.log').write_text('\n'.join(activation)+'\n')
-            (args.output/'held-refocus-all.log').write_text('\n'.join(after[len(before):])+'\n')
+        if name in ('blur','held-refocus'):
+            # X focus requests return before Android has consumed queued input.
+            # Observe the first contact before moving focus, then independently
+            # witness its cancellation and the fresh press after key release.
+            activate=['windowfocus','--sync',window]
+            if nested:
+                activate+=['mousemove','--window',window,
+                           str(220+offset[0]),str(320+offset[1]),'click','1']
+            run(x+activate);time.sleep(.2)
+            before=logs();checkpoint=before;collected=[]
+            def capture(label):
+                nonlocal checkpoint
+                current=logs()
+                # Preserve raw evidence even if the prefix/rotation check fails.
+                (args.output/(name+'-'+label+'-all.log')).write_text('\n'.join(current)+'\n')
+                require(current[:len(before)]==before,'Android log buffer rotated')
+                (args.output/(name+'-all.log')).write_text('\n'.join(current[len(before):])+'\n')
+                require(current[:len(checkpoint)]==checkpoint,'Android log buffer rotated')
+                delta=current[len(checkpoint):]
+                (args.output/(name+'-'+label+'.log')).write_text('\n'.join(delta)+'\n')
+                return current,delta
+            def wait_stage(label,predicate):
+                deadline=time.monotonic()+5
+                while True:
+                    current,delta=capture(label)
+                    if predicate(delta):
+                        # Advance only after a witnessed acknowledgment.
+                        return current,delta
+                    require(time.monotonic()<deadline,name+': timed out waiting for '+label)
+                    time.sleep(.05)
+            def has_touch(rows,action):
+                return any('AnvilTouchProbe:' in row and ' ACTION_'+action+' ' in row for row in rows)
+            run(x+['keydown','w'])
+            checkpoint,first=wait_stage('initial-down',lambda rows:has_touch(rows,'DOWN'))
+            require(not has_touch(first,'UP') and not has_touch(first,'CANCEL'),
+                    name+': initial gesture ended before blur')
+            collected+=first
+            run(x+['windowfocus','--sync',root_window[1]])
+            checkpoint,cancelled=wait_stage('blur-terminal',lambda rows:has_touch(rows,'UP') or has_touch(rows,'CANCEL'))
+            collected+=cancelled;touch_events(collected)
+            if name=='held-refocus':
+                run(x+activate);time.sleep(.25)
+                current,activation=capture('refocus-activation')
+                require(not any('AnvilKeymap:' in row and 'touch package=' in row for row in activation),
+                        'Refocus activation unexpectedly restarted mapped contact')
+                clicks=[row for row in activation if 'AnvilTouchProbe:' in row and ' ACTION_' in row]
+                if nested:
+                    require(len(clicks)==2 and ' ACTION_DOWN ' in clicks[0] and
+                            ' ACTION_UP ' in clicks[-1] and 'activeAfter=0' in clicks[-1] and
+                            all('source=0x2002' in row and 'tool=MOUSE(3)' in row for row in clicks),
+                            'Refocus activation was not one ordinary mouse click')
+                else:require(not clicks,'Native refocus unexpectedly delivered touch')
+                checkpoint=current
+                run(x+['keydown','w']);time.sleep(.25)
+                checkpoint,held=capture('held-suppressed')
+                require(not any('AnvilTouchProbe:' in row and ' ACTION_' in row for row in held),
+                        'Held key resumed before release')
+                collected+=held
+            run(x+['keyup','w']);time.sleep(.2)
+            checkpoint,released=capture('release-suppressed')
+            require(not any('AnvilTouchProbe:' in row and ' ACTION_' in row for row in released),
+                    name+': releasing cancelled key delivered extra touch')
+            collected+=released
+            if name=='held-refocus':
+                run(x+['keydown','w'])
+                checkpoint,fresh=wait_stage('fresh-down',lambda rows:has_touch(rows,'DOWN'))
+                collected+=fresh
+                run(x+['keyup','w'])
+                checkpoint,terminal=wait_stage('fresh-terminal',lambda rows:has_touch(rows,'UP') or has_touch(rows,'CANCEL'))
+                collected+=terminal
+            lines=collected
         else:
             before=logs();run(x+sequence);time.sleep(.2);after=logs()
             require(after[:len(before)]==before,'Android log buffer rotated during acceptance; rerun')
@@ -213,7 +278,7 @@ def main():
         verify_worker()
         if nested:require(compositor_state()==compositor_identity,'Private compositor changed during acceptance')
         text='\n'.join(lines)+'\n';(args.output/(name+'.log')).write_text(text)
-        events=[v for v in lines if 'AnvilTouchProbe:' in v and ' ACTION_' in v]
+        events=touch_events(lines)
         downs=sum(' ACTION_DOWN ' in v for v in events)
         require(downs>=minimum,name+': missing actual Android DOWN')
         if name=='macro':require(downs==2,'Finite macro restarted or lost a cycle')
@@ -224,6 +289,41 @@ def main():
         require(all('source=0x1002' in v and 'tool=FINGER(1)' in v for v in events),name+': not actual touch delivery')
         require(not any('WARNING' in v for v in lines),name+': observer detected stale contacts')
         results.append({'scenario':name,'passed':True,'down_count':downs,'event_count':len(events)})
+    # Stage lifecycle transitions separately: a final balanced gesture alone
+    # cannot prove that playback was suppressed while the editor was active.
+    def stage(sequence,label):
+        verify_worker()
+        if nested:require(compositor_state()==compositor_identity,'Private compositor changed')
+        before=logs();run(x+sequence);time.sleep(.35);after=logs()
+        (args.output/(label+'-all.log')).write_text('\n'.join(after)+'\n')
+        require(after[:len(before)]==before,'Android log buffer rotated')
+        delta=after[len(before):]
+        (args.output/(label+'.log')).write_text('\n'.join(delta)+'\n')
+        return delta
+    for name,toggle in [('playback-lifecycle','F3'),('editor-lifecycle','F2')]:
+        run(x+['windowfocus','--sync',window])
+        lines=stage(['keydown','w','sleep','.15','key',toggle,'sleep','.5'],name+'-cancel')
+        # Opening/disable must finish the already held mapped contact.
+        touch_events(lines)
+        suppressed=stage(['keyup','w','key','b'],name+'-suppressed')
+        require(not any('AnvilTouchProbe:' in row and ' ACTION_' in row for row in suppressed),
+                name+': mapped touch leaked while suppressed')
+        resumed=stage(['key',toggle,'sleep','.5','key','b'],name+'-resumed')
+        touch_events(resumed)
+        lines+=suppressed+resumed
+        events=touch_events(lines)
+        downs=sum(' ACTION_DOWN ' in row for row in events)
+        require(downs==2,name+': lifecycle produced unexpected gesture count')
+        (args.output/(name+'.log')).write_text('\n'.join(lines)+'\n')
+        results.append({'scenario':name,'passed':True,'down_count':downs,'event_count':len(events)})
+    marker=stage(['keydown','w','sleep','.15','key','F4','sleep','.15',
+                  'key','F4','sleep','.15','keyup','w'],'marker-lifecycle')
+    events=touch_events(marker)
+    require(sum(' ACTION_DOWN ' in row for row in events)==1,
+            'Marker visibility interrupted or restarted the mapped gesture')
+    (args.output/'marker-lifecycle.log').write_text('\n'.join(marker)+'\n')
+    results.append({'scenario':'marker-toggle-continuity','passed':True,'down_count':1,'event_count':len(events),
+                    'visibility_observed':False})
     (args.output/'summary.json').write_text(json.dumps({'runtime':m['id'],'generation':m['generation'],'package_sha256':m.get('package_sha256'),'guest_display_backend':'wayland' if nested else 'native-x11','input_transport':transport or {'kind':'private-xvfb'},'scene_graph_capture_ms':scene_elapsed_ms,'scene_graph_timeout_seconds':5 if nested else None,'worker_start_time':identity_start,'worker_mount_namespace':identity_mnt,'results':results},indent=2))
     print(json.dumps(results,indent=2))
 

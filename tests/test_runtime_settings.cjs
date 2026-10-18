@@ -107,3 +107,112 @@ test('Frozen boot settings thaw through Stop before apply and restart',async()=>
   const result=await apply({op:'gpu_set',id:'sleep',node:'auto'},{send:async r=>{calls.push(r.op);return r.op==='refresh'?{id:'sleep',state:'Frozen'}:{saved:true};},transition:async op=>calls.push(op)});
   assert.equal(result.restarted,true);assert.deepEqual(calls,['refresh','stop','gpu_set','start']);
 });
+
+// Exercise the production Settings ARM actions with inert DOM/IPC boundaries.
+// These checks do not claim graphical rendering or Android ARM execution.
+function armSettingsFixture({engine='libhoudini', installed=true, id='test', arm={}, download, mutationError=''} = {}) {
+  const digest = 'b'.repeat(64);
+  const calls = [];
+  const drafts = new Map([[id, {engine, sha256:digest}]]);
+  const record = {id, state:'Stopped', arm:{supported:true,enabled:true,provider:'libndk',sources:[{engine:'libhoudini',version:'13',android:'Android 13',sha256:digest,installed}],...arm}};
+  let change;
+  const context = vm.createContext({
+    runtimeArmDraft:drafts, controllerMutation:false, controllerError:'', escapeHtml:String,
+    runtimeRecord:requested => requested === id ? record : null,
+    document:{querySelector:selector => ({value:selector.includes('arm-engine') ? engine : engine === 'none' ? 'none' : digest}),addEventListener:(type, listener) => { assert.equal(type,'change'); change=listener; }},
+    renderController:()=>calls.push({op:'render'}),
+    tauriInvoke:async (op,request)=>{calls.push({op,...request});return download ? download(request) : {sha256:digest};},
+    mutateController:async request=>{calls.push({...request});context.controllerError=mutationError;},
+    showAppToast:(message,kind)=>calls.push({op:'toast',message,kind}),
+  });
+  vm.runInContext(source.slice(source.indexOf('const ARM_BUILTIN_SHA'),source.indexOf('// Start only after all runtime request helpers')),context);
+  return {context,calls,drafts,record,digest,change:()=>change};
+}
+
+test('Settings switches to an already cached provider with the exact selected digest', async()=>{
+  const f=armSettingsFixture();
+  await f.context.installRuntimeArm('test');
+  assert.deepEqual(f.calls,[{op:'render'},{op:'arm_set',id:'test',enabled:true,archive_sha256:f.digest},{op:'render'}]);
+  assert.equal(f.drafts.has('test'),false);
+});
+test('Settings downloads the selected verified catalog entry before applying it',async()=>{
+  const f=armSettingsFixture({installed:false});
+  await f.context.installRuntimeArm('test');
+  assert.deepEqual(f.calls.map(call=>call.op),['render','import_arm_translation','arm_set','render']);
+  assert.deepEqual(f.calls[1],{op:'import_arm_translation',source:f.digest,sourceKind:'builtin',expectedSha256:''});
+});
+for (const failure of ['download','digest']) {
+  test(`Settings ${failure} failure never changes the current provider and permits retry`,async()=>{
+    let fail=true;
+    const f=armSettingsFixture({installed:false,download:()=>{if(fail){if(failure==='download')throw Error('Offline');return {sha256:'wrong'};}return {sha256:f.digest};}});
+    await f.context.installRuntimeArm('test');
+    assert.equal(f.calls.some(call=>call.op==='arm_set'),false);
+    assert.match(f.context.controllerError,/ARM installation failed/);
+    assert.equal(f.drafts.has('test'),true);
+    assert.equal(f.calls.filter(call=>call.op==='toast').length,1);
+    fail=false;
+    await f.context.installRuntimeArm('test');
+    assert.equal(f.calls.filter(call=>call.op==='arm_set').length,1);
+    assert.equal(f.drafts.has('test'),false);
+  });
+}
+test('Settings retains selected provider draft after a rejected configuration change',async()=>{
+  const f=armSettingsFixture({mutationError:'Previous configuration retained'});
+  await f.context.installRuntimeArm('test');
+  assert.equal(f.drafts.has('test'),true);
+  assert.equal(f.calls.filter(call=>call.op==='arm_set').length,1);
+});
+test('Settings disabling translation sends no archive or download request',async()=>{
+  const f=armSettingsFixture({engine:'none'});
+  await f.context.installRuntimeArm('test');
+  assert.deepEqual(f.calls,[{op:'arm_set',id:'test',enabled:false}]);
+  assert.equal(f.drafts.has('test'),false);
+});
+for (const enabled of [true,false]) {
+  test(`Default Settings ${enabled?'disable':'restore'} only toggles existing provider properties`,async()=>{
+    const f=armSettingsFixture({id:'default',arm:{enabled,restore_available:true}});
+    await f.context.installRuntimeArm('default');
+    assert.deepEqual(f.calls,[{op:'arm_set',id:'default',enabled:!enabled}]);
+    assert.doesNotMatch(f.context.renderRuntimeArm(f.record,false),/data-arm-engine|Import another version/);
+  });
+}
+test('Default Settings refuses restore without saved provider properties',async()=>{
+  const f=armSettingsFixture({id:'default',arm:{enabled:false,restore_available:false}});
+  await f.context.installRuntimeArm('default');
+  assert.deepEqual(f.calls,[]);
+  assert.match(f.context.renderRuntimeArm(f.record,false),/disabled.*>Restore translation/);
+});
+test('Settings rejects a digest from the other engine without downloading or applying',async()=>{
+  const f=armSettingsFixture({engine:'libndk',installed:false});
+  await f.context.installRuntimeArm('test');
+  assert.deepEqual(f.calls,[]);
+});
+test('Settings serializes provider downloads against repeated clicks and other mutations',async()=>{
+  let release;
+  const f=armSettingsFixture({installed:false,download:()=>new Promise(resolve=>{release=resolve;})});
+  const pending=f.context.installRuntimeArm('test');
+  await f.context.installRuntimeArm('test');
+  assert.equal(f.calls.filter(call=>call.op==='import_arm_translation').length,1);
+  release({sha256:f.digest});
+  await pending;
+  f.context.controllerMutation=true;
+  await f.context.installRuntimeArm('test');
+  assert.equal(f.calls.filter(call=>call.op==='arm_set').length,1);
+});
+
+test('Settings provider selection stores a runtime-scoped draft and selects its first catalog version',()=>{
+  const f=armSettingsFixture();
+  let blurred=false;
+  f.change()({target:{dataset:{armEngine:'test'},value:'libhoudini',blur:()=>{blurred=true;}}});
+  assert.deepEqual({...f.drafts.get('test')},{engine:'libhoudini',sha256:f.digest});
+  assert.equal(blurred,true);
+  assert.deepEqual(f.calls,[{op:'render'}]);
+});
+test('Settings version selection preserves its engine and ignores unrelated change events',()=>{
+  const f=armSettingsFixture();
+  f.change()({target:{dataset:{unrelated:'test'},value:'ignored'}});
+  assert.deepEqual(f.calls,[]);
+  f.change()({target:{dataset:{armSelect:'test'},value:f.digest}});
+  assert.deepEqual({...f.drafts.get('test')},{engine:'libhoudini',sha256:f.digest});
+  assert.equal(f.drafts.size,1);
+});

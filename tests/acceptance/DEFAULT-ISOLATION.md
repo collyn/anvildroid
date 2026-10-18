@@ -121,3 +121,22 @@ whole-directory-absence failure and its evidence remain archived separately.
 This verifies disposable stock Default sharing and diagnostic export with
 software rendering. It does not establish physical desktop input behavior or
 gameplay on Default.
+
+## Optional installed ARM fixture
+
+When all three ARM preparation inputs are supplied, only a production-pinned
+libndk archive and the two diagnostic APKs are additionally copied. Their exact
+hashes and the verified fixture overlay manifest bind the reviewed preflight to
+the live run. The fixture provisions its own installed libraries/properties;
+it never copies the personal Default overlay or userdata and does not extend
+the product's Default installer API. Pinned helper imports disable Python
+bytecode creation to keep extracted-package provenance exact.
+
+The optional lifecycle replaces share/diagnostic phases with actual controller
+disable/restore while stopped. ARM32/64 JNI passes before/after, fresh ARM-only
+install fails while disabled, the test-app marker survives, and all ARM and
+unrelated properties/configuration match after the final restored boot/Stop.
+App-private test values are checked in-guest and are not exported. The run
+passed on 2026-10-18; its evidence is under
+`target/plan-completion-20261018/default-arm/`, with an empty scope and positively
+detached task loops. See `README.md` for the maintained probe build and commands.

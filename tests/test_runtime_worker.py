@@ -14,6 +14,24 @@ spec.loader.exec_module(worker)
 
 
 class WorkerPermissions(unittest.TestCase):
+    def test_desktop_watchdog_uses_private_alias_and_keeps_disconnect_failure(self):
+        import socket
+        # Long managed storage paths cannot be passed to AF_UNIX.connect.
+        path = '/tmp/anvil-live-controls-wayland-20261018/instances/r-' + 'a' * 32 + '/android/desktop-socket'
+        with socket.socket(socket.AF_UNIX) as real:
+            with self.assertRaisesRegex(OSError, 'AF_UNIX path too long'):
+                real.connect(path)
+        with patch.object(worker.socket, 'socket') as factory:
+            probe = factory.return_value.__enter__.return_value
+            worker.check_desktop_session()
+            probe.connect.assert_called_once_with('/run/anvil-xdg/wayland-probe')
+            probe.settimeout.assert_called_once_with(1)
+            failure = ConnectionRefusedError('closed compositor')
+            probe.connect.side_effect = failure
+            with self.assertRaisesRegex(RuntimeError, 'Desktop session disconnected') as caught:
+                worker.check_desktop_session()
+            self.assertIs(caught.exception.__cause__, failure)
+
     def test_imported_full_ui_session_does_not_open_on_managed_start(self):
         inherited = ['waydroid.background_start=false', 'waydroid.active_apps=Waydroid',
                      'waydroid.background_start = false',

@@ -29,6 +29,9 @@ import tarfile
 import time
 import uuid
 
+# Importing pinned helpers must not add cache files to their verified payload.
+sys.dont_write_bytecode = True
+
 SCRIPT = Path(__file__).resolve()
 REPO = SCRIPT.parents[2]
 ASSETS = Path('/usr/local/lib/anvildroid-controller')
@@ -135,7 +138,57 @@ def verify_copies(root, value):
     return {'payload_manifest_sha256': hashlib.sha256(json.dumps(expected, sort_keys=True).encode()).hexdigest(), 'copied_images': images}
 
 
+def arm_inputs(args):
+    inputs = (args.arm_archive, args.arm_probe32, args.arm_probe64)
+    require(not any(inputs) or all(inputs), 'ARM archive and both probe APKs are required together')
+    return inputs if all(inputs) else None
+
+
+def stage_arm_inputs(root, value, args):
+    inputs = arm_inputs(args)
+    if not inputs: return
+    arm = load_module('runtime-arm', root / 'package/usr/local/lib/anvildroid-controller')
+    expected = {}
+    for name, source in zip(('arm.zip', 'arm32.apk', 'arm64.apk'), inputs):
+        require(source.is_file() and not source.is_symlink(), 'ARM input must be a regular nonsymlink file')
+        before = digest(source)
+        if name == 'arm.zip': require(before == arm.SHA256, 'Require production-pinned libndk archive')
+        target = root / name
+        shutil.copyfile(source, target); target.chmod(0o600)
+        require(digest(target) == before == digest(source), 'ARM input changed while copying')
+        expected[name] = before
+    value['arm_inputs'] = expected
+    write_json(root / 'acceptance.json', value)
+
+
+def verify_arm_inputs(root, value):
+    expected = value.get('arm_inputs')
+    if expected is None: return None
+    require(set(expected) == {'arm.zip', 'arm32.apk', 'arm64.apk'}, 'Incomplete ARM fixture provenance')
+    arm = load_module('runtime-arm', root / 'package/usr/local/lib/anvildroid-controller')
+    require(expected['arm.zip'] == arm.SHA256, 'ARM archive is not production-pinned')
+    for name, checksum in expected.items():
+        path = root / name; info = path.lstat()
+        require(stat.S_ISREG(info.st_mode) and info.st_uid == 0 and info.st_nlink == 1 and
+                not info.st_mode & 0o077 and path.resolve() == path, 'Unsafe copied ARM input')
+        require(digest(path) == checksum, 'Copied ARM input changed: ' + name)
+    return dict(expected)
+
+
+def verify_arm_overlay(root, value):
+    if not value.get('arm_inputs'): return None
+    arm = load_module('runtime-arm', root / 'package/usr/local/lib/anvildroid-controller')
+    manifest = arm.verify(root / 'arm-payload', arm.SHA256)
+    for relative, checksum in manifest['files'].items():
+        path = root / 'work/overlay' / relative; info = path.lstat()
+        require(stat.S_ISREG(info.st_mode) and info.st_uid == 0 and info.st_nlink == 1 and
+                not info.st_mode & 0o022 and path.resolve() == path, 'Unsafe staged ARM overlay')
+        require(digest(path) == checksum, 'Staged ARM overlay changed')
+    return hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest()
+
+
 def prepare(args):
+    arm_inputs(args)
     root = args.root; validate_root(root, False)
     require(not root.exists(), 'Require a new disposable fixture root')
     require(args.expected_package_sha256 and digest(args.package) == args.expected_package_sha256, 'Pinned package digest mismatch')
@@ -173,6 +226,7 @@ def prepare(args):
              'share_token': token, 'prepared_at': time.time()}
     write_json(root / 'acceptance.json', value)
     stage_probe(root, value, args.probe_apk)
+    stage_arm_inputs(root, value, args)
     print(json.dumps(value), flush=True)
 
 
@@ -183,6 +237,7 @@ def stage_probe(root, value, source):
 
 
 def restage(args):
+    require(not any(arm_inputs(args) or ()), 'ARM inputs are preparation-only; create a fresh fixture')
     value = metadata(args.root)
     require(not value.get('loops') and not Path(value.get('host_cgroup', '/nonexistent')).exists(), 'Fixture still active; refusing restage')
     require(args.expected_package_sha256 and digest(args.package) == args.expected_package_sha256, 'Pinned package digest mismatch')
@@ -512,6 +567,20 @@ def configure_stock(root, value):
     config = ('[waydroid]\narch=x86_64\nvendor_type=MAINLINE\nimages_path=/var/lib/waydroid/images\nmount_overlays=True\n'
               'binder=' + names[0] + '\nvndbinder=' + names[1] + '\nhwbinder=' + names[2] + '\nsystem_ota=None\nvendor_ota=None\n'
               '\n[properties]\nro.hardware.gralloc=default\nro.hardware.egl=angle\nro.hardware.vulkan=pastel\nwaydroid.stub_sensors_hal=1\nro.waydroid.software_rendering=1\nro.waydroid.override_props=false\ndebug.hwui.renderer=skiagl\n')
+    if value.get('arm_inputs'):
+        verify_arm_inputs(root, value)
+        arm = load_module('runtime-arm')
+        payload = root / 'arm-payload'
+        if payload.exists(): shutil.rmtree(payload)
+        arm.stage(root / 'arm.zip', payload, arm.SHA256)
+        manifest = arm.verify(payload, arm.SHA256)
+        for relative in manifest['files']:
+            target = WORK / 'overlay' / relative
+            require(not target.is_symlink() and (not target.exists() or target.is_file() and digest(target) == manifest['files'][relative]), 'ARM fixture overlay changed')
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(payload / relative, target)
+            target.chmod(stat.S_IMODE((payload / relative).stat().st_mode))
+        config += ''.join(key + '=' + val + '\n' for key, val in arm.PROPERTIES.items())
     (WORK / 'waydroid.cfg').write_text(config)
     cfg = tools.config.load(args)
     args.images_path = cfg['waydroid']['images_path']; args.system_ota = cfg['waydroid']['system_ota']; args.vendor_ota = cfg['waydroid']['vendor_ota']
@@ -854,7 +923,79 @@ def run_lifecycle(root, value, proxy, service, processes, report):
         if writable: require((home / 'share' / ('acceptance-write-' + app_token + '-app')).read_text() == app_token, 'Application write not reflected in fixture source')
         if not writable: require(snapshot == {p.name: p.read_bytes() for p in (home / 'share').iterdir() if p.is_file()}, 'Read-only or removed share changed source')
         record('probe-' + phase, application=result, mounted=False if absent else mounted())
-    start('claim'); request('existing_claim'); stop(); diagnostics('stopped')
+    def arm_lifecycle():
+        # Only fixture-created app data is inspected in-guest; never export it.
+        existing = load_module('runtime-existing')
+        keys = existing.ARM_KEYS
+        def snapshot():
+            import configparser
+            cfg = configparser.ConfigParser(interpolation=None); cfg.read(WORK / 'waydroid.cfg')
+            files = {}
+            for name in ('waydroid.prop', 'waydroid_base.prop'):
+                props = existing.properties((WORK / name).read_text())
+                files[name] = {'arm': {key: props.get(key) for key in keys},
+                               'unrelated': {key: val for key, val in props.items() if key not in keys}}
+            return {'files': files, 'config': {section: dict(cfg[section]) for section in cfg.sections()}}
+        def unchanged_unrelated(before, after):
+            for name in before['files']:
+                require(before['files'][name]['unrelated'] == after['files'][name]['unrelated'], 'ARM change modified unrelated properties')
+            def without_arm(cfg):
+                return {section: {key: val for key, val in values.items() if section != 'properties' or key not in keys}
+                        for section, values in cfg.items()}
+            require(without_arm(before['config']) == without_arm(after['config']), 'ARM change modified unrelated configuration')
+        def install(bits, reject=False):
+            path = root / ('arm' + str(bits) + '.apk')
+            verify_arm_inputs(root, value)
+            with path.open('rb') as apk: android('cat > /data/local/tmp/anvil-arm.apk', stdin=apk)
+            output = android('pm install /data/local/tmp/anvil-arm.apk 2>&1; true', timeout=45)
+            if reject:
+                require('INSTALL_FAILED_NO_MATCHING_ABIS' in output and 'Success' not in output, 'Disabled bridge did not reject fresh ARM APK')
+            else: require('Success' in output, 'ARM probe install failed: ' + output[-1000:])
+        marker = secrets.token_hex(16)
+        def marker_check():
+            require(android('cat /data/user/0/org.anvildroid.armprobe64/files/acceptance-marker').strip() == marker, 'ARM switch lost test app data')
+        def execute(phase):
+            require(android('getprop ro.dalvik.vm.native.bridge').strip() == 'libndk_translation.so', 'Installed bridge not active')
+            for bits in (32, 64):
+                package = 'org.anvildroid.armprobe' + str(bits)
+                result = '/data/user/0/' + package + '/files/result'
+                android('am force-stop ' + package + '; rm -f ' + result)
+                android('am broadcast --user 0 --include-stopped-packages -n ' + package + '/org.anvildroid.armprobe.ProbeReceiver')
+                deadline = time.monotonic() + 30
+                while True:
+                    output = android('cat ' + result + ' 2>/dev/null || true').strip()
+                    if output: break
+                    require(time.monotonic() < deadline, 'ARM JNI probe timed out'); time.sleep(.5)
+                require(output == 'ARM_NATIVE_EXECUTION_PASS', 'ARM JNI execution failed')
+            record('arm-jni-' + phase, arm32=True, arm64=True)
+        start('arm-initial')
+        install(32); install(64); execute('initial')
+        android('echo ' + marker + ' > /data/user/0/org.anvildroid.armprobe64/files/acceptance-marker')
+        stop()
+        # Capture after stock startup has materialized its normal property files.
+        baseline = snapshot()
+        require(request('arm_set', enabled=False)['enabled'] is False, 'Disable readback mismatch')
+        disabled = snapshot(); unchanged_unrelated(baseline, disabled)
+        start('arm-disabled'); marker_check()
+        require(android('getprop ro.dalvik.vm.native.bridge').strip() == '0', 'Disabled bridge remained active')
+        for key in ('ro.product.cpu.abilist', 'ro.product.cpu.abilist32', 'ro.product.cpu.abilist64'):
+            require(not any(abi.startswith('arm') for abi in android('getprop ' + key).strip().split(',')), 'Disabled runtime still advertises ARM')
+        # Retain ARM64 data while reinstalling ARM32 as a genuinely fresh APK.
+        require('Success' in android('pm uninstall org.anvildroid.armprobe32'), 'Cannot remove ARM32 probe')
+        install(32, reject=True); stop()
+        require(request('arm_set', enabled=True)['enabled'] is True, 'Restore readback mismatch')
+        restored = snapshot(); unchanged_unrelated(baseline, restored)
+        for name in baseline['files']:
+            require(restored['files'][name]['arm'] == baseline['files'][name]['arm'], 'Saved ARM_KEYS were not restored exactly')
+        require(restored['config'] == baseline['config'], 'Saved configuration was not restored exactly')
+        start('arm-restored'); marker_check(); install(32); execute('restored'); stop()
+        final = snapshot(); unchanged_unrelated(baseline, final)
+        require(final == baseline, 'Restored boot changed saved ARM or unrelated configuration')
+        record('complete', clean_stock_stop=True, default_arm_disable_restore=True, app_data_preserved=True)
+    start('claim'); request('existing_claim'); stop()
+    if value.get('arm_inputs'):
+        arm_lifecycle(); return
+    diagnostics('stopped')
     request('shares_set', name='Acceptance', source=str(home / 'share'), read_only=True)
     start('ro'); mounted(); probe('ro', False); diagnostics('running'); stop()
     request('shares_set', name='Acceptance', source=str(home / 'share'), read_only=False)
@@ -907,6 +1048,8 @@ def inside(args):
             run('/bin/sh', '-x', '/usr/lib/waydroid/data/scripts/waydroid-net.sh', 'stop', stdout=network_log, stderr=network_log)
         finally: network_log.close()
         report.update(verify_copies(root, value))
+        report['arm_inputs'] = verify_arm_inputs(root, value)
+        report['arm_overlay_manifest_sha256'] = verify_arm_overlay(root, value)
         prepare_audio(root, value, processes)
         report['private_audio_socket'] = True
         bus = private_bus(root); processes.append(bus)
@@ -957,6 +1100,7 @@ def main():
     mode.add_argument('--audit-start', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--package', type=Path, default=REPO / 'target/releases/anvildroid-controller_0.1.3_amd64.deb')
     parser.add_argument('--probe-apk', type=Path, default=REPO / 'target/touch-probe/AnvilDroidTouchProbe.apk')
+    for name in ('arm-archive', 'arm-probe32', 'arm-probe64'): parser.add_argument('--' + name, type=Path)
     parser.add_argument('--checkpoint-seconds', type=int, default=0)
     parser.add_argument('--host-proc-fd', type=int, help=argparse.SUPPRESS)
     parser.add_argument('--expected-package-sha256')
@@ -966,6 +1110,8 @@ def main():
     parser.add_argument('--scoped', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--inside', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args(); require(os.geteuid() == 0, 'Root is required')
+    arm_inputs(args)
+    require(args.prepare or not any(arm_inputs(args) or ()), 'ARM input paths are preparation-only')
     require(0 <= args.checkpoint_seconds <= 600, 'Checkpoint bound invalid')
     if args.prepare: return prepare(args)
     if args.restage: return restage(args)
@@ -979,6 +1125,8 @@ def main():
         require(prior['fixture_id'] == value['id'] and prior['fixture_root'] == str(args.root) and
                 prior['package_sha256'] == value['package_sha256'] and prior['harness_sha256'] == digest(SCRIPT), 'Reviewed preflight identity or code changed')
         require(prior['probe_apk_sha256'] == value['probe_apk_sha256'] == digest(args.root / 'probe.apk'), 'Reviewed probe APK changed')
+        require(prior.get('arm_inputs') == verify_arm_inputs(args.root, value), 'Reviewed ARM inputs changed')
+        require(prior.get('arm_overlay_manifest_sha256') == verify_arm_overlay(args.root, value), 'Reviewed ARM overlay changed')
         copies = verify_copies(args.root, value)
         require(copies['copied_images'] == prior['copied_images'] and copies['payload_manifest_sha256'] == prior['payload_manifest_sha256'], 'Reviewed preflight image or payload provenance changed')
     require(digest(args.root / 'controller.deb') == value['package_sha256'], 'Pinned package changed')

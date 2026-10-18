@@ -780,6 +780,16 @@ def app_action(instance, identifier, action, package, desktop=False, generation=
     return {'action': action, 'package': package, 'message': ('Android accepted launch in desktop preview.' if desktop else 'Android accepted launch (headless; no desktop window).') if action == 'launch' else 'Android accepted force-stop.'}
 
 
+def check_desktop_session():
+    # This private alias pins the authenticated compositor for both Wayland
+    # and nested X11. Instance paths can exceed AF_UNIX's pathname limit.
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
+        probe.settimeout(1)
+        try: probe.connect('/run/anvil-xdg/wayland-probe')
+        except OSError as error:
+            raise RuntimeError('Desktop session disconnected. Stop / clean up, then start again from your desktop.') from error
+
+
 def pin_desktop_socket(path, uid):
     path = Path(path)
     require(uid > 0 and path.parent == Path('/run/user') / str(uid) and
@@ -1900,11 +1910,7 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
             if x11_session: x11_session.check()
             if uplink: uplink.check()
             if desktop and not native:
-                watchdog_target = desktop_pin if not x11['display'] else Path('/run/anvil-xdg') / 'wayland-probe'
-                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
-                    probe.settimeout(1)
-                    try: probe.connect(str(watchdog_target))
-                    except OSError as error: raise RuntimeError('Desktop session disconnected. Stop / clean up, then start again from your desktop.') from error
+                check_desktop_session()
             require(lxc('lxc-info', identifier, '-sH') in ('RUNNING', 'FROZEN'), 'Android container exited')
             if compositors: require(compositors[0].poll() is None, 'Desktop compositor exited' if desktop else 'Headless compositor exited')
     except Exception as error:
