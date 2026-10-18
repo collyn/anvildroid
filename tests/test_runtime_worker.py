@@ -62,6 +62,47 @@ class WorkerPermissions(unittest.TestCase):
             run.assert_called_once_with(['mount', '-t', 'binder', 'binder', '/dev/binderfs'],
                                         capture_output=True, text=True)
 
+    def test_private_binder_accepts_prepopulated_kernel_devices(self):
+        import errno, stat
+        metadata = SimpleNamespace(st_mode=stat.S_IFCHR | 0o600, st_uid=0,
+                                   st_dev=7, st_rdev=os.makedev(511, 1))
+        for existing in (False, True):
+            with self.subTest(existing=existing), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                (root / 'binder-control').touch()
+                with patch.object(worker.os, 'fstat', return_value=metadata), \
+                     patch.object(worker.fcntl, 'ioctl', side_effect=FileExistsError(errno.EEXIST, 'exists') if existing else None), \
+                     patch.object(Path, 'lstat', return_value=metadata), \
+                     patch.object(Path, 'chmod') as chmod:
+                    worker.prepare_binder_devices(root)
+                    self.assertEqual(chmod.call_count, 3)
+                    self.assertTrue(all(call.args == (0o666,) for call in chmod.call_args_list))
+
+    def test_private_binder_rejects_invalid_existing_devices_and_other_errors(self):
+        import errno, stat
+        control = SimpleNamespace(st_mode=stat.S_IFCHR, st_uid=0, st_dev=7,
+                                  st_rdev=os.makedev(511, 1))
+        for changes in ({'st_mode': stat.S_IFREG}, {'st_mode': stat.S_IFLNK},
+                        {'st_uid': 1000}, {'st_dev': 8}, {'st_rdev': os.makedev(1, 3)}):
+            metadata = SimpleNamespace(**(vars(control) | changes))
+            with self.subTest(changes=changes), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                (root / 'binder-control').touch()
+                with patch.object(worker.os, 'fstat', return_value=control), \
+                     patch.object(worker.fcntl, 'ioctl', side_effect=FileExistsError(errno.EEXIST, 'exists')), \
+                     patch.object(Path, 'lstat', return_value=metadata), \
+                     patch.object(Path, 'chmod') as chmod:
+                    with self.assertRaisesRegex(RuntimeError, 'Invalid private BinderFS device'):
+                        worker.prepare_binder_devices(root)
+                    chmod.assert_not_called()
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / 'binder-control').touch()
+            with patch.object(worker.os, 'fstat', return_value=control), \
+                 patch.object(worker.fcntl, 'ioctl', side_effect=PermissionError(errno.EPERM, 'denied')):
+                with self.assertRaisesRegex(RuntimeError, 'Cannot create BinderFS device binder'):
+                    worker.prepare_binder_devices(root)
+
     def test_android_roots_remain_traversable_under_private_service_umask(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -115,6 +156,13 @@ class WorkerPermissions(unittest.TestCase):
         options = worker.android_overlay_options('/lower', '/upper', '/work')
         self.assertEqual(options, 'lowerdir=/lower,upperdir=/upper,workdir=/work,xino=off,'
                                  'index=off,metacopy=off,redirect_dir=off,nfs_export=off')
+
+    def test_mount_environment_is_scoped_to_child(self):
+        before = dict(os.environ)
+        environment = dict(before, LIBMOUNT_FORCE_MOUNT2='always')
+        self.assertEqual(worker.linux.run(sys.executable, '-c',
+            'import os; print(os.environ["LIBMOUNT_FORCE_MOUNT2"])', env=environment), 'always')
+        self.assertEqual(dict(os.environ), before)
 
     def test_audio_pin_missing_socket_and_wrong_owner(self):
         with patch.object(Path, 'exists', return_value=False):

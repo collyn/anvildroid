@@ -2,6 +2,7 @@
 """One persistent headless Android instance; internal root-only worker protocol."""
 import argparse
 import base64
+import errno
 import fcntl
 import importlib.util
 import json
@@ -276,6 +277,30 @@ def ensure_binder_filesystem():
             raise RuntimeError('Cannot mount BinderFS; check kernel Binder support and privileges.' +
                                (f' ({detail})' if detail else ''))
     return Path('/dev/binderfs')
+
+
+def prepare_binder_devices(directory):
+    """Accept only kernel-created nodes in the worker's fresh BinderFS mount."""
+    with (directory / 'binder-control').open('rb') as control:
+        control_info = os.fstat(control.fileno())
+        require(stat.S_ISCHR(control_info.st_mode) and control_info.st_uid == 0,
+                'Invalid private BinderFS control device')
+        for device in ('binder', 'vndbinder', 'hwbinder'):
+            try:
+                fcntl.ioctl(control, 0xC1086201, struct.pack('256sII', device.encode(), 0, 0))
+            except OSError as error:
+                # Kernels with default Binder devices populate each new mount.
+                # Reuse only authenticated character nodes, never arbitrary
+                # existing files or devices from the host's BinderFS mount.
+                if error.errno != errno.EEXIST:
+                    raise RuntimeError(f'Cannot create BinderFS device {device}: {error}') from error
+            node = directory / device
+            info = node.lstat()
+            require(stat.S_ISCHR(info.st_mode) and info.st_uid == 0
+                    and info.st_dev == control_info.st_dev
+                    and os.major(info.st_rdev) == os.major(control_info.st_rdev),
+                    f'Invalid private BinderFS device: {device}')
+            node.chmod(0o666)
 
 
 _label_cache = {}
@@ -851,8 +876,13 @@ def overlay_upper_features(upper):
 
 def mount_android_overlay(lower, upper, work, target, mount):
     options = android_overlay_options(lower, upper, work)
+    # fsconfig(FSCONFIG_SET_STRING) limits each value to 256 bytes. Our
+    # colon-separated lowerdir can exceed that with ARM and image layers;
+    # recent libmount passes it as one value and fails before mounting.
+    # Keep the same overlay policy via mount(2), scoped to this command.
+    environment = dict(os.environ, LIBMOUNT_FORCE_MOUNT2='always')
     try:
-        mount('-t', 'overlay', 'overlay', '-o', options, target)
+        mount('-t', 'overlay', 'overlay', '-o', options, target, env=environment)
     except RuntimeError as error:
         # Keep the failing layer and exact policy in the controller error. Do
         # not retry with fewer protections or discard a runtime's upper layer.
@@ -1177,8 +1207,8 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
             return linux.run_bounded(tool, '-P', root, '-n', name, *args, timeout=timeout, umask=0o022,
                                      operation='Android ' + tool)
         return run(tool, '-P', root, '-n', name, *args, umask=0o022, timeout=timeout, include_stderr=include_stderr)
-    def mount(*args):
-        run('mount', *args)
+    def mount(*args, **kwargs):
+        run('mount', *args, **kwargs)
         mounts.append(Path(args[-1]))
     def shell(*args, timeout=20): return lxc('lxc-attach', identifier, '--', '/system/bin/' + args[0], *args[1:], timeout=timeout)
     def provision_android_user():
@@ -1538,10 +1568,7 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
             (fs / 'vendor/waydroid.prop').write_text('\n'.join(props) + '\n')
             ensure_binder_filesystem()
             mount('-t', 'binder', 'binder', work / 'binder')
-            with (work / 'binder/binder-control').open('rb') as control:
-                for device in ('binder', 'vndbinder', 'hwbinder'):
-                    fcntl.ioctl(control, 0xC1086201, struct.pack('256sII', device.encode(), 0, 0))
-                    (work / 'binder' / device).chmod(0o666)
+            prepare_binder_devices(work / 'binder')
             xdg = Path('/run/anvil-xdg')
             xdg.mkdir(mode=0o700, exist_ok=True)
             xdg.chmod(0o700)

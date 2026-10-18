@@ -22,9 +22,14 @@ class OverlayTests(unittest.TestCase):
 
     def test_mount_uses_one_explicit_policy_for_the_selected_target(self):
         calls = []
-        worker.mount_android_overlay('/patch:/base', '/upper', '/work', '/rootfs', lambda *args: calls.append(args))
-        self.assertEqual(calls, [('-t', 'overlay', 'overlay', '-o',
-                                 worker.android_overlay_options('/patch:/base', '/upper', '/work'), '/rootfs')])
+        before = dict(os.environ)
+        worker.mount_android_overlay('/patch:/base', '/upper', '/work', '/rootfs',
+                                     lambda *args, **kwargs: calls.append((args, kwargs)))
+        self.assertEqual(calls[0][0], ('-t', 'overlay', 'overlay', '-o',
+                                      worker.android_overlay_options('/patch:/base', '/upper', '/work'), '/rootfs'))
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][1]['env'], dict(before, LIBMOUNT_FORCE_MOUNT2='always'))
+        self.assertEqual(dict(os.environ), before)
 
     def test_upper_feature_scan_never_follows_symlinks(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -43,7 +48,7 @@ class OverlayTests(unittest.TestCase):
             sentinel = upper / 'app-data'
             sentinel.write_text('preserve')
             calls = []
-            def fail(*args):
+            def fail(*args, **kwargs):
                 calls.append(args)
                 raise RuntimeError('wrong fs type, bad option, bad superblock on overlay')
             with self.assertRaisesRegex(RuntimeError, 'Android OverlayFS mount failed at /rootfs') as caught:
@@ -93,7 +98,7 @@ def mount_child():
             finally:
                 subprocess.run(['umount', str(root / 'merged')], check=True)
             worker.mount_android_overlay(lower, root / 'upper', root / 'work', root / 'merged',
-                                         lambda *args: subprocess.run(['mount', *map(str, args)], check=True))
+                                         lambda *args, **kwargs: subprocess.run(['mount', *map(str, args)], check=True, **kwargs))
             try:
                 assert (root / 'merged/file').read_text() == 'copy-up'
                 assert not (root / 'merged/base-only').exists()
@@ -128,6 +133,34 @@ def mount_child():
             finally:
                 subprocess.run(['umount', str(migration)], check=True)
             print('PASS migration: legacy metacopy upper retains contents and metadata', flush=True)
+            # Real controller paths plus ARM commonly exceed fsconfig's
+            # 255-character string limit even when every path is valid.
+            long_root = root / ('runtime-' + 'x' * 88)
+            long_root.mkdir()
+            for name in ('arm', 'patch', 'base', 'upper', 'work', 'merged'):
+                (long_root / name).mkdir()
+            for name in ('arm', 'patch', 'base'):
+                (long_root / name / 'file').write_text(name)
+            (long_root / 'base/base-only').write_text('preserve lower')
+            long_lower = ':'.join(str(long_root / name) for name in ('arm', 'patch', 'base'))
+            assert len(long_lower.encode()) >= 256
+            assert all(len(path.encode()) < 256 for path in long_lower.split(':'))
+            merged = long_root / 'merged'
+            for cycle in range(2):
+                worker.mount_android_overlay(long_lower, long_root / 'upper', long_root / 'work', merged,
+                    lambda *args, **kwargs: subprocess.run(['mount', *map(str, args)], check=True, **kwargs))
+                try:
+                    assert (merged / 'file').read_text() == ('arm' if cycle == 0 else 'copy-up')
+                    if cycle == 0:
+                        (merged / 'file').write_text('copy-up')
+                        (merged / 'base-only').unlink()
+                    else:
+                        assert not (merged / 'base-only').exists()
+                    assert (long_root / 'arm/file').read_text() == 'arm'
+                    assert (long_root / 'base/base-only').read_text() == 'preserve lower'
+                finally:
+                    subprocess.run(['umount', str(merged)], check=True)
+            print('PASS long lowerdir: ARM priority, copy-up, whiteout and remount persistence', flush=True)
         finally:
             subprocess.run(['umount', str(root)], check=True)
     print('PASS isolated Android overlay: explicit feature overrides, patch priority, copy-up, whiteout, remount persistence')

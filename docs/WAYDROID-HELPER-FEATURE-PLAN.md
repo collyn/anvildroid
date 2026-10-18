@@ -309,8 +309,9 @@ Owner: primary agent; shared-folders agent reviews system-hook packaging.
 - [x] Exercise Debian clean installation, same-version reinstall, fully
   configured 0.1.2 → 0.1.3 upgrade and removal in disposable Ubuntu 24.04 with
   actual systemd PID 1. Verify controller lifecycle and the retained data marker.
-- [ ] Confirm installation/start on the user's Arch machine. The user will run
-  this acceptance later; no local namespace fixture establishes that result.
+- [x] Confirm installation/start on the user's Arch machine. The CachyOS
+  follow-up below records actual package installation, boot, Stop/restart,
+  GPU verification and Android Settings activity checks on that host.
 - [x] Repeat live controls, shares, compatibility, ARM/GAPPS and diagnostic
   acceptance with pinned package assets and recorded module parity. Latest X11
   controls and Wayland use the final Debian build. Final Debian/Arch extracted
@@ -358,9 +359,9 @@ layers, with required metacopy/redirect features retained for existing upper
 layers. A real migration test caught a mount that succeeded but could not read
 metadata-only files; the final policy preserves those reads and directory
 redirects. Mount errors retain the original cause, target and options. The
-reported Arch failure is still unconfirmed: kernel version, backing filesystem
-and dmesg from the failing machine are not available. No upper layer is deleted
-or reset as a fallback.
+reported Arch failure was still unconfirmed at that point. The CachyOS
+follow-up below identifies the actual mount API limit and verifies the fix
+on the failing machine. No upper layer is deleted or reset as a fallback.
 
 | Check | Observed result |
 | --- | --- |
@@ -679,7 +680,8 @@ namespace test also passes. Rust and Android/native input code are unchanged;
 exact package comparison against input-tested `29700b0b…` finds only the two
 Default Python service modules changed.
 
-Current development artifacts; AppImage remains deferred:
+Artifacts from this stock Default acceptance (superseded by the CachyOS
+delivery below); AppImage remains deferred:
 
 | Artifact | Bytes | SHA-256 |
 | --- | ---: | --- |
@@ -699,3 +701,66 @@ Both final disposable roots were removed only after archive verification,
 empty-scope/loop/mount checks and exclusive launch locks. Arch host acceptance,
 physical desktop/editor/gameplay, Default ARM restore and online Google checks
 remain manual as listed above. No merge or release was performed.
+
+### 2026-10-18: CachyOS startup acceptance
+
+The reported managed-runtime failure was reproduced directly on the user's
+CachyOS host: Linux `7.2.9-1-cachyos`, util-linux/libmount `2.42.4`, Btrfs with
+`compress=zstd:1`, Intel Iris Xe, and a real Wayland desktop. A simple disposable
+Btrfs overlay passed, while the runtime's exact 311-byte `lowerdir` failed at
+`fsconfig(FSCONFIG_SET_STRING)` with `EINVAL`. The same layers, upper/work and
+feature policy mounted successfully through `mount(2)`. The new mount API's
+individual string-value limit was the cause; image corruption and Btrfs upper
+support were not implicated by these probes.
+
+Android system/vendor overlay commands now set `LIBMOUNT_FORCE_MOUNT2=always`
+only in their child environment. Existing xino/index/metacopy/redirect policy
+is retained, with no global environment/kernel changes, reduced-protection
+retry, upper reset or image reinstall. A maintained real-mount regression
+exercises a three-layer lowerdir longer than 255 bytes, ARM precedence,
+copy-up, whiteouts and persistence after remount. It passes on both this
+CachyOS kernel and the Ubuntu build host; legacy metacopy migration also passes.
+
+Once overlay mounting worked, startup exposed a second host difference:
+CachyOS prepopulates each fresh BinderFS mount with `binder`, `vndbinder` and
+`hwbinder`. Unconditional creation returned `EEXIST`. The worker now accepts
+that result only for root-owned character nodes on the same BinderFS device
+and character-device major as its control node. Other errors, symlinks, regular
+files, foreign owners/filesystems and unrelated device majors are rejected.
+Two disposable BinderFS mounts on CachyOS passed repeated initialization and
+had disjoint Binder device identities, confirming that the worker does not
+reuse the host's Binder nodes.
+
+The existing Android 13 GAPPS runtime with libndk translation then booted
+successfully. Health confirmed boot completion, private networking and a
+non-software Iris Xe renderer. Fourteen launcher apps were listed; Android
+Settings launch succeeded and `dumpsys activity` showed its resumed activity.
+Normal Stop completed successfully. The rebuilt Arch package was then
+reinstalled with `pacman -U`, all 118 installed payload files matched the exact
+archive, the controller restarted successfully, and a fresh Start reached
+`Running` with a successful lifecycle job. Runtime images and userdata were
+preserved; the runtime is left running for the user's testing.
+
+Validation: **28 worker tests plus 214 feature/acceptance Python tests**,
+**313 frontend cases**, **42 dedicated frontend cases**, **seven native
+suites**, and complete module staging/import pass. Worker Xvfb/Weston and
+package GUI checks ran in private mount/network/PID namespaces with host
+`/run`, `/tmp`, D-Bus/display sockets and both runtime stores hidden. Both final
+package payloads, source/native/binary parity, CLI/image tools, private
+controller IPC and UID1000 GUI first-frame checks pass.
+
+The final artifacts are retained in
+`target/releases/cachyos-overlay-fix-20261018/` with `SHA256SUMS`:
+
+| Artifact | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `anvildroid-controller_0.1.3_amd64.deb` | 26,250,890 | `7ce769516c5c763d531cea74f13f75f7758ebf21f49832ab4b95fde51a7939a3` |
+| `anvildroid-controller-0.1.3-1-x86_64.pkg.tar.zst` | 26,069,507 | `5db4af5d5f7297d8e7cbc5cee1221e3034a0eed52a1e48a9036d764b7edcccc1` |
+
+The Arch package was installed on the failing host. The Debian package was
+rebuilt and verified; this follow-up did not reinstall it over the build host's
+personal services. Evidence is under
+`target/cachyos-overlay-fix-20261018-133705/`. This establishes this host's
+Wayland startup and app launch, while other Arch kernels, Arch X11, gameplay,
+physical input/editor feel, Default ARM restore and online Google checks retain
+their separate acceptance scope. AppImage remains deferred.
