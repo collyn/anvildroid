@@ -25,7 +25,7 @@ function fixture() {
     runtimeSettingsOpen:new Set(), escapeHtml:String,
     renderRuntimeUsage:()=>'', updateDefaultRuntimeBadge(){},
     renderGpuControls:()=>'', renderRuntimeGraphics:()=>'', renderRuntimeArm:()=>'',
-    renderRuntimeGoogle:()=>'', renderResourceControls:()=>'', renderRuntimeHealth:()=>'',
+    renderRuntimeGoogle:()=>'', renderResourceControls:()=>'', renderRuntimeHealth:()=>'', renderRuntimeDevice:()=>'',
     renderController(){ctx.renderExistingRuntime();}, refreshExistingRuntime:async()=>{},
     refreshApps(){}, refreshStatus(){}, setTimeout(){}, showAppToast(){},
   });

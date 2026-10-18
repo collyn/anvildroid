@@ -69,7 +69,8 @@ function controllerContext() {
 test('light runtime refresh retains configuration, refreshes state and usage, and avoids setup probes', async () => {
   const {ctx,calls} = controllerContext();
   await ctx.refreshController({light:true});
-  assert.equal(calls.length, 8);
+  assert.equal(calls.length, 10);
+  assert.equal(calls.filter(r=>r.op==='device_info').length, 2);
   assert.ok(calls.some(r=>r.op==='app_job'));
   assert.ok(calls.some(r=>r.op==='storage_info'));
   assert.ok(!calls.some(r=>['gpu_info','arm_info','display_info','requirements','arm_sources'].includes(r.op)));

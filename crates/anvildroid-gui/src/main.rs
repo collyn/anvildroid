@@ -246,6 +246,7 @@ fn requires_legacy_operation_guard(request: &anvildroid_core::controller::Reques
     use anvildroid_core::controller::Request;
     match request {
         Request::ResourcesSet { id, .. } | Request::GpuSet { id, .. }
+        | Request::DeviceSet { id, .. }
         | Request::ArmSet { id, .. } | Request::ExistingClaim { id } | Request::SystemIntegration { id }
         | Request::ExistingImport { id, .. } | Request::Rename { id, .. }
         | Request::CompatibilitySet { id, .. } | Request::CompatibilityReset { id, .. }
@@ -1383,6 +1384,7 @@ mod tests {
         use anvildroid_core::controller::Request;
         let revision = "a".repeat(64);
         for request in [
+            serde_json::json!({"op":"device_set","id":"default","profile":"pixel-7","custom":null,"revision":revision}),
             serde_json::json!({"op":"compatibility_set","id":"default","package":"com.example.app","settings":{"fake_wifi":true,"mouse_as_touch":false},"revision":revision}),
             serde_json::json!({"op":"compatibility_reset","id":"default","package":"com.example.app","revision":revision}),
             serde_json::json!({"op":"components_set","id":"default","component_id":"libndk","enabled":false,"archive_sha256":null,"revision":revision}),
@@ -1397,6 +1399,7 @@ mod tests {
             assert!(!requires_legacy_operation_guard(&decoded));
         }
         for request in [
+            serde_json::json!({"op":"device_info","id":"default"}),
             serde_json::json!({"op":"compatibility_get","id":"default","package":"com.example.app"}),
             serde_json::json!({"op":"components_get","id":"default"}),
             serde_json::json!({"op":"shares_get","id":"default"}),

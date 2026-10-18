@@ -1605,6 +1605,7 @@ document.addEventListener('toggle', event => {
 const runtimeArmDraft = new Map();
 const runtimeGpuDraft = new Map();
 const runtimeResourceDraft = new Map();
+const runtimeDeviceDraft = new Map();
 const runtimeGoogle = new Map();
 let googleRegistrationTarget = null;
 const googlePlayAcknowledged = new Map();
@@ -1724,7 +1725,7 @@ async function refreshExistingRuntime({light = false} = {}) {
       existingRuntime = {...record, detailsLoading:true};
       renderController();
     }
-    await Promise.all(['resources','gpu','arm','storage'].map(async kind => {
+    await Promise.all(['resources','gpu','arm','storage','device'].map(async kind => {
       if (light && ['gpu', 'arm'].includes(kind) && previous?.[kind] && previous.state === record.state && !previous.unavailable) { record[kind] = previous[kind]; return; }
       try { record[kind] = await controllerRequest({op:kind + '_info', id:'default'}); if (kind === 'resources') RuntimeUsage.sample(record); }
       catch (error) { record[kind + 'Error'] = String(error); }
@@ -1771,6 +1772,7 @@ function renderExistingRuntime() {
       <details class="runtime-settings-group" data-settings-key="${escapeHtml(record.id)}:storage" ${runtimeSettingsOpen.has(record.id + ':storage') ? 'open' : ''}><summary>Storage</summary><div class="runtime-storage-panel"><p class="runtime-storage-path">${escapeHtml(record.storage?.path || record.storageError || 'Unavailable')}</p>${record.storage ? `<p>Disk free: ${(record.storage.free_bytes / 1024**3).toFixed(2)} / ${(record.storage.total_bytes / 1024**3).toFixed(2)} GiB</p>` : ''}<p class="hint">Shared filesystem; no disk quota.</p><div data-runtime-shares="default"></div></div></details>
       <details class="runtime-settings-group" data-settings-key="${escapeHtml(record.id)}:arm" ${runtimeSettingsOpen.has(record.id + ':arm') ? 'open' : ''}><summary>ARM translation</summary><div class="runtime-arm-panel">${renderRuntimeArm(record,busy)}</div></details>
       <div class="runtime-settings-list runtime-settings-visible">
+      ${renderRuntimeDevice(record, busy)}
         <details class="runtime-setting-row" data-settings-key="${escapeHtml(record.id)}:resources" ${runtimeSettingsOpen.has(record.id + ':resources') ? 'open' : ''}><summary><span><strong>Performance</strong><small>RAM and CPU limits</small></span></summary><div class="runtime-setting-body"><div class="runtime-resources-panel">${renderResourceControls(record,busy)}</div></div></details>
         <details class="runtime-setting-row" data-settings-key="${escapeHtml(record.id)}:google" ${runtimeSettingsOpen.has(record.id + ':google') ? 'open' : ''}><summary><span><strong>Google Play</strong></span></summary><div class="runtime-setting-body"><div class="runtime-google-panel">${renderRuntimeGoogle(record)}</div></div></details>
         <details class="runtime-setting-row" data-settings-key="${escapeHtml(record.id)}:health" ${runtimeSettingsOpen.has(record.id + ':health') ? 'open' : ''}><summary><span><strong>Diagnostics</strong></span></summary><div class="runtime-setting-body"><div class="runtime-health-panel">${button('health','Check health',controllerMutation)}${renderRuntimeHealth('default')}</div><div data-runtime-diagnostics="default"></div></div></details>
@@ -2459,7 +2461,7 @@ function renderController() {
   // Replacing the table destroys WebKit's native select popup. Keep its DOM
   // while focused (including keyboard selection and an in-flight poll reply).
   // Data still refreshes; the next render after focus leaves catches up.
-  if (document.activeElement?.dataset?.gpuSelect || document.activeElement?.dataset?.resourceField || document.activeElement?.dataset?.armSelect || document.activeElement?.dataset?.armEngine) return;
+  if (document.activeElement?.dataset?.gpuSelect || document.activeElement?.dataset?.resourceField || document.activeElement?.dataset?.armSelect || document.activeElement?.dataset?.armEngine || document.activeElement?.dataset?.deviceProfile || document.activeElement?.dataset?.deviceField) return;
   const inline = document.activeElement?.closest?.('.runtime-inline-feature');
   const focusedRecord = runtimeRecord(runtimeSettingsId);
   if (inline && currentPage === 'runtime-settings' && inline.dataset.runtimeId === focusedRecord?.id &&
@@ -2588,6 +2590,7 @@ function renderController() {
       </div></details>
       <details class="runtime-settings-group" data-settings-key="${escapeHtml(record.id)}:arm" ${runtimeSettingsOpen.has(record.id + ':arm') ? 'open' : ''}><summary>ARM translation</summary><div class="runtime-arm-panel">${renderRuntimeArm(record, busy)}</div></details>
       <div class="runtime-settings-list runtime-settings-visible">
+      ${renderRuntimeDevice(record, busy)}
       <details class="runtime-setting-row" data-settings-key="${escapeHtml(record.id)}:google" ${runtimeSettingsOpen.has(record.id + ':google') ? 'open' : ''}><summary><span><strong>Google Play</strong></span></summary><div class="runtime-setting-body"><div class="runtime-google-panel">${renderRuntimeGoogle(record)}</div></div></details>
       <details class="runtime-setting-row" data-settings-key="${escapeHtml(record.id)}:display" ${runtimeSettingsOpen.has(record.id + ':display') ? 'open' : ''}><summary><span><strong>Display</strong><small>Desktop windows or headless</small></span></summary><div class="runtime-setting-body"><div class="runtime-display-panel"><strong>Display mode: ${record.display?.mode === 'desktop' ? 'Desktop (preview)' : 'Headless'}</strong>
       <p class="hint">${record.display?.mode === 'desktop' ? 'Desktop app windows.' : 'Background mode; no app windows.'}</p>
@@ -2704,6 +2707,8 @@ async function refreshController({light = false} = {}) {
       catch (error) { record.gpuError = `Cannot read GPU configuration: ${error}`; }
       try { record.arm = cached('arm') ? previous.arm : await controllerRequest({op: 'arm_info', id: r.id}); }
       catch (error) { record.armError = `Cannot read ARM configuration: ${error}`; }
+      try { record.device = await controllerRequest({op:'device_info', id:r.id}); }
+      catch (error) { record.deviceError = `Cannot read device identity: ${error}`; }
       try { record.appJob = await controllerRequest({ op: 'app_job', id: r.id }); }
       catch (error) { record.appJob = previousRecords.find(previous => previous.id === r.id)?.appJob; }
       invalidateRuntimeGraphics(previousRecords.find(previous => previous.id === r.id), record);
@@ -2870,6 +2875,10 @@ async function mutateController(request) {
     if (request.op === 'display_set' || request.op === 'backend_set') {
       const record = runtimeRecord(request.id);
       if (record) record.display = result;
+    } else if (request.op === 'device_set') {
+      const record = runtimeRecord(request.id);
+      if (record) record.device = result;
+      runtimeDeviceDraft.delete(request.id);
     } else if (request.op === 'resources_set') {
       const record = runtimeRecord(request.id);
       if (record) record.resources = result;
@@ -2894,7 +2903,7 @@ async function mutateController(request) {
       else controllerRecords[position] = result;
     }
     controllerPending = null;
-    completionNotice = ({resources_set: 'RAM and CPU limits saved. Start this runtime to apply them.', gpu_set: 'GPU saved. Start this runtime to apply it.', arm_set: `ARM translation ${request.enabled ? 'installed' : 'disabled'}. Start this runtime to apply it.`, delete: 'Deletion accepted. The runtime will disappear when its data has been removed.', display_set: 'Display mode saved. Start Android to apply it.', backend_set: 'Display backend saved. Start Android to apply it.', app_action: 'App action accepted. Watch its job result below.', create: 'Runtime created. Android is running.', create_image: 'Runtime created. Android is running.', rename: 'Runtime name saved.', prepare: 'Preparation accepted. Watch the runtime status below.', start: 'Start request accepted. The runtime card below shows boot progress and the result.', stop: 'Stop request accepted. The runtime card below shows progress and the result.', move: 'Storage move accepted. Keep both disks connected until verification completes.', discard_previous: 'Removal accepted. Watch storage status below; active runtime data is kept.', existing_import: 'Import started. Keep Default runtime stopped until preparation succeeds.'})[request.op] || 'Request accepted.';
+    completionNotice = ({device_set:'Device identity saved. Start Android to apply it.', resources_set: 'RAM and CPU limits saved. Start this runtime to apply them.', gpu_set: 'GPU saved. Start this runtime to apply it.', arm_set: `ARM translation ${request.enabled ? 'installed' : 'disabled'}. Start this runtime to apply it.`, delete: 'Deletion accepted. The runtime will disappear when its data has been removed.', display_set: 'Display mode saved. Start Android to apply it.', backend_set: 'Display backend saved. Start Android to apply it.', app_action: 'App action accepted. Watch its job result below.', create: 'Runtime created. Android is running.', create_image: 'Runtime created. Android is running.', rename: 'Runtime name saved.', prepare: 'Preparation accepted. Watch the runtime status below.', start: 'Start request accepted. The runtime card below shows boot progress and the result.', stop: 'Stop request accepted. The runtime card below shows progress and the result.', move: 'Storage move accepted. Keep both disks connected until verification completes.', discard_previous: 'Removal accepted. Watch storage status below; active runtime data is kept.', existing_import: 'Import started. Keep Default runtime stopped until preparation succeeds.'})[request.op] || 'Request accepted.';
     if (restarted) {
       completionNotice = 'Settings applied. Android restarted successfully.';
     }
@@ -3032,6 +3041,7 @@ function handleRuntimeAction(event) {
     if (id) copyTextToClipboard(id).then(() => showAppToast('GSF Android ID copied.', 'success'))
       .catch(error => showAppToast(`Cannot copy Android ID: ${error}`, 'error'));
   }
+  else if (['device_set', 'device_reset'].includes(button.dataset.controllerOp)) saveRuntimeDevice(button.dataset.controllerId, button.dataset.controllerOp === 'device_reset');
   else if (button.dataset.controllerOp === 'resources_set') {
     const id = button.dataset.controllerId;
     const record = runtimeRecord(id);
@@ -3245,6 +3255,7 @@ async function checkRuntimeGoogle(id) {
 }
 
 function handleRuntimeConfigChange(event) {
+  if (event.target.dataset?.deviceProfile) changeRuntimeDeviceProfile(event.target.dataset.deviceProfile, event.target.value);
   const id = event.target.dataset?.gpuSelect;
   if (id) runtimeGpuDraft.set(id, event.target.value);
   const resourceId = event.target.dataset?.resourceId;
@@ -3254,6 +3265,17 @@ function handleRuntimeConfigChange(event) {
 }
 
 function handleRuntimeConfigInput(event) {
+  if (event.target.dataset?.deviceId) {
+    const id = event.target.dataset.deviceId, field = event.target.dataset.deviceField;
+    let draft = runtimeDeviceDraft.get(id);
+    if (!draft && runtimeRecord(id)?.device?.profile === 'custom') {
+      const data = runtimeRecord(id).device;
+      draft = {profile:'custom', custom:{...data.custom}, revision:data.revision};
+      runtimeDeviceDraft.set(id, draft);
+    }
+    if (draft?.profile === 'custom' && ['brand', 'manufacturer', 'model', 'device', 'product', 'fingerprint'].includes(field)) draft.custom[field] = event.target.value;
+    return;
+  }
   const id = event.target.dataset?.resourceId;
   const field = event.target.dataset?.resourceField;
   if (!id || !['memory_mib', 'cpu_count'].includes(field)) return;
@@ -3299,6 +3321,76 @@ function updateResourceBudget(id) {
   if (!record?.resources) return;
   const panel = document.getElementById(`resource-budget-${id}`);
   if (panel) panel.innerHTML = resourceBudgetHtml(record.resources, runtimeResourceDraft.get(id) || record.resources.configured);
+}
+
+function renderRuntimeDevice(record, busy) {
+  const id = escapeHtml(record.id), data = record.device;
+  const open = runtimeSettingsOpen.has(record.id + ':device') ? 'open' : '';
+  const heading = `<details class="runtime-setting-row" data-settings-key="${id}:device" ${open}><summary><span><strong>Device identity</strong><small>Spoof Android device model</small></span></summary><div class="runtime-setting-body"><div class="runtime-device-panel">`;
+  if (!data?.profiles || !data.revision) return heading + `<p class="hint">${escapeHtml(record.deviceError || 'Device profiles are unavailable. Refresh or update the runtime controller.')}</p></div></div></details>`;
+  const draft = runtimeDeviceDraft.get(record.id) || data;
+  const disabled = busy || !['Allocated', 'Prepared', 'Stopped', 'Error', 'Running', 'Frozen'].includes(record.state);
+  const attr = disabled ? 'disabled' : '';
+  const selected = draft.profile;
+  const values = selected === 'custom' ? draft.custom : data.profiles.find(row => row.id === selected)?.values;
+  const group = new Map();
+  for (const row of data.profiles) {
+    const key = row.values.manufacturer;
+    if (!group.has(key)) group.set(key, []);
+    group.get(key).push(row);
+  }
+  const choices = [...group].map(([manufacturer, rows]) => `<optgroup label="${escapeHtml(manufacturer)}">${rows.map(row => `<option value="${escapeHtml(row.id)}" ${selected === row.id ? 'selected' : ''}>${escapeHtml(row.name)}</option>`).join('')}</optgroup>`).join('');
+  const labels = {brand:'Brand', manufacturer:'Manufacturer', model:'Model', device:'Device codename', product:'Product name', fingerprint:'Build fingerprint (optional)'};
+  const custom = selected === 'custom' ? `<div class="runtime-device-fields">${Object.entries(labels).map(([field, label]) => `<label>${label}<input type="text" data-device-id="${id}" data-device-field="${field}" value="${escapeHtml(values?.[field] || '')}" maxlength="${field === 'fingerprint' ? 256 : 91}" ${field === 'fingerprint' ? '' : 'required'} autocomplete="off" spellcheck="false" ${attr}></label>`).join('')}</div>` : '';
+  const stale = draft.revision !== data.revision;
+  return heading + `<label>Device profile<select data-device-profile="${id}" ${attr}><option value="default" ${selected === 'default' ? 'selected' : ''}>Original image / Waydroid</option>${choices}<option value="custom" ${selected === 'custom' ? 'selected' : ''}>Custom device…</option></select></label>
+    ${custom}${stale ? '<p class="runtime-feedback warning">Device configuration changed elsewhere. Restore original or select a profile again to review the new configuration.</p>' : ''}${values && selected !== 'custom' ? `<p class="hint">Model: ${escapeHtml(values.model)} · device: ${escapeHtml(values.device)}</p>` : ''}
+    <p class="hint">Changes the device identity reported to apps. Android version, CPU/ARM support and graphics remain the same. Play certification is separate.</p>
+    <p class="hint">${values?.fingerprint ? 'This profile includes a build fingerprint.' : 'An empty fingerprint lets Android generate it from the image and selected identity.'} Use Custom to edit a preset. Saving a running runtime restarts Android.</p>
+    <div class="runtime-actions"><button class="btn btn-quiet" data-controller-op="device_set" data-controller-id="${id}" ${attr}>${['Running', 'Frozen'].includes(record.state) ? 'Save & restart' : 'Save device'}</button><button class="btn btn-quiet" data-controller-op="device_reset" data-controller-id="${id}" ${disabled || (data.profile === 'default' && selected === 'default') ? 'disabled' : ''}>Restore original${['Running', 'Frozen'].includes(record.state) ? ' & restart' : ''}</button></div></div></div></details>`;
+}
+
+function changeRuntimeDeviceProfile(id, profile) {
+  const record = runtimeRecord(id), data = record?.device;
+  if (!data?.profiles || runtimeOperationBusy(id)) return;
+  const previous = runtimeDeviceDraft.get(id) || data;
+  if (!['default', 'custom', ...data.profiles.map(row => row.id)].includes(profile)) return;
+  let custom = null;
+  if (profile === 'custom') {
+    const values = previous.profile === 'custom' ? previous.custom
+      : data.profiles.find(row => row.id === previous.profile)?.values || data.values;
+    custom = {...(values || {brand:'', manufacturer:'', model:'', device:'', product:'', fingerprint:''})};
+  }
+  runtimeDeviceDraft.set(id, {profile, custom, revision:data.revision});
+  const panel = document.getElementById('page-runtime-settings').querySelector(`[data-settings-key="${id}:device"]`);
+  if (panel) panel.outerHTML = renderRuntimeDevice(record, runtimeOperationBusy(id));
+}
+
+async function saveRuntimeDevice(id, reset = false) {
+  const record = runtimeRecord(id), data = record?.device;
+  if (!data?.revision || runtimeOperationBusy(id)) return;
+  const draft = reset ? {profile:'default', custom:null, revision:data.revision} : runtimeDeviceDraft.get(id) || data;
+  if (!reset && draft.revision !== data.revision) {
+    showAppToast('Device configuration changed. Select a profile again before saving.', 'error');
+    return;
+  }
+  if (draft.profile === 'custom') {
+    const values = draft.custom;
+    if (!values || ['brand','manufacturer','model','device','product'].some(key => !values[key]?.trim())) {
+      showAppToast('Fill in brand, manufacturer, model, device and product before saving.', 'error');
+      return;
+    }
+    for (const key of Object.keys(values)) values[key] = values[key].trim();
+    if (Object.entries(values).some(([key, value]) => value.length > (key === 'fingerprint' ? 256 : 91) || /[^\x20-\x7e]|[=\\]/.test(value))) {
+      showAppToast('Device values must use printable text, without = or backslash, within the field limits.', 'error');
+      return;
+    }
+    if (values.fingerprint && !/^[^/\s:]+\/[^/\s:]+\/[^/\s:]+:[^/\s:]+\/[^/\s:]+\/[^/\s:]+:(?:user|userdebug|eng)\/[\w.,-]+$/.test(values.fingerprint)) {
+      showAppToast('Enter a complete Android build fingerprint or leave it empty.', 'error');
+      return;
+    }
+  }
+  await mutateController({op:'device_set', id, profile:draft.profile, custom:draft.custom, revision:draft.revision});
 }
 
 function renderResourceControls(record, busy) {

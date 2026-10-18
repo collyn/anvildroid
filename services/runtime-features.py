@@ -20,8 +20,11 @@ default_shares = module('runtime-default-shares')
 components = module('runtime-components')
 diagnostics = module('runtime-diagnostics')
 linux = module('runtime-linux')
+device = module('runtime-device')
 
 FIELDS = {
+    'device_info': {'op', 'id'},
+    'device_set': {'op', 'id', 'profile', 'custom', 'revision'},
     'compatibility_get': {'op', 'id', 'package'},
     'compatibility_set': {'op', 'id', 'package', 'settings', 'revision'},
     'compatibility_reset': {'op', 'id', 'package', 'revision'},
@@ -126,6 +129,17 @@ def dispatch(store, request, uid, descriptor=None):
         raise RuntimeError('Unexpected feature fields or file descriptor')
     record = authorize(store, request['id'], uid)
     identifier = request['id']
+    if op in ('device_info', 'device_set'):
+        if identifier == 'default':
+            if op == 'device_info': return device.default_info(store.existing, uid)
+            if any(getattr(store, 'imports', {}).get(job) == 'pending' for job in store.active_jobs):
+                raise RuntimeError('Wait for Default runtime import to finish')
+            return device.default_set(store.existing, uid, request['profile'], request['custom'], request['revision'])
+        instance = store.backend.location(identifier)
+        if op == 'device_info': return device.managed_info(instance, identifier)
+        if record['state'] not in ('Allocated', 'Prepared', 'Stopped', 'Error') or not store.android.quiescent(identifier):
+            raise RuntimeError('Stop this runtime completely before changing device identity')
+        return device.managed_set(instance, identifier, request['profile'], request['custom'], request['revision'])
     if op.startswith('compatibility_'):
         action = op.removeprefix('compatibility_')
         if identifier == 'default':

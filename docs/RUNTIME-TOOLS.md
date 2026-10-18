@@ -30,6 +30,11 @@ Shared folders appear inside Storage; see [folder sharing](SHARED-FOLDERS.md).
 They load only when Storage is expanded. Drafts and pending actions survive
 same-runtime refreshes; changing runtime/state invalidates stale responses.
 
+Device identity uses the same Settings page for 26 spoofing presets and custom
+model/fingerprint values. It supports managed runtimes and Default, with the
+existing save/restart flow and restoration of original identity values. See
+[device profiles](DEVICE-SPOOFING.md) for behavior and verification.
+
 ## Diagnostics
 
 Expand Diagnostics to run the existing health checks or use Export report.

@@ -19,7 +19,7 @@ import importlib.util
 
 ROOT = Path(__file__).resolve().parent.parent
 MODULES = ('runtime-system.py', 'runtime-controller.py', 'runtime-existing.py', 'runtime-keymap.py', 'runtime-host.py', 'runtime-images.py', 'runtime-android.py',
-           'runtime-worker.py', 'runtime-x11.py', 'runtime-path-guard.py', 'runtime-linux.py', 'runtime-image-format.py', 'runtime-adb.py', 'runtime-network.py', 'runtime-storage.py', 'runtime-labels.py', 'runtime-transfer.py', 'runtime-catalog.py', 'runtime-download.py', 'runtime-extract.py', 'runtime-provision.py', 'runtime-arm.py', 'runtime-arm-source.py', 'runtime-gpu.py', 'runtime-nvidia.py', 'runtime-resources.py', 'runtime-desktop.py', 'runtime-workarea.py', 'runtime-features.py', 'runtime-compatibility.py', 'runtime-shares.py', 'runtime-default-shares.py', 'runtime-components.py', 'runtime-diagnostics.py')
+           'runtime-worker.py', 'runtime-x11.py', 'runtime-path-guard.py', 'runtime-linux.py', 'runtime-image-format.py', 'runtime-adb.py', 'runtime-network.py', 'runtime-storage.py', 'runtime-labels.py', 'runtime-transfer.py', 'runtime-catalog.py', 'runtime-download.py', 'runtime-extract.py', 'runtime-provision.py', 'runtime-arm.py', 'runtime-arm-source.py', 'runtime-gpu.py', 'runtime-nvidia.py', 'runtime-resources.py', 'runtime-desktop.py', 'runtime-workarea.py', 'runtime-features.py', 'runtime-compatibility.py', 'runtime-shares.py', 'runtime-default-shares.py', 'runtime-device.py', 'runtime-components.py', 'runtime-diagnostics.py')
 DESTINATION = Path('/usr/local/lib/anvildroid-controller')
 SOCKET_PATH = Path('/run/anvildroid/control.sock')
 

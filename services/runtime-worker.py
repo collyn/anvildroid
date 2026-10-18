@@ -82,6 +82,9 @@ spec.loader.exec_module(compatibility_module)
 spec = importlib.util.spec_from_file_location('runtime_shares', Path(__file__).with_name('runtime-shares.py'))
 shares_module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(shares_module)
+spec = importlib.util.spec_from_file_location('runtime_device', Path(__file__).with_name('runtime-device.py'))
+device_module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(device_module)
 
 
 def atomic(path, value):
@@ -1476,6 +1479,7 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
                 props += [key + '=' + value for key, value in arm_props.items()]
             props = [p for p in props if not p.startswith('ro.adb.secure=')] + ['ro.adb.secure=1']
             props = managed_session_properties(props)
+            props = device_module.boot_properties(instance, props)
             props = [p for p in props if not p.startswith((
                 'waydroid.anvil_shm_presentation=', 'waydroid.anvil_gpu_copy_presentation='))]
             if nvidia_rendering and compatibility.get('sdk', 0) > 33:

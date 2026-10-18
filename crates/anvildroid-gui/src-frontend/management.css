@@ -393,13 +393,19 @@
 #page-runtime-settings [data-settings-key$=":display"] { order: 3; }
 #page-runtime-settings [data-settings-key$=":storage"] { order: 4; }
 #page-runtime-settings [data-settings-key$=":arm"] { order: 5; }
-#page-runtime-settings [data-settings-key$=":google"] { order: 6; }
-#page-runtime-settings [data-settings-key$=":boot"] { order: 7; }
-#page-runtime-settings [data-settings-key$=":health"] { order: 8; }
+#page-runtime-settings [data-settings-key$=":device"] { order: 6; }
+#page-runtime-settings [data-settings-key$=":google"] { order: 7; }
+#page-runtime-settings [data-settings-key$=":boot"] { order: 8; }
+#page-runtime-settings [data-settings-key$=":health"] { order: 9; }
 #page-runtime-settings [data-settings-key$=":import"],
-#page-runtime-settings .runtime-details { order: 9; }
+#page-runtime-settings .runtime-details { order: 10; }
 #page-runtime-settings .runtime-setting-row summary small { display: none; }
 #page-runtime-settings .runtime-gpu-panel { padding: 0; border: 0; background: transparent; }
+.runtime-device-panel > label, .runtime-device-fields label { display: flex; flex-direction: column; gap: 6px; }
+.runtime-device-panel select { width: 100%; max-width: 560px; }
+.runtime-device-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin-top: 12px; }
+.runtime-device-fields input { width: 100%; min-width: 0; padding: 8px; box-sizing: border-box; }
+.runtime-device-fields label:last-child { grid-column: 1 / -1; }
 
 /* Use the same spaced stack for system and isolated runtime settings. */
 #page-runtime-settings #existing-runtime-management,

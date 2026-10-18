@@ -2990,3 +2990,83 @@ test('Settings Refresh retries ARM after controller failure', async () => {
   assert.doesNotMatch(element('arm-source-panel').innerHTML,/Cannot load ARM sources|Loading ARM/);
   assert.equal(element('btn-refresh-settings').disabled,false);
 });
+
+function deviceFixture() {
+  const values = {brand:'google',manufacturer:'Google',model:'Pixel 7',device:'panther',product:'panther',fingerprint:''};
+  return {runtime_id:'default',profile:'pixel-7',custom:null,values,revision:'a'.repeat(64),profiles:[{id:'pixel-7',name:'Google Pixel 7',values}]};
+}
+
+test('Default settings load device profiles without starting Android',async()=>{
+  const calls=[], data=deviceFixture();
+  const {context,element}=gui(async(command,args)=>{
+    if(command!=='runtime_controller')return;
+    const q=args.request;calls.push(q);
+    if(q.op==='refresh')return {id:'default',name:'Default',state:'Stopped',managed:true};
+    if(q.op==='device_info')return data;
+    return {};
+  },undefined,'?view=controls');
+  await vm.runInContext('refreshExistingRuntime()',context);
+  vm.runInContext('renderExistingRuntime()',context);
+  const html=element('existing-runtime-management').innerHTML;
+  assert.equal((html.match(/<strong>Device identity<\/strong>/g)||[]).length,1);
+  assert.match(html,/Google Pixel 7/);
+  assert.ok(calls.some(q=>q.op==='device_info'&&q.id==='default'));
+  assert.ok(calls.every(q=>!['start','stop','prepare'].includes(q.op)));
+});
+
+test('device controls support managed and Default states, busy and escaped custom values',()=>{
+  const {context}=gui(async()=>{},undefined,'?view=controls');context.deviceData=deviceFixture();
+  for(const id of ['default','r-'+'b'.repeat(32)]) {
+    context.testId=id;
+    const html=vm.runInContext('renderRuntimeDevice({id:testId,state:"Running",device:deviceData},false)',context);
+    assert.match(html,/Save & restart/);assert.match(html,/Restore original & restart/);
+    assert.match(html,new RegExp(`data-device-profile="${id}"`));
+    for(const state of ['Starting','Stopping','Provisioning']) {
+      context.testState=state;
+      assert.match(vm.runInContext('renderRuntimeDevice({id:testId,state:testState,device:deviceData},false)',context),/data-device-profile="[^"]+" disabled/);
+    }
+    assert.match(vm.runInContext('renderRuntimeDevice({id:testId,state:"Running",device:deviceData},true)',context),/data-device-profile="[^"]+" disabled/);
+  }
+  context.deviceData={...deviceFixture(),profile:'custom',custom:{...deviceFixture().values,model:'<script>"bad"</script>'}};
+  const html=vm.runInContext('renderRuntimeDevice({id:"default",state:"Stopped",device:deviceData},false)',context);
+  assert.doesNotMatch(html,/<script>/);assert.match(html,/&lt;script&gt;/);
+  assert.equal((html.match(/data-device-field=/g)||[]).length,6);
+});
+
+test('preset to Custom clones selected values and existing Custom edits are retained',()=>{
+  const {context}=gui(async()=>{},undefined,'?view=controls');context.deviceData=deviceFixture();
+  vm.runInContext('existingRuntime={id:"default",state:"Stopped",device:deviceData}; changeRuntimeDeviceProfile("default","custom"); handleRuntimeConfigInput({target:{dataset:{deviceId:"default",deviceField:"model"},value:"Edited model"}})',context);
+  assert.equal(vm.runInContext('runtimeDeviceDraft.get("default").custom.model',context),'Edited model');
+  assert.equal(context.deviceData.values.model,'Pixel 7');
+  vm.runInContext('runtimeDeviceDraft.clear(); existingRuntime.device={...deviceData,profile:"custom",custom:{...deviceData.values}}; handleRuntimeConfigInput({target:{dataset:{deviceId:"default",deviceField:"model"},value:"Edit saved Custom"}})',context);
+  assert.equal(vm.runInContext('runtimeDeviceDraft.get("default").custom.model',context),'Edit saved Custom');
+  assert.equal(vm.runInContext('existingRuntime.device.custom.model',context),'Pixel 7');
+});
+
+test('device Save and Restore send strict runtime-scoped requests and reject stale drafts',async()=>{
+  const {context}=gui(async()=>{},undefined,'?view=controls');context.deviceData=deviceFixture();context.sent=[];
+  vm.runInContext('existingRuntime={id:"default",state:"Stopped",device:deviceData}; mutateController=async q=>sent.push(q)',context);
+  await vm.runInContext('saveRuntimeDevice("default")',context);
+  assert.deepEqual(JSON.parse(JSON.stringify(context.sent[0])),{op:'device_set',id:'default',profile:'pixel-7',custom:null,revision:'a'.repeat(64)});
+  vm.runInContext('changeRuntimeDeviceProfile("default","custom"); runtimeDeviceDraft.get("default").custom.model=" Custom phone ";',context);
+  await vm.runInContext('saveRuntimeDevice("default")',context);
+  assert.equal(context.sent[1].custom.model,'Custom phone');
+  vm.runInContext('runtimeDeviceDraft.get("default").revision="stale"',context);
+  await vm.runInContext('saveRuntimeDevice("default")',context);assert.equal(context.sent.length,2);
+  await vm.runInContext('saveRuntimeDevice("default",true)',context);
+  assert.deepEqual(JSON.parse(JSON.stringify(context.sent[2])),{op:'device_set',id:'default',profile:'default',custom:null,revision:'a'.repeat(64)});
+});
+
+test('device Custom validation and focused inputs suppress unsafe saves and poll redraws',async()=>{
+  const {context,element}=gui(async()=>{},undefined,'?view=controls');context.deviceData=deviceFixture();context.sent=[];
+  vm.runInContext('existingRuntime={id:"default",state:"Stopped",device:deviceData}; mutateController=async q=>sent.push(q); changeRuntimeDeviceProfile("default","custom"); runtimeDeviceDraft.get("default").custom.brand=""',context);
+  await vm.runInContext('saveRuntimeDevice("default")',context);assert.equal(context.sent.length,0);
+  vm.runInContext('runtimeDeviceDraft.get("default").custom.brand="google"; runtimeDeviceDraft.get("default").custom.fingerprint="invalid"',context);
+  await vm.runInContext('saveRuntimeDevice("default")',context);assert.equal(context.sent.length,0);
+  for(const dataset of [{deviceProfile:'default'},{deviceField:'model',deviceId:'default'}]) {
+    context.document.activeElement={dataset};
+    element('existing-runtime-management').innerHTML='retained input';
+    vm.runInContext('renderController()',context);
+    assert.equal(element('existing-runtime-management').innerHTML,'retained input');
+  }
+});

@@ -10,6 +10,10 @@ use std::time::Duration;
 #[serde(tag = "op", rename_all = "lowercase", deny_unknown_fields)]
 pub enum Request {
     List {},
+    #[serde(rename = "device_info")]
+    DeviceInfo { id: String },
+    #[serde(rename = "device_set")]
+    DeviceSet { id: String, profile: String, custom: Option<DeviceIdentity>, revision: String },
     #[serde(rename = "compatibility_get")]
     CompatibilityGet { id: String, package: String },
     #[serde(rename = "compatibility_set")]
@@ -215,6 +219,17 @@ pub enum Request {
     Refresh {
         id: String,
     },
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeviceIdentity {
+    pub brand: String,
+    pub manufacturer: String,
+    pub model: String,
+    pub device: String,
+    pub product: String,
+    pub fingerprint: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -519,6 +534,9 @@ mod tests {
     fn feature_requests_roundtrip_and_reject_caller_privileged_fields() {
         let revision = "a".repeat(64);
         for value in [
+            serde_json::json!({"op":"device_info","id":"default"}),
+            serde_json::json!({"op":"device_set","id":"default","profile":"pixel-7","custom":null,"revision":revision}),
+            serde_json::json!({"op":"device_set","id":"default","profile":"custom","custom":{"brand":"Test","manufacturer":"Test","model":"Test phone","device":"test","product":"test","fingerprint":""},"revision":revision}),
             serde_json::json!({"op":"compatibility_get","id":"default","package":"com.example.app"}),
             serde_json::json!({"op":"compatibility_set","id":"default","package":"com.example.app","settings":{"fake_wifi":true,"mouse_as_touch":false},"revision":revision}),
             serde_json::json!({"op":"compatibility_reset","id":"default","package":"com.example.app","revision":revision}),

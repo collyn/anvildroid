@@ -21,7 +21,7 @@ function fixture(state = 'Running', failure) {
     },
   }};
 }
-for (const op of ['arm_set', 'gpu_set', 'resources_set', 'display_set', 'backend_set']) {
+for (const op of ['arm_set', 'gpu_set', 'resources_set', 'display_set', 'backend_set', 'device_set']) {
   test(`${op} automatically stops, applies and restarts a running runtime`, async () => {
     const {calls, options} = fixture();
     const result = await apply({op,id:'test'}, options);
