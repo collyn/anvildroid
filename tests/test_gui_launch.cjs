@@ -1089,22 +1089,111 @@ test('stopped runtime loads persisted snapshot after reopening without starting 
 });
 
 
-test('Settings creates a runtime with persisted Desktop default before prepare/start', async()=>{
+test('Settings creates, prepares and starts a new runtime after saving Desktop mode', async()=>{
  const calls=[]; let created=false;
- const record={id:'r-new',name:'New',state:'Allocated',job:null};
- const {context}=gui(async(command,args)=>{
+ const record={id:'r-'+'1'.repeat(32),name:'New',state:'Allocated',job:null};
+ const {context,element,banner}=gui(async(command,args)=>{
   if(command!=='runtime_controller') return;
   const r=args.request;calls.push(r);
   if(r.op==='create'){created=true;return {...record};}
   if(r.op==='display_set'||r.op==='display_info')return {mode:'desktop',effective_mode:null};
+  if(['prepare','start'].includes(r.op)){
+   record.state=r.op==='prepare'?'Provisioning':'Starting';record.job={id:r.op,operation:r.op,status:'Running'};return {...record};
+  }
   if(r.op==='list')return created?[record]:[];
-  if(r.op==='refresh')return {...record};
+  if(r.op==='refresh'){
+   if(r.id==='default')return {id:'default',name:'Default',state:'Stopped'};
+   if(record.job){record.state=record.job.operation==='prepare'?'Prepared':'Running';record.job={...record.job,status:'Succeeded'};}
+   return {...record};
+  }
  },undefined,'?view=settings');
  await tick();calls.length=0;
+ element('controller-name').value='New';
  await vm.runInContext("mutateController({op:'create',name:'New'})",context);
- assert.deepEqual(calls.slice(0,2).map(r=>[r.op,r.id,r.mode]),[['create',undefined,undefined],['display_set','r-new','desktop']]);
- assert.equal(calls.filter(r=>['start','prepare','stop'].includes(r.op)).length,0);
+ assert.deepEqual(calls.filter(r=>['create','display_set','prepare','start'].includes(r.op)).map(r=>r.op),['create','display_set','prepare','start']);
+ assert.ok(calls.filter(r=>['display_set','prepare','start'].includes(r.op)).every(r=>r.id===record.id));
+ assert.equal(calls.some(r=>r.op==='stop'),false);
  assert.equal(vm.runInContext('controllerRecords[0].display.mode',context),'desktop');
+ assert.equal(vm.runInContext('controllerRecords[0].state',context),'Running');
+ assert.equal(vm.runInContext('selectedRuntimeId',context),record.id);
+ assert.equal(element('controller-name').value,'');
+ assert.match(banner.textContent,/Android is running/);
+});
+
+for(const failure of ['display_set','prepare-job','start']){
+ test(`creation retains the new runtime and reports ${failure} without a duplicate or later action`,async()=>{
+  const calls=[],prompts=[];let created=false;
+  const record={id:'r-'+'3'.repeat(32),name:'New',state:'Allocated',job:null};
+  const {context,element,banner}=gui(async(command,args)=>{
+   if(command!=='runtime_controller')return;
+   const r=args.request;calls.push(r);
+   if(r.op==='create'){created=true;return {...record};}
+   if(r.op===failure)throw Error('Fixture stage failure');
+   if(r.op==='display_set'||r.op==='display_info')return {mode:'desktop'};
+   if(r.op==='prepare'){
+    record.state='Provisioning';record.job={id:'prepare',operation:'prepare',status:'Running'};return {...record};
+   }
+   if(r.op==='list')return created?[record]:[];
+   if(r.op==='refresh'){
+    if(r.id==='default')return {id:'default',state:'Stopped'};
+    if(record.job){
+     record.state=failure==='prepare-job'?'Error':'Prepared';
+     record.job={...record.job,status:failure==='prepare-job'?'Failed':'Succeeded',error:failure==='prepare-job'?'Fixture prepare failure':null};
+    }
+    return {...record};
+   }
+  },async text=>{prompts.push(text);return true;},'?view=settings');
+  await tick();calls.length=0;element('controller-name').value='New';
+  await vm.runInContext("mutateController({op:'create',name:'New'})",context);
+  assert.equal(calls.filter(r=>r.op==='create').length,1);
+  assert.equal(calls.filter(r=>r.op==='start').length,failure==='start'?1:0);
+  assert.equal(vm.runInContext('controllerRecords.length',context),1);
+  assert.equal(vm.runInContext('selectedRuntimeId',context),record.id);
+  assert.equal(vm.runInContext('controllerMutation',context),false);
+  assert.equal(element('controller-name').value,'');
+  assert.equal(prompts.length,0);
+  assert.match(banner.textContent,/was created, but/);
+  assert.match(banner.textContent,/Fixture/);
+  assert.doesNotMatch(banner.textContent,/Android is running/);
+  assert.ok(calls.filter(r=>['display_set','prepare','start','stop','delete'].includes(r.op)).every(r=>r.id===record.id));
+ });
+}
+
+test('pending creation shows its stage and blocks duplicate Create until boot completes',async()=>{
+ const calls=[],prepared=deferred();let created=false;
+ const record={id:'r-'+'4'.repeat(32),name:'New',state:'Allocated',job:null};
+ const {context,element}=gui(async(command,args)=>{
+  if(command!=='runtime_controller')return;
+  const r=args.request;calls.push(r);
+  if(r.op==='create'){created=true;return {...record};}
+  if(r.op==='display_set'||r.op==='display_info')return {mode:'desktop'};
+  if(['prepare','start'].includes(r.op)){
+   record.state=r.op==='prepare'?'Provisioning':'Starting';record.job={id:r.op,operation:r.op,status:'Running'};return {...record};
+  }
+  if(r.op==='list')return created?[record]:[];
+  if(r.op==='refresh'){
+   if(r.id==='default')return {id:'default',state:'Stopped'};
+   if(record.job?.operation==='prepare'&&record.job.status==='Running')return prepared.promise;
+   if(record.job?.operation==='start'){record.state='Running';record.job={...record.job,status:'Succeeded'};}
+   return {...record};
+  }
+ },undefined,'?view=settings');
+ await tick();calls.length=0;
+ const work=vm.runInContext("mutateController({op:'create',name:'New'})",context);
+ await tick();
+ assert.match(element('controller-message').textContent,/Preparing images/);
+ assert.equal(element('controller-create-button').disabled,true);
+ assert.equal(vm.runInContext('controllerPending.id',context),record.id);
+ assert.equal(vm.runInContext('controllerRecords[0].state',context),'Provisioning');
+ await vm.runInContext("mutateController({op:'create',name:'Duplicate'})",context);
+ assert.equal(calls.filter(r=>r.op==='create').length,1);
+ assert.equal(calls.filter(r=>r.op==='start').length,0);
+ record.state='Prepared';record.job={...record.job,status:'Succeeded'};prepared.resolve({...record});
+ await work;
+ assert.equal(calls.filter(r=>r.op==='start').length,1);
+ assert.equal(vm.runInContext('controllerRecords[0].state',context),'Running');
+ assert.equal(vm.runInContext('controllerMutation',context),false);
+ assert.equal(element('controller-create-button').disabled,false);
 });
 
 test('managed app icons use their own snapshot and never the default icon route',()=>{
@@ -1446,16 +1535,23 @@ test('cross-runtime Google result is rejected and does not enable Play Store', a
 });
 
 
-test('GAPPS creation requires ready matching cache and pins both hashes without starting Android', async()=>{
- const calls=[];const record={id:'r-gapps',name:'Play',state:'Allocated',job:null};let created=false;
+test('GAPPS creation pins the ready image pair then automatically prepares and starts it', async()=>{
+ const calls=[];const record={id:'r-'+'2'.repeat(32),name:'Play',state:'Allocated',job:null};let created=false;
  const {context,element}=gui(async(command,args)=>{
   if(command!=='runtime_controller')return;
   const r=args.request;calls.push(r);
   if(r.op==='image_select')return {status:'Ready',flavor:'GAPPS',images:{system:{sha256:'system'},vendor:{sha256:'vendor'}}};
   if(r.op==='create_image'){created=true;return {...record};}
   if(r.op==='display_set'||r.op==='display_info')return {mode:'desktop'};
+  if(['prepare','start'].includes(r.op)){
+   record.state=r.op==='prepare'?'Provisioning':'Starting';record.job={id:r.op,operation:r.op,status:'Running'};return {...record};
+  }
   if(r.op==='list')return created?[record]:[];
-  if(r.op==='refresh')return {...record};
+  if(r.op==='refresh'){
+   if(r.id==='default')return {id:'default',name:'Default',state:'Stopped'};
+   if(record.job){record.state=record.job.operation==='prepare'?'Prepared':'Running';record.job={...record.job,status:'Succeeded'};}
+   return {...record};
+  }
  },undefined,'?view=settings');
  await tick();calls.length=0;
  element('controller-name').value='Play';element('controller-image').value='GAPPS';
@@ -1465,8 +1561,9 @@ test('GAPPS creation requires ready matching cache and pins both hashes without 
  await tick();await tick();
  const request=calls.find(r=>r.op==='create_image');
  assert.equal(request.flavor,'GAPPS');assert.equal(request.system_sha256,'system');assert.equal(request.vendor_sha256,'vendor');
- assert.equal(calls.filter(r=>['prepare','start','image_download'].includes(r.op)).length,0);
- assert.equal(calls.find(r=>r.op==='display_set').id,'r-gapps');
+ assert.deepEqual(calls.filter(r=>['image_select','create_image','display_set','prepare','start','image_download'].includes(r.op)).map(r=>r.op),['image_select','create_image','display_set','prepare','start']);
+ assert.equal(calls.find(r=>r.op==='display_set').id,record.id);
+ assert.equal(vm.runInContext('controllerRecords[0].state',context),'Running');
 });
 
 

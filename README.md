@@ -184,9 +184,11 @@ install both `anvildroid-gui` and the `anvildroid` CLI in `/usr/bin`.
 
 ## Run
 
-Open `anvildroid-gui`, start the controller from **Runtimes**, create or import
-a runtime, prepare its images, then start it. Install and launch APKs from the
-Apps page while the selected runtime is running.
+Open `anvildroid-gui`, start the controller from **Runtimes**, and create
+a runtime. AnvilDroid prepares its images and starts Android automatically.
+Keep AnvilDroid open until this finishes. Preparation and boot progress appear
+on the runtime card; failures retain the new runtime with a retry action.
+Install and launch APKs from the Apps page while the selected runtime is running.
 Use **Images** to download/import images, the runtime Settings button to adjust
 its configuration, and **Settings** for GUI preferences, runtime start on boot
 and ARM packages. **Open Waydroid** opens the selected runtime's full Android UI.

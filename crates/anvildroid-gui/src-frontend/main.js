@@ -2077,15 +2077,17 @@ function renderCreateImageHint() {
         : '';
     renderCustomUrlProgress();
     panel.textContent = ready ? 'Custom image · Experimental compatibility. ARM translation must be configured separately.' : 'Import both system.img and vendor.img from a folder or ZIP before creating this runtime.';
+    if (ready && !reinstallTargetId) panel.textContent += ' Creating a runtime automatically prepares its images and starts Android.';
     return;
   }
-  if (flavor === 'installed') { panel.textContent = 'Creates a separate runtime from the installed image.'; return; }
+  if (flavor === 'installed') { panel.textContent = 'Creates a separate runtime from the installed image.' + (reinstallTargetId ? '' : ' Images are prepared and Android starts automatically.'); return; }
   const state = selectedImage || imageDownloadState;
   if (state?.status !== 'Ready' || state.flavor !== flavor) {
     panel.textContent = `Waydroid ${flavor}: ${IMAGE_FLAVOR_NOTE(flavor)} Download & verify this image in the Images tab first. It will be used for a new runtime; existing runtimes are kept.`;
     return;
   }
   panel.textContent = `Waydroid ${flavor} · ${(state.image_bytes / 1024**3).toFixed(2)} GiB + runtime data. ${IMAGE_FLAVOR_NOTE(flavor)}${flavor === 'GAPPS' ? ' Google sign-in requires device registration.' : ''}`;
+  if (!reinstallTargetId) panel.textContent += ' Images are prepared and Android starts automatically.';
 }
 document.getElementById('controller-image').addEventListener('change', event => {
   selectedImageLibraryId = event.target.value.startsWith('custom:') ? event.target.value.slice(7) : '';
@@ -2507,7 +2509,7 @@ function renderController() {
       Error: 'The last operation failed. Review the error below before retrying.'
     };
     const phase = pending?.phase;
-    const waiting = ({stopping:'Stopping Android to apply settings…', applying:'Applying settings…', starting:'Restarting Android…'})[phase] || (phase === 'confirm' ? 'Waiting for confirmation…' : phase === 'send' ? 'Sending request…' : 'Waiting for current refresh…');
+    const waiting = ({stopping:'Stopping Android to apply settings…', applying:'Applying settings…', starting:'Restarting Android…', configuring:'Setting up runtime…', preparing:record.prepare_phase || 'Preparing images…', booting:'Starting Android…'})[phase] || (phase === 'confirm' ? 'Waiting for confirmation…' : phase === 'send' ? 'Sending request…' : 'Waiting for current refresh…');
     const storagePhase = ({copy: 'Copying runtime data…', verify: 'Verifying the copied data…', switch: 'Activating the new location…', cleanup: 'Removing the retained copy…'})[record.storage?.job?.phase];
     const title = runtimeBatchRestarting.has(record.id) ? 'Restarting…' : RuntimeWindow.isPending(record.id) ? 'Opening Waydroid…' : pending ? waiting : appWorking ? (record.appJob.action === 'delete' ? 'Deleting runtime…' : record.appJob.action === 'install' ? 'Installing APK…' : record.appJob.action === 'full_ui' ? 'Opening Waydroid…' : record.appJob.action === 'launch' ? (desktopMode ? 'Launching desktop app…' : 'Launching app in headless Android…') : 'Force-stopping app…') : storageMoving ? storagePhase || 'Moving runtime data…' : record.deletion_pending ? 'Deletion incomplete' : labels[record.state] || record.state;
     const status = runtimeOperations.get(record.id) === 'restart' ? 'Restarting' : pending?.op === 'reinstall' && phase === 'stopping' ? 'Stopping' : pending?.op === 'reinstall' && phase === 'applying' ? 'Reinstalling' : runtimeBatchRestarting.has(record.id) || pending && pending.op !== 'reinstall' && ['stopping', 'starting'].includes(phase) ? 'Restarting' : labels[record.state] || record.state;
@@ -2820,7 +2822,7 @@ async function mutateController(request) {
         renderController();
       },
     });
-    const {result, restarted} = request.id
+    let {result, restarted} = request.id
       ? await RuntimeSettings.apply(request, {
         send: controllerRequest,
         progress: phase => {
@@ -2843,10 +2845,27 @@ async function mutateController(request) {
     if (request.op === 'existing_import' && result?.id) {
       selectedRuntimeId = result.id;
     }
-    if (['create', 'create_image'].includes(request.op) && result?.id) {
+    if (['create', 'create_image'].includes(request.op)) {
+      if (!/^r-[a-f0-9]{32}$/.test(result?.id) || result.state !== 'Allocated' || result.job ||
+          controllerRecords.some(record => record.id === result.id)) throw new Error('Invalid newly created runtime; refresh before retrying.');
       selectedRuntimeId = result.id;
-      try { result.display = await controllerRequest({op:'display_set', id:result.id, mode:'desktop'}); }
-      catch (error) { throw new Error(`Runtime ${result.name} was created, but Desktop mode could not be saved: ${error}. Select Use Desktop before starting it.`); }
+      controllerRecords.push(result);
+      controllerPending.id = result.id;
+      document.getElementById('controller-name').value = '';
+      document.getElementById('runtime-create-panel').open = false;
+      result = await RuntimeSettings.initialize(result, {
+        send:controllerRequest,
+        progress:phase => {
+          controllerPending.phase = phase;
+          message.textContent = ({configuring:'Setting up the new runtime…', preparing:'Preparing images for the new runtime…', booting:'Starting the new Android runtime…'})[phase] + ' Keep AnvilDroid open until this finishes.';
+          renderController();
+        },
+        update:updated => {
+          const index = controllerRecords.findIndex(record => record.id === updated.id);
+          controllerRecords[index] = updated;
+          renderController();
+        },
+      });
     }
     if (request.op === 'display_set' || request.op === 'backend_set') {
       const record = runtimeRecord(request.id);
@@ -2875,7 +2894,7 @@ async function mutateController(request) {
       else controllerRecords[position] = result;
     }
     controllerPending = null;
-    completionNotice = ({resources_set: 'RAM and CPU limits saved. Start this runtime to apply them.', gpu_set: 'GPU saved. Start this runtime to apply it.', arm_set: `ARM translation ${request.enabled ? 'installed' : 'disabled'}. Start this runtime to apply it.`, delete: 'Deletion accepted. The runtime will disappear when its data has been removed.', display_set: 'Display mode saved. Start Android to apply it.', backend_set: 'Display backend saved. Start Android to apply it.', app_action: 'App action accepted. Watch its job result below.', create: 'Runtime created with Desktop mode. Next: prepare images.', rename: 'Runtime name saved.', prepare: 'Preparation accepted. Watch the runtime status below.', start: 'Start request accepted. The runtime card below shows boot progress and the result.', stop: 'Stop request accepted. The runtime card below shows progress and the result.', move: 'Storage move accepted. Keep both disks connected until verification completes.', discard_previous: 'Removal accepted. Watch storage status below; active runtime data is kept.', existing_import: 'Import started. Keep Default runtime stopped until preparation succeeds.'})[request.op] || 'Request accepted.';
+    completionNotice = ({resources_set: 'RAM and CPU limits saved. Start this runtime to apply them.', gpu_set: 'GPU saved. Start this runtime to apply it.', arm_set: `ARM translation ${request.enabled ? 'installed' : 'disabled'}. Start this runtime to apply it.`, delete: 'Deletion accepted. The runtime will disappear when its data has been removed.', display_set: 'Display mode saved. Start Android to apply it.', backend_set: 'Display backend saved. Start Android to apply it.', app_action: 'App action accepted. Watch its job result below.', create: 'Runtime created. Android is running.', create_image: 'Runtime created. Android is running.', rename: 'Runtime name saved.', prepare: 'Preparation accepted. Watch the runtime status below.', start: 'Start request accepted. The runtime card below shows boot progress and the result.', stop: 'Stop request accepted. The runtime card below shows progress and the result.', move: 'Storage move accepted. Keep both disks connected until verification completes.', discard_previous: 'Removal accepted. Watch storage status below; active runtime data is kept.', existing_import: 'Import started. Keep Default runtime stopped until preparation succeeds.'})[request.op] || 'Request accepted.';
     if (restarted) {
       completionNotice = 'Settings applied. Android restarted successfully.';
     }
@@ -2884,11 +2903,6 @@ async function mutateController(request) {
       cancelReinstall();
       document.getElementById('runtime-create-panel').open = false;
       completionNotice = 'Runtime reinstall started. Wait for image preparation to finish before starting it.';
-    }
-    if (['create', 'create_image'].includes(request.op)) {
-      document.getElementById('controller-name').value = '';
-      document.getElementById('runtime-create-panel').open = false;
-      if (request.op === 'create_image') completionNotice = `${request.flavor} runtime created. Prepare selects a compatible GPU and installs ARM translation.`;
     }
   } catch (error) { failure = String(error); }
   finally {
