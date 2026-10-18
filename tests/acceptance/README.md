@@ -82,6 +82,33 @@ From another terminal, exercise the actual mapper and Android input sink:
 sudo python3 tests/acceptance/probe-android-controls.py /tmp/anvil-live-local/acceptance.json HOST_WORKER_PID "$PWD/target/live-controls-local"
 ```
 
+Append `--keymap-v3 --editor-v3 --capture-v3` for the 25-case editor/input
+matrix. V3 adds real finger mouse click/drag, fixed-button routing, center-first
+joystick, held swipe endpoint, relative hold-look with edge restart, and three
+simultaneous movement/look/fire contacts. Editor checks click Add/place/Key/Save,
+validate persisted V3 rows and fresh playback, then change a rendered property
+and Cancel while requiring exact saved bytes to survive. Geometry includes
+centered letterboxing; unknown frame geometry fails closed.
+
+The separate capture opt-in requires the actual compositor's relative-pointer
+and pointer-constraints capabilities. It observes lock-dependent Android DOWN,
+relative movement, independent fire, Escape release, blur cancellation and fresh
+activation after refocus. Nested Wayland protocol tracing correlates the scoped
+app surface, client, pointer and relative/lock objects: a real grant must suppress
+that client's absolute pointer motion while delivering relative events, then
+restore absolute motion after release. The outer X11 transport cursor may move
+independently of this Wayland lock. Native X11 instead requires its host pointer
+to remain confined. A missing capability or denied lock fails this requested
+test; it cannot silently count as a pass. This bounded test does not certify
+unlimited motion, physical mouse feel or sustained gameplay. Keep the flags off
+when reproducing the historical 13-case result.
+
+Use a fresh private compositor for each full editor/capture run. Nested Weston's
+logical pointer can retain an offset from its outer X11 pointer after relative
+capture. Reusing that display after a failed capture can invalidate the next
+run's absolute-coordinate editor setup; keep the exact authored-position oracle
+and preserve the failed evidence rather than widening its tolerance.
+
 The runner installs only `org.anvildroid.touchprobe` and its guest test profile.
 It sends real XTest keys/pointer events and records the APK's MotionEvents.
 For guest Wayland, it authenticates the separate compositor's UID, generation,
@@ -139,6 +166,28 @@ marker visibility. Blur/refocus stages now wait for real Android event
 acknowledgments and retain failed-stage logs. These results do not close the
 editor Save/Cancel, resize or gameplay gates above. Evidence is under
 `target/plan-completion-20261018/controls-{x11-synchronized,wayland}/`.
+
+The final keymap-editor follow-up on 2026-10-18 passes **25/25 scenarios on
+each route**, using Debian SHA256
+`0a5896286b74ed5e5387d8e5fdd17eaf4d3f59c608f565b84ef7287a9e6deb19`.
+Both runs enable `--keymap-v3 --editor-v3 --capture-v3` and use the final packaged
+native bridge. The visible Add/place/Key/Save/reload and rendered-change/Cancel
+subset now passes alongside V3 finger gestures and capture lifecycle.
+
+| Guest backend | Final evidence | Complete cleanup |
+| --- | --- | --- |
+| Wayland | [25/25 summary](../../target/keymap-v3-verification/controls-wayland-v3-final/summary.json); [scoped protocol trace](../../target/keymap-v3-verification/controls-wayland-v3-final/v3-capture-protocol.log) | [Stopped, empty scope/processes/mounts](../../target/keymap-v3-verification/retired-fixtures/anvil-live-kv3-wl-v4.json) |
+| Native X11 | [25/25 summary](../../target/keymap-v3-verification/controls-x11-v3/summary.json), including physical capture confinement | [Stopped, empty scope/processes/mounts](../../target/keymap-v3-verification/retired-fixtures/anvil-live-kv3-x11-v3.json) |
+
+These runs use actual Android 13 Vanilla with software rendering, private
+networking and fresh desktop processes. All disposable roots were removed
+after authenticated stop and quiescence checks. Neither package was installed
+over personal services. Full live drag/delete/conflict/resize/rotation/app
+replacement, concurrent windows/runtimes, physical GNOME/KDE/Default input and
+representative games remain open. Finite capture tests explicitly record
+`unlimited_movement_verified: false`; they do not establish sustained FPS
+movement, game feel or physical mouse latency. Earlier failed runs remain in
+`target/keymap-v3-verification/` for diagnosis.
 
 Shared-folder checks require a test-owned source with the sentinel
 `acceptance-read` containing TOKEN, configured through production shared-folder

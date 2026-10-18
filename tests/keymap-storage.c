@@ -39,7 +39,12 @@ int main(void){
   assert(keymap_load(dir,"com.game.test","r-one",&loaded)==1&&loaded.count==64&&loaded.points[63].duration==5000);
   assert(!unlinkat(dir,"com.game.test",0));
   const char *invalid[]={
-    "ANVIL_KEYMAP 3 r-one com.game.test 0\n",
+    "ANVIL_KEYMAP 4 r-one com.game.test 0\n",
+    "ANVIL_KEYMAP 1 r-one com.game.test 1 30 100 200 1\n",
+    "ANVIL_KEYMAP 1 r-one com.game.test 2\n30 100 200 1 31 100 200 1\n",
+    "ANVIL_KEYMAP 1 r-one com.game.test 1\n30 100\n200 1\n",
+    "ANVIL_KEYMAP 3 r-one com.game.test 1\n30 100 200 0 0 0 0 50 1 0 1 0 0 0 0 0 0 0\n",
+    "ANVIL_KEYMAP 3 r-one com.game.test 1\n30 100 200 0 0 0 0 50 1 0 1 0 0 0 0 0 0 0 0 99\n",
     "ANVIL_KEYMAP 2 r-one com.game.test 1\n30 0 0 0 2 0 0 250 3 extra\n",
     "ANVIL_KEYMAP 2 r-one com.game.test 1\n30 0 0 0 2 0 0 -1 3\n",
     "ANVIL_KEYMAP 2 r-one com.game.test 1\n30 0 0 0 7 0 0 250 3\n",
@@ -52,6 +57,31 @@ int main(void){
     assert(keymap_load(dir,"com.game.test","r-one",&loaded)==-1);
     assert(!unlinkat(dir,"com.game.test",0));
   }
+  m=(struct keymap_model){.count=4,.selected=-1};
+  m.points[0]=(struct keymap_point){.key=30,.nx=10000,.ny=20000};
+  keymap_set_kind(&m.points[0],KEYMAP_SWIPE);m.points[0].end_mode=KEYMAP_END_HOLD;
+  m.points[1]=(struct keymap_point){.key=272,.nx=50000,.ny=40000};
+  keymap_set_kind(&m.points[1],KEYMAP_BASIC);m.points[1].source=KEYMAP_SOURCE_MOUSE;
+  m.points[2]=(struct keymap_point){.nx=32768,.ny=32768};
+  keymap_set_kind(&m.points[2],KEYMAP_MOUSE_TOUCH);
+  m.points[3]=(struct keymap_point){.key=34,.nx=42000,.ny=33000};
+  keymap_set_kind(&m.points[3],KEYMAP_LOOK);m.points[3].activation=1;
+  m.points[3].invert_y=1;m.points[3].sensitivity_x=250;m.points[3].sensitivity_y=175;
+  assert(keymap_save(dir,"com.game.test","r-one",&m));
+  assert(keymap_load(dir,"com.game.test","r-one",&loaded)==1);
+  assert(!memcmp(m.points,loaded.points,sizeof(m.points)));
+  int inspect=openat(dir,"com.game.test",PROFILE_NOFOLLOW);assert(inspect>=0);
+  char header[16]={0};assert(read(inspect,header,14)==14);close(inspect);
+  assert(!memcmp(header,"ANVIL_KEYMAP 3",14));
+  assert(!unlinkat(dir,"com.game.test",0));
+  int oversized=openat(dir,"com.game.test",1|PROFILE_CREAT|PROFILE_EXCL,0600);assert(oversized>=0);
+  const char *empty="ANVIL_KEYMAP 3 r-one com.game.test 0\n";
+  assert(write(oversized,empty,strlen(empty))==(long)strlen(empty));
+  char padding[1024];memset(padding,' ',sizeof(padding));
+  for(int i=0;i<17;++i)assert(write(oversized,padding,sizeof(padding))==(long)sizeof(padding));
+  close(oversized);assert(keymap_load(dir,"com.game.test","r-one",&loaded)==-1);
+  assert(!keymap_save(dir,"com.game.test","r-one",&m));
+  assert(!unlinkat(dir,"com.game.test",0));
   int fd=openat(dir,"com.game.test",1|PROFILE_CREAT|PROFILE_EXCL,0600);assert(fd>=0);assert(write(fd,"corrupt",7)==7);close(fd);
   assert(!keymap_save(dir,"com.game.test","r-one",&m));assert(keymap_load(dir,"com.game.test","r-one",&loaded)==-1);
   assert(!unlinkat(dir,"com.game.test",0));close(dir);assert(!rmdir(path));

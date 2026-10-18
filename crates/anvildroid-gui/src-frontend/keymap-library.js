@@ -11,7 +11,9 @@
     if(className)item.className=className;
     return item;
   }
-  function physicalLabel(key){
+  function physicalLabel(key,source){
+    if(source==='pointer')return 'Pointer';
+    if(source==='mouse')return ({272:'Mouse left',273:'Mouse right',274:'Mouse middle',275:'Mouse back',276:'Mouse forward'})[key];
     const codes=[16,17,18,19,20,21,22,23,24,25,30,31,32,33,34,35,36,37,38,44,45,46,47,48,49,50];
     const at=codes.indexOf(key);if(at>=0)return 'QWERTYUIOPASDFGHJKLZXCVBNM'[at];
     return ({57:'Space',28:'Enter',15:'Tab',14:'Backspace',103:'↑',108:'↓',105:'←',106:'→'})[key]||`Key ${key}`;
@@ -26,26 +28,48 @@
          !Array.isArray(p.bindings)||p.bindings.length>64)throw new Error('Invalid keymap scope');
       packages.add(p.package);const keys=new Set();
       for(const b of p.bindings){
-        if(!b||!Number.isInteger(b.evdev)||b.evdev<2||b.evdev>767||keys.has(b.evdev)||
-           !['tap','hold','wasd','swipe','repeat','skill','macro','aim'].includes(b.kind)||!['nx','ny'].every(k=>Number.isInteger(b[k])&&b[k]>=0&&b[k]<=65535))throw new Error('Invalid keymap binding');
+        const source=b?.input_source||'keyboard',v3=b?.input_source!==undefined;
+        const bindingKey=`${source}:${b?.evdev}`;
+        if(!b||!['keyboard','mouse','pointer'].includes(source)||!Number.isInteger(b.evdev)||
+           (source==='keyboard'&&(b.evdev<2||b.evdev>767))||(source==='mouse'&&(b.evdev<272||b.evdev>276))||
+           ((source==='pointer')!==(b.kind==='mouse_touch'))||(source==='pointer'&&b.evdev!==0)||keys.has(bindingKey)||
+           !['tap','hold','wasd','swipe','repeat','skill','macro','aim','mouse_touch','look'].includes(b.kind)||!['nx','ny'].every(k=>Number.isInteger(b[k])&&b[k]>=0&&b[k]<=65535))throw new Error('Invalid keymap binding');
         if(!['tap','hold'].includes(b.kind)&&
            (!['end_nx','end_ny'].every(k=>Number.isInteger(b[k])&&b[k]>=0&&b[k]<=65535)||
             !Number.isInteger(b.duration_ms)||b.duration_ms<50||b.duration_ms>5000||
             !Number.isInteger(b.repeat_count)||b.repeat_count<1||b.repeat_count>20||
             (b.kind==='macro'&&b.duration_ms*b.repeat_count*2>10000)||
-            (b.kind==='wasd'&&b.evdev!==17)))throw new Error('Invalid advanced keymap binding');
-        keys.add(b.evdev);
+            (b.kind==='wasd'&&(b.evdev!==17||source!=='keyboard'))))throw new Error('Invalid advanced keymap binding');
+        if((['mouse_touch','look'].includes(b.kind)&&!v3)||(v3&&(
+           !['legacy','release','hold'].includes(b.end_mode)||!['hold','capture'].includes(b.activation)||
+           !Number.isInteger(b.invert_y)||![0,1].includes(b.invert_y)||
+           !Number.isInteger(b.radius)||(b.radius!==0&&(b.radius<256||b.radius>32767))||
+           !Number.isInteger(b.ramp_ms)||b.ramp_ms<0||b.ramp_ms>1000||
+           !['look_width','look_height'].every(k=>Number.isInteger(b[k])&&b[k]>=0&&b[k]<=32767)||
+           !['sensitivity_x','sensitivity_y'].every(k=>Number.isInteger(b[k])&&b[k]>=0&&b[k]<=1000)||
+           (b.kind==='look'&&(b.look_width<256||b.look_height<256||b.nx<b.look_width||b.nx+b.look_width>65535||
+             b.ny<b.look_height||b.ny+b.look_height>65535||b.sensitivity_x<10||b.sensitivity_y<10))
+        )))throw new Error('Invalid V3 keymap binding');
+        keys.add(bindingKey);
       }
-      if(p.bindings.some(b=>b.kind==='wasd')&&[30,31,32].some(k=>keys.has(k)))throw new Error('Conflicting WASD keys');
+      if(p.bindings.some(b=>b.kind==='wasd')&&[30,31,32].some(k=>keys.has(`keyboard:${k}`)))throw new Error('Conflicting WASD keys');
+      if(['mouse_touch','look'].some(kind=>p.bindings.filter(b=>b.kind===kind).length>1)||
+         (p.bindings.some(b=>b.kind==='aim')&&keys.has('mouse:272')))throw new Error('Conflicting pointer controls');
       return {...p,source:'runtime'};
     });
   }
   function bindingTitle(b){
-    const titles={tap:'Tap',hold:'Hold',wasd:'WASD joystick',swipe:'Swipe',repeat:'Repeated click',skill:'Skill cast',macro:'Bounded macro',aim:'Aim / left-click fire'};
+    const titles={tap:'Tap',hold:'Hold',wasd:'WASD joystick',swipe:'Swipe',repeat:'Repeated click',skill:'Skill cast',macro:'Bounded macro',aim:'Aim / left-click fire',mouse_touch:'Mouse touch',look:'Look'};
     let title=titles[b.kind];
     if(['swipe','repeat','macro'].includes(b.kind))title+=` · ${b.duration_ms} ms`;
     if(b.kind==='macro')title+=` · ${b.repeat_count} clicks`;
     if(['swipe','macro','aim'].includes(b.kind))title+=` · endpoint ${b.end_nx}, ${b.end_ny}`;
+    if(b.input_source){
+      title+=` · ${b.input_source} · ${b.end_mode}`;
+      if(b.radius)title+=` · radius ${b.radius}`;
+      if(b.ramp_ms)title+=` · ramp ${b.ramp_ms} ms`;
+      if(b.kind==='look')title+=` · region ±${b.look_width}, ±${b.look_height} · sensitivity ${b.sensitivity_x}% / ${b.sensitivity_y}% · ${b.invert_y?'inverted Y · ':''}${b.activation}`;
+    }
     return title;
   }
   function available(r){return ['Running','Frozen'].includes(r?.state)&&!r.error;}
@@ -90,7 +114,7 @@
         runtime.appendChild(node('span',r?.state||'Unavailable','controls-runtime-state'));
         if(r?.state!=='Running'&&r?.state!=='Frozen')runtime.title='Last loaded keymaps';
         const chips=node('div',undefined,'controls-key-chips');
-        for(const b of p.bindings){const chip=node('kbd',physicalLabel(b.evdev));chip.title=bindingTitle(b);chips.appendChild(chip);}
+        for(const b of p.bindings){const chip=node('kbd',physicalLabel(b.evdev,b.input_source));chip.title=bindingTitle(b);chips.appendChild(chip);}
         if(!p.bindings.length)chips.appendChild(node('span','—','hint'));
         keys.appendChild(chips);
         const edit=node('button',undefined,'btn runtime-action-icon');edit.type='button';

@@ -25,6 +25,12 @@ and managed X11/Wayland editor/playback cancellation now pass. The remaining
 gates stay unchecked below. AppImage
 is deferred; this branch is not a merge or published release.
 
+**Current priority: complete the existing keymap editor and touch gestures.**
+The user's latest request adds true mouse-to-finger input, joystick drag/hold,
+explicit swipe endpoint holding, and relative camera control. The concrete
+delivery plan and acceptance gates are in the final section of this document.
+These additions are planned, not covered by the earlier 13/13 input results.
+
 ## Work allocation
 
 | Owner | Feature | Deliverables |
@@ -126,8 +132,9 @@ packaging and CI; the controls agent verified the native build and profile UI.
    Default uses its integrated system-service adapter; managed runtimes use the
    worker's private mount lifecycle.
 3. V2 native profiles/editor with V1 reads, WASD, swipe, repeat, skill, finite
-   two-point macros and bounded absolute aim/fire. Relative unlimited FPS mouse
-   capture and an arbitrary macro scripting language are outside this delivery.
+   two-point macros and bounded absolute aim/fire. Relative FPS camera control
+   is not implemented in this verified scope; the latest user request schedules
+   it in the keymap-editor follow-up below. Arbitrary macro scripting is excluded.
 4. Existing ARM translation settings enriched with versions/requirements/
    conflicts/digests and separate cache/configuration states. Existing Google Play
    retains the GAPPS workflow; diagnostic catalogs keep unavailable extensions truthful.
@@ -204,7 +211,7 @@ and automated verification from the remaining Android app acceptance gates.
 Keep all additions inside the existing Storage, ARM translation, Google Play,
 Diagnostics and per-app settings flows.
 
-### 1. Default shared-folder lifecycle — highest priority
+### 1. Default shared-folder lifecycle — completed
 
 Owner: shared-folders agent; primary agent owns shared controller/frontend wiring.
 
@@ -331,16 +338,16 @@ Owner: primary agent; shared-folders agent reviews system-hook packaging.
   acceptance now passes, while other images and scoped-storage apps remain open.
 - [x] Review changes and commit/push on `dev/waydroid-helper-features`.
 
-Execution order: Default design/adapter and test-environment preparation first;
-app/controls acceptance and regression-fixture repair can proceed in parallel;
-final packaging follows integrated acceptance. Continue with `gpt-6.1-sol` for
+Original execution order: Default design/adapter and test-environment preparation
+first, then app/controls acceptance, regression repair and packaging. The latest
+keymap-editor priority below supersedes that order. Continue with `gpt-6.1-sol` for
 all delegated work. Installed personal runtimes are not test targets: use a
 disposable test installation/VM and named test runtimes for lifecycle changes.
 
-MicroG/SmartDock/Magisk installers, arbitrary macro scripting and unlimited
-relative FPS mouse capture remain separate feature scope, not completion gates
-for these five agreed recommendations. Publishing a release or merging remains
-outside this branch's delivery.
+MicroG/SmartDock/Magisk installers and arbitrary macro scripting remain separate
+feature scope. Relative FPS camera control was outside the original five-feature
+delivery and is now explicitly requested in the keymap-editor follow-up.
+Publishing a release or merging remains outside this branch's delivery.
 
 ### Completion execution — 2026-10-17
 
@@ -829,3 +836,210 @@ physical desktop/Default input matrix, full graphical editor Save/Cancel and
 resize/replacement behavior, actual graphical managed ARM provider changes,
 representative games/Wi-Fi-only/scoped-storage apps and online Google account
 checks. AppImage remains deferred; no merge or published release is made.
+
+### Keymap editor priority — 2026-10-18
+
+The user requests an editor that supports games accepting only finger input,
+movement activated by dragging and holding a joystick, and mouse-driven camera
+swipes. This is the current implementation priority on this development branch.
+Extend the existing native editor and per-runtime/per-app profile; do not add
+another Runtime Settings panel. Checked items have implementation and focused
+verification; composite live/gameplay gates stay open until all their scenarios
+are observed. AppImage remains deferred.
+
+#### Gaps observed before implementation
+
+- Ordinary pointer packets in `native/bridge/scrcpy-mapping.inc` use
+  `POINTER_ID_MOUSE`. The existing per-app Fake Touch property changed the
+  observed source, but the Android probe still reported tool type MOUSE.
+  The numeric contact IDs used by `map_send()` provide the existing finger sink.
+- DPAD starts its contact at the displaced direction point, so it does not
+  establish a drag from the authored joystick center. Its normalized radius
+  also needs physical-aspect-ratio handling.
+- SWIPE always releases at its duration; its existing `hold` field does not
+  implement holding the endpoint until key release.
+- AIM/SKILL follow absolute pointer coordinates. Existing AIM's endpoint is a
+  separate fire position; it is not a camera boundary or relative FPS control.
+- The editor relies on F6–F9 for type, endpoint and timing changes. These
+  controls need visible authoring tools and direct manipulation.
+
+#### Required control behavior
+
+| Control in the existing editor | Required touch sequence and options |
+| --- | --- |
+| Mouse touch | At the pointer position: left press → finger DOWN, held motion → MOVE with the same ID, release → UP. Hover creates no contact. This supports taps and dragging without requiring the game to accept a mouse. |
+| Fixed tap/hold binding | A keyboard key or mouse button activates a chosen on-screen button. Choose a bounded tap or hold-until-release. A mouse button consumed here must not also activate Mouse touch. |
+| Movement joystick | First direction → DOWN at authored center → short configurable MOVE to the direction → hold. Direction changes move the same contact; final movement-key release → UP. Set center, radius and transition time visibly. |
+| Swipe | DOWN at start → timed MOVE to endpoint. Choose Release at end or Hold endpoint until binding release. Releasing the binding early terminates the gesture. |
+| Camera / Look | While activated, mouse deltas move a finger within an authored camera region. First deliver hold-to-look, then capability-gated toggle/capture for FPS. Set activation binding, region, X/Y sensitivity and invert Y. |
+
+Opposing movement keys return the joystick to neutral while retaining the
+contact until all movement keys are released. Normalize diagonals in physical
+task pixels so portrait/landscape dimensions do not stretch the movement circle.
+Do not reissue DOWN or lift the finger when changing direction.
+
+Camera movement must use displacement, not the absolute cursor position. When
+the finger reaches a camera-region edge, release it and start a new contact at
+the region center before applying further motion. Moving the same finger back
+to center would produce an unwanted reverse camera swipe. Lifting/restarting
+may still interrupt some games and needs representative gameplay acceptance.
+Retain existing absolute Aim/Skill behavior as separately named controls.
+
+Fire is an independent finger at its authored button. Movement, camera and
+fire must coexist, using the same bounded ten-contact allocator without ID
+collisions. Define explicit routing: active fixed mouse bindings take their
+assigned buttons; free pointer touches and camera activation take only remaining
+events. Reject conflicting bindings in the editor, consume both press/release
+halves, and suppress original mouse delivery when touch mode owns the event.
+
+#### Delivery order and work allocation
+
+Use `gpt-6.1-sol` for delegated work. Only one owner edits each shared file at a
+time; agents propose contracts before integration and do not commit separately.
+
+| Stage | Owner | Deliverable and gate |
+| --- | --- | --- |
+| 1. Profile contract | Primary + controls agent | Define explicit input-source, gesture-end and camera fields in a versioned extension; agree parser/model/runtime contracts before edits. |
+| 2. Mouse touch and visible basics | Controls agent; primary integrates editor | Real finger click/drag, keyboard/mouse fixed bindings, visible type selection and binding controls. Demonstrate Android finger events without duplicate mouse events. |
+| 3. Movement and swipe hold | Controls agent; primary integrates inspector | Center-first joystick, physical circular radius, continuous direction changes, explicit endpoint-hold option, draggable center/endpoint/radius handles. |
+| 4. Camera hold-to-look | Controls agent; compatibility agent reviews | Relative deltas, visible camera-region/sensitivity controls, independent fire, edge restart and complete cancellation. Preserve existing Aim/Skill profiles. |
+| 5. FPS capture/toggle | Controls agent; primary owns protocol integration | Bind relative-pointer and pointer-constraints in the bridge, verify backend capabilities and capture acknowledgment, hide/confine cursor only during active capture, expose a release shortcut. |
+| 6. Acceptance and delivery | Controls-acceptance agent + primary | Native/parser/frontend tests, isolated Android X11/Wayland evidence, graphical editor lifecycle, representative games, then package smoke, commit and push the development branch. |
+
+Each behavior ships with its editor controls and focused tests; do not postpone
+all UI work until after input implementation. The primary agent owns shared
+profile inventory/service/frontend changes, reviewing the native contract with
+the controls owner. Acceptance work uses separate harness/probe files.
+
+#### Profile and editor requirements
+
+- [x] Read V1/V2 unchanged; introduce explicit versioned fields for new behavior
+  rather than repurposing legacy `hold`, endpoint or timing values. Preserve
+  old swipe release behavior and existing absolute Aim/fire semantics. Document
+  the joystick center-first correction and keep saved geometry intact.
+- [x] Upgrade only on an explicit successful Save. Never rewrite a loaded
+  profile automatically. Validate the new version consistently in the native
+  reader/writer, `services/runtime-keymap.py` and frontend inventory. Bound row
+  and file sizes for all 64 controls; reject unsupported/malformed data clearly
+  without truncation, losing fields or replacing a good saved profile.
+- [x] Provide a visible control palette and selected-control inspector for
+  binding, tap/hold mode, center/endpoint, joystick radius, swipe timing, camera
+  region and sensitivity. Show drag handles for the selected control and a
+  readable binding label. Shortcuts remain optional conveniences.
+- [x] Keep editing, saved profile, marker visibility and gameplay activation
+  distinct. Provide clear Save/Cancel behavior, dirty/error feedback, conflict
+  messages, and usable layouts at the existing supported window sizes.
+- [x] Explain the difference between compatibility Fake Touch and this editor's
+  actual finger input in the existing UI/help. Do not add a duplicate setting
+  or promise that the compatibility property alone fixes mouse-only rejection.
+
+#### Verification gates
+
+- [x] Native sequence tests: mouse click/drag, no hover contact, no duplicate
+  raw mouse delivery, joystick center DOWN preceding MOVE, diagonal/opposing
+  keys, direction changes without contact replacement, release at any point,
+  both swipe end modes, timing limits and exhausted contact pool.
+- [x] Native camera tests: delta direction/sensitivity/invert Y, region bounds, edge
+  UP then center DOWN without a reverse MOVE, distinct fire contact surviving
+  camera restart, hold/toggle behavior and unsupported/denied capture. Do not
+  claim unlimited movement when capture/relative motion is unavailable.
+- [x] Native lifecycle tests: focus loss, editor entry, playback off, resize/rotation,
+  task/package replacement, runtime disconnect and capture-release shortcut
+  release every contact/timer/capture. Consume stale button/key releases;
+  require fresh input after refocus, with toggle capture remaining off.
+- [ ] Actual Android probe on managed X11 and Wayland observes
+  SOURCE_TOUCHSCREEN and TOOL_TYPE_FINGER, correct coordinates/IDs and exact
+  gesture order. Exercise joystick + camera + fire simultaneously and profile
+  isolation across concurrent app windows/runtimes. Report supported Default
+  combinations separately; earlier 13/13 results do not cover these additions.
+- [ ] Drive the graphical editor: add/select/rebind/drag/delete, invalid/conflict
+  states, Save/reload/Cancel, marker visibility and window resizing. Round-trip
+  old and new profiles through native persistence and GUI inventory.
+- [ ] Test representative games: a game rejecting mouse input, a drag-to-start
+  joystick game, and a camera-swiping FPS/MOBA. Record games/builds/backends and
+  known limits. Diagnostic MotionEvents establish delivery, not game feel or
+  compatibility; user game names can refine this matrix without blocking work.
+- [x] Keep live tests inside the maintained disposable namespace fixtures;
+  preserve the personal Default/runtime, desktop session and RustDesk. Complete
+  focused regressions and final Debian/Arch package smoke after integration.
+
+Exit: users can author and save these gestures from the existing editor without
+memorizing F6–F9, games receive real finger sequences, simultaneous movement/
+camera/fire works, and no held contact or mouse capture survives cancellation.
+Unverified game/backend combinations remain explicitly open.
+
+#### Implemented editor and input behavior
+
+The existing native editor now provides explicit Key/Mouse binding capture,
+visible type/property pages and draggable center, endpoint, radius and Look
+region handles. Mouse touch emits actual finger click/drag sequences; fixed
+keyboard/mouse bindings take precedence over free pointer touches. WASD starts
+at the authored center, uses a physical circular radius and configurable ramp,
+and retains one contact across direction changes. Swipe can hold its endpoint.
+Look uses relative deltas, independent fire and an edge lift/new-center contact;
+FPS capture requires compositor capabilities and an acknowledged lock. Escape,
+blur and the existing lifecycle guards release contacts and capture.
+
+Profiles use bounded nineteen-field V3 rows across native storage, controller
+inventory and the existing GUI library. V1/V2 remain readable without an
+automatic rewrite; explicit Save migrates them. Inventory framing uses byte
+lengths so profile content cannot forge another inventory record. No duplicate
+Runtime Settings panel was added.
+
+Actual acceptance exposed and fixed three lifecycle faults: letterboxed
+key-flash repaint used raw geometry and canceled a held joystick; a key released
+outside focus could remain latched; and bridge-owned editor/chrome surfaces
+did not resolve to their app for keyboard binding. Native listener regressions
+now cover those paths, including valid/invalid focus snapshots and transfers
+between app-owned child surfaces. Mouse release is also drained during editor
+or chrome suppression, and explicitly selecting Release on a legacy Basic
+control initializes its bounded tap duration.
+
+#### Keymap verification and delivery — 2026-10-18
+
+The final Debian payload passed **25/25 actual Android scenarios on each of
+managed Wayland and native X11**, using separate disposable Android 13 Vanilla
+instances. The added cases observe real finger click/drag, fixed-button routing,
+center-first movement, held swipe endpoints, Look edge restart and three
+simultaneous joystick/camera/fire contacts. Real editor clicks author and bind a
+control, Save/reload it, change a rendered property and Cancel while retaining
+exact saved bytes and fresh playback.
+
+FPS capture is verified separately for each route: nested Wayland protocol
+traces correlate the scoped app root and child surface, acknowledged lock,
+relative events, suppressed absolute client motion and restored motion after
+release. Native X11 verifies physical pointer confinement. Both observe
+independent fire, Escape cancellation and fresh activation after blur/refocus.
+The outer X11 pointer of nested Weston may move during a Wayland lock; it is
+reported separately. Capture tests use finite deltas and do not certify
+unlimited sustained movement.
+
+| Final input result | Evidence | Cleanup |
+| --- | --- | --- |
+| Wayland 25/25 | [summary](../target/keymap-v3-verification/controls-wayland-v3-final/summary.json) | [stopped fixture](../target/keymap-v3-verification/retired-fixtures/anvil-live-kv3-wl-v4.json) |
+| X11 25/25 | [summary](../target/keymap-v3-verification/controls-x11-v3/summary.json) | [stopped fixture](../target/keymap-v3-verification/retired-fixtures/anvil-live-kv3-x11-v3.json) |
+
+Final-source verification passes **266 Python tests, 327 frontend cases,
+42 dedicated frontend cases and 11 native suites**. Android clang's production
+build passes `-Wall -Wextra -Werror`; focused native suites pass ASan/UBSan.
+Both packages pass extracted source/native payload parity, CLI/image tools,
+isolated controller IPC and a private UID1000 GUI first frame. Evidence is in
+`target/keymap-v3-verification/`: `regressions-final-protocol.log`,
+`worker-final.log`, `build-native-owner.log`, `sanitizer-owner.log` and
+`packages-smoke-owner.log`. Earlier failed attempts remain available alongside
+the passing evidence.
+
+| Artifact in `target/releases/keymap-editor-20261018/` | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `anvildroid-controller_0.1.3_amd64.deb` | 26,263,732 | `0a5896286b74ed5e5387d8e5fdd17eaf4d3f59c608f565b84ef7287a9e6deb19` |
+| `anvildroid-controller-0.1.3-1-x86_64.pkg.tar.zst` | 26,072,237 | `2ea7cb3e5cdece5750e0d4082707e7f1177033767d756edbec28793593673fa2` |
+
+All test runtimes reached `Stopped`, complete cleanup and empty scopes, with
+no owned processes or host mounts, before removing their disposable stores.
+No package was installed over personal services, and no physical Arch-host
+deployment is claimed for this editor build. The composite Android and editor
+gates above remain open for concurrent app/runtime isolation and the full live
+drag/delete/conflict/resize/rotation/replacement matrix. Physical GNOME/KDE/
+Default input, representative mouse-rejecting/joystick/FPS/MOBA games, ARM game
+compatibility, tuning and latency under load remain manual acceptance gates.
+AppImage remains deferred; this delivery does not merge or publish a release.

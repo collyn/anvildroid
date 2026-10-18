@@ -15,6 +15,8 @@ static void enter(void*d,struct proxy*p,uint32_t s,struct proxy*w,int32_t x,int3
 static void leave(void*d,struct proxy*p,uint32_t s,struct proxy*w){(void)d;(void)p;(void)s;(void)w;}
 static void motion(void*d,struct proxy*p,uint32_t t,int32_t x,int32_t y){(void)d;(void)p;(void)t;(void)x;(void)y;++forwarded;}
 static void button(void*d,struct proxy*p,uint32_t s,uint32_t t,uint32_t b,uint32_t state){(void)d;(void)p;(void)s;(void)t;(void)b;(void)state;++forwarded;}
+static void keyboard_enter(void *d,struct proxy *p,uint32_t serial,struct proxy *surface,void *keys){(void)d;(void)p;(void)serial;(void)surface;(void)keys;}
+static void keyboard_leave(void *d,struct proxy *p,uint32_t serial,struct proxy *surface){(void)d;(void)p;(void)serial;(void)surface;}
 int main(void){
   real_marshal=marshal;real_destroy=destroy;get_version=version;
   struct object s={.p=&app,.app=1,.app_id="com.android.settings"},pointer={0};
@@ -29,11 +31,23 @@ int main(void){
   csd_pointer_button(&pointer,0,3,2,0x110,1);csd_pointer_button(&pointer,0,4,2,0x110,0);
   assert(!forwarded&&!destroyed);
   assert(keymap_add(&s.overlay->model,200,200,800,600));
-  void(*keyboard_callbacks[])(void)={0,0,0,(void(*)(void))button,0,0};
+  void(*keyboard_callbacks[])(void)={0,(void(*)(void))keyboard_enter,(void(*)(void))keyboard_leave,(void(*)(void))button,0,0};
   struct object keyboard={.keyboard_focus=&s,.listener=keyboard_callbacks};
   pointer.next=&keyboard;
+  assert(!find(&overlay)&&keymap_owner(&overlay)==&s);
+  keymap_kleave(&keyboard,0,4,&app);
+  struct {size_t size,alloc;void *data;} empty_keys={0,0,0};
+  keymap_kenter(&keyboard,0,5,&overlay,&empty_keys);
+  assert(keyboard.keyboard_focus==&s&&!keyboard.keyboard_leave_pending);
+  keymap_key(&keyboard,0,5,5,31,1);
+  assert(!s.overlay->model.points[0].key); /* selecting/placing never arms binding */
+  struct keymap_layout binding_layout=keymap_layout(800,600,0);
+  pointer.csd_x=binding_layout.properties[4].x+2;pointer.csd_y=binding_layout.properties[4].y+2;
+  csd_pointer_button(&pointer,0,5,5,272,1);csd_pointer_button(&pointer,0,5,5,272,0);
+  assert(s.overlay->binding_capture==1);
   keymap_key(&keyboard,0,5,5,30,1);
-  assert(s.overlay->model.points[0].key==30&&!forwarded);
+  assert(s.overlay->model.points[0].key==30&&!s.overlay->binding_capture&&!forwarded);
+  pointer.csd_x=pointer.csd_y=200;
   keymap_key(&keyboard,0,5,5,64,1); /* author WASD */
   assert(s.overlay->model.points[0].kind==KEYMAP_DPAD&&s.overlay->model.points[0].key==17);
   assert(!keymap_assign(&s.overlay->model,30)); /* WASD's trigger is fixed W */

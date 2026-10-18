@@ -12,6 +12,7 @@ class KeymapTests(unittest.TestCase):
     def test_inventory_scope_and_validation(self):
         good='BEGIN\nANVIL_KEYMAP 1 r-one com.game.test 2\n30 100 200 0\n57 65535 0 1\nEND\n'
         report=worker.parse_keymaps(good,'r-one')
+        self.assertEqual(report['profiles'][0]['bindings'][0]['kind'],'hold')
         self.assertEqual(report['profiles'][0]['bindings'][1]['kind'],'hold')
         self.assertEqual(report['invalid_count'],0)
         self.assertEqual(worker.parse_keymaps(good,'r-two')['invalid_count'],1)
@@ -34,6 +35,64 @@ class KeymapTests(unittest.TestCase):
         conflict=header.replace(' 1\n',' 2\n')+'17 0 0 0 1 0 0 250 3\n30 0 0 0 0 0 0 0 0\nEND\n'
         self.assertEqual(worker.parse_keymaps(conflict,'r-one')['invalid_count'],1)
 
+    def test_v3_sources_regions_and_conflicts(self):
+        def profile(rows):
+            return 'BEGIN\nANVIL_KEYMAP 3 r-one com.game.test '+str(len(rows))+'\n'+'\n'.join(rows)+'\nEND\n'
+        look='273 32768 32768 0 8 49152 32768 250 3 1 0 0 0 8192 8192 100 150 1 1'
+        pointer='0 0 0 0 7 0 0 250 3 2 0 0 0 0 0 0 0 0 0'
+        basic='273 100 200 0 0 0 0 50 3 0 1 0 0 0 0 0 0 0 0'
+        report=worker.parse_keymaps(profile([look,pointer,basic]),'r-one')
+        self.assertEqual(report['invalid_count'],0)
+        binding=report['profiles'][0]['bindings'][0]
+        self.assertEqual((binding['input_source'],binding['activation'],binding['sensitivity_y']),('mouse','capture',150))
+        self.assertEqual(report['profiles'][0]['bindings'][2]['kind'],'tap')
+        # The explicit mode is authoritative even if an imported hold bit
+        # disagrees. Inventory labels must match native playback/editor.
+        for bit,end,label in ((1,1,'tap'),(0,2,'hold'),(0,0,'hold')):
+            fields=basic.split();fields[3]=str(bit);fields[10]=str(end)
+            item=worker.parse_keymaps(profile([' '.join(fields)]),'r-one')['profiles'][0]['bindings'][0]
+            self.assertEqual(item['kind'],label)
+        for rows in ([look,look],[pointer,pointer],[look.replace('8192 8192','32767 32767').replace('32768 32768','0 0')],
+                     [look.replace('100 150','9 150')],[pointer.replace(' 2 0 0 0',' 0 0 0 0')],
+                     [look.replace('273 ','277 ',1)],[look+' 0'],[look.replace(' 1 1',' 2 1')]):
+            self.assertEqual(worker.parse_keymaps(profile(rows),'r-one')['invalid_count'],1,rows)
+        aim='17 0 0 0 6 0 0 250 3 0 0 0 0 0 0 0 0 0 0'
+        self.assertEqual(worker.parse_keymaps(profile([aim,look.replace('273 ','272 ',1)]),'r-one')['invalid_count'],1)
+
+    def test_inventory_limits_and_running_read_detects_oversize(self):
+        oversized='BEGIN\nANVIL_KEYMAP 1 r-one com.game.test 0\n'+' '*16384+'\nEND\n'
+        self.assertEqual(worker.parse_keymaps(oversized,'r-one')['invalid_count'],1)
+        with self.assertRaisesRegex(RuntimeError,'inventory exceeds limit'):
+            worker.parse_keymaps('x'*(3*1024*1024+1),'r-one')
+        with patch.object(worker.keymap.linux,'run_bounded',return_value='') as run:
+            worker.keymap.keymap_profiles('/lxc','container','r-one')
+        self.assertIn('head -c 16385',run.call_args.args[-1])
+        self.assertEqual(run.call_args.kwargs['output_limit'],3*1024*1024)
+
+    def test_strict_decimal_lexer_and_trusted_file_framing(self):
+        good='ANVIL_KEYMAP 1 default com.game.test 1\n30 100 200 0\n'
+        def framed(payload): return 'SIZE '+str(len(payload.encode()))+'\n'+payload+'\n'
+        for token in ('+30','3_0','３０','-30'):
+            malformed=good.replace('30 100',token+' 100')
+            self.assertEqual(worker.keymap.parse_keymap_frames(framed(malformed),'default')['invalid_count'],1)
+        for count in ('+1','0_1','１'):
+            malformed=good.replace('test 1','test '+count)
+            self.assertEqual(worker.keymap.parse_keymap_frames(framed(malformed),'default')['invalid_count'],1)
+        injected='garbage\nEND\nBEGIN\n'+good
+        self.assertEqual(worker.keymap.parse_keymap_frames(framed(injected),'default')['profiles'],[])
+        oversized=(good+' '*16385)[:16385]
+        self.assertEqual(worker.keymap.parse_keymap_frames('SIZE 20000\n'+oversized+'\n','default')['profiles'],[])
+        with self.assertRaisesRegex(RuntimeError,'frame'):
+            worker.keymap.parse_keymap_frames('SIZE 99\n'+good+'\n','default')
+        with tempfile.TemporaryDirectory() as temporary:
+            folder=Path(temporary)/'waydroid_tmp/anvildroid/keymaps';folder.mkdir(parents=True)
+            (folder/'injected').write_text(injected)
+            fd=os.open(temporary,os.O_RDONLY|os.O_DIRECTORY)
+            try:
+                result=worker.keymap.keymap_profiles_at(fd,'default')
+                self.assertEqual(result['profiles'],[]);self.assertEqual(result['invalid_count'],1)
+            finally: os.close(fd)
+
     def test_saved_empty_profile_remains_visible_and_editable(self):
         report = worker.parse_keymaps('BEGIN\nANVIL_KEYMAP 1 default com.android.settings 0\nEND\n', 'default')
         self.assertEqual(report['profiles'][0]['package'], 'com.android.settings')
@@ -47,7 +106,7 @@ class KeymapTests(unittest.TestCase):
             good = 'ANVIL_KEYMAP 1 default com.game.test 1\n30 100 200 0\n'
             (folder / 'com.game.test').write_text(good)
             (folder / 'wrong.scope').write_text(good.replace('default', 'r-other'))
-            (folder / 'oversized').write_bytes(b'x' * 4097)
+            (folder / 'oversized').write_bytes(b'x' * 16385)
             (folder / 'invalid.utf8').write_bytes(b'\xff\n')
             (folder / 'symlink').symlink_to(folder / 'com.game.test')
             os.mkfifo(folder / 'fifo')

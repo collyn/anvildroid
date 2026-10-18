@@ -105,3 +105,24 @@ test('Advanced runtime profiles validate and show truthful type and bounded para
   states.profiles.set('default',conflict);await api.refresh();
   assert.doesNotMatch(el('keymap-saved-list').textContent,/com.bad.advanced/);
 });
+
+test('V3 sources display mouse, pointer and look settings and reject invalid regions',async()=>{
+  const {api,el,states}=setup();
+  const binding=(kind,input_source,evdev)=>({kind,input_source,evdev,nx:32768,ny:32768,end_nx:49152,end_ny:32768,
+    duration_ms:250,repeat_count:3,end_mode:'release',radius:8192,ramp_ms:80,look_width:8192,look_height:8192,
+    sensitivity_x:100,sensitivity_y:150,invert_y:1,activation:'capture'});
+  const good=report('default');good.profiles[0].bindings=[binding('look','mouse',273),binding('mouse_touch','pointer',0),binding('tap','keyboard',273)];
+  states.profiles.set('default',good);await api.refresh();
+  const chips=descendants(el('keymap-saved-list'),'kbd');
+  assert.deepEqual(chips.map(c=>c.textContent),['Mouse right','Pointer','Key 273']);
+  assert.match(chips[0].title,/Look · mouse · release.*region ±8192, ±8192.*100%.*inverted Y · capture/);
+  for(const mutate of [b=>b.input_source='invalid',b=>b.evdev=277,b=>b.look_width=32768,b=>b.nx=0,
+    b=>b.sensitivity_y=9,b=>b.invert_y=2,b=>b.activation='invalid',b=>b.radius=255,b=>b.ramp_ms=1001]){
+    const bad=report('default','com.bad.vthree');bad.profiles[0].bindings=[binding('look','mouse',273)];
+    mutate(bad.profiles[0].bindings[0]);states.profiles.set('default',bad);await api.refresh();
+    assert.doesNotMatch(el('keymap-saved-list').textContent,/com.bad.vthree/);
+    assert.match(el('keymap-saved-list').textContent,/com.test.game/);
+  }
+  const duplicate=report('default','com.bad.duplicate');duplicate.profiles[0].bindings=[binding('look','mouse',273),binding('look','keyboard',17)];
+  states.profiles.set('default',duplicate);await api.refresh();assert.doesNotMatch(el('keymap-saved-list').textContent,/com.bad.duplicate/);
+});

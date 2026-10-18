@@ -64,12 +64,12 @@ int main(void) {
   assert(last[1]==3&&map_count==0);
   int before=packets;h.task=6;
   assert(scrcpy_mapping_key(&s,&h,30,1)==1&&packets==before);
-  h.task=5;map_fd=-1;unavailable=1;
+  scrcpy_mapping_key(&s,&h,30,0);h.task=5;map_fd=-1;unavailable=1;
   assert(scrcpy_mapping_key(&s,&h,30,1)==1&&packets==before&&map_count==0);
   assert(scrcpy_mapping_key(&s,&h,31,1)==0);
   /* Full UI retains the Waydroid host identity, but injects into its app
    * task in Android coordinates, independent of host fit/letterboxing. */
-  unavailable=0;map_fd=-1;
+  scrcpy_mapping_key(&s,&h,30,0);unavailable=0;map_fd=-1;
   s.app=0;s.full_ui=1;s.app_id="Waydroid";
   s.full_canvas_w=1984;s.full_canvas_h=1164;s.full_w=992;s.full_h=700;
   tasks[1]=(struct task){.id=1,.package="com.android.launcher3",.width=1984,.height=1164};
@@ -124,6 +124,25 @@ int main(void) {
   assert(keyboard.keymap_blocked_keys[1]==16);
   assert(absolute_pointer_button(&pointer,0x110,1)&&map_count==2);
   assert(absolute_pointer_button(&pointer,0x110,0)&&map_count==1);
+  /* Bridge-created chrome and hint surfaces are not in objects, but keep
+   * their app keyboard owner and must not cancel a held control on transfer. */
+  struct proxy header_proxy={0},menu_proxy={0},frame_bar_proxy={0},fit_bar_proxy={0},hint_proxy={0};
+  struct csd_frame owned_frame={0};struct game_fit_state owned_fit={0};
+  owned_frame.pieces[0].surface=&header_proxy;owned_frame.menu.surface=&menu_proxy;
+  owned_frame.bars[0].surface=&frame_bar_proxy;owned_fit.bars[0].surface=&fit_bar_proxy;
+  s.csd=&owned_frame;s.fit=&owned_fit;aim.piece.surface=&hint_proxy;
+  struct proxy *owned_surfaces[]={&header_proxy,&menu_proxy,&frame_bar_proxy,&fit_bar_proxy,&hint_proxy};
+  struct proxy *previous=&child;
+  for(unsigned i=0;i<sizeof(owned_surfaces)/sizeof(owned_surfaces[0]);++i){
+    assert(!find(owned_surfaces[i])&&keymap_owner(owned_surfaces[i])==&s);
+    keymap_kleave(&keyboard,0,2,previous);
+    keymap_kenter(&keyboard,0,2,owned_surfaces[i],0);
+    keymap_finish_keyboard_leaves(0);
+    assert(keyboard.keyboard_focus==&s&&map_count==1&&map_held[36]);previous=owned_surfaces[i];
+  }
+  keymap_kleave(&keyboard,0,2,previous);keymap_kenter(&keyboard,0,2,&child,0);
+  assert(map_count==1);s.csd=0;s.fit=0;aim.piece.surface=0;
+  assert(!keymap_owner(&header_proxy)&&!keymap_owner(&fit_bar_proxy)&&!keymap_owner(0));
   /* A genuine leave is finalized at the dispatch boundary, only for the
    * dispatched connection. Same-package replacement objects are not owners. */
   keymap_kleave(&keyboard,0,3,&child);
@@ -134,12 +153,15 @@ int main(void) {
   struct proxy replacement_proxy={0};
   struct object replacement={.p=&replacement_proxy,.app=1,.app_id="org.test"};
   keyboard.keyboard_focus=&s;
+  before=packets;scrcpy_mapping_key(&s,&aim,36,1);assert(!map_count&&packets==before);
+  scrcpy_mapping_key(&s,&aim,36,0);
   assert(scrcpy_mapping_key(&s,&aim,36,1)&&map_count==1);
   keyboard.next=&replacement;
   keymap_kleave(&keyboard,0,4,&root);
   keymap_kenter(&keyboard,0,5,&replacement_proxy,0);
   assert(keyboard.keyboard_focus==&replacement&&!map_count);
   keyboard.next=0;keyboard.keyboard_focus=&s;
+  scrcpy_mapping_key(&s,&aim,36,0);
   assert(scrcpy_mapping_key(&s,&aim,36,1)&&map_count==1);
   keymap_kleave(&keyboard,0,6,&root);
   uint32_t held_key=36;
@@ -151,6 +173,35 @@ int main(void) {
   keymap_key(&keyboard,0,9,0,36,0);assert(!map_count&&!keyboard.keymap_blocked_keys[1]);
   keymap_key(&keyboard,0,10,0,36,1);assert(map_count==1);
   keymap_key(&keyboard,0,11,0,36,0);assert(!map_count);
+  /* Key-up while another client has focus is not delivered here. A valid
+   * empty enter snapshot proves release and admits the first fresh press. */
+  struct { size_t size,alloc;void *data; } empty_keys={0,0,0};
+  keyboard.keyboard_focus=&s;
+  assert(scrcpy_mapping_key(&s,&aim,36,1)&&map_count==1);
+  keymap_kleave(&keyboard,0,12,&root);keymap_finish_keyboard_leaves(0);
+  assert(!map_count&&map_held[36]);
+  keymap_kenter(&keyboard,0,13,&root,&empty_keys);assert(!map_held[36]);
+  keymap_key(&keyboard,0,14,0,36,1);assert(map_count==1);
+  /* Coalescing a same-owner child transfer must preserve the held registry. */
+  keymap_kleave(&keyboard,0,15,&root);keymap_kenter(&keyboard,0,16,&child,&empty_keys);
+  assert(map_count==1&&map_held[36]);
+  keymap_key(&keyboard,0,17,0,36,0);assert(!map_count);
+  /* Enter listing the activation key keeps it suppressed until physical UP. */
+  scrcpy_mapping_key(&s,&aim,36,1);keymap_kleave(&keyboard,0,18,&child);
+  keymap_finish_keyboard_leaves(0);keymap_kenter(&keyboard,0,19,&root,&held);
+  keymap_key(&keyboard,0,20,0,36,1);assert(!map_count&&map_held[36]);
+  keymap_key(&keyboard,0,21,0,36,0);keymap_key(&keyboard,0,22,0,36,1);assert(map_count==1);
+  keymap_key(&keyboard,0,23,0,36,0);
+  /* A malformed enter array cannot clear a previously held key. */
+  scrcpy_mapping_key(&s,&aim,36,1);keymap_kleave(&keyboard,0,24,&root);
+  keymap_finish_keyboard_leaves(0);
+  struct { size_t size,alloc;void *data; } invalid_keys={1,1,&held_key};
+  keymap_kenter(&keyboard,0,25,&root,&invalid_keys);assert(map_held[36]);
+  uint32_t invalid_key=768;invalid_keys.size=invalid_keys.alloc=sizeof(invalid_key);invalid_keys.data=&invalid_key;
+  keymap_kenter(&keyboard,0,25,&root,&invalid_keys);assert(map_held[36]);
+  keymap_key(&keyboard,0,26,0,36,1);assert(!map_count);
+  keymap_key(&keyboard,0,27,0,36,0);keymap_key(&keyboard,0,28,0,36,1);assert(map_count==1);
+  keymap_key(&keyboard,0,29,0,36,0);
   /* Unexpected button input between leave/enter must cancel, never fall
    * through to the legacy mouse sink; its matching release is consumed. */
   keyboard.keyboard_focus=&s;
@@ -161,10 +212,15 @@ int main(void) {
   assert(packets==before+1&&last[1]==3&&pointer.focus_blocked_button==0x110);
   before=packets;
   assert(absolute_pointer_button(&pointer,0x110,0)&&packets==before&&!pointer.focus_blocked_button);
-  /* Real pointer leave retains immediate cancellation, independent of the
-   * keyboard's pending-focus coalescing. */
+  /* A true pointer leave cancels by the dispatch boundary; physical key-up
+   * is required before a held key can start a fresh contact. */
+  scrcpy_mapping_key(&s,&aim,36,0);keyboard.keyboard_focus=&s;
   assert(scrcpy_mapping_key(&s,&aim,36,1)&&map_count==1);
-  absolute_pointer_leave(&pointer);assert(!map_count&&last[1]==3);
+  absolute_pointer_leave(&pointer);assert(map_count==1);
+  keyboard.next=&pointer;keymap_finish_pointer_leaves(0);keyboard.next=0;
+  assert(!map_count&&last[1]==3);
+  before=packets;scrcpy_mapping_key(&s,&aim,36,1);assert(!map_count&&packets==before);
+  scrcpy_mapping_key(&s,&aim,36,0);
   /* Nested dispatch must not finalize the outer batch's leave, whereas an
    * outer dispatch failure must finalize it before returning the error. */
   keyboard.keyboard_focus=&s;keyboard.display=(struct wl_display *)1;

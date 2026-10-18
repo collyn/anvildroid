@@ -94,6 +94,151 @@ class Safety(unittest.TestCase):
         for events in cases:
             with self.subTest(events=events),self.assertRaises(RuntimeError):probe.touch_events(events)
 
+    def test_v3_profile_preserves_contract_order_and_explicit_hold_mode(self):
+        row=probe.v3_point(key=19,kind=2,source=0,end_mode=2,duration=200)
+        self.assertEqual(len(row),19)
+        self.assertEqual(row[:5],(19,32000,32000,1,2))
+        self.assertEqual(row[7:11],(200,1,0,2))
+        profile=probe.v3_profile('r-fixture',[row])
+        self.assertTrue(profile.startswith('ANVIL_KEYMAP 3 r-fixture org.anvildroid.touchprobe 1\n'))
+        self.assertEqual(tuple(map(int,profile.splitlines()[1].split())),row)
+        for rows in ([],[(1,)*18],[(1,)*18+('2',)]):
+            with self.subTest(rows=rows),self.assertRaises(RuntimeError):probe.v3_profile('r-fixture',rows)
+        with self.assertRaises(RuntimeError):probe.v3_point(unrecognized=1)
+
+    def test_finger_samples_ignore_mapper_logs_and_preserve_pointer_identity(self):
+        rows=['AnvilKeymap: touch package=example action=0 pointer=1 xy=4,5',
+              'AnvilTouchProbe: 4 ACTION_DOWN source=0x1002 id=7(12.5,90.0) tool=FINGER(1) activeAfter=1',
+              'AnvilTouchProbe: 5 ACTION_MOVE source=0x1002 id=7(22.5,90.0) tool=FINGER(1) activeAfter=1']
+        self.assertEqual(probe.finger_samples(rows),[('DOWN',7,12.5,90.0),('MOVE',7,22.5,90.0)])
+
+    def test_look_rebase_accepts_clipped_move_then_lift_without_reverse_drag(self):
+        def row(action,x):
+            return f'AnvilTouchProbe: 1 ACTION_{action} id=0({x},90.0) tool=FINGER(1) activeAfter=1'
+        probe.assert_look_rebase([row('MOVE',80),row('UP',80),row('DOWN',50)],50,90)
+        probe.assert_look_rebase([row('UP',80),row('DOWN',50)],50,90)
+        for rows in ([row('MOVE',80),row('MOVE',50),row('UP',50),row('DOWN',50)],
+                     [row('UP',80),row('MOVE',50),row('DOWN',50)],
+                     [row('UP',80),row('DOWN',60)]):
+            with self.subTest(rows=rows),self.assertRaises(RuntimeError):probe.assert_look_rebase(rows,50,90)
+
+    def test_editor_click_targets_follow_compact_and_full_layout(self):
+        compact=probe.editor_targets(448,670)
+        self.assertEqual(compact['add'],(54,640))
+        self.assertEqual(compact['save'],(306,640))
+        self.assertEqual(compact['cancel'],(390,640))
+        self.assertEqual(compact['bind_key'],(56,47))
+        portrait=probe.editor_targets(464,824)
+        self.assertEqual(portrait['add'],(55,794))
+        self.assertEqual(portrait['save'],(316,794))
+        self.assertEqual(portrait['cancel'],(403,794))
+        self.assertEqual(portrait['bind_key'],(58,47))
+        full=probe.editor_targets(900,700)
+        self.assertEqual(full['add'],(768,148))
+        self.assertEqual(full['bind_key'],(715,383))
+        self.assertEqual(full['save'],(768,652))
+        self.assertEqual(full['cancel'],(870,30))
+        for dimensions in [(200,700),(448,300)]:
+            with self.assertRaises(RuntimeError):probe.editor_targets(*dimensions)
+
+    def test_editor_attachment_requires_exact_scoped_app_geometry(self):
+        row='AnvilKeymapOverlay: attached waydroid.anvildroid.r-fixture.org.anvildroid.touchprobe origin=0,0 size=448x670'
+        self.assertEqual(probe.editor_attachment([row],'r-fixture'),(0,0,448,670))
+        bare=row.replace('waydroid.anvildroid.r-fixture.','').replace('448x670','464x824')
+        self.assertEqual(probe.editor_attachment([bare],'r-fixture'),(0,0,464,824))
+        for bad in [bare.replace('touchprobe origin','touchprobe.evil origin'),
+                    bare.replace('touchprobe origin','other origin'),row.replace('r-fixture','r-other'),row.replace('origin=0,0','origin=-1,0'),row.replace('448x670','200x300')]:
+            with self.assertRaises(RuntimeError):probe.editor_attachment([bad],'r-fixture')
+
+    def test_capture_requires_both_actual_protocol_capabilities(self):
+        protocols={'zwp_relative_pointer_manager_v1':1,'zwp_pointer_constraints_v1':1}
+        probe.require_capture_protocols(protocols)
+        for bad in ({},{'zwp_relative_pointer_manager_v1':1},
+                    {**protocols,'zwp_pointer_constraints_v1':0},
+                    {**protocols,'zwp_pointer_constraints_v1':True}):
+            with self.subTest(protocols=bad),self.assertRaises(RuntimeError):probe.require_capture_protocols(bad)
+
+    def test_capture_relative_oracle_rejects_wrong_direction_or_axis(self):
+        def row(x,y):
+            return f'AnvilTouchProbe: 1 ACTION_MOVE id=0({x},{y}) tool=FINGER(1) activeAfter=1'
+        probe.require_relative_direction([row(108,90)],100,90)
+        for rows in ([],[row(100,90)],[row(92,90)],[row(108,98)]):
+            with self.subTest(rows=rows),self.assertRaises(RuntimeError):probe.require_relative_direction(rows,100,90)
+
+    def test_editor_recovery_accepts_timed_tap_before_keyup_or_hold_after_keyup(self):
+        down=self.event('DOWN',1);up=self.event('UP',0)
+        self.assertFalse(probe.gesture_complete([]))
+        self.assertFalse(probe.gesture_complete([down]))
+        # Timed tap terminal can already be in the keydown-stage snapshot.
+        keydown_stage=[down,up];keyup_stage=[]
+        self.assertTrue(probe.gesture_complete(keydown_stage+keyup_stage))
+        # Hold terminal arrives only in the keyup-stage snapshot.
+        keydown_stage=[down];keyup_stage=[up]
+        self.assertTrue(probe.gesture_complete(keydown_stage+keyup_stage))
+        with self.assertRaises(RuntimeError):probe.gesture_complete([down,down,up])
+
+    def test_editor_frame_accepts_raw_and_centered_fitted_content(self):
+        for nested,host in [(True,(464,824)),(False,(474,862))]:
+            expected=(0,0) if nested else (5,33)
+            for geometry in [(0,0,464,824),(0,47,464,729),(0,48,464,729),(52,0,360,824)]:
+                with self.subTest(nested=nested,geometry=geometry):
+                    self.assertEqual(probe.editor_frame(geometry,*host,nested),expected)
+            for geometry in [(-1,0,464,824),(0,0,465,824),(0,49,464,729),
+                             (10,47,444,729),(0,20,464,729),(53,0,360,824)]:
+                with self.subTest(nested=nested,geometry=geometry),self.assertRaises(RuntimeError):
+                    probe.editor_frame(geometry,*host,nested)
+        # Native host dimensions must still accommodate fixed CSD extents;
+        # treating the fitted size as a new arbitrary frame is rejected.
+        with self.assertRaises(RuntimeError):probe.editor_frame((0,47,464,729),464,824,False)
+
+    def test_independent_focus_setup_release_must_not_deliver_mapped_contact(self):
+        probe.require_no_mapped_contact(['AnvilKeymapOverlay: attached app origin=0,0 size=448x704'],'setup')
+        probe.require_no_mapped_contact([self.event('UP',0,source='0x2002',tool='MOUSE(3)')],'setup')
+        for rows in ([self.event('UP',0)],[self.event('DOWN',1)],
+                     ['AnvilKeymap: touch package=org.anvildroid.touchprobe action=1 pointer=0 xy=1,2']):
+            with self.subTest(rows=rows),self.assertRaises(RuntimeError):probe.require_no_mapped_contact(rows,'setup')
+
+    def capture_trace(self):
+        prefix='[2026-10-18 16:59:53.906][proto] client 0xabc (PID 204) '
+        return '\n'.join(prefix+event for event in [
+            'rq zwp_relative_pointer_manager_v1@8.get_relative_pointer(new id zwp_relative_pointer_v1@66, wl_pointer@3)',
+            'rq zwp_pointer_constraints_v1@9.lock_pointer(new id zwp_locked_pointer_v1@30, wl_surface@53, wl_pointer@3, nil, 1)',
+            'ev zwp_locked_pointer_v1@30.locked()',
+            'ev zwp_relative_pointer_v1@66.relative_motion(1, 2, 8.000000, 0.000000, 8.000000, 0.000000)',
+            'rq zwp_locked_pointer_v1@30.destroy()',
+            'ev zwp_locked_pointer_v1@30.unlocked()',
+            'ev wl_pointer@3.motion(10, 225.000000, 332.000000)'])
+
+    def test_capture_trace_proves_scoped_grant_relative_suppression_and_restore(self):
+        trace=self.capture_trace()
+        witness=probe.capture_protocol_witness(trace,53)
+        self.assertEqual(witness['client'],'0xabc')
+        self.assertEqual(witness['pointer_id'],3)
+        self.assertTrue(witness['absolute_motion_suppressed'])
+        self.assertTrue(witness['absolute_motion_restored'])
+        # Unrelated clients and pointer resources can move during this lock.
+        unrelated='[proto] client 0xdef (PID 66) ev wl_pointer@3.motion(1, 2, 3)\n'
+        rows=trace.splitlines();rows.insert(4,unrelated.strip())
+        self.assertTrue(probe.capture_protocol_witness('\n'.join(rows),53))
+        child='[proto] client 0xabc (PID 204) rq wl_subcompositor@2.get_subsurface(new id wl_subsurface@8, wl_surface@53, wl_surface@56)'
+        witness=probe.capture_protocol_witness(child+'\n'+trace,56)
+        self.assertEqual(witness['locked_surface_ancestry'],[53,56])
+        with self.assertRaises(RuntimeError):probe.capture_protocol_witness(trace,56)
+        with self.assertRaises(RuntimeError):probe.capture_protocol_witness(child.replace('0xabc','0xdef')+'\n'+trace,56)
+
+    def test_capture_trace_rejects_false_grants_motion_leaks_and_missing_restore(self):
+        trace=self.capture_trace()
+        cases=[trace.replace('wl_surface@53','wl_surface@54'),
+               trace.replace('ev zwp_locked_pointer_v1@30.locked()','ev zwp_locked_pointer_v1@31.locked()'),
+               trace.replace('ev zwp_relative_pointer_v1@66.relative_motion','ev zwp_relative_pointer_v1@67.relative_motion'),
+               trace.replace('rq zwp_locked_pointer_v1@30.destroy()',
+                             'ev wl_pointer@3.motion(1, 2, 3)\n[proto] client 0xabc (PID 204) rq zwp_locked_pointer_v1@30.destroy()'),
+               trace.replace('ev wl_pointer@3.motion','ev wl_pointer@4.motion'),
+               trace.replace('client 0xabc (PID 204) ev zwp_locked_pointer_v1@30.locked()',
+                             'client 0xdef (PID 204) ev zwp_locked_pointer_v1@30.locked()')]
+        for bad in cases:
+            with self.subTest(trace=bad),self.assertRaises(RuntimeError):probe.capture_protocol_witness(bad,53)
+
     def test_display_cleanup_is_reverse_order_and_bounded(self):
         events=[]
         class Child:

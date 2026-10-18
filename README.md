@@ -52,9 +52,10 @@ compatibility across custom images, desktops and games is still being developed.
   reset and rollback. Image support and app behavior still need live validation.
 - Explicit shared folders for managed runtimes and integrated Default, with read-only or read/write
   mounts activated at the next start. See [folder sharing](docs/SHARED-FOLDERS.md).
-- Advanced native game controls: WASD joystick, swipe, repeated clicks, pointer
-  skill casting, finite two-point macros and bounded absolute aim/fire. The
-  editor preserves V1 profiles; see [controls and limits](docs/GAME-CONTROLS.md).
+- Native game controls: Mouse touch, fixed keyboard/mouse bindings, WASD joystick,
+  swipe, repeated clicks, skill casting, finite macros, aim/fire and Look with
+  optional FPS capture. The editor preserves older profiles until Save;
+  see [authoring controls and limits](docs/GAME-CONTROLS.md).
 - Runtime ARM translation settings show version, checksum, requirements and cache
   status alongside the existing installer. Google Play keeps its image-creation
   workflow. See [runtime settings](docs/RUNTIME-TOOLS.md).

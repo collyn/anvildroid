@@ -8,6 +8,8 @@
 #include <string.h>
 static int packets, unavailable, packet_size;
 static unsigned char last[32];
+static unsigned char sequence[4096][32];
+static int sequence_count;
 int __android_log_print(int l,const char*t,const char*f,...){(void)l;(void)t;(void)f;return 0;}
 int __system_property_get(const char *key,char *value) {
   return snprintf(value,128,"%d",strstr(key,"width")?1984:1164);
@@ -28,7 +30,7 @@ long test_recv(int fd,void *data,size_t size,int flags) {
   (void)fd;(void)flags;assert(size==1);*(char*)data=0;return 1;
 }
 long test_send(int fd,const void *data,size_t size,int flags) {
-  (void)fd;(void)flags;assert(size==32||size==21);memcpy(last,data,size);packet_size=(int)size;++packets;return unavailable==2?(long)size-1:(long)size;
+  (void)fd;(void)flags;assert(size==32||size==21);memcpy(last,data,size);if(sequence_count<4096){memset(sequence[sequence_count],0,32);memcpy(sequence[sequence_count++],data,size);}packet_size=(int)size;++packets;return unavailable==2?(long)size-1:(long)size;
 }
 int main(void) {
   struct object s={.app=1,.has_bounds=1,.app_id="org.test"};objects=&s;
@@ -44,12 +46,12 @@ int main(void) {
   assert(last[1]==3&&map_count==0);
   int before=packets;h.task=6;
   assert(scrcpy_mapping_key(&s,&h,30,1)==1&&packets==before);
-  h.task=5;map_fd=-1;unavailable=1;
+  scrcpy_mapping_key(&s,&h,30,0);h.task=5;map_fd=-1;unavailable=1;
   assert(scrcpy_mapping_key(&s,&h,30,1)==1&&packets==before&&map_count==0);
   assert(scrcpy_mapping_key(&s,&h,31,1)==0);
   /* Full UI retains the Waydroid host identity, but injects into its app
    * task in Android coordinates, independent of host fit/letterboxing. */
-  unavailable=0;map_fd=-1;
+  scrcpy_mapping_key(&s,&h,30,0);unavailable=0;map_fd=-1;
   s.app=0;s.full_ui=1;s.app_id="Waydroid";
   s.full_canvas_w=1984;s.full_canvas_h=1164;s.full_w=992;s.full_h=700;
   tasks[1]=(struct task){.id=1,.package="com.android.launcher3",.width=1984,.height=1164};
@@ -66,7 +68,7 @@ int main(void) {
   s.full_ui=0;s.app=1;s.app_id="org.test";
   struct proxy root={0},child={0},sub_proxy={0};
   s.p=&root;s.viewport=&s;scale_has_viewporter=1;objects=&s;
-  tasks[0].id=5;task_count=1;map_fd=-1;absolute_pointer_enabled=1;
+  scrcpy_mapping_key(&s,&h,30,0);tasks[0].id=5;task_count=1;map_fd=-1;absolute_pointer_enabled=1;
   struct object pointer={.pointer_surface=&root};
   assert(absolute_pointer_update(&pointer,810*256,234*256,1));
   assert(pointer.absolute_x==810&&pointer.absolute_y==234&&last[1]==7&&packet_size==32);

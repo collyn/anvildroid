@@ -120,6 +120,8 @@ struct object {
   int source_x, source_y, source_width, source_height;
   struct proxy *edit_cursor;
   uint32_t cursor_serial;
+  struct proxy *cursor_surface;
+  int cursor_hotspot_x,cursor_hotspot_y,cursor_requested;
   struct proxy *attached_buffer;
   int attach_x, attach_y, clip_hidden, clip_x, clip_y;
   int bx, by, bw, bh, has_bounds, attached;
@@ -146,6 +148,8 @@ struct object {
   struct object *overlay_focus;
   int overlay_dismissed, overlay_pressed;
   struct object *keyboard_focus;
+  int keymap_pointer_leave_pending;
+  struct proxy *keymap_pointer_leave_surface;
   int keyboard_leave_pending;
   struct proxy *keyboard_leave_surface;
   uint32_t keymap_blocked_keys[24];
@@ -202,6 +206,20 @@ struct keymap_overlay;
 static int scrcpy_mapping_key(struct object *, struct keymap_overlay *, int, int);
 static void scrcpy_mapping_cancel(void);
 static void scrcpy_mapping_tick(void);
+static void scrcpy_mapping_release_key(int);
+static int scrcpy_mapping_escape(void);
+static void scrcpy_mapping_relative(struct object *,int32_t,int32_t);
+static int keymap_capture_start(struct object *);
+static int keymap_capture_active(struct object *);
+static int keymap_capture_supported(struct object *);
+static int __attribute__((unused)) keymap_capture_status(struct object *);
+static void keymap_capture_stop(void);
+static void keymap_capture_protocol_init(void *);
+static int keymap_capture_global(struct object *,uint32_t,const char *,uint32_t);
+static int keymap_capture_remove(struct object *,uint32_t);
+static void keymap_capture_disconnect(struct wl_display *);
+static void keymap_capture_forget(struct object *);
+static void keymap_capture_cursor_request(struct object *,union argument *);
 static struct task tasks[128];
 static int task_count;
 #include "media-layer.inc"
@@ -267,6 +285,7 @@ static void init(void) {
     pthread_detach(thread);
   ime_protocol_init(h);
   window_activation_protocol_init(h);
+  keymap_capture_protocol_init(h);
   if (!pthread_create(&thread, 0, ime_worker, 0))
     pthread_detach(thread);
 }
@@ -350,6 +369,7 @@ static void decoration_destroy(struct object *top) {
 #include "close-adapter.inc"
 #include "keymap-overlay.inc"
 #include "scrcpy-mapping.inc"
+#include "keymap-capture.inc"
 #include "display-probe.inc"
 #include "display-size.inc"
 #include "full-ui.inc"
@@ -859,7 +879,10 @@ static struct proxy *bridge_marshal(
   const char *method = p->interface->methods[op].name;
   struct object *o = find(p);
   if (o) {o->protocol_name = cls;o->protocol_interface = p->interface;}
-  if(!strcmp(cls,"wl_pointer")&&!strcmp(method,"set_cursor"))csd_cursor_request(o,a);
+  if(!strcmp(cls,"wl_pointer")&&!strcmp(method,"set_cursor")) {
+    keymap_capture_cursor_request(o,a);
+    csd_cursor_request(o,a);
+  }
   int skip = 0;
   struct proxy *nv_result=0;
   int nv_constructor=0;
@@ -1232,6 +1255,7 @@ static void forget_proxy(struct proxy *p) {
     at = &(*at)->next;
   if (*at) {
     struct object *old = *at;
+    keymap_capture_forget(old);
     if(old->nv_ring){nv_orphan(old->nv_ring);old->nv_ring=0;nv_trim();}
     if(old->nv_plane_fd)close(old->nv_plane_fd-1);
     if(old->full_ui){display_projection=(struct display_projection){0};display_pending_w=display_pending_h=0;}
@@ -1298,6 +1322,7 @@ static void bridge_disconnecting(struct wl_display *display) {
   /* libwayland destroys every queue at disconnect. Drop bindings and object
    * metadata while proxies still belong to a live display, never on reuse. */
   __android_log_print(4,"AnvilDroid","display disconnect %p",display);
+  keymap_capture_disconnect(display);
   for (;;) {
     struct object *o=objects;
     while (o && o->display!=display) o=o->next;

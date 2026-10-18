@@ -6,6 +6,7 @@
 struct wl_display;
 struct wl_event_queue;
 static void keymap_finish_keyboard_leaves(struct wl_display *);
+static void keymap_finish_pointer_leaves(struct wl_display *);
 static struct wl_display *(*real_display_connect)(const char *);
 static struct wl_display *(*real_display_connect_fd)(int);
 static void (*real_display_disconnect)(struct wl_display *);
@@ -212,6 +213,7 @@ static void keymap_dispatch_queued(struct wl_display *display) {
   }
   pthread_mutex_lock(mutex);
   keymap_finish_keyboard_leaves(display);
+  keymap_finish_pointer_leaves(display);
   pthread_mutex_unlock(mutex);
   pthread_mutex_unlock(keymap_queue_gate);
 }
@@ -220,6 +222,7 @@ static void keymap_dispatch_finished(struct wl_display *display,int result) {
   pthread_mutex_lock(keymap_queue_gate);
   pthread_mutex_lock(mutex);
   keymap_finish_keyboard_leaves(display);
+  keymap_finish_pointer_leaves(display);
   if(display==keymap_display) {
     keymap_cancel_callback();
     keymap_connection_lost();

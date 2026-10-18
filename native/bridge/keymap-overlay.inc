@@ -20,6 +20,7 @@ struct keymap_overlay {
   int dirty, dragging, save_pending, close_pending, close_result, ack_pending,
       task;
   int panel_hidden, placement_hold;
+  int property_page, binding_capture, placement_kind, capture_status;
   int passive;
   int disabled, hints_hidden;
   int sync_valid, sync_x, sync_y;
@@ -111,13 +112,32 @@ static void keymap_overlay_paint(uint32_t *pixels, int w, int h) {
     else keymap_editor_paint(pixels,w,h,keymap_paint_context);
   }
 }
+/* V3 has one complete, bounded row per control. Never accept a missing field
+ * by consuming the next row or silently ignore an unsupported extension. */
+static int keymap_profile_row(const char **cursor, int values[19],int fields) {
+  const char *s=*cursor;
+  for(int i=0;i<fields;++i) {
+    while(*s==' '||*s=='\t')++s;
+    char number[16];int n=0;
+    while(*s>='0'&&*s<='9') {
+      if(n==15)return 0;
+      number[n++]=*s++;
+    }
+    number[n]=0;
+    values[i]=keymap_number(number,65535);
+    if(values[i]<0 || (*s!=' '&&*s!='\t'&&*s!='\r'&&*s!='\n'))return 0;
+  }
+  while(*s==' '||*s=='\t'||*s=='\r')++s;
+  if(*s++!='\n')return 0;
+  *cursor=s;return 1;
+}
 static int keymap_load(int dir, const char *pkg, const char *runtime,
                        struct keymap_model *m) {
   int fd =
       openat(dir, pkg, PROFILE_NOFOLLOW | PROFILE_CLOEXEC | PROFILE_NONBLOCK);
   if (fd < 0)
     return PROFILE_ERRNO == 2 ? 0 : -1;
-  char bytes[4096];
+  char bytes[KEYMAP_PROFILE_LIMIT+1];
   long n = read(fd, bytes, sizeof(bytes) - 1);
   char extra;
   long tail = n >= 0 ? read(fd, &extra, 1) : -1;
@@ -129,38 +149,31 @@ static int keymap_load(int dir, const char *pkg, const char *runtime,
   int used = 0;
   if (sscanf(bytes, "ANVIL_KEYMAP %15s %128s %240s %15s%n", version, r, p,
              count_text, &used) != 4 ||
-      !used || (strcmp(version, "1") && strcmp(version, "2")) || strcmp(r, runtime) || strcmp(p, pkg))
+      !used || (strcmp(version, "1") && strcmp(version, "2") && strcmp(version,"3")) || strcmp(r, runtime) || strcmp(p, pkg))
     return -1;
   int count = keymap_number(count_text, KEYMAP_POINTS);
   if (count < 0)
     return -1;
-  *m = (struct keymap_model){.count = count, .selected = -1};
-  for (int i = 0; i < count; ++i) {
-    int consumed = 0;
-    struct keymap_point *q = &m->points[i];
-    char values[9][16];
-    if (sscanf(bytes + used, " %15s %15s %15s %15s%n", values[0], values[1],
-               values[2], values[3], &consumed) != 4 ||
-        !consumed)
-      return -1;
-    q->key = keymap_number(values[0], 767);
-    q->nx = keymap_number(values[1], 65535);
-    q->ny = keymap_number(values[2], 65535);
-    q->hold = keymap_number(values[3], 1);
-    used += consumed;
-    if (!strcmp(version,"2")) {
-      if(sscanf(bytes+used," %15s %15s %15s %15s %15s%n",values[4],values[5],values[6],values[7],values[8],&consumed)!=5 || !consumed) return -1;
-      q->kind=keymap_number(values[4],KEYMAP_AIM);
-      q->ex=keymap_number(values[5],65535);q->ey=keymap_number(values[6],65535);
-      q->duration=keymap_number(values[7],5000);q->repeats=keymap_number(values[8],20);
-      used+=consumed;
+  struct keymap_model parsed={.count=count,.selected=-1};
+  {
+    const char *cursor=bytes+used;
+    while(*cursor==' '||*cursor=='\t'||*cursor=='\r')++cursor;
+    if(*cursor++!='\n')return -1;
+    for(int i=0;i<count;++i) {
+      int fields=!strcmp(version,"1")?4:!strcmp(version,"2")?9:19;
+      int v[19]={0};if(!keymap_profile_row(&cursor,v,fields))return -1;
+      if(fields<19&&v[4]>KEYMAP_AIM)return -1;
+      parsed.points[i]=(struct keymap_point){
+        .key=v[0],.nx=v[1],.ny=v[2],.hold=v[3],.kind=v[4],.ex=v[5],.ey=v[6],
+        .duration=v[7],.repeats=v[8],.source=v[9],.end_mode=v[10],.radius=v[11],
+        .ramp_ms=v[12],.look_width=v[13],.look_height=v[14],.sensitivity_x=v[15],
+        .sensitivity_y=v[16],.invert_y=v[17],.activation=v[18]};
     }
+    used=(int)(cursor-bytes);
   }
-  for (int i = used; i < n; ++i)
-    if (bytes[i] != '\n' && bytes[i] != ' ' && bytes[i] != '\r' &&
-        bytes[i] != '\t')
-      return -1;
-  return keymap_valid(m, 1) ? 1 : -1;
+  if(used!=n)return -1;
+  if(!keymap_valid(&parsed,1))return -1;
+  *m=parsed;return 1;
 }
 static int keymap_save(int dir, const char *pkg, const char *runtime,
                        const struct keymap_model *m) {
@@ -169,13 +182,19 @@ static int keymap_save(int dir, const char *pkg, const char *runtime,
   struct keymap_model prior;
   if (keymap_load(dir, pkg, runtime, &prior) < 0)
     return 0;
-  char data[4096], temp[80];
-  int used = snprintf(data, sizeof(data), "ANVIL_KEYMAP 2 %s %s %d\n", runtime,
+  char data[KEYMAP_PROFILE_LIMIT+1], temp[80];
+  int used = snprintf(data, sizeof(data), "ANVIL_KEYMAP 3 %s %s %d\n", runtime,
                       pkg, m->count);
+  if(used<0||(size_t)used>=sizeof(data))return 0;
   for (int i = 0; i < m->count; ++i) {
     const struct keymap_point *p = &m->points[i];
-    used += snprintf(data + used, sizeof(data) - (size_t)used, "%d %d %d %d %d %d %d %d %d\n",
-                     p->key, p->nx, p->ny, p->hold,p->kind,p->ex,p->ey,p->duration,p->repeats);
+    int n=snprintf(data+used,sizeof(data)-(size_t)used,
+       "%d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d\n",
+       p->key,p->nx,p->ny,p->hold,p->kind,p->ex,p->ey,p->duration,p->repeats,
+       p->source,p->end_mode,p->radius,p->ramp_ms,p->look_width,p->look_height,
+       p->sensitivity_x,p->sensitivity_y,p->invert_y,p->activation);
+    if(n<0||(size_t)n>=sizeof(data)-(size_t)used)return 0;
+    used+=n;
   }
   uint64_t salt = 0;
   if (syscall(318, &salt, sizeof(salt), 0) != (long)sizeof(salt))
@@ -354,6 +373,10 @@ static void keymap_connection_lost(void) {
 static void keymap_overlay_sync(struct object *s, int x, int y, int w, int h) {
   if (!s)
     return;
+  if(s->overlay) {
+    int status=keymap_capture_status(s);
+    if(status!=s->overlay->capture_status){s->overlay->capture_status=status;s->overlay->dirty=1;}
+  }
 #ifdef ANVIL_KEYMAP_OVERLAY_PROBE
   if (!s->overlay && !s->overlay_dismissed && s->app_id &&
       !strcmp(s->app_id, "com.android.settings")) {
@@ -473,8 +496,20 @@ static void keymap_overlay_motion(struct object *pointer) {
   struct keymap_layout l=keymap_layout(f->piece.width,f->piece.height,f->panel_hidden);
   if (f->dragging && !f->save_pending &&
       !keymap_ui_hit(l,pointer->csd_x,pointer->csd_y)) {
-    keymap_move(&f->model, f->model.selected, pointer->csd_x, pointer->csd_y,
-                f->piece.width, f->piece.height);
+    struct keymap_point *q=&f->model.points[f->model.selected];
+    int nx=keymap_normalize(pointer->csd_x,f->piece.width),ny=keymap_normalize(pointer->csd_y,f->piece.height);
+    if(f->dragging==2){q->ex=nx;q->ey=ny;}
+    else if(f->dragging==3){int cx=(int)((int64_t)q->nx*(f->piece.width-1)/65535),d=pointer->csd_x-cx;
+      if(d<0)d=-d;
+      q->radius=(int)((int64_t)d*65535/(f->piece.width<f->piece.height?f->piece.width:f->piece.height));
+      if(q->radius<256)q->radius=256;
+      if(q->radius>32767)q->radius=32767;}
+    else if(f->dragging==4){int dx=nx-q->nx,dy=ny-q->ny;if(dx<0)dx=-dx;if(dy<0)dy=-dy;
+      int mx=q->nx<32768?q->nx:65535-q->nx,my=q->ny<32768?q->ny:65535-q->ny;
+      q->look_width=dx<256?256:dx>mx?mx:dx;q->look_height=dy<256?256:dy>my?my:dy;}
+    else {if(q->kind==KEYMAP_LOOK){if(nx<q->look_width)nx=q->look_width;if(nx>65535-q->look_width)nx=65535-q->look_width;if(ny<q->look_height)ny=q->look_height;if(ny>65535-q->look_height)ny=65535-q->look_height;}
+      q->nx=nx;q->ny=ny;}
+    f->model.dirty=1;
     f->dirty = 1;
     keymap_wake();
   }
@@ -487,10 +522,15 @@ static void keymap_overlay_pointer_cancel(struct object *pointer) {
 static void keymap_overlay_button(struct object *pointer, uint32_t button,
                                   uint32_t state) {
   struct object *s = pointer->overlay_focus;
-  if (!s || !s->overlay || button != 0x110)
+  if (!s || !s->overlay)
     return;
   struct keymap_overlay *f = s->overlay;
   struct keymap_model *m = &f->model;
+  if(f->binding_capture==2&&state&&!f->save_pending){
+    if(keymap_assign_source(m,KEYMAP_SOURCE_MOUSE,(int)button))f->binding_capture=0;
+    f->dirty=1;keymap_wake();return;
+  }
+  if(button!=0x110)return;
   int x = pointer->csd_x, y = pointer->csd_y;
   struct keymap_layout l=keymap_layout(f->piece.width,f->piece.height,f->panel_hidden);
   int hit=keymap_ui_hit(l,x,y);
@@ -500,24 +540,32 @@ static void keymap_overlay_button(struct object *pointer, uint32_t button,
   if (state) {
     pointer->overlay_pressed = hit;
     if ((hit==0||hit>=200) && !f->save_pending) {
-      int found=hit>=200?hit-200:-1;
+      int found=hit>=200?hit%100:-1;
       if (m->placing && !hit) {
-        if(keymap_add(m,x,y,f->piece.width,f->piece.height))
+        if(keymap_add(m,x,y,f->piece.width,f->piece.height)) {
+          keymap_set_kind(&m->points[m->selected],f->placement_kind);
           m->points[m->selected].hold=f->placement_hold;
+          if(f->placement_hold&&(f->placement_kind==KEYMAP_BASIC||f->placement_kind==KEYMAP_SWIPE))
+            m->points[m->selected].end_mode=KEYMAP_END_HOLD;
+        }
       }
       else
         m->selected = found;
-      f->dragging = m->selected >= 0;
+      if(m->selected<0||!keymap_page_available(&m->points[m->selected],f->property_page))f->property_page=0;
+      f->binding_capture=0;
+      f->dragging = m->selected >= 0?(hit>=500?4:hit>=400?3:hit>=300?2:1):0;
       f->dirty = 1;
       keymap_wake();
     }
   } else {
     f->dragging = 0;
     if (hit && hit == pointer->overlay_pressed && !f->save_pending) {
+      if(hit>=20&&hit<28)keymap_property_action(f,hit-20);
       if (hit == 1 && m->count<KEYMAP_POINTS) {
         m->placing = 1;
         m->selected = -1;
         m->error = 0;
+        f->property_page=0;f->binding_capture=0;
       }
       if (hit == 2) {
         if (keymap_valid(m, 1))
@@ -525,16 +573,22 @@ static void keymap_overlay_button(struct object *pointer, uint32_t button,
         else
           m->error = 2;
       }
-      if (hit == 3)
+      if (hit == 3) {
         keymap_remove(m);
+        f->property_page=0;f->binding_capture=0;
+      }
       if(hit>=100&&hit<100+KEYMAP_POINTS) {
         m->selected=hit-100;keymap_remove(m);
       }
       if (hit == 4 || hit == 7 || hit == 8) {
         int selected=m->selected>=0&&m->selected<m->count;
-        int previous=selected?m->points[m->selected].hold:f->placement_hold;
+        if(selected&&m->points[m->selected].kind!=KEYMAP_BASIC&&m->points[m->selected].kind!=KEYMAP_SWIPE) {
+          pointer->overlay_pressed=0;return;
+        }
+        int previous=selected?keymap_effective_hold(&m->points[m->selected]):f->placement_hold;
         f->placement_hold=hit==4?!previous:hit==8;
-        if(selected) {m->points[m->selected].hold=f->placement_hold;m->dirty=1;}
+        if(selected) {keymap_editor_set_end(&m->points[m->selected],f->placement_hold);m->dirty=1;}
+        if(selected&&!keymap_page_available(&m->points[m->selected],f->property_page))f->property_page=0;
       }
       if(hit==6)f->panel_hidden=!f->panel_hidden;
       if(hit==9||hit==10)keymap_toggle(s,hit==10);
@@ -549,6 +603,7 @@ static void keymap_overlay_button(struct object *pointer, uint32_t button,
     pointer->overlay_pressed = 0;
   }
 }
+static struct game_fit_rect game_fit_area(struct object *);
 static void keymap_done(void *unused, struct proxy *callback, uint32_t serial) {
   (void)serial;
   pthread_mutex_lock(mutex);
@@ -563,7 +618,14 @@ static void keymap_done(void *unused, struct proxy *callback, uint32_t serial) {
   for (struct object *s = objects; s; s = s->next)
     if (s->overlay || s->hints) {
       if(s->full_ui)keymap_canvas_bounds(s);
-      keymap_overlay_sync(s, s->bx, s->by, s->bw, s->bh);
+      if(!s->full_ui&&window_fit_enabled(s)&&s->fit&&
+         s->fit_sw>0&&s->fit_sh>0&&s->fit_w>0&&s->fit_h>0) {
+        /* Flash repaints must use the same fitted content rectangle as HWC
+         * geometry commits. Container bounds include letterboxing; swapping
+         * between them cancels held contacts as though a resize occurred. */
+        struct game_fit_rect r=game_fit_area(s);
+        keymap_overlay_sync(s,r.x,r.y,r.width,r.height);
+      } else keymap_overlay_sync(s,s->bx,s->by,s->bw,s->bh);
       wayland_send(s->p, 6, 0);
     }
   ime_sync();
@@ -599,7 +661,23 @@ static void keymap_wake(void) {
     keymap_connection_lost();
   }
 }
+static struct object *game_fit_bar_owner(struct proxy *);
 static struct object *keymap_owner(struct proxy *p) {
+  if(!p)return 0;
+  /* These bridge-created children bypass the upstream object registry, but
+   * Weston may focus them after a click. Their keyboard owner is still the
+   * app that owns the editor, menu, frame, or letterbox. */
+  for(struct object *owner=objects;owner;owner=owner->next)if(owner->app||owner->full_ui) {
+    if((owner->overlay&&owner->overlay->piece.surface==p)||
+       (owner->hints&&owner->hints->piece.surface==p))return owner;
+    if(owner->csd){
+      if(owner->csd->menu.surface==p)return owner;
+      for(int i=0;i<4;++i)
+        if(owner->csd->pieces[i].surface==p||owner->csd->bars[i].surface==p)return owner;
+    }
+  }
+  struct object *bar_owner=game_fit_bar_owner(p);
+  if(bar_owner)return bar_owner;
   struct object *s = find(p);
   if (!s)
     return 0;
@@ -636,6 +714,7 @@ static void keymap_finish_keyboard_leaves(struct wl_display *display) {
   for(struct object *o=objects;o;o=o->next)
     if(o->display==display)keymap_finish_keyboard_leave(o);
 }
+static void scrcpy_mapping_reconcile_keys(const uint32_t *,size_t);
 static void keymap_kenter(void *data, struct proxy *p, uint32_t serial,
                           struct proxy *surface, void *keys) {
   struct object *o = data;
@@ -652,12 +731,18 @@ static void keymap_kenter(void *data, struct proxy *p, uint32_t serial,
     /* wl_keyboard.enter lists keys already down. After a real blur they
      * must be released before a mapped key can start another contact. */
     struct { size_t size,alloc;void *data; } *held=keys;
-    if(held&&held->data&&held->size<=768*sizeof(uint32_t)&&
-       !(held->size%sizeof(uint32_t)))
+    int snapshot_valid=held&&held->size<=768*sizeof(uint32_t)&&
+      !(held->size%sizeof(uint32_t))&&(!held->size||held->data);
+    if(snapshot_valid)for(size_t i=0;i<held->size/sizeof(uint32_t);++i)
+      if(((uint32_t *)held->data)[i]>=768)snapshot_valid=0;
+    if(snapshot_valid) {
+      scrcpy_mapping_reconcile_keys(held->data,held->size/sizeof(uint32_t));
+      memset(o->keymap_blocked_keys,0,sizeof(o->keymap_blocked_keys));
       for(size_t i=0;i<held->size/sizeof(uint32_t);++i) {
         uint32_t key=((uint32_t *)held->data)[i];
         if(key<768)o->keymap_blocked_keys[key/32]|=1u<<(key%32);
       }
+    } /* An invalid/missing snapshot cannot prove that an old key was released. */
   }
   o->keyboard_focus=owner;
   pthread_mutex_unlock(mutex);
@@ -681,6 +766,12 @@ static void keymap_key(void *data, struct proxy *p, uint32_t serial,
   pthread_mutex_lock(mutex);
   clipboard_input(serial);
   keymap_finish_keyboard_leave(o);
+  if(!state)scrcpy_mapping_release_key((int)key);
+  if(key==1 && scrcpy_mapping_escape()) {
+    if(state)o->keymap_blocked_keys[key/32]|=1u<<(key%32);
+    else o->keymap_blocked_keys[key/32]&=~(1u<<(key%32));
+    pthread_mutex_unlock(mutex);return;
+  }
   if(csd_menu_key(o,key,state)){pthread_mutex_unlock(mutex);return;}
   struct keymap_overlay *f = o->keyboard_focus ? o->keyboard_focus->overlay : 0;
   int blocked =
@@ -724,15 +815,17 @@ static void keymap_key(void *data, struct proxy *p, uint32_t serial,
     return;
   }
   if (f && state && !f->save_pending) {
-    if (key == 1) {
+    if(f->binding_capture==1&&key!=1){
+      if(keymap_assign_source(&f->model,KEYMAP_SOURCE_KEY,(int)key))f->binding_capture=0;
+    } else if (key == 1 && f->binding_capture) {
+      f->binding_capture=0;
+    } else if (key == 1) {
       f->close_pending = 1;
       f->ack_pending = 3;
     } else if (key==64 && f->model.selected>=0) { /* F6 cycles functional control presets. */
       struct keymap_point *q=&f->model.points[f->model.selected];
-      q->kind=(q->kind+1)%(KEYMAP_AIM+1);
-      q->ex=q->nx<49151?q->nx+16384:65535;q->ey=q->ny;
-      q->duration=250;q->repeats=3;
-      if(q->kind==KEYMAP_DPAD)q->key=17;
+      keymap_set_kind(q,(q->kind+1)%(KEYMAP_LOOK+1));
+      f->property_page=0;
       f->model.dirty=1;
     } else if((key==66||key==67) && f->model.selected>=0) {
       struct keymap_point *q=&f->model.points[f->model.selected];
@@ -749,8 +842,7 @@ static void keymap_key(void *data, struct proxy *p, uint32_t serial,
           q->ex=keymap_normalize(pointer->csd_x,f->piece.width);
           q->ey=keymap_normalize(pointer->csd_y,f->piece.height);f->model.dirty=1;break;
         }
-    } else
-      keymap_assign(&f->model, (int)key);
+    }
     f->dirty = 1;
     keymap_wake();
   }
