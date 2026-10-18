@@ -31,6 +31,17 @@ opt-in. Component reports also distinguish cached packages by target SDK.
 CPU targets above describe upstream metadata, not a hardware compatibility
 certification. Libraries, image versions and individual apps can differ.
 
+## Licensing
+
+These proprietary prebuilts retain their own terms. The three pinned NDK
+revisions include a limited ARM-to-AMD DBT copyright notice with AMD-related
+redistribution/execution conditions and an exclusion of other rights. The
+seven pinned Houdini revisions mark modules proprietary and contain no
+standalone license notice or redistribution grant that we located. See the
+[README licensing details](../README.md#optional-arm-translation-binaries) and
+[complete NDK notice](../packaging/arm/ARM_TO_AMD_DBT_LICENSE.txt).
+Compatibility patches and checksum verification do not grant additional rights.
+
 ## Verified variants
 
 The five patched choices have their own immutable SHA-256 identities. Their

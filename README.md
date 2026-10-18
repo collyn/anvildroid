@@ -48,6 +48,7 @@ compatibility across custom images, desktops and games is still being developed.
   **Resize app layout** updates Android task bounds; **Keep resolution** changes
   the host window while preserving the Android rendering resolution.
 - ARM translation selection: libndk_translation and libhoudini catalogs.
+  These third-party binaries have [separate licensing terms](#optional-arm-translation-binaries).
 - Per-app Fake Wi-Fi and mouse-as-touch settings, with runtime-scoped readback,
   reset and rollback. Image support and app behavior still need live validation.
 - Explicit shared folders for managed runtimes and integrated Default, with read-only or read/write
@@ -282,6 +283,41 @@ licenses and notices. See the [NVIDIA notices](packaging/nvidia/NOTICE),
 AnvilDroid source code is licensed under the [MIT License](LICENSE-MIT).
 Waydroid, Android/LineageOS images, Google services, ARM translation packages,
 native libraries and installed applications remain under their own licenses.
+
+### Optional ARM translation binaries
+
+The MIT license above covers AnvilDroid's own source code. The translation
+bridges are proprietary Google/Intel prebuilts obtained from community mirrors:
+
+| Component | Source / origin | License information in the pinned archives |
+| --- | --- | --- |
+| Google's `libndk_translation` | [supremegamers NDK prebuilts](https://github.com/supremegamers/vendor_google_proprietary_ndk_translation-prebuilt); ChromeOS Zork/Guybrush | All three checked revisions include [ARM_TO_AMD_DBT_LICENSE.txt](packaging/arm/ARM_TO_AMD_DBT_LICENSE.txt). This is a limited grant concerning ARM ISA copyrights. |
+| Intel's `libhoudini` | [supremegamers Houdini prebuilts](https://github.com/supremegamers/vendor_intel_proprietary_houdini); ChromeOS, Microsoft WSA and Google Play Games for PC | No standalone license notice or redistribution grant was found in the seven checked revisions. Their `Android.mk` files mark the translator modules as proprietary. |
+
+The NDK notice explicitly names `system/lib/libndk_translation.so` and
+`system/lib64/libndk_translation.so`. It covers only ARM's copyright rights in
+the ARM-v8 and ARM-v9 ISAs, requires retaining/reproducing its notices and
+disclaimer, and excludes other intellectual property rights, including patents.
+Its clause 3 permits redistribution only in conjunction with the sale of a
+semiconductor product containing an AMD-64 ISA compliant CPU core licensed or
+sold by AMD, and limits use/execution of that redistributed software to that
+core. Read the [complete notice](packaging/arm/ARM_TO_AMD_DBT_LICENSE.txt);
+it does not establish a complete license for all rights in the prebuilt package.
+The [upstream copy](https://github.com/supremegamers/vendor_google_proprietary_ndk_translation-prebuilt/blob/68734c52556d3d7a6db34c603dd9276915c29f2f/ARM_TO_AMD_DBT_LICENSE.txt)
+is pinned to the default catalog revision.
+
+For Houdini, permission to redistribute the catalog binaries has not been
+established from those archives. Public availability on GitHub and successful
+SHA-256 verification do not themselves grant distribution or modification
+rights. Applicable rightsholder terms must be checked before redistributing
+translator binaries, modified variants or images containing them. Compatibility
+patches do not replace the original licensing terms.
+
+AnvilDroid's package builders include the catalog/downloader code; the ARM
+translation archives are fetched separately during runtime preparation or
+version installation. The checked revisions, versions and patch variants are
+listed in [ARM translation documentation](docs/ARM-TRANSLATION.md), with exact
+URLs and checksums in [the catalog](services/runtime-arm-source.py).
 
 See [Waydroid documentation](https://docs.waydro.id/) for Android runtime setup.
 
