@@ -42,6 +42,8 @@ test_*.py
 /tests/*
 !/tests/test_runtime_tools.cjs
 !/tests/test_runtime_worker.py
+!/tests/test_runtime_arm.py
+!/tests/test_runtime_arm_source.py
 !/tests/test_*.cjs
 !/tests/keymap-x11-sink.c
 !/tests/keymap-advanced.c
@@ -61,6 +63,7 @@ test_*.py
 !/tests/acceptance/test-controls-harness.py
 !/tests/acceptance/default-android.py
 !/tests/acceptance/test-default-harness.py
+!/tests/acceptance/verify-arm-catalog.py
 !/tests/acceptance/README.md
 !/tests/acceptance/DEFAULT-ISOLATION.md
 /scripts/build-arm-probes.sh

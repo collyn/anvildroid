@@ -766,13 +766,15 @@ class Store:
                 if not re.fullmatch(r'[a-f0-9]{64}', digest): continue
                 metadata_path = directory / (digest + '.json')
                 metadata = read_file(metadata_path) if metadata_path.exists() else {'engine': 'libndk', 'version':'Custom ' + digest[:12], 'label':'libndk / custom ' + digest[:12]}
+                known = next((item for item in worker_module.arm.CATALOG if item['sha256'] == digest), {})
+                metadata = dict(metadata, **known)
                 result.append(dict(metadata, id=digest, sha256=digest, bytes=info.st_size, installed=True))
             except OSError: continue
         if worker_module.arm.ARCHIVE.is_file():
             result = [item for item in result if item['sha256'] != worker_module.arm.SHA256]
-            result.insert(0, {'id': worker_module.arm.SHA256, 'provider': 'libndk_translation 0.2.3', 'engine':'libndk', 'version':'0.2.3', 'installed':True,
+            result.insert(0, dict(worker_module.arm.CATALOG[0], **{'id': worker_module.arm.SHA256, 'provider': 'libndk_translation 0.2.3', 'installed':True,
                               'sha256': worker_module.arm.SHA256, 'bytes': worker_module.arm.ARCHIVE.stat().st_size,
-                              'label': 'Built-in verified libndk_translation 0.2.3'})
+                              'label': worker_module.arm.CATALOG[0]['label']}))
         for item in worker_module.arm.CATALOG:
             if not any(source['sha256'] == item['sha256'] for source in result):
                 result.append(dict(item, id=item['sha256'], installed=False, bytes=0))

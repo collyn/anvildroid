@@ -216,3 +216,20 @@ test('Settings version selection preserves its engine and ignores unrelated chan
   assert.deepEqual({...f.drafts.get('test')},{engine:'libhoudini',sha256:f.digest});
   assert.equal(f.drafts.size,1);
 });
+
+test('Settings distinguishes source variants and warns about an Android target mismatch',()=>{
+  const f=armSettingsFixture({arm:{android_sdk:33}});
+  f.record.arm.sources=[
+    {engine:'libhoudini',version:'Brya 38795 (patched)',sha256:f.digest,installed:false,android:'Android 11; Intel / AMD',android_sdks:[30],variant:'houdini-brya-38795-patched'},
+    {engine:'libhoudini',version:'Brya 38795',sha256:'c'.repeat(64),installed:true,android:'Android 11; Intel / AMD',android_sdks:[30]},
+    {engine:'libhoudini',version:'Octopus 39598',sha256:'d'.repeat(64),installed:false,android:'Android 13; Intel',android_sdks:[33]},
+  ];
+  const markup=f.context.renderRuntimeArm(f.record,false);
+  assert.match(markup,/Brya 38795 \(patched\)/);
+  assert.match(markup,/value="c{64}"[^>]*>Brya 38795/);
+  assert.match(markup,/Octopus 39598/);
+  assert.match(markup,/Compatibility patch bytes and output checksum/);
+  assert.match(markup,/arm-target-warning.*this runtime is Android SDK 33/);
+  f.drafts.set('test',{engine:'libhoudini',sha256:'d'.repeat(64)});
+  assert.doesNotMatch(f.context.renderRuntimeArm(f.record,false),/arm-target-warning/);
+});

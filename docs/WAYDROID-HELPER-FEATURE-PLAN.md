@@ -25,11 +25,11 @@ and managed X11/Wayland editor/playback cancellation now pass. The remaining
 gates stay unchecked below. AppImage
 is deferred; this branch is not a merge or published release.
 
-**Current priority: complete the existing keymap editor and touch gestures.**
-The user's latest request adds true mouse-to-finger input, joystick drag/hold,
-explicit swipe endpoint holding, and relative camera control. The concrete
-delivery plan and acceptance gates are in the final section of this document.
-These additions are planned, not covered by the earlier 13/13 input results.
+**Latest delivery: expand the existing ARM Engine/Version catalog.**
+The new catalog and its installation/JNI acceptance are recorded in the final
+section. The touch keymap V3 editor and gestures are implemented, with 25/25
+managed input checks on each backend recorded below; the broader manual game
+and physical-desktop acceptance gates remain open.
 
 ## Work allocation
 
@@ -1043,3 +1043,32 @@ drag/delete/conflict/resize/rotation/replacement matrix. Physical GNOME/KDE/
 Default input, representative mouse-rejecting/joystick/FPS/MOBA games, ARM game
 compatibility, tuning and latency under load remain manual acceptance gates.
 AppImage remains deferred; this delivery does not merge or publish a release.
+
+## ARM translation release catalog — 2026-10-18
+
+The existing Engine/Version settings now cover all 13 ARM choices in
+waydroid-helper/extensions `a2c9f98548a9f1aa9cf25f1ea56347e1e4930e29`,
+plus the previous unpatched HPE archive for existing runtime configurations.
+NDK includes Zork R136/R125 and Guybrush R119 regular/patched. Houdini includes
+Octopus 39598/39489, Brya 38795 regular/patched, WSA11 38765 regular/patched,
+and HPE com1.3/com1.2 patched plus com1.0. Version labels include the source
+board/build. No additional runtime settings section was created.
+
+Patched variants have separate pinned archive identities, strict original-byte
+checks and pinned full-library output hashes. Known cache metadata refreshes
+older generic labels. Android target SDKs are recorded per package; the existing
+runtime setting warns on mismatches, and component actions distinguish SDK 30
+and SDK 33 choices. Unknown custom NDK artifacts no longer claim library 0.2.3.
+Default retains its installed-provider restore path; archive selection remains
+available through managed copies.
+
+Validation passes 41 root-owned ARM unit tests, 348 frontend cases, the complete
+feature/native/packaging regression script and 14/14 real-archive controller
+installations. Actual Android 13 boots and fresh ARM32/ARM64 JNI arithmetic
+execution pass for all seven non-legacy Android 13 catalog choices. Each boot
+ends with clean framework flush/Stop; final scopes, workers, mounts and loops
+were empty before removing the disposable fixture. No installed runtime,
+RustDesk, desktop session or service was a test target. Android 11 live execution,
+the graphical install workflow, representative games and physical Arch testing
+remain open. See [ARM translation](ARM-TRANSLATION.md) for the full version table,
+checksums/provenance and retained evidence.

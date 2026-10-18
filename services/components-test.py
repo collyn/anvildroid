@@ -30,6 +30,18 @@ class ComponentsTests(unittest.TestCase):
             {'engine':'libhoudini','sha256':DIGEST,'installed':True},
             {'engine':'libhoudini','sha256':'b'*64,'installed':False}]})
         with self.assertRaises(ValueError):components.arm_action(report,'libhoudini',True,'b'*64)
+    def test_android_11_packages_are_distinguished_from_android_13_packages(self):
+        sources=[{'engine':'libndk','sha256':DIGEST,'installed':True,'android_sdks':[30]},
+                 {'engine':'libndk','sha256':'b'*64,'installed':True,'android_sdks':[33]}]
+        for sdk, selected, rejected in [(30,DIGEST,'b'*64),(33,'b'*64,DIGEST)]:
+            report=self.report(sdk=sdk,arm_report={'supported':True,'sources':sources})
+            row=self.row(report,'libndk')
+            self.assertEqual(row['android_sdks'],[30,33])
+            self.assertTrue(row['can_enable'])
+            self.assertEqual(components.arm_action(report,'libndk',True,selected)['archive_sha256'],selected)
+            with self.assertRaises(ValueError):components.arm_action(report,'libndk',True,rejected)
+        report=self.report(sdk=30,arm_report={'supported':True,'sources':[sources[1]]})
+        self.assertFalse(self.row(report,'libndk')['can_enable'])
     def test_conflicts_and_installed_inherited(self):
         report=self.report(arm_report={'supported':True,'enabled':True,'provider':'libhoudini-12','inherited':True,'archive_sha256':DIGEST})
         ndk=self.row(report,'libndk'); houdini=self.row(report,'libhoudini')
