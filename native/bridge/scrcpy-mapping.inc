@@ -10,7 +10,6 @@ extern int connect(int, const void *, unsigned);
 extern int close(int);
 extern long send(int, const void *, size_t, int);
 extern long recv(int, void *, size_t, int);
-extern int __system_property_get(const char *, char *) __attribute__((weak));
 
 static int map_fd = -1;
 static int map_broken;

@@ -34,6 +34,7 @@ static int capture_listen(struct proxy *p,void (**listener)(void),void *data) {
 static void capture_destroy(struct proxy *p){assert(p);++destroyed;}
 static struct object owner,pointer,keyboard,cursor;
 static struct proxy owner_proxy={&surface_iface},pointer_proxy={&pointer_iface},cursor_proxy={&surface_iface};
+static struct proxy fallback_proxy={&surface_iface};
 static struct keymap_overlay profile;
 static void capture_setup(void) {
   scrcpy_mapping_cancel();map_fd=-1;unavailable=0;memset(map_held,0,sizeof(map_held));
@@ -46,7 +47,8 @@ static void capture_setup(void) {
     .pointer_surface=&owner_proxy,.cursor_serial=77,.cursor_surface=&cursor_proxy,.cursor_requested=1,
     .cursor_hotspot_x=3,.cursor_hotspot_y=4};
   keyboard=(struct object){.keyboard_focus=&owner,.display=(void *)17};
-  cursor=(struct object){.p=&cursor_proxy,.protocol_name="wl_surface",.display=(void *)17};
+  cursor=(struct object){.p=&cursor_proxy,.protocol_name="wl_surface",.display=(void *)17,
+    .committed_attached=1};
   owner.next=&pointer;pointer.next=&keyboard;keyboard.next=&cursor;objects=&owner;
   tasks[0]=(struct task){.id=5,.x=760,.y=154,.width=464,.height=824,.package="org.test"};task_count=1;
   profile=(struct keymap_overlay){.passive=1,.task=5,.package="org.test",.model={.count=1}};
@@ -85,6 +87,27 @@ int main(void) {
   scrcpy_mapping_key(&owner,&profile,38,1);keymap_locked(0,&lock_proxy);
   assert(packets==before+1&&!hidden); /* Never hide a cursor with unknown restore state. */
   scrcpy_mapping_cancel();assert(!restored);
+
+  /* The bridge's fallback exists before any guest cursor request. Capture
+   * must hide it on grant, then restore it on escape and compositor unlock. */
+  for(int unlock=0;unlock<2;++unlock) {
+    capture_setup();pointer.cursor_requested=0;pointer.cursor_surface=0;
+    pointer.edit_cursor=&fallback_proxy;
+    csd_cursor_show(&pointer);assert(restored==1&&last_cursor[1].o==&fallback_proxy);
+    restored=0;
+    scrcpy_mapping_key(&owner,&profile,38,1);keymap_locked(0,&lock_proxy);
+    assert(hidden==1&&!last_cursor[1].o);
+    if(unlock)keymap_unlocked(0,&lock_proxy);else assert(scrcpy_mapping_escape());
+    assert(restored==1&&last_cursor[1].o==&fallback_proxy&&
+      last_cursor[2].i==3&&last_cursor[3].i==2);
+    pointer.edit_cursor=0;
+  }
+
+  /* Enter serial zero remains valid after wraparound, including capture. */
+  capture_setup();pointer.cursor_serial=0;
+  scrcpy_mapping_key(&owner,&profile,38,1);keymap_locked(0,&lock_proxy);
+  assert(hidden==1&&!last_cursor[0].u);
+  assert(scrcpy_mapping_escape()&&restored==1&&!last_cursor[0].u);
 
   capture_setup();before=packets;
   keymap_capture_bindings->constraints=0;

@@ -66,7 +66,7 @@ def build():
     subprocess.run(cxx + ['-std=c++17', '-O2', '-g', '-Wall', '-Wextra', '-Werror',
                          *checked, '-I' + str(OUT), str(HERE / 'keymap-client-check.cpp'), *objects,
                          str(mapper), str(text_state),
-                         '-o', str(OUT / 'keymap-client-check'), '-lwayland-client', '-lX11', '-lXtst', '-ldl', '-pthread'], check=True)
+                         '-o', str(OUT / 'keymap-client-check'), '-lwayland-client', '-lX11', '-lXtst', '-lXfixes', '-ldl', '-pthread'], check=True)
     print(OUT / 'anvildroid-x11-host')
     (OUT / 'NOTICE').write_text('\n\n'.join(notices) + '\n')
     (OUT / 'source-manifest.json').write_text(json.dumps(dict(

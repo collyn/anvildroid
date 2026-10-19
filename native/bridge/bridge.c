@@ -17,6 +17,7 @@ extern void *calloc(size_t, size_t);
 extern void free(void *);
 extern int strcmp(const char *, const char *);
 extern int __android_log_print(int, const char *, const char *, ...);
+extern int __system_property_get(const char *, char *) __attribute__((weak));
 extern void abort(void);
 extern int pthread_mutex_lock(void *);
 extern int pthread_mutex_unlock(void *);
@@ -121,7 +122,8 @@ struct object {
   struct proxy *edit_cursor;
   uint32_t cursor_serial;
   struct proxy *cursor_surface;
-  int cursor_hotspot_x,cursor_hotspot_y,cursor_requested;
+  int cursor_hotspot_x,cursor_hotspot_y,cursor_requested,cursor_fallback;
+  int committed_attached; /* Buffer state after the last forwarded surface commit. */
   struct proxy *attached_buffer;
   int attach_x, attach_y, clip_hidden, clip_x, clip_y;
   int bx, by, bw, bh, has_bounds, attached;
@@ -211,6 +213,7 @@ static int scrcpy_mapping_escape(void);
 static void scrcpy_mapping_relative(struct object *,int32_t,int32_t);
 static int keymap_capture_start(struct object *);
 static int keymap_capture_active(struct object *);
+static int keymap_capture_hides_cursor(struct object *);
 static int keymap_capture_supported(struct object *);
 static int __attribute__((unused)) keymap_capture_status(struct object *);
 static void keymap_capture_stop(void);
@@ -220,6 +223,7 @@ static int keymap_capture_remove(struct object *,uint32_t);
 static void keymap_capture_disconnect(struct wl_display *);
 static void keymap_capture_forget(struct object *);
 static void keymap_capture_cursor_request(struct object *,union argument *);
+static struct object *keymap_owner(struct proxy *);
 static struct task tasks[128];
 static int task_count;
 #include "media-layer.inc"
@@ -1145,6 +1149,7 @@ static struct proxy *bridge_marshal(
   struct proxy *result = nv_constructor ? nv_result : skip ? 0 : modern
       ? real_array_flags(p, op, interface, version, flags, a)
       : real_marshal(p, op, a, interface, version);
+  if(!skip&&o&&!strcmp(cls,"wl_surface")&&!strcmp(method,"commit"))csd_cursor_commit(o);
   if (!skip) window_feedback_event(o,cls,method);
   if (!skip && o && o->app && o->attached && !strcmp(cls,"wl_surface") &&
       !strcmp(method,"commit")) o->initial_presented=1;

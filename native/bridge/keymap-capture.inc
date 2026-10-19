@@ -83,14 +83,10 @@ static void keymap_capture_stop(void) {
   memset(&keymap_capture,0,sizeof(keymap_capture));
   if(locked){wayland_send(locked,0,0);real_destroy(locked);}
   if(relative){wayland_send(relative,0,0);real_destroy(relative);}
-  if(restore&&pointer&&pointer->pointer_surface&&pointer->cursor_serial&&pointer->cursor_requested) {
-    struct proxy *surface=pointer->cursor_surface;
-    if(surface&&!find(surface))surface=0;
-    union argument a[4]={{.u=pointer->cursor_serial},{.o=surface},
-      {.i=pointer->cursor_hotspot_x},{.i=pointer->cursor_hotspot_y}};
-    wayland_send(pointer->p,0,a);
-    csd_cursor_show(pointer);
-  }
+  if(restore)csd_cursor_restore(pointer);
+}
+static int keymap_capture_hides_cursor(struct object *pointer) {
+  return keymap_capture.pointer==pointer&&keymap_capture.active;
 }
 static int keymap_capture_active(struct object *owner) {
   if(keymap_capture.owner!=owner||!keymap_capture.locked)return 0;
@@ -118,9 +114,8 @@ static void keymap_locked(void *data,struct proxy *p) {
   pthread_mutex_lock(mutex);
   if(p==keymap_capture.locked&&keymap_capture_owner_valid()) {
     keymap_capture.active=1;
-    /* Preserve an unknown compositor cursor. Once upstream supplies its
-     * cursor, interception below hides it and retains an exact restore value. */
-    if(keymap_capture.pointer->cursor_requested) {
+    /* A bridge arrow is restorable even before HWC's first cursor request. */
+    if(keymap_capture.pointer->cursor_requested||keymap_capture.pointer->cursor_fallback) {
       union argument a[4]={{.u=keymap_capture.pointer->cursor_serial},{.o=0},{.i=0},{.i=0}};
       wayland_send(keymap_capture.pointer->p,0,a);
     }
@@ -141,7 +136,7 @@ static int keymap_capture_start(struct object *owner) {
   if(keymap_capture.owner)return keymap_capture.owner==owner;
   struct object *pointer=0;
   for(struct object *o=objects;o;o=o->next)
-    if(object_is(o,"wl_pointer")&&o->display==owner->display&&o->cursor_serial&&
+    if(object_is(o,"wl_pointer")&&o->display==owner->display&&o->pointer_surface&&
        game_fit_owner(find(o->pointer_surface))==owner) {pointer=o;break;}
   if(!pointer)return 0;
   keymap_capture.owner=owner;keymap_capture.pointer=pointer;
@@ -213,7 +208,10 @@ static void keymap_capture_forget(struct object *o) {
   if(o==keymap_capture.owner||o==keymap_capture.pointer ||
      (keymap_capture.pointer&&o->p==keymap_capture.pointer->pointer_surface))
     scrcpy_mapping_cancel();
-  for(struct object *p=objects;p;p=p->next)if(p->cursor_surface==o->p)p->cursor_surface=0;
+  for(struct object *p=objects;p;p=p->next)if(p->cursor_surface==o->p) {
+    p->cursor_surface=0;
+    if(p!=o&&p->pointer_surface!=o->p)csd_cursor_show(p);
+  }
 }
 static void keymap_capture_cursor_request(struct object *o,union argument *a) {
   if(!o)return;
