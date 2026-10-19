@@ -2,8 +2,12 @@
 """Inert checks: reject unsafe input routing and ambiguous surface coordinates."""
 import copy
 import importlib.util
+import io
 import os
 from pathlib import Path
+import subprocess
+import tarfile
+import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -15,8 +19,62 @@ def load(name):
 probe=load('probe-android-controls')
 live=load('live-android')
 isolation=load('probe-editor-isolation')
+game=load('probe-luanti-game')
 
 class Safety(unittest.TestCase):
+    def test_game_rejects_changed_official_bytes_before_guest_mutation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'changed.apk';path.write_bytes(b'changed official archive')
+            session=object.__new__(game.Session)
+            with patch.object(session,'raw',create=True) as raw,patch.object(session,'request',create=True) as request,\
+                 self.assertRaises(RuntimeError):session.prepare(path,path)
+            raw.assert_not_called();request.assert_not_called()
+
+    def test_game_archive_rejects_traversal_and_links(self):
+        for name,kind in [('minetest_game-5.8.0/../escape',tarfile.REGTYPE),
+                          ('/minetest_game-5.8.0/escape',tarfile.REGTYPE),
+                          ('minetest_game-5.8.0/link',tarfile.SYMTYPE)]:
+            data=io.BytesIO()
+            with tarfile.open(fileobj=data,mode='w') as archive:
+                entry=tarfile.TarInfo(name);entry.type=kind;entry.linkname='/outside'
+                archive.addfile(entry,io.BytesIO())
+            with self.subTest(name=name),self.assertRaises(RuntimeError):game.assets(data.getvalue())
+
+    def test_game_oracle_refuses_stale_sequence_and_replaced_server(self):
+        session=object.__new__(game.Session);session.epoch='current'
+        with patch.object(session,'game_state',return_value={'epoch':'current','seq':12}),\
+             patch.object(game.time,'monotonic',side_effect=[0,1]),self.assertRaises(RuntimeError):
+            session.wait(lambda v:True,'stale',after=12,timeout=.1)
+        with patch.object(session,'game_state',return_value={'epoch':'replaced','seq':999}),\
+             self.assertRaisesRegex(RuntimeError,'epoch changed'):
+            session.wait(lambda v:True,'replaced',after=12)
+
+    def test_game_profiles_pass_production_validator_and_editor_can_own_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            session=object.__new__(game.Session);session.m={'id':'r-'+'a'*32}
+            session.output=Path(directory);session.guest=['lxc-attach','--']
+            with patch.object(session,'run',return_value='') as run:session.write_profile()
+            commands=[c.args[0] for c in run.call_args_list]
+            self.assertIn(['lxc-attach','--','/system/bin/chown','1000:1000',
+                           '/data/waydroid_tmp/anvildroid/keymaps',
+                           '/data/waydroid_tmp/anvildroid/keymaps/'+game.PACKAGE],commands)
+            self.assertIn('--uid',commands[-1]);self.assertEqual(commands[-1][2],'1000')
+            text=(session.output/'game-profile.txt').read_text();lines=text.splitlines()
+            rows=[list(map(int,row.split())) for row in lines[1:]]
+            self.assertEqual(lines[0].split()[2:4],[session.m['id'],game.PACKAGE])
+            header=(Path(__file__).resolve().parents[2]/'native/bridge/keymap-model.h').as_posix()
+            def model(values):return '{.count='+str(len(values))+',.points={'+','.join('{'+','.join(map(str,row))+'}' for row in values)+'}}'
+            captured=copy.deepcopy(rows);look=next(row for row in captured if row[4]==8)
+            look[0],look[9],look[18]=38,0,1
+            invalid=captured+[copy.deepcopy(rows[3])]
+            source=Path(directory)/'game-profile.c'
+            source.write_text('#include "'+header+'"\nint main(void) {\n'+
+                '\n'.join('struct keymap_model m'+str(i)+'='+model(values)+';' for i,values in enumerate([rows,captured,invalid]))+
+                '\nreturn !(keymap_valid(&m0,1) && keymap_valid(&m1,1) && !keymap_valid(&m2,1));\n}\n')
+            executable=Path(directory)/'validate'
+            subprocess.run(['cc',str(source),'-o',str(executable)],check=True,capture_output=True,timeout=20)
+            subprocess.run([str(executable)],check=True,capture_output=True,timeout=5)
+
     def test_editor_isolation_refuses_personal_or_non_fixture_endpoints(self):
         for path in ('/var/lib/waydroid/acceptance.json','/tmp/personal/acceptance.json','/home/user/acceptance.json'):
             with self.subTest(path=path),patch.object(isolation.subprocess,'run') as run,self.assertRaises(RuntimeError):

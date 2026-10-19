@@ -138,7 +138,7 @@ pointer and may still move. Native X11 additionally checks its host confinement.
 Recorded results and package checksums are in
 [`tests/acceptance/README.md`](../tests/acceptance/README.md).
 
-Real FPS/MOBA gameplay, mouse feel, sustained capture and ARM game acceptance
+Representative FPS/MOBA/ARM games, physical mouse feel and long capture sessions
 remain manual release gates. Diagnostic MotionEvents establish delivery to the
 probe app; they cannot certify another game's compatibility or physical
 GNOME/KDE/Default input behavior. The 2026-10-19 disposable managed runs pass
@@ -151,6 +151,15 @@ package, own-profile touch coordinates and peer gameplay while editing, with no
 cross-runtime input or saved-byte changes. These checks do not establish physical
 desktop window-manager behavior or multiple same-package tasks in one runtime;
 ambiguous task owners remain rejected.
+
+The subsequent [real-game acceptance](GAME-ACCEPTANCE.md) uses official Luanti
+5.17.0 with Minetest Game 5.8.0 in forced touch mode. It observes actual node
+digging, hotbar taps, joystick/swipe movement, mouse/Look camera rotation,
+simultaneous movement/look/dig, blur cancellation and fresh recovery. The
+existing editor changes Hold Look to FPS Capture for a bounded 30-second
+relative-motion run, followed by Escape/quiescence and a fresh toggle. This
+is one offline game in disposable managed guests; it does not certify other
+games or the physical desktop matrix.
 
 The X11 suite additionally uses a private Xvfb/XTest display, the real X11
 adapter and Wayland seat, and production keyboard/pointer mapping handlers with

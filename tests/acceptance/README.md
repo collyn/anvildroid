@@ -387,3 +387,45 @@ This lifecycle passed on 2026-10-18 using launcher SHA256
 Evidence and positive scope/loop teardown are retained in
 `target/plan-completion-20261018/default-arm/`. The probes' JNI results establish
 actual ARM code execution, not representative ARM game compatibility.
+
+## Offline real-game controls
+
+`probe-luanti-game.py` uses the official unmodified Luanti 5.17.0 x86_64 APK
+and Minetest Game 5.8.0 in a managed disposable Android guest. Obtain the two
+release files from the pinned sources in [game acceptance](../../docs/GAME-ACCEPTANCE.md).
+The helper checks their SHA256 before installation. It downloads nothing and
+uses the same worker/generation/namespace and private display guards as the
+two-runtime controls probe. It never connects to the installed controller.
+
+Prepare/start separate stores with `live-android.py` as above, using `--x11`
+or `--wayland-x11`. From a second terminal, pass that store's actual host worker
+PID, absolute output directory and downloaded input paths:
+
+```sh
+sudo python3 tests/acceptance/probe-luanti-game.py /tmp/anvil-live-game-local/acceptance.json HOST_WORKER_PID "$PWD/target/game-local" --prepare --apk /absolute/luanti-5.17.0-x86_64.apk --game /absolute/minetest_game-5.8.0.tar.gz --normalize-window --enter --run
+```
+
+`--prepare` resets only the probe's `Acceptance` world inside that authenticated
+disposable guest. It installs a world-local scene/telemetry mod, enables the
+game's touch controls, remaps native W/A/S/D away from movement, and creates
+the package's V3 profile as Android UID 1000 so the production editor can Save.
+The observer sets the initial scene once, then records actual player state;
+it does not move the player or synthesize input during measurement.
+
+Window normalization uses the production CSD on private Weston; native X11
+uses its private Xvfb window. The probe rejects invisible/ambiguous surfaces
+and stale fitted geometry. A new server epoch and advancing sequence numbers
+are required. Tests observe node removal, hotbar selection, position, camera
+and simultaneous game controls through real XTest → bridge → mapper → Android
+input. Hold Look is changed to FPS Capture using the existing graphical editor.
+Capture receives relative motion for at least 30 seconds; Escape, camera
+quiescence and a fresh toggle are checked separately. Final/failed runs blur
+the private client and release inputs, including a toggle that survives key-up.
+
+Run `python3 tests/acceptance/test-controls-harness.py` for inert archive,
+pinning, stale-oracle, endpoint and profile checks. The actual game profile and
+its Capture variant are checked by the production C validator. The ordinary
+feature script runs those checks without starting Android or a game.
+After live testing, stop each store with `live-android.py --stop`, verify
+Stopped/cleanup_complete, quiescence, empty scope and no owned process/mount,
+then remove only the exact disposable stores. Retain evidence outside them.

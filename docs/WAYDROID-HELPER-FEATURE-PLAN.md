@@ -1150,3 +1150,37 @@ Physical GNOME/KDE/CachyOS/Default input, representative games and ARM game feel
 sustained FPS capture and latency under game load remain open. No new Arch build
 or host deployment is claimed here. AppImage stays deferred; this follow-up is
 submitted on PR #2 without merging or publishing a release.
+
+## Item 2: real-game controls acceptance — 2026-10-19
+
+The managed real-game portion now has reproducible **11/11 native X11 and
+11/11 nested Wayland** passes using the official Luanti 5.17.0 x86_64 APK and
+Minetest Game 5.8.0. Actual game state confirms node digging, hotbar taps,
+mouse-as-finger camera movement, center-first drag/hold joystick, held swipe
+endpoints, Hold Look, simultaneous movement/look/dig, blur cancellation and
+fresh input after refocus. Mapping-off native mouse/W are negative controls.
+The existing editor changes the same Look to Capture and Saves it. Relative
+camera movement continues for 30.496/30.586 seconds, Escape releases it, and a
+fresh toggle works again. No new runtime settings section was created.
+
+The maintained probe pins official APK/game bytes, reuses authenticated private
+endpoints and requires a fresh game epoch/advancing telemetry. A world-local
+mod initializes the scene once and only observes player state during testing.
+The nested XTest/Weston cursor positions are normalized after unlocking; the
+outer transport cursor is distinct from the locked Wayland pointer. This is
+fixture routing, with no product input or binary change in this follow-up.
+
+The complete feature regression script and 26 inert controls-harness tests
+pass. Both final Android generations reached Stopped/cleanup_complete,
+quiescence and empty scopes, with no owned process/host mount before removing
+their disposable stores. Exact inputs, licensing, scenario results, summaries,
+failed attempts, cleanup and remaining scope are in
+[real-game acceptance](GAME-ACCEPTANCE.md); reproduction is maintained in the
+[acceptance README](../tests/acceptance/README.md#offline-real-game-controls).
+
+This completes one offline game's managed input acceptance. The broader item 2
+Default/physical-desktop/image matrix stays open, including held-input runtime
+disconnect/restart. Other representative FPS/MOBA/ARM games, long sessions,
+GPU behavior and latency under load also remain open. The package remains
+`editor.lifecycle3` (`caf0d63b…`); no personal runtime, installed service,
+RustDesk session or remote Arch host was changed. AppImage remains deferred.

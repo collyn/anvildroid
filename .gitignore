@@ -63,6 +63,7 @@ test_*.py
 !/tests/acceptance/probe-android-controls.py
 !/tests/acceptance/editor-lifecycle.py
 !/tests/acceptance/probe-editor-isolation.py
+!/tests/acceptance/probe-luanti-game.py
 !/tests/acceptance/test-controls-harness.py
 !/tests/acceptance/default-android.py
 !/tests/acceptance/test-default-harness.py
