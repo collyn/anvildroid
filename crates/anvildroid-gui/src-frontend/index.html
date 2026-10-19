@@ -142,7 +142,7 @@
 
 
       <section id="page-runtime-settings" class="page" aria-labelledby="runtime-settings-title">
-        <header class="runtime-page-header runtime-config-header">
+        <header class="page-header runtime-page-header runtime-config-header">
           <button id="runtime-settings-back" type="button" class="btn btn-quiet">← Runtimes</button>
           <div><p class="runtime-config-eyebrow">Runtime settings</p><h1 id="runtime-settings-title" tabindex="-1"></h1></div>
         </header>
@@ -174,9 +174,11 @@
 
       <!-- Images page -->
       <section id="page-images" class="page">
-        <div class="page-header"><div><h1>Images</h1><p class="hint">Download and import Android images for your runtimes.</p></div><button id="btn-refresh-images" class="btn" type="button">Refresh</button></div>
-        <section class="settings-section image-settings runtime-images-section">
-          <div class="section-heading"><div><h2>Image library</h2></div><div class="runtime-actions"><button id="btn-import-images" class="btn" type="button" aria-controls="image-library-import" aria-expanded="false">Import custom image…</button><button id="btn-create-runtime-images" class="btn btn-primary" type="button">Create runtime</button></div></div>
+        <div class="page-header">
+          <h1>Images</h1>
+          <div class="runtime-actions"><button id="btn-refresh-images" class="btn" type="button">Refresh</button><button id="btn-import-images" class="btn" type="button" aria-controls="image-library-import" aria-expanded="false">Import custom image…</button><button id="btn-create-runtime-images" class="btn btn-primary" type="button">Create runtime</button></div>
+        </div>
+        <section class="settings-section image-settings runtime-images-section" aria-label="Image library">
           <p id="custom-image-status" role="status" aria-live="polite"></p>
           <div id="settings-image-download" role="status" aria-live="polite"></div>
           <button id="btn-cancel-image-download" class="btn" hidden>Cancel download</button>
@@ -185,7 +187,7 @@
           <label class="custom-image-name">Image name<input id="custom-image-name" type="text" maxlength="128" placeholder="My custom Android" autocomplete="off"></label>
           <div class="runtime-actions"><button id="btn-import-runtime-folder" type="button" class="btn btn-primary">Choose image folder…</button><button id="btn-import-runtime-image" type="button" class="btn">Choose custom image ZIP…</button><button id="btn-cancel-custom-image" type="button" class="btn" hidden>Cancel import</button></div>
           <div class="runtime-actions custom-image-url-row"><input id="custom-image-url" type="url" placeholder="https://example.com/waydroid-images.zip" aria-label="Custom image ZIP URL" autocomplete="off"><button id="btn-import-runtime-url" type="button" class="btn btn-primary">Download custom image</button></div>
-          <p class="hint">Choose a folder containing system.img and vendor.img directly, or a ZIP containing both files for Waydroid x86_64, Android SDK 33+ (ext4, EROFS, SquashFS or Android sparse). Sparse images are expanded automatically. Newer Android support is experimental: Prepare checks required Waydroid components; boot and desktop controls still depend on the build. Image import creates an independent runtime; it does not replace Default runtime. Use images from a source you trust. Custom Android builds may not support AnvilDroid desktop controls or ARM translation.</p>
+          <details class="image-import-help"><summary>Image requirements</summary><p class="hint">Choose a folder containing system.img and vendor.img directly, or a ZIP containing both files for Waydroid x86_64, Android SDK 33+ (ext4, EROFS, SquashFS or Android sparse). Sparse images are expanded automatically. Newer Android support is experimental: Prepare checks required Waydroid components; boot and desktop controls still depend on the build. Image import creates an independent runtime; it does not replace Default runtime. Use images from a source you trust. Custom Android builds may not support AnvilDroid desktop controls or ARM translation.</p></details>
         </div>
           </div>
           <div id="available-runtime-images" aria-live="polite"><p class="hint">Loading image library...</p></div>
@@ -207,7 +209,7 @@
 
       <!-- Settings page -->
       <section id="page-settings" class="page">
-        <div class="page-header"><div><h1>Settings</h1><p class="hint">Application preferences and ARM packages</p></div><button id="btn-refresh-settings" class="btn">Refresh</button></div>
+        <div class="page-header"><h1>Settings</h1><button id="btn-refresh-settings" class="btn">Refresh</button></div>
         <div class="settings-section">
           <div class="application-preferences">
           <label class="shortcut-preference"><input id="minimize-to-panel" type="checkbox" disabled> Minimize to panel</label>
