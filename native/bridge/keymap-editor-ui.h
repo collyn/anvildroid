@@ -27,7 +27,7 @@ struct keymap_rect {
 };
 struct keymap_layout {
   int compact;
-  struct keymap_rect panel, add, save, remove, tap, hold, cancel, toggle;
+  struct keymap_rect panel, add, save, remove, tap, hold, cancel, toggle, status;
   struct keymap_rect playback, visibility;
   struct keymap_rect properties[8];
 };
@@ -51,6 +51,7 @@ static struct keymap_layout keymap_layout(int w, int h, int hidden) {
   l.visibility=(struct keymap_rect){152,68,132,28};
   if(h<160)l.playback.h=l.visibility.h=0;
   if (l.compact) {
+    if(h>=200)l.status=(struct keymap_rect){12,104,w-24,32};
     l.panel = (struct keymap_rect){8, h - 52, w - 16, 44};
     int unit = (w - 28) / 5, x = 14, y = h - 46;
     l.add = (struct keymap_rect){x, y, unit - 4, 32};
@@ -90,6 +91,7 @@ static int keymap_ui_hit(struct keymap_layout l, int x, int y) {
     return l.compact ? 4 : 7;
   if (keymap_contains(l.hold, x, y))
     return 8;
+  if(keymap_contains(l.status,x,y))return -1;
   return keymap_contains(l.panel, x, y) ? -1 : 0;
 }
 static void keymap_box(uint32_t *p, int w, int h, struct keymap_rect r,
@@ -285,7 +287,7 @@ static void keymap_editor_paint(uint32_t *p, int w, int h,
     "Joystick: radius / ramp milliseconds","Look region: width / height",
     "Look: X / Y sensitivity percent","Look: invert Y / hold or FPS capture"};
   const char *hint = f->save_pending ? "Saving..."
-                     : m->error == 1 ? "Key already used"
+                     : m->error == 1 ? "Binding conflict"
                      : m->error == 2 ? "Check keys and WASD"
                      : m->error == 3 ? "Save failed"
                      : m->placing    ? "Click to place a control"
@@ -310,6 +312,11 @@ static void keymap_editor_paint(uint32_t *p, int w, int h,
                        m->error ? 0xffffad99 : 0xff89d5ff, 1);
   }
   if (!f->panel_hidden) {
+    if(l.status.h) {
+      keymap_box(p,w,h,l.status,6,0xee172331);
+      keymap_text_scaled_clipped(p,w,h,l.status.x+l.status.w-6,
+        l.status.x+8,l.status.y+11,hint,m->error?0xffffad99:0xff89d5ff,1);
+    }
     keymap_ui_button(p,w,h,l.playback,f->disabled?"F3: Keymap off":"F3: Keymap on",!f->disabled,1);
     keymap_ui_button(p,w,h,l.visibility,f->hints_hidden?"F4: Markers off":"F4: Markers on",!f->hints_hidden,1);
     keymap_box(p, w, h, l.panel, 10, 0xfa19232f);
@@ -350,7 +357,7 @@ static void keymap_editor_paint(uint32_t *p, int w, int h,
     keymap_ui_button(p, w, h, l.hold, "Hold", hold, end_enabled);
     keymap_ui_button(p, w, h, l.remove, l.compact ? "Del" : "Delete control", 0,
                      selected);
-    keymap_ui_button(p, w, h, l.save, f->save_pending ? "Wait" : m->dirty?"Save*":"Save", 1,
+    keymap_ui_button(p, w, h, l.save, f->save_pending ? "Wait" : m->error?"Check":m->dirty?"Save*":"Save", 1,
                      !f->save_pending);
     keymap_ui_button(p, w, h, l.cancel, l.compact ? "Exit" : "X", 0, 1);
   }

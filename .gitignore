@@ -50,6 +50,7 @@ test_*.py
 !/tests/keymap-storage.c
 !/tests/scrcpy-mapping.c
 !/tests/keymap-overlay.c
+!/tests/keymap-editor-lifecycle.c
 !/tests/keymap-hints.c
 !/tests/boot-canvas.c
 !/tests/test_runtime_keymaps.py
@@ -60,6 +61,8 @@ test_*.py
 !/tests/acceptance/live-android.py
 !/tests/acceptance/probe-android-shares.py
 !/tests/acceptance/probe-android-controls.py
+!/tests/acceptance/editor-lifecycle.py
+!/tests/acceptance/probe-editor-isolation.py
 !/tests/acceptance/test-controls-harness.py
 !/tests/acceptance/default-android.py
 !/tests/acceptance/test-default-harness.py

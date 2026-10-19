@@ -1,6 +1,7 @@
 # Waydroid Helper feature implementation plan
 
-Last updated: 2026-10-18. Branch: `dev/waydroid-helper-features`.
+Last updated: 2026-10-19. Original branch: `dev/waydroid-helper-features`;
+current follow-up: `fix/compact-page-headers` (PR #2).
 
 The user requested implementation of all five recommendations, parallel agent
 work, thorough testing, and commits on a development branch. Existing installed
@@ -19,9 +20,10 @@ results and current package hashes are recorded at the end of this document.
 Arch installation, boot, restart and GPU checks pass on CachyOS; the user also
 confirmed the runtime works after the OverlayFS/BinderFS fixes.
 Remaining acceptance requires representative apps/games,
-physical desktop/editor interactions, the graphical managed ARM workflow, and
+physical desktop input/gameplay, the graphical managed ARM workflow, and
 online Google account/Integrity checks. Disposable Default ARM disable/restore
-and managed X11/Wayland editor/playback cancellation now pass. The remaining
+and the managed X11/Wayland graphical editor lifecycle now pass (45/45 on each
+route, plus 8/8 concurrent-runtime isolation checks). The remaining
 gates stay unchecked below. AppImage
 is deferred; this branch is not a merge or published release.
 
@@ -247,6 +249,9 @@ Owner: game-controls agent; shared-folders agent assists mount investigation.
 - [ ] Exercise Basic/WASD/swipe/repeat/skill/macro/aim-fire in Android apps on both
   display backends. Verify editor/save/reload, independent marker visibility,
   focus loss, window resize, app replacement, disconnect and restart cancellation.
+  The 2026-10-19 follow-up completes the managed graphical editor, geometry and
+  app-replacement portions; live runtime disconnect/restart under held input
+  remains separate from the deterministic native cancellation coverage.
 - [x] Exercise all ten maintained delivery scenarios on actual managed VANILLA
   Android 13 through native X11, the production bridge and scrcpy Android sink;
   verify finger MotionEvents, finite macros, multiple contacts and blur release.
@@ -947,14 +952,19 @@ the controls owner. Acceptance work uses separate harness/probe files.
   task/package replacement, runtime disconnect and capture-release shortcut
   release every contact/timer/capture. Consume stale button/key releases;
   require fresh input after refocus, with toggle capture remaining off.
-- [ ] Actual Android probe on managed X11 and Wayland observes
+- [x] Actual Android probe on managed X11 and Wayland observes
   SOURCE_TOUCHSCREEN and TOOL_TYPE_FINGER, correct coordinates/IDs and exact
   gesture order. Exercise joystick + camera + fire simultaneously and profile
   isolation across concurrent app windows/runtimes. Report supported Default
   combinations separately; earlier 13/13 results do not cover these additions.
-- [ ] Drive the graphical editor: add/select/rebind/drag/delete, invalid/conflict
+  The 2026-10-19 managed runs pass 45/45 per backend and 8/8 same-package,
+  concurrent-runtime isolation cases. Multiple ambiguous same-package tasks in
+  one runtime remain rejected; physical Default input is not covered here.
+- [x] Drive the graphical editor: add/select/rebind/drag/delete, invalid/conflict
   states, Save/reload/Cancel, marker visibility and window resizing. Round-trip
-  old and new profiles through native persistence and GUI inventory.
+  old and new profiles through native persistence and GUI inventory. The
+  2026-10-19 disposable managed runs add real DPI/rotation and task replacement;
+  physical GNOME/KDE/Default behavior remains a separate acceptance gate.
 - [ ] Test representative games: a game rejecting mouse input, a drag-to-start
   joystick game, and a camera-swiping FPS/MOBA. Record games/builds/backends and
   known limits. Diagnostic MotionEvents establish delivery, not game feel or
@@ -1037,9 +1047,10 @@ the passing evidence.
 All test runtimes reached `Stopped`, complete cleanup and empty scopes, with
 no owned processes or host mounts, before removing their disposable stores.
 No package was installed over personal services, and no physical Arch-host
-deployment is claimed for this editor build. The composite Android and editor
-gates above remain open for concurrent app/runtime isolation and the full live
-drag/delete/conflict/resize/rotation/replacement matrix. Physical GNOME/KDE/
+deployment is claimed for this editor build. At that delivery, the composite
+Android/editor gates remained open for concurrent runtime isolation and live
+drag/delete/conflict/resize/rotation/replacement; the 2026-10-19 follow-up below
+closes those managed cases. Physical GNOME/KDE/
 Default input, representative mouse-rejecting/joystick/FPS/MOBA games, ARM game
 compatibility, tuning and latency under load remain manual acceptance gates.
 AppImage remains deferred; this delivery does not merge or publish a release.
@@ -1072,3 +1083,70 @@ RustDesk, desktop session or service was a test target. Android 11 live executio
 the graphical install workflow, representative games and physical Arch testing
 remain open. See [ARM translation](ARM-TRANSLATION.md) for the full version table,
 checksums/provenance and retained evidence.
+
+## Keymap editor lifecycle completion — 2026-10-19
+
+This completes item 1 of the remaining-work review in the existing editor.
+Compact layouts now show binding/validation errors; invalid bindings preserve
+the prior control. Deleting a marker clears binding capture/property state.
+Resize or fitted-origin changes cancel dragging and stale toolbar presses, so
+an old release cannot activate a relocated Save/Delete target. Replaced or
+ambiguous task ownership cancels the draft before it can save to another task.
+
+Actual Android density testing exposed a receiver fault: Activity recreation
+can already cancel Android's gesture, causing our subsequent CANCEL to fail
+and latch all later input off. The patched scrcpy receiver still blocks stale
+MOVE/UP after a failed reset, but permits only a fresh DOWN to recover with an
+empty pointer list. A failed fresh DOWN keeps the guard latched. The build now
+tests these production Java methods against the real upstream pointer state
+before compiling the pinned Android server.
+
+| Managed acceptance | Result | Evidence |
+| --- | --- | --- |
+| Native X11 editor/input/capture | 45/45 pass | [summary](../target/editor-lifecycle-20261019/recovery-x11-v2/summary.json) |
+| Nested Wayland editor/input/capture | 45/45 pass | [summary](../target/editor-lifecycle-20261019/recovery-wayland-v5/summary.json) |
+| Same package in concurrent X11 and Wayland runtimes | 8/8 pass | [summary](../target/editor-lifecycle-20261019/isolation-v2/summary.json) |
+
+The full runs include add/select/drag/rebind/delete, rendered conflict feedback,
+unassigned Save rejection, Save/reload/Cancel, actual marker hide/restore pixels,
+dirty app replacement/reopen, resize during drag, maximize/restore, real Android
+density 220 and 90-degree rotation while a contact is held, and fresh playback
+after each transition. Existing finger mouse/joystick/swipe/look/multicontact and
+capture tests remain enabled. Wayland maximize uses the production CSD; native
+X11 supplies an explicit private EWMH/ConfigureNotify WM fixture. This does not
+certify physical KWin/GNOME maximize behavior.
+
+The isolation probe alternates real input between two distinct profiles for
+`org.anvildroid.touchprobe`, checks the authored positions (actual x=109/334),
+edits/Saves each binding while the peer plays, and requires zero cross-runtime
+contacts and unchanged peer profile bytes. Multiple ambiguous same-package
+tasks in one runtime are still rejected rather than sharing an editor owner.
+
+Verification also passes the complete feature script (backend/frontend and
+12 native suites), full native regressions, new editor ASan/UBSan/leak checks,
+private native-X11 host regressions, the Android x86_64 bridge warning-as-error
+build, production-method Java reset regression/full scrcpy build, and the final
+22 inert controls-harness tests. The extracted Debian package passes pinned
+source/native/scrcpy parity, dependencies, CLI routing and image-tool checks.
+Logs are under `target/editor-lifecycle-*.log`; live evidence and failed attempts
+are retained under `target/editor-lifecycle-20261019/`.
+
+| Final artifact | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `target/releases/anvildroid-controller_0.1.3+editor.lifecycle3_amd64.deb` | 26,285,118 | `caf0d63bc2abca3a065981df1b7252af9eb7660e960eb23b3e72368b6f1c1b1f` |
+| Packaged patched scrcpy server | — | `855be209a8719a964827cc990ed84a406119f4110c77f2074d215bba20cb2ca7` |
+
+The scrcpy revision remains `f01231dff8294fe2c99045a4f9a14b233a71bb86`;
+patch SHA256 is `ccbc0a0bd85eb17d8acf643f6b2431fc4fcb635e3eeea4359189de2b43d8930a`.
+Both acceptance generations were cleanly stopped before fresh isolation
+desktops. Final isolation generations also reached Stopped/cleanup_complete,
+quiescence and empty scopes, with no owned process or host mount before removal:
+[X11](../target/editor-lifecycle-20261019/cleanup-final-x11.json),
+[Wayland](../target/editor-lifecycle-20261019/cleanup-final-wl.json).
+
+All live work used disposable Android 13 Vanilla guests, software rendering and
+private namespaces/displays. No new package was installed over personal services.
+Physical GNOME/KDE/CachyOS/Default input, representative games and ARM game feel,
+sustained FPS capture and latency under game load remain open. No new Arch build
+or host deployment is claimed here. AppImage stays deferred; this follow-up is
+submitted on PR #2 without merging or publishing a release.

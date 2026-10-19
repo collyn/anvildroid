@@ -90,6 +90,26 @@ validate persisted V3 rows and fresh playback, then change a rendered property
 and Cancel while requiring exact saved bytes to survive. Geometry includes
 centered letterboxing; unknown frame geometry fails closed.
 
+Add `--editor-lifecycle` (requires `--editor-v3`) for the full 45-case run. It
+drives select/drag/rebind, rendered duplicate-binding feedback, toolbar Delete,
+unassigned Save rejection and marker Delete while binding capture is armed.
+It compares actual marker pixels across F4 hide/show, requires saved bytes to
+survive Cancel and dirty task replacement, then exercises resize during drag,
+maximize/restore, actual Android density and 90-degree rotation while holding
+a contact, followed by fresh input. Wayland maximize uses the production CSD;
+X11 has no desktop WM and uses an explicit private EWMH/ConfigureNotify fixture.
+
+Readiness waits for the current observer PID's content size and focused,
+contact-free state. It collapses the private guest's NotificationShade when
+necessary and reacquires mapped native windows after Activity recreation.
+The longer run uses a bounded 16 MiB private log buffer and keeps the exact log
+prefix oracle. Only density/rotation cases allow Android's framework-generated
+terminal CANCEL with touchscreen source, device zero, raw coordinates zero and
+UNKNOWN tool type. DOWN/MOVE/UP still require FINGER, and all other cases retain
+the strict finger-only oracle. A production-method Java regression also covers
+failed CANCEL, stale MOVE/UP rejection and fresh-DOWN recovery after recreation;
+the scrcpy builder runs it against the pinned, patched upstream sources.
+
 The separate capture opt-in requires the actual compositor's relative-pointer
 and pointer-constraints capabilities. It observes lock-dependent Android DOWN,
 relative movement, independent fire, Escape release, blur cancellation and fresh
@@ -182,12 +202,55 @@ subset now passes alongside V3 finger gestures and capture lifecycle.
 These runs use actual Android 13 Vanilla with software rendering, private
 networking and fresh desktop processes. All disposable roots were removed
 after authenticated stop and quiescence checks. Neither package was installed
-over personal services. Full live drag/delete/conflict/resize/rotation/app
-replacement, concurrent windows/runtimes, physical GNOME/KDE/Default input and
+over personal services. At that delivery, full live drag/delete/conflict/resize/
+rotation/app replacement and concurrent runtimes remained open; the follow-up
+below closes those managed cases. Physical GNOME/KDE/Default input and
 representative games remain open. Finite capture tests explicitly record
 `unlimited_movement_verified: false`; they do not establish sustained FPS
 movement, game feel or physical mouse latency. Earlier failed runs remain in
 `target/keymap-v3-verification/` for diagnosis.
+
+The 2026-10-19 editor-lifecycle follow-up passes **45/45 on each route** with
+`--keymap-v3 --editor-v3 --editor-lifecycle --capture-v3`. The pinned package is
+`target/releases/anvildroid-controller_0.1.3+editor.lifecycle3_amd64.deb`, SHA256
+`caf0d63bc2abca3a065981df1b7252af9eb7660e960eb23b3e72368b6f1c1b1f`.
+Its patched scrcpy JAR SHA256 is
+`855be209a8719a964827cc990ed84a406119f4110c77f2074d215bba20cb2ca7`.
+
+| Guest backend | Final lifecycle evidence | Cleanup before fresh isolation desktops |
+| --- | --- | --- |
+| Native X11 | [45/45 summary](../../target/editor-lifecycle-20261019/recovery-x11-v2/summary.json) | [Stopped and quiescent](../../target/editor-lifecycle-20261019/cleanup-before-isolation-x11.json) |
+| Wayland | [45/45 summary](../../target/editor-lifecycle-20261019/recovery-wayland-v5/summary.json) | [Stopped and quiescent](../../target/editor-lifecycle-20261019/cleanup-before-isolation-wl.json) |
+
+For simultaneous-runtime isolation, first complete the normal probe on two
+different disposable stores so the observer is installed in each guest. Stop
+them cleanly and start fresh private desktop processes with the same pinned
+package (relative capture can leave the outer pointer offset). Wait for both
+workers to be Running and rediscover their exact host PIDs/new generations:
+
+```sh
+sudo python3 tests/acceptance/probe-editor-isolation.py /tmp/anvil-live-a/acceptance.json HOST_WORKER_PID_A /tmp/anvil-live-b/acceptance.json HOST_WORKER_PID_B "$PWD/target/live-editor-isolation"
+```
+
+This probe validates private worker/compositor identities before each operation.
+It writes different scoped profiles for the same observer package, alternates
+real mapped input and checks own-profile DOWN coordinates within four pixels.
+It then edits/rebinds/Saves each through the visible editor while playing the
+peer, requiring no leaked contact or peer saved-byte change. The final mixed
+native-X11/Wayland run passes **8/8**, with actual DOWN x=109/334 matching the
+two authored positions. See [isolation summary](../../target/editor-lifecycle-20261019/isolation-v2/summary.json).
+Both final generations reached Stopped/cleanup_complete and quiescence, with
+empty scopes, no owned worker/display processes and no host fixture mounts:
+[X11 cleanup](../../target/editor-lifecycle-20261019/cleanup-final-x11.json),
+[Wayland cleanup](../../target/editor-lifecycle-20261019/cleanup-final-wl.json).
+Their disposable roots were removed after preserving metadata and evidence.
+
+These results close the managed graphical editor lifecycle and same-package
+two-runtime isolation gates above. Multiple ambiguous same-package tasks in
+one runtime remain rejected. Physical GNOME/KDE/CachyOS/Default input, popup/chat/
+IME gameplay, sustained capture, representative games and latency under load
+remain separate gates. No package from this follow-up was installed over the
+personal controller/runtime or remote desktop session.
 
 Shared-folder checks require a test-owned source with the sentinel
 `acceptance-read` containing TOKEN, configured through production shared-folder

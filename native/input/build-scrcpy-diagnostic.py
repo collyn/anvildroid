@@ -7,6 +7,7 @@ Use --verify to check the cached artifact against the source and patch pins.
 """
 import hashlib
 import json
+import runpy
 from pathlib import Path
 import shutil
 import subprocess
@@ -48,6 +49,7 @@ def build(checkout, platform, tools):
         with zipfile.ZipFile(archive_path) as z:
             z.extractall(work)
         subprocess.run(['patch', '-p1', '-i', str(root / 'native/input/scrcpy-3.3.1-cancel.patch')], cwd=work, check=True)
+        runpy.run_path(str(root / 'native/input/scrcpy-reset-test.py'))['test_source'](work)
         gen = work / 'gen'
         classes = work / 'classes'
         dex = work / 'dex'

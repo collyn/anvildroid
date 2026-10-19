@@ -137,7 +137,7 @@ static int keymap_assign_source(struct keymap_model *m, int source, int key) {
   if (m->selected<0 || m->selected>=m->count || source<0 || source>2 ||
       (source==KEYMAP_SOURCE_KEY && (key<2 || key>767 || (key>=60 && key<=62))) ||
       (source==KEYMAP_SOURCE_MOUSE && (key<272 || key>276)) ||
-      (source==KEYMAP_SOURCE_POINTER && key!=0)) return 0;
+      (source==KEYMAP_SOURCE_POINTER && key!=0)) {m->error=2;return 0;}
   struct keymap_point old=m->points[m->selected];
   m->points[m->selected].source=source; m->points[m->selected].key=key;
   if (!keymap_valid(m,0)) { m->points[m->selected]=old; m->error=1; return 0; }

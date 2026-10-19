@@ -373,6 +373,12 @@ static void keymap_connection_lost(void) {
 static void keymap_overlay_sync(struct object *s, int x, int y, int w, int h) {
   if (!s)
     return;
+  if(s->overlay&&s->overlay->token&&keymap_task_owner(s)!=s->overlay->task) {
+    /* A replaced or ambiguous task must never inherit an in-flight edit. */
+    s->overlay->close_pending=1;
+    s->overlay->close_result=3;
+    s->overlay->save_pending=0;
+  }
   if(s->overlay) {
     int status=keymap_capture_status(s);
     if(status!=s->overlay->capture_status){s->overlay->capture_status=status;s->overlay->dirty=1;}
@@ -404,6 +410,15 @@ static void keymap_overlay_sync(struct object *s, int x, int y, int w, int h) {
   struct keymap_overlay *f=s->overlay?s->overlay:s->hints;
   if(!f)return;
   struct csd_piece *p=&f->piece;
+  if(p->width!=w||p->height!=h||
+     (f->sync_valid&&(f->sync_x!=x||f->sync_y!=y))) {
+    /* A release after a geometry change belongs to the old layout. It cannot
+     * finish a drag or activate Save/Delete at a newly positioned hit target. */
+    f->dragging=0;
+    for(struct object *o=objects;o;o=o->next)
+      if(o->overlay_focus==s)o->overlay_pressed=0;
+    scrcpy_mapping_cancel();
+  }
   if (!csd_compositor || !csd_subcompositor || !csd_shm)
     return;
   if (w < 300 || h < 120 || w > 8192 || h > 8192 || (int64_t)w * h > 16777216) {
@@ -451,9 +466,6 @@ static void keymap_overlay_sync(struct object *s, int x, int y, int w, int h) {
   wayland_send(p->subsurface, 1, pos);
   if(above_surface){union argument above={.o=above_surface};wayland_send(p->subsurface,2,&above);}
   if (f->dirty || p->width != w || p->height != h) {
-    if (p->width != w || p->height != h) {
-      f->dragging = 0; scrcpy_mapping_cancel();
-    }
     keymap_paint_context = f;
     struct proxy *buffer = csd_paint(4, w, h, 0);
     keymap_paint_context = 0;
@@ -493,6 +505,7 @@ static void keymap_overlay_motion(struct object *pointer) {
   if (!s || !s->overlay)
     return;
   struct keymap_overlay *f = s->overlay;
+  if(f->model.selected<0||f->model.selected>=f->model.count)f->dragging=0;
   struct keymap_layout l=keymap_layout(f->piece.width,f->piece.height,f->panel_hidden);
   if (f->dragging && !f->save_pending &&
       !keymap_ui_hit(l,pointer->csd_x,pointer->csd_y)) {
@@ -579,6 +592,7 @@ static void keymap_overlay_button(struct object *pointer, uint32_t button,
       }
       if(hit>=100&&hit<100+KEYMAP_POINTS) {
         m->selected=hit-100;keymap_remove(m);
+        f->property_page=0;f->binding_capture=0;
       }
       if (hit == 4 || hit == 7 || hit == 8) {
         int selected=m->selected>=0&&m->selected<m->count;

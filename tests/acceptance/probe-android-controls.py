@@ -49,15 +49,22 @@ def scene_rectangle(scene, runtime_id):
     require(right<=1600 and bottom<=1000,'Wayland surface outside private output')
     return x,y
 
-def touch_events(lines):
+def touch_events(lines,allow_framework_cancel=False):
     """Require complete balanced Android gestures, not merely a final zero."""
     require(not any('WARNING' in row for row in lines),'Observer detected stale contacts')
     events=[row for row in lines if 'AnvilTouchProbe:' in row and ' ACTION_' in row]
     active=0
     for row in events:
+        # Activity recreation can make Android dispatch its own device-0,
+        # zero-coordinate CANCEL with UNKNOWN tool type. Only explicit
+        # lifecycle scenarios may accept that terminal; all injected
+        # DOWN/MOVE/UP events still require real touchscreen fingers.
+        framework_cancel=(allow_framework_cancel and ' ACTION_CANCEL ' in row and
+                          ' device=0 ' in row and ' raw=(0.0,0.0) ' in row and
+                          re.findall(r'tool=([^ ]+)',row)==['UNKNOWN(0)'])
         require(re.search(r' source=0x1002(?:$|\s)',row) is not None and
                 re.findall(r'tool=([^ ]+)',row) and
-                all(tool=='FINGER(1)' for tool in re.findall(r'tool=([^ ]+)',row)),
+                (all(tool=='FINGER(1)' for tool in re.findall(r'tool=([^ ]+)',row)) or framework_cancel),
                 'Not actual finger touch delivery')
         match=re.search(r' ACTION_(DOWN|UP|MOVE|CANCEL|POINTER_DOWN|POINTER_UP)(?:\(\d+\))? ',row)
         count=re.search(r' activeAfter=(\d+)(?:$|\s)',row)
@@ -78,11 +85,11 @@ def require_no_mapped_contact(lines,reason):
                     ('AnvilTouchProbe:' in row and ' ACTION_' in row and 'source=0x1002' in row)
                     for row in lines),reason)
 
-def gesture_complete(lines):
+def gesture_complete(lines,allow_framework_cancel=False):
     """A tap may finish before key-up; holds finish after it."""
     events=[row for row in lines if 'AnvilTouchProbe:' in row and ' ACTION_' in row]
     if not events or re.search(r' activeAfter=0(?:$|\s)',events[-1]) is None:return False
-    touch_events(lines)
+    touch_events(lines,allow_framework_cancel)
     return True
 
 def v3_point(**changes):
@@ -161,9 +168,9 @@ def editor_targets(w,h):
     if compact:
         unit=(w-28)//5
         targets={name:(14+unit*column+(unit-4)//2,h-30)
-                 for name,column in [('add',0),('tap',1),('save',3),('cancel',4)]}
+                 for name,column in [('add',0),('tap',1),('remove',2),('save',3),('cancel',4)]}
     else:
-        targets=dict(add=(w-132,148),tap=(w-186,231),save=(w-132,h-48),cancel=(w-30,30))
+        targets=dict(add=(w-132,148),tap=(w-186,231),remove=(w-132,283),save=(w-132,h-48),cancel=(w-30,30))
     columns=2 if not compact and h>=540 else 4
     row_height=32 if columns==2 else 24
     px,py,pw=(12,12,w-88) if compact else (w-236,304,208)
@@ -245,8 +252,9 @@ def main():
     parser.add_argument('metadata',type=Path);parser.add_argument('worker_pid',type=int);parser.add_argument('output',type=Path)
     parser.add_argument('--keymap-v3',action='store_true',help='Run V3 finger/joystick/swipe/look acceptance after the legacy thirteen cases')
     parser.add_argument('--editor-v3',action='store_true',help='With --keymap-v3, click the real editor Add/Bind/Save and edit/Cancel controls')
+    parser.add_argument('--editor-lifecycle',action='store_true',help='With --editor-v3, verify drag/delete/conflicts, marker pixels and live geometry/task lifecycle')
     parser.add_argument('--capture-v3',action='store_true',help='With --keymap-v3, require actual FPS lock/relative motion and lifecycle acceptance')
-    args=parser.parse_args();require(not args.capture_v3 or args.keymap_v3,'--capture-v3 requires --keymap-v3');require(not args.editor_v3 or args.keymap_v3,'--editor-v3 requires --keymap-v3');require(os.geteuid()==0,'Root required')
+    args=parser.parse_args();require(not args.capture_v3 or args.keymap_v3,'--capture-v3 requires --keymap-v3');require(not args.editor_v3 or args.keymap_v3,'--editor-v3 requires --keymap-v3');require(not args.editor_lifecycle or args.editor_v3,'--editor-lifecycle requires --editor-v3');require(os.geteuid()==0,'Root required')
     root=args.metadata.parent
     require(root.parent==Path('/tmp') and root.name.startswith('anvil-live-') and root.resolve()==root and root.stat().st_uid==0 and not root.stat().st_mode & 0o077,'Unsafe disposable root')
     require(args.metadata.name=='acceptance.json' and not args.metadata.is_symlink(),'Unexpected metadata')
@@ -280,6 +288,7 @@ def main():
         def compositor_state():
             return ((compositor/'stat').read_text().rsplit(')',1)[1].split()[19],os.readlink(compositor/'ns/mnt'),os.readlink(compositor/'ns/pid'),(compositor/'cmdline').read_bytes())
         compositor_identity=compositor_state()
+    args.output=args.output.resolve()
     args.output.mkdir(parents=True,exist_ok=True)
     prefix=['nsenter','-t',str(args.worker_pid),'-m','-n','-p','--']
     guest=prefix+['lxc-attach','-P',str(instance/'android'),'-n',m['id']]
@@ -315,6 +324,13 @@ def main():
     status=request({'op':'status'})
     if status['state']=='Frozen':status=request({'op':'resume'})
     require(status['state']=='Running','Actual Android must be Running')
+    # The longer lifecycle matrix recreates Activities and rotates the test
+    # display. Bound private log storage while retaining the strict prefix
+    # oracle instead of silently accepting rotated evidence buffers.
+    run(guest+['--','/system/bin/logcat','-G','16M'])
+    if args.editor_lifecycle:
+        run(guest+['--','/system/bin/wm','user-rotation','lock','0'])
+        run(guest+['--','/system/bin/wm','density','reset'])
     apk=os.open(REPO/'target/touch-probe/AnvilDroidTouchProbe.apk',os.O_RDONLY)
     try:request({'op':'install'},apk)
     finally:os.close(apk)
@@ -333,7 +349,21 @@ def main():
     input_prefix=['nsenter','-t',compositor.name,'-m','-n','-p','--'] if nested else prefix
     input_env=['env','DISPLAY=:77','XAUTHORITY='+transport['authority']] if nested else ['env','DISPLAY=:77','XAUTHORITY=/run/anvil-x11-authority']
     x=input_prefix+input_env+['xdotool']
-    windows=run(x+(['search','--onlyvisible','--class','weston'] if nested else ['search','--class',r'\.org\.anvildroid\.touchprobe$'])).splitlines()
+    # A failed opt-in run may leave XTest keys held. Release only the probe's
+    # known inputs on this authenticated private display before measuring.
+    run(x+['keyup','w','a','s','d','b','r','t','g','h','j','l','z','x','c','v','n','Escape','F2','F3','F4',
+           'mouseup','1','mouseup','3'])
+    def mapped_windows():
+        deadline=time.monotonic()+10
+        previous=None
+        while True:
+            try:found=run(x+(['search','--onlyvisible','--class','weston'] if nested else ['search','--onlyvisible','--class',r'\.org\.anvildroid\.touchprobe$'])).splitlines()
+            except subprocess.CalledProcessError:found=[]
+            require(len(found)<=1,'Ambiguous scoped observer windows')
+            if len(found)==1 and found==previous:return found
+            require(time.monotonic()<deadline,'Scoped observer did not map within ten seconds')
+            previous=found;time.sleep(.3)
+    windows=mapped_windows()
     require(len(windows)==1,'Expected one unambiguous observer window');window=windows[0]
     if nested:require(window==transport['x11_window'],'Private Weston X11 output changed')
     offset=(0,0)
@@ -346,6 +376,33 @@ def main():
         offset=scene_rectangle(scene,m['id'])
     run(x+['windowfocus','--sync',window,'mousemove','--window',window,str(220+offset[0]),str(320+offset[1])])
     def logs():return run(guest+['--','/system/bin/logcat','-d','-s','AnvilTouchProbe:I','AnvilKeymap:I','AnvilKeymapOverlay:I','*:S']).splitlines()
+    def guest_ready(label):
+        nonlocal offset
+        deadline=time.monotonic()+10
+        collapsed=False
+        while True:
+            try:
+                pid=run(guest+['--','/system/bin/pidof',PACKAGE]).strip()
+                require(pid.isdecimal(),'Observer PID ambiguous')
+                rows=run(guest+['--','/system/bin/logcat','-d','--pid='+pid,'-s','AnvilTouchProbe:I','*:S']).splitlines()
+                (args.output/(label+'-ready.log')).write_text('\n'.join(rows)+'\n')
+                focus=[row for row in rows if ' FOCUS=' in row]
+                if any(' SIZE contentPx=' in row for row in rows) and focus and ' FOCUS=true active=0' in focus[-1]:return
+                if not collapsed:
+                    # Fresh stock guests can leave NotificationShade focused
+                    # after setup/configuration. Establish the diagnostic app's
+                    # foreground state before measuring, only in this guest.
+                    run(guest+['--','/system/bin/cmd','statusbar','collapse'])
+                    collapsed=True;time.sleep(.15);continue
+                if nested:
+                    scene=run(input_prefix+['env','XDG_RUNTIME_DIR=/run/user/'+str(m['owner_uid']),
+                              'WAYLAND_DISPLAY='+transport['wayland_display'],'weston-debug','scene-graph'],timeout=5)
+                    offset=scene_rectangle(scene,m['id'])
+                    run(x+['mousemove','--window',window,str(offset[0]+220),str(offset[1]+320),'sleep','.15','click','1'])
+            except subprocess.CalledProcessError:pass
+            require(time.monotonic()<deadline,'Actual observer did not become focused and ready')
+            time.sleep(.1)
+    guest_ready('initial-observer')
     tree=run(input_prefix+input_env+['xwininfo','-root'])
     root_window=re.search(r'Window id: (0x[0-9a-fA-F]+)',tree)
     require(root_window is not None,'Private X11 root unavailable')
@@ -514,7 +571,9 @@ def main():
         def action_count(rows,action):
             return sum(' ACTION_'+action+' ' in row for row in observed(rows))
         def v3_stage(label,sequence,predicate=None,settle=.15):
-            v3_guard();before=logs();run(x+sequence)
+            v3_guard();before=logs()
+            if callable(sequence):sequence()
+            else:run(x+sequence)
             deadline=time.monotonic()+5
             while True:
                 time.sleep(settle);v3_guard();after=logs()
@@ -525,7 +584,10 @@ def main():
                 if predicate is None or predicate(rows):return rows
                 require(time.monotonic()<deadline,label+': Android acknowledgment timed out')
         def v3_move(px,py):
-            return ['mousemove','--sync','--window',window,str(px+offset[0]),str(py+offset[1])]
+            # Xdotool --sync may wait forever for a move to the current point.
+            # XTest request order plus the Android/persistence oracle supplies
+            # the acknowledgment, including stationary editor pixel captures.
+            return ['mousemove','--window',window,str(px+offset[0]),str(py+offset[1])]
         def v3_reload(rows,label):
             nonlocal window,offset
             v3_guard()
@@ -535,7 +597,7 @@ def main():
                        'cat > /data/waydroid_tmp/anvildroid/keymaps/org.anvildroid.touchprobe'],input=profile.encode())
             for action in ('force_stop','launch'):request({'op':'app_action','action':action,'package':PACKAGE})
             time.sleep(1)
-            windows=run(x+(['search','--onlyvisible','--class','weston'] if nested else ['search','--class',r'\.org\.anvildroid\.touchprobe$'])).splitlines()
+            windows=mapped_windows()
             require(len(windows)==1,'V3 requires one scoped observer window');window=windows[0]
             if nested:
                 require(window==transport['x11_window'],'Private Weston output changed')
@@ -548,9 +610,10 @@ def main():
             activate=['windowfocus','--sync',window]+v3_move(220,320)
             if nested:activate+=['click','1']
             v3_stage(label+'-activation',activate,settle=.3)
-        def v3_finish(name,rows,downs=None,peak=None):
+            guest_ready(label)
+        def v3_finish(name,rows,downs=None,peak=None,framework_cancel=False):
             (args.output/(name+'.log')).write_text('\n'.join(rows)+'\n')
-            events=touch_events(rows);count=action_count(rows,'DOWN')
+            events=touch_events(rows,framework_cancel);count=action_count(rows,'DOWN')
             if downs is not None:require(count==downs,name+': wrong gesture count')
             maximum=max(int(re.search(r'activeAfter=(\d+)',row)[1]) for row in events)
             if peak is not None:require(maximum==peak,name+': wrong simultaneous contact count')
@@ -637,16 +700,17 @@ def main():
                 v3_guard()
                 return run(guest+['--uid','1000','--gid','1000','--','/system/bin/cat',profile_path])
             before_editor=editor_bytes()
-            def editor_open(label):
-                rows=v3_stage(label,['key','F2'],lambda lines:any('AnvilKeymapOverlay:' in line and 'attached ' in line for line in lines),settle=.2)
-                require(not observed(rows),'Opening editor leaked Android contact')
+            def editor_measure(label,rows=None):
+                nonlocal window,offset
+                if not nested:window=mapped_windows()[0]
+                if rows is None:rows=logs()
                 geometry=editor_attachment(rows,m['id'])
                 ox,oy,ew,eh=geometry
                 if nested:
                     scene=run(input_prefix+['env','XDG_RUNTIME_DIR=/run/user/'+str(m['owner_uid']),
                               'WAYLAND_DISPLAY='+transport['wayland_display'],'weston-debug','scene-graph'],timeout=5)
                     (args.output/(label+'-scene.txt')).write_text(scene)
-                    scene_rectangle(scene,m['id'])
+                    offset=scene_rectangle(scene,m['id'])
                     section=next(part for part in scene.split('\n\tView ') if 'role xdg_toplevel' in part and ' of waydroid.anvildroid.'+m['id']+'.'+PACKAGE+',' in part)
                     bounds=tuple(map(int,re.search(r'position: \((-?\d+), (-?\d+)\) -> \((-?\d+), (-?\d+)\)',section).groups()))
                     host_w,host_h=bounds[2]-bounds[0],bounds[3]-bounds[1]
@@ -657,6 +721,14 @@ def main():
                     host_w,host_h=int(values['WIDTH']),int(values['HEIGHT'])
                 frame=editor_frame(geometry,host_w,host_h,nested)
                 return geometry,frame,rows
+            def editor_open(label):
+                nonlocal window
+                if not nested:
+                    window=mapped_windows()[0]
+                    run(x+['windowfocus','--sync',window])
+                rows=v3_stage(label,['key','F2'],lambda lines:any('AnvilKeymapOverlay:' in line and 'attached ' in line for line in lines),settle=.2)
+                require(not observed(rows),'Opening editor leaked Android contact')
+                return editor_measure(label,rows)
             def editor_click(label,geometry,top,point):
                 ox,oy,ew,eh=geometry;px,py=point
                 require(0<=px<ew and 0<=py<eh,'Editor click outside content')
@@ -722,6 +794,11 @@ def main():
             recovery+=v3_stage('v3-editor-cancel-up',['keyup','z'],lambda rows:gesture_complete(recovery+rows))
             v3_finish('v3-editor-visible-cancel',recovery,downs=1,peak=1)
             require(editor_bytes()==saved,'Editor Cancel changed profile after playback recovery')
+            if args.editor_lifecycle:
+                spec=importlib.util.spec_from_file_location('editor_lifecycle',Path(__file__).with_name('editor-lifecycle.py'))
+                lifecycle=importlib.util.module_from_spec(spec);spec.loader.exec_module(lifecycle)
+                editor_window=lambda:(window,offset)
+                lifecycle.exercise({**globals(),**locals()})
         if args.capture_v3:
             trace_process=None;trace_files=[]
             trace_path=args.output/'v3-capture-protocol.log'

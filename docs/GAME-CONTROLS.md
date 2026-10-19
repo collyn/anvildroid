@@ -15,6 +15,14 @@ and closes; **Save*** indicates changes. Cancel, Escape or F2 closes the editor
 without saving. F3 toggles gameplay mapping and F4 toggles markers independently.
 F6–F9 remain shortcuts for type, endpoint, timing and macro count.
 
+The compact editor shows binding conflicts and validation errors above the
+canvas; **Check** on Save also flags a problem in very short windows. A rejected
+binding keeps the previous assignment. Delete removes the selected control;
+the marker's X does the same and cancels binding capture. Resizing or moving
+the fitted canvas cancels an in-progress drag/button press, so begin a fresh
+press after the change. Replacing or closing the Android task cancels its
+unsaved edit session; the next app instance loads the last saved profile.
+
 ## Authoring controls
 
 - **Mouse touch:** add a control and cycle its type to **Touch >**. This enables
@@ -103,6 +111,12 @@ on reconnection. Runtime processes and generation-scoped editor requests retain
 the existing runtime/package/task isolation; ambiguous duplicate tasks are
 rejected.
 
+Android may cancel a gesture itself when density changes recreate the Activity.
+If its subsequent CANCEL rejects our now-obsolete contact, the receiver drops
+stale MOVE/UP events and accepts only a fresh DOWN to start a new stream with
+an empty pointer list. A failed fresh DOWN keeps that recovery guard active.
+This avoids permanently disabling input after a configuration change.
+
 ## Verification and live acceptance
 
 `tests/keymap-advanced.c` exercises diagonal/opposing movement, independent
@@ -127,9 +141,16 @@ Recorded results and package checksums are in
 Real FPS/MOBA gameplay, mouse feel, sustained capture and ARM game acceptance
 remain manual release gates. Diagnostic MotionEvents establish delivery to the
 probe app; they cannot certify another game's compatibility or physical
-GNOME/KDE/Default input behavior. The full live editor drag/delete/conflict,
-resize/rotation/replacement and concurrent-window matrix also remains open;
-deterministic native coverage of those guards is separate from live acceptance.
+GNOME/KDE/Default input behavior. The 2026-10-19 disposable managed runs pass
+45/45 scenarios on each backend, including graphical drag/delete/rebind,
+rendered conflict feedback, rejected unassigned Save, marker pixels,
+resize/maximize, Android density/rotation and dirty task replacement/reopen.
+Wayland maximize uses the production CSD; X11 uses a private EWMH window-manager
+fixture. A separate 8/8 two-runtime run verifies different profiles for the same
+package, own-profile touch coordinates and peer gameplay while editing, with no
+cross-runtime input or saved-byte changes. These checks do not establish physical
+desktop window-manager behavior or multiple same-package tasks in one runtime;
+ambiguous task owners remain rejected.
 
 The X11 suite additionally uses a private Xvfb/XTest display, the real X11
 adapter and Wayland seat, and production keyboard/pointer mapping handlers with

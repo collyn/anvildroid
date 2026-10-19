@@ -14,8 +14,26 @@ def load(name):
 
 probe=load('probe-android-controls')
 live=load('live-android')
+isolation=load('probe-editor-isolation')
 
 class Safety(unittest.TestCase):
+    def test_editor_isolation_refuses_personal_or_non_fixture_endpoints(self):
+        for path in ('/var/lib/waydroid/acceptance.json','/tmp/personal/acceptance.json','/home/user/acceptance.json'):
+            with self.subTest(path=path),patch.object(isolation.subprocess,'run') as run,self.assertRaises(RuntimeError):
+                isolation.Endpoint(Path(path),1,Path('/tmp/evidence'))
+            run.assert_not_called()
+
+    def test_editor_isolation_rechecks_worker_and_compositor_identity(self):
+        endpoint=object.__new__(isolation.Endpoint)
+        endpoint.identity=('123','mnt:private',b'worker');endpoint.nested=True
+        endpoint.compositor_identity=('456','mnt:compositor','pid:private',b'weston')
+        with patch.object(endpoint,'state',return_value=endpoint.identity),\
+             patch.object(endpoint,'compositor_state',return_value=endpoint.compositor_identity):endpoint.guard()
+        with patch.object(endpoint,'state',return_value=('124','mnt:private',b'worker')),self.assertRaises(RuntimeError):endpoint.guard()
+        with patch.object(endpoint,'state',return_value=endpoint.identity),\
+             patch.object(endpoint,'compositor_state',return_value=('457','mnt:compositor','pid:private',b'weston')),\
+             self.assertRaises(RuntimeError):endpoint.guard()
+
     def test_session_masks_host_endpoints_and_discards_inherited_environment(self):
         identity=SimpleNamespace(st_dev=9,st_ino=12)
         account=SimpleNamespace(pw_dir='/home/fixture',pw_gid=1000)
@@ -93,6 +111,16 @@ class Safety(unittest.TestCase):
                ['AnvilTouchProbe: ACTION_UNKNOWN activeAfter=0']]
         for events in cases:
             with self.subTest(events=events),self.assertRaises(RuntimeError):probe.touch_events(events)
+
+    def test_framework_recreation_cancel_is_explicit_and_terminal_only(self):
+        cancel='AnvilTouchProbe: 2 ACTION_CANCEL source=0x1002 device=0 raw=(0.0,0.0) id=0(0.0,0.0) tool=UNKNOWN(0) activeAfter=0'
+        down=self.event('DOWN',1)
+        with self.assertRaises(RuntimeError):probe.touch_events([down,cancel])
+        self.assertEqual(probe.touch_events([down,cancel],True),[down,cancel])
+        for bad in (cancel.replace('CANCEL','UP'),cancel.replace('device=0','device=-1'),
+                    cancel.replace('source=0x1002','source=0x2002'),cancel.replace('raw=(0.0,0.0)','raw=(2.0,0.0)')):
+            with self.subTest(bad=bad),self.assertRaises(RuntimeError):probe.touch_events([down,bad],True)
+        with self.assertRaises(RuntimeError):probe.touch_events([cancel],True)
 
     def test_v3_profile_preserves_contract_order_and_explicit_hold_mode(self):
         row=probe.v3_point(key=19,kind=2,source=0,end_mode=2,duration=200)
