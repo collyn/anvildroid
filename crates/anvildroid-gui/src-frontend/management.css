@@ -45,8 +45,7 @@
 }
 
 /* Use the same unboxed toolbar on every page. */
-.page > .page-header { min-height: 36px; gap: 8px 12px; flex-wrap: wrap; margin: 0 0 12px; }
-.page > .page-header h1 { margin: 0; font-size: 22px; line-height: 1.25; letter-spacing: -.4px; }
+.page > .page-header { min-height: 36px; gap: 8px 12px; flex-wrap: wrap; align-items: center; margin: 0 0 12px; }
 .page > .page-header .runtime-actions { margin: 0; gap: 6px; }
 
 :is(#page-runtime, #page-runtime-settings, #page-images, #page-adb) .controller-heading { margin: 20px 2px 12px; }
@@ -162,6 +161,7 @@
 
 .controls-toolbar, .controls-diagnostics { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 #page-controls select { max-width: 300px; min-width: 180px; padding: 8px 10px; border-radius: 7px; }
+#page-controls .controls-toolbar select { height: 32px; min-height: 32px; padding: 5px 10px; }
 #page-controls .btn { padding: 7px 12px; font-size: 12px; }
 #page-controls .controls-table-scroll { margin: 0; border-color: var(--mg-border); }
 #page-controls .controls-table { table-layout: fixed; }

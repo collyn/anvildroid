@@ -47,6 +47,7 @@
       <!-- Apps page -->
       <section id="page-apps" class="page active">
         <div class="page-header apps-topbar">
+          <h1 class="page-title">App Library</h1>
           <label class="global-search"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="10.5" cy="10.5" r="7"/><path d="m16 16 5 5"/></svg><input id="search-apps" type="search" placeholder="Search apps, packages, or activities…" aria-label="Search apps"><span class="search-shortcut" aria-hidden="true"><kbd>Ctrl</kbd><kbd>K</kbd></span></label>
           <div class="page-actions">
             <button id="btn-refresh-apps" class="btn" title="Refresh apps"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M20 7v5h-5M20 12a8 8 0 1 0-2 5M20 7l-3-2"/></svg><span>Refresh</span></button>
@@ -60,7 +61,6 @@
           <button id="btn-manage-tags" class="btn btn-quiet" type="button" aria-label="Manage tags" title="Manage tags">+</button>
           <div class="library-display-controls"><div class="library-view" role="group" aria-label="Library view"><button class="view-button active" type="button" data-view="grid" aria-label="Grid view"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg></button><button class="view-button" type="button" data-view="list" aria-label="List view"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5h12M9 12h12M9 19h12M3 5h.01M3 12h.01M3 19h.01"/></svg></button></div><label class="favorites-toggle"><input id="favorites-only" type="checkbox"><span class="toggle-track" aria-hidden="true"></span><span class="favorites-label">Favorites only</span></label></div>
         </div>
-        <h1 class="app-list-caption">App Library</h1>
         <div id="library-google-notices" aria-label="Google Play registration"></div>
         <div id="library-runtime-status" class="hint" role="status"></div>
         <div id="apps-grid" class="apps-grid">
@@ -78,7 +78,7 @@
 
       <!-- Runtime page -->
       <section id="page-runtime" class="page">
-        <div class="page-header runtime-page-header"><h1>Runtimes</h1><div class="runtime-actions"><span id="controller-connection" class="status-badge" role="status" title="Runtime service connection">Connecting…</span><button id="btn-runtime-setup-details" class="btn btn-quiet" type="button" aria-controls="runtime-setup-panel" aria-expanded="false">Setup details</button><button id="btn-restart-controller" class="btn btn-quiet" type="button" title="Restart the controller service">Restart controller</button><button id="btn-refresh-runtimes" class="btn">Refresh</button></div></div>
+        <div class="page-header runtime-page-header"><h1 class="page-title">Runtimes</h1><div class="runtime-actions"><span id="controller-connection" class="status-badge" role="status" title="Runtime service connection">Connecting…</span><button id="btn-runtime-setup-details" class="btn btn-quiet" type="button" aria-controls="runtime-setup-panel" aria-expanded="false">Setup details</button><button id="btn-restart-controller" class="btn btn-quiet" type="button" title="Restart the controller service">Restart controller</button><button id="btn-refresh-runtimes" class="btn">Refresh</button></div></div>
         <div id="runtime-setup-panel" hidden>
         <div id="controller-setup" role="status"></div>
         <div id="waydroid-setup-actions" hidden>
@@ -144,7 +144,7 @@
       <section id="page-runtime-settings" class="page" aria-labelledby="runtime-settings-title">
         <header class="page-header runtime-page-header runtime-config-header">
           <button id="runtime-settings-back" type="button" class="btn btn-quiet">← Runtimes</button>
-          <div><p class="runtime-config-eyebrow">Runtime settings</p><h1 id="runtime-settings-title" tabindex="-1"></h1></div>
+          <div><p class="runtime-config-eyebrow">Runtime settings</p><h1 id="runtime-settings-title" class="page-title" tabindex="-1"></h1></div>
         </header>
         <div id="runtime-settings-content"></div>
         <div id="legacy-runtime-detail" hidden>
@@ -175,7 +175,7 @@
       <!-- Images page -->
       <section id="page-images" class="page">
         <div class="page-header">
-          <h1>Images</h1>
+          <h1 class="page-title">Images</h1>
           <div class="runtime-actions"><button id="btn-refresh-images" class="btn" type="button">Refresh</button><button id="btn-import-images" class="btn" type="button" aria-controls="image-library-import" aria-expanded="false">Import custom image…</button><button id="btn-create-runtime-images" class="btn btn-primary" type="button">Create runtime</button></div>
         </div>
         <section class="settings-section image-settings runtime-images-section" aria-label="Image library">
@@ -200,7 +200,7 @@
 
       <!-- ADB page -->
       <section id="page-adb" class="page">
-        <div class="page-header"><h1>ADB</h1><button id="btn-refresh-adb" class="btn" type="button">Refresh</button></div>
+        <div class="page-header"><h1 class="page-title">ADB</h1><button id="btn-refresh-adb" class="btn" type="button">Refresh</button></div>
         <p class="hint">Connect a running runtime, then select it in Android Studio. Approve USB debugging in Android if requested.</p>
         <div class="runtime-table-scroll"><table class="runtime-table adb-runtime-table"><thead><tr><th>Runtime</th><th>Connection</th><th>Address</th><th>Actions</th></tr></thead><tbody id="adb-runtime-rows"><tr><td colspan="4">Loading…</td></tr></tbody></table></div>
         <p id="adb-status" class="hint" role="status"></p>
@@ -209,7 +209,7 @@
 
       <!-- Settings page -->
       <section id="page-settings" class="page">
-        <div class="page-header"><h1>Settings</h1><button id="btn-refresh-settings" class="btn">Refresh</button></div>
+        <div class="page-header"><h1 class="page-title">Settings</h1><button id="btn-refresh-settings" class="btn">Refresh</button></div>
         <div class="settings-section">
           <div class="application-preferences">
           <label class="shortcut-preference"><input id="minimize-to-panel" type="checkbox" disabled> Minimize to panel</label>
@@ -235,7 +235,7 @@
 
       <section id="page-controls" class="page">
         <div class="page-header controls-header">
-          <h1>Game Controls</h1>
+          <h1 class="page-title">Game Controls</h1>
           <div class="controls-toolbar">
             <select id="keymap-runtime-filter" aria-label="Filter keymaps by runtime"><option value="all">All runtimes</option><option value="default">Default runtime</option></select>
             <button id="keymap-list-refresh" class="btn" type="button">Refresh</button>
