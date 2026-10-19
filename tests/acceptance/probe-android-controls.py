@@ -744,7 +744,7 @@ def main():
             point=(int(ew*.45),int(eh*.78))
             editor_logs+=editor_click('v3-editor-add',geometry,top,buttons['add'])
             editor_logs+=editor_click('v3-editor-place',geometry,top,point)
-            editor_logs+=editor_click('v3-editor-key-bind',geometry,top,buttons['bind_key'])
+            # Placement itself arms capture; no hidden extra Key... step.
             binding=v3_stage('v3-editor-key-input',['key','z'])
             require(not observed(binding),'Binding capture leaked Android contact');editor_logs+=binding
             editor_logs+=editor_click('v3-editor-save',geometry,top,buttons['save'])

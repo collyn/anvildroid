@@ -16,7 +16,7 @@ static void keymap_hints_paint(uint32_t *p,int w,int h,
       p[(size_t)py*w+px]=d>=25*25?
         (active?0xff8de8ff:0x70355c70):(active?0xb018628a:0x1806080c);
     }
-    char key[20];const char *label=keymap_label(q->key,key,sizeof(key));
+    char key[20];const char *label=keymap_point_label(q,key,sizeof(key));
     int scale=keymap_text_width(label,2)>44?1:2;
     keymap_text_scaled(p,w,h,cx-keymap_text_width(label,scale)/2,cy-7,
                        label,active?0xfff2fbff:0x90909090,scale);
@@ -93,6 +93,34 @@ static int keymap_ui_hit(struct keymap_layout l, int x, int y) {
     return 8;
   if(keymap_contains(l.status,x,y))return -1;
   return keymap_contains(l.panel, x, y) ? -1 : 0;
+}
+/* A direct type picker replaces cycling through unrelated control types.
+ * It is modal for pointer input so a dismissal cannot also move/place a point. */
+static struct keymap_rect keymap_type_rect(const struct keymap_overlay *f,int kind) {
+  int w=f->piece.width,h=f->piece.height;
+  int width=w-24;if(width>330)width=330;
+  int row=h<200?28:40;
+  int x=w>=600?w-264-width:12;if(x<12)x=12;
+  int y=h<200?(h-3*row)/2:104;
+  return (struct keymap_rect){x+(kind%3)*width/3,y+(kind/3)*row,width/3-3,row-3};
+}
+static int keymap_type_hit(const struct keymap_overlay *f,int x,int y) {
+  for(int i=0;i<=KEYMAP_LOOK;++i)
+    if(keymap_contains(keymap_type_rect(f,i),x,y))return 40+i;
+  return -2;
+}
+static const char *keymap_type_label(int kind) {
+  return kind==KEYMAP_BASIC?"Tap/Hold":keymap_kind_name(kind);
+}
+static void keymap_editor_choose_kind(struct keymap_overlay *f,int kind) {
+  struct keymap_model *m=&f->model;
+  struct keymap_point *q=m->selected>=0&&m->selected<m->count?&m->points[m->selected]:0;
+  f->placement_kind=kind;f->type_open=0;f->property_page=0;f->binding_capture=0;
+  if(q&&q->kind!=kind) {
+    keymap_set_kind(q,kind);m->dirty=1;m->error=keymap_valid(m,0)?0:1;
+  }
+  if(q&&q->kind!=KEYMAP_DPAD&&q->source==KEYMAP_SOURCE_KEY&&
+     (!q->key||!keymap_valid(m,0)))f->binding_capture=1;
 }
 static void keymap_box(uint32_t *p, int w, int h, struct keymap_rect r,
                        int radius, uint32_t color) {
@@ -173,8 +201,8 @@ static const char *keymap_property_label(const struct keymap_overlay *f,int i,ch
   const struct keymap_model *m=&f->model;
   const struct keymap_point *q=m->selected>=0&&m->selected<m->count?&m->points[m->selected]:0;
   if(i==0){int kind=q?q->kind:f->placement_kind;
-    if(kind==KEYMAP_MOUSE_TOUCH)return "Touch >";
-    snprintf(b,n,"%s >",keymap_kind_name(kind));return b;}
+    if(kind==KEYMAP_MOUSE_TOUCH)return "Touch...";
+    snprintf(b,n,"%s...",keymap_type_label(kind));return b;}
   if(i==1)return "< Page";
   if(i==2){const char *names[]={"Binding >","Timing >","Joystick >","Region >","Sensitivity >","Look >"};
     const char *short_names[]={"Bind >","Time >","Stick >","Region>","Sens >","Look >"};
@@ -219,9 +247,7 @@ static void keymap_property_action(struct keymap_overlay *f,int i) {
   struct keymap_point *q=m->selected>=0&&m->selected<m->count?&m->points[m->selected]:0;
   if(!keymap_property_enabled(f,i))return;
   if(i==1||i==2){do{f->property_page=(f->property_page+(i==1?5:1))%6;}while(!keymap_page_available(q,f->property_page));return;}
-  if(i==0){f->placement_kind=((q?q->kind:f->placement_kind)+1)%(KEYMAP_LOOK+1);
-    if(q){keymap_set_kind(q,f->placement_kind);m->dirty=1;m->error=keymap_valid(m,0)?0:1;}
-    f->property_page=0;f->binding_capture=0;return;}
+  if(i==0){f->type_open=!f->type_open;f->binding_capture=0;return;}
   int j=i-4,delta=j%2?1:-1;
   if(q->kind==KEYMAP_MOUSE_TOUCH){keymap_remove(m);return;}
   if(f->property_page==0)f->binding_capture=j+1;
@@ -273,7 +299,7 @@ static void keymap_editor_paint(uint32_t *p, int w, int h,
           p[(size_t)py * w + px] = color;
       }
     char key[20];
-    const char *label = keymap_label(q->key, key, sizeof(key));
+    const char *label = keymap_point_label(q, key, sizeof(key));
     int scale = keymap_text_width(label,2)>44?1:2;
     keymap_text_scaled(p, w, h, cx-keymap_text_width(label,scale)/2, cy - 7,
                        label, 0xfff3faff, scale);
@@ -288,10 +314,10 @@ static void keymap_editor_paint(uint32_t *p, int w, int h,
     "Look: X / Y sensitivity percent","Look: invert Y / hold or FPS capture"};
   const char *hint = f->save_pending ? "Saving..."
                      : m->error == 1 ? "Binding conflict"
-                     : m->error == 2 ? "Check keys and WASD"
+                     : m->error == 2 ? "Assign keys / check conflicts"
                      : m->error == 3 ? "Save failed"
                      : m->placing    ? "Click to place a control"
-                     : f->binding_capture==1 ? "Press binding key / Esc cancel"
+                     : f->binding_capture==1 ? "Press a key / Mouse... for button"
                      : f->binding_capture==2 ? "Press mouse button / Esc cancel"
                      : selected      ? pages[f->property_page%6]
                                      : "Select or add a control";
@@ -327,7 +353,7 @@ static void keymap_editor_paint(uint32_t *p, int w, int h,
       char pkg[34];
       snprintf(pkg, sizeof(pkg), "%.32s", f->package);
       keymap_text_scaled_clipped(p, w, h, x+224, x + 16, 80, pkg, 0xffbecddd, 1);
-      keymap_text_scaled(p, w, h, x + 16, 105, "Place on the app", 0xff8194aa,
+      keymap_text_scaled(p, w, h, x + 16, 105, "Add - place - press a key", 0xff8194aa,
                          1);
       keymap_text_scaled(p, w, h, x + 16, 190, "Press behavior", 0xff8194aa, 1);
       if (h >= 600) {
@@ -353,7 +379,7 @@ static void keymap_editor_paint(uint32_t *p, int w, int h,
                      m->count < 64);
     int end_enabled=!selected||m->points[m->selected].kind==KEYMAP_BASIC||m->points[m->selected].kind==KEYMAP_SWIPE;
     keymap_ui_button(p, w, h, l.tap,
-                     l.compact ? (hold ? "Hold" : "Tap") : "Release", !hold, end_enabled);
+                     l.compact ? (hold ? "Hold" : "Tap") : "Tap", !hold, end_enabled);
     keymap_ui_button(p, w, h, l.hold, "Hold", hold, end_enabled);
     keymap_ui_button(p, w, h, l.remove, l.compact ? "Del" : "Delete control", 0,
                      selected);
@@ -370,4 +396,11 @@ static void keymap_editor_paint(uint32_t *p, int w, int h,
     }
     keymap_ui_button(p,w,h,l.properties[i],keymap_property_label(f,i,label,sizeof(label)),
       active,keymap_property_enabled(f,i));}
+  if(f->type_open) {
+    struct keymap_rect r=keymap_type_rect(f,0),last=keymap_type_rect(f,KEYMAP_LOOK);
+    keymap_box(p,w,h,(struct keymap_rect){r.x-6,r.y-6,last.x+last.w-r.x+12,last.y+last.h-r.y+12},8,0xff101d2b);
+    int kind=selected?m->points[m->selected].kind:f->placement_kind;
+    for(int i=0;i<=KEYMAP_LOOK;++i)
+      keymap_ui_button(p,w,h,keymap_type_rect(f,i),keymap_type_label(i),kind==i,1);
+  }
 }

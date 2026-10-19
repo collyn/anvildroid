@@ -12,6 +12,12 @@ static void click(struct object *pointer, struct keymap_rect r) {
   keymap_overlay_button(pointer, 0x110, 1);
   keymap_overlay_button(pointer, 0x110, 0);
 }
+static void choose_type(struct object *pointer,struct keymap_overlay *f,int kind) {
+  click(pointer,keymap_layout(f->piece.width,f->piece.height,0).properties[0]);
+  assert(f->type_open);
+  click(pointer,keymap_type_rect(f,kind));
+  assert(!f->type_open&&f->placement_kind==kind);
+}
 static void test_ui(int w, int h) {
   struct keymap_overlay f = {0};
   f.model.selected = -1;
@@ -43,6 +49,7 @@ static void test_ui(int w, int h) {
   keymap_overlay_button(&pointer, 0x110, 1);
   keymap_overlay_button(&pointer, 0x110, 0);
   assert(f.model.count == 1 && !f.model.placing);
+  assert(f.binding_capture==1); /* Placing immediately asks for the key. */
   assert(keymap_assign(&f.model, 30));
   int nx = f.model.points[0].nx, ny = f.model.points[0].ny;
   click(&pointer, l.toggle);
@@ -72,6 +79,12 @@ static void test_ui(int w, int h) {
   p[0] = 0x12345678;
   p[n + 1] = 0x87654321;
   f.panel_hidden = 0;
+  f.type_open=1;
+  for(int i=0;i<=KEYMAP_LOOK;++i) {
+    struct keymap_rect r=keymap_type_rect(&f,i);
+    assert(r.x>=0&&r.y>=0&&r.x+r.w<=w&&r.y+r.h<=h);
+    assert(keymap_type_hit(&f,r.x+2,r.y+2)==40+i);
+  }
   keymap_editor_paint(p + 1, w, h, &f);
   assert(p[0] == 0x12345678 && p[n + 1] == 0x87654321);
   for (size_t i = 1; i <= n; ++i) {
@@ -90,19 +103,24 @@ static void test_authoring(void) {
   pointer.csd_x=250;pointer.csd_y=250;
   keymap_overlay_button(&pointer,272,1);keymap_overlay_button(&pointer,272,0);
   assert(f.model.count==1&&f.model.points[0].key==0);
+  assert(f.binding_capture==1);
   assert(f.model.points[0].end_mode==KEYMAP_END_RELEASE&&f.model.points[0].duration==50);
   click(&pointer,l.properties[5]);assert(f.binding_capture==2);
   keymap_overlay_button(&pointer,273,1);keymap_overlay_button(&pointer,273,0);
   assert(!f.binding_capture&&f.model.points[0].source==KEYMAP_SOURCE_MOUSE&&f.model.points[0].key==273);
+  char marker[20];assert(!strcmp(keymap_point_label(&f.model.points[0],marker,sizeof(marker)),"M2"));
+  choose_type(&pointer,&f,KEYMAP_SWIPE);
+  assert(f.model.points[0].source==KEYMAP_SOURCE_MOUSE&&f.model.points[0].key==273);
   click(&pointer,l.hold);assert(f.model.points[0].end_mode==KEYMAP_END_HOLD);
   /* Type selector, radius handle, and page controls all edit persisted fields. */
-  click(&pointer,l.properties[0]);assert(f.model.points[0].kind==KEYMAP_DPAD);
+  choose_type(&pointer,&f,KEYMAP_DPAD);assert(f.model.points[0].kind==KEYMAP_DPAD);
+  assert(!strcmp(keymap_point_label(&f.model.points[0],marker,sizeof(marker)),"WASD"));
   struct keymap_point *q=&f.model.points[0];
   int hx=250+(int)((int64_t)q->radius*700/65535);
   pointer.csd_x=hx;pointer.csd_y=250;keymap_overlay_button(&pointer,272,1);
   assert(f.dragging==3);pointer.csd_x+=30;keymap_overlay_motion(&pointer);
   keymap_overlay_button(&pointer,272,0);assert(q->radius>8192);
-  click(&pointer,l.properties[0]);assert(q->kind==KEYMAP_SWIPE);
+  choose_type(&pointer,&f,KEYMAP_SWIPE);assert(q->kind==KEYMAP_SWIPE);
   int ex=(int)((int64_t)q->ex*999/65535),ey=(int)((int64_t)q->ey*699/65535);
   pointer.csd_x=ex;pointer.csd_y=ey;keymap_overlay_button(&pointer,272,1);
   assert(f.dragging==2);pointer.csd_y+=40;keymap_overlay_motion(&pointer);keymap_overlay_button(&pointer,272,0);
@@ -133,7 +151,23 @@ static void test_authoring(void) {
   assert(q->end_mode==KEYMAP_END_LEGACY&&keymap_effective_hold(q));
   click(&pointer,l.tap);
   assert(q->end_mode==KEYMAP_END_RELEASE&&q->duration==50&&f.model.dirty);
+  /* Picking the current type must preserve timing, source and endpoint. */
+  q->duration=350;
+  struct keymap_point before=*q;
+  choose_type(&pointer,&f,KEYMAP_BASIC);
+  assert(!memcmp(q,&before,sizeof(before)));
+  /* A click outside the picker dismisses it without activating Save. */
+  click(&pointer,l.properties[0]);assert(f.type_open);
+  click(&pointer,l.save);assert(!f.type_open&&!f.save_pending);
   click(&pointer,l.cancel);assert(f.close_pending&&f.ack_pending==3&&!f.save_pending&&f.model.dirty);
+  /* A new WASD preset converted to Look inherits W; if another joystick
+   * owns W, ask for its replacement immediately rather than ignore typing. */
+  f=(struct keymap_overlay){.piece={.width=1000,.height=700}};
+  keymap_add(&f.model,200,400,1000,700);keymap_set_kind(&f.model.points[0],KEYMAP_DPAD);
+  keymap_add(&f.model,600,400,1000,700);keymap_set_kind(&f.model.points[1],KEYMAP_DPAD);
+  keymap_editor_choose_kind(&f,KEYMAP_LOOK);
+  assert(f.binding_capture==1);
+  assert(keymap_assign(&f.model,19)&&keymap_valid(&f.model,1));
 }
 int main(int argc, char **argv) {
   test_authoring();

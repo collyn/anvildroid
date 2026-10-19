@@ -112,14 +112,19 @@ static int keymap_add(struct keymap_model *m, int x, int y, int w, int h) {
   return 1;
 }
 static void keymap_set_kind(struct keymap_point *p, int kind) {
-  p->kind=kind; p->source=KEYMAP_SOURCE_KEY; p->end_mode=KEYMAP_END_LEGACY;
+  /* Changing the gesture must not reinterpret a mouse button as a keyboard
+   * evdev code. Pointer-only controls have no reusable trigger. */
+  int source=p->source;
+  p->kind=kind; p->source=source==KEYMAP_SOURCE_MOUSE?source:KEYMAP_SOURCE_KEY;
+  if(source==KEYMAP_SOURCE_POINTER)p->key=0;
+  p->end_mode=KEYMAP_END_LEGACY;
   p->radius=p->ramp_ms=p->look_width=p->look_height=0;
   p->sensitivity_x=p->sensitivity_y=p->invert_y=p->activation=0;
   p->duration=250; p->repeats=3;
   p->ex=p->nx>49151?65535:p->nx+16384; p->ey=p->ny;
   if (kind==KEYMAP_BASIC) { p->end_mode=KEYMAP_END_RELEASE; p->duration=50; }
   if (kind==KEYMAP_SWIPE) p->end_mode=KEYMAP_END_RELEASE;
-  if (kind==KEYMAP_DPAD) { p->key=17; p->radius=8192; p->ramp_ms=80; }
+  if (kind==KEYMAP_DPAD) { p->source=KEYMAP_SOURCE_KEY; p->key=17; p->radius=8192; p->ramp_ms=80; }
   if (kind==KEYMAP_MOUSE_TOUCH) { p->source=KEYMAP_SOURCE_POINTER; p->key=0; }
   if (kind==KEYMAP_LOOK) {
     if(p->nx<256)p->nx=256;

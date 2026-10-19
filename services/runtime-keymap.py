@@ -18,7 +18,7 @@ def keymap_profiles(lxc_path, container, identifier):
               'size=$(wc -c < "$f") || exit 2; '
               'printf "SIZE %s\\n" "$size"; head -c 16385 "$f"; printf "\\n"; done')
     output = linux.run_bounded('lxc-attach', '-P', lxc_path, '-n', container, '--uid','1000','--gid','1000','--',
-                              '/system/bin/sh', '-c', script, timeout=4, operation='Keymap inventory', output_limit=3*1024*1024, full_output=True)
+                              '/system/bin/sh', '-c', script, timeout=4, operation='Keymap inventory', output_limit=3*1024*1024, full_output=True, preserve_whitespace=True)
     return parse_keymap_frames(output, identifier)
 
 
@@ -167,7 +167,7 @@ def open_keymap(lxc_path, container, generation, package, android, run=linux.run
         reply=android('sh','-c','head -c 160 /data/waydroid_tmp/anvildroid/keymap-reply 2>/dev/null || true').split()
         if len(reply)==2 and reply[0]==nonce:
             require(reply[1] in ('editing','saved','cancelled'),'Overlay refused: finish another edit, release resize, or check profile data')
-            message=('Overlay attached. Choose a control type, Add → place it, then use Key... or Mouse... to bind. Adjust the control and Save. Focus the app to play; Esc releases captured mouse input.'
+            message=('Overlay attached. Add a control, place it, then press a key to bind. The type button opens all control types; Mouse... binds a mouse button. Adjust and Save. Focus the app to play; Esc releases captured mouse input.'
                      if reply[1]=='editing' else 'Overlay '+reply[1]+'.')
             return {'action':'keymap_edit','package':package,'success':True,'message':message}
         time.sleep(.05)

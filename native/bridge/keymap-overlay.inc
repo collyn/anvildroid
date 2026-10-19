@@ -21,6 +21,7 @@ struct keymap_overlay {
       task;
   int panel_hidden, placement_hold;
   int property_page, binding_capture, placement_kind, capture_status;
+  int type_open;
   int passive;
   int disabled, hints_hidden;
   int sync_valid, sync_x, sync_y;
@@ -104,6 +105,12 @@ static const char *keymap_label(int key, char *buf, size_t size) {
     snprintf(buf, size, "K%d", key);
     return buf;
   }
+}
+static const char *keymap_point_label(const struct keymap_point *q,char *buf,size_t size) {
+  if(q->kind==KEYMAP_DPAD)return "WASD";
+  if(q->source==KEYMAP_SOURCE_POINTER)return "MOUSE";
+  if(q->source==KEYMAP_SOURCE_MOUSE){snprintf(buf,size,"M%d",q->key-271);return buf;}
+  return keymap_label(q->key,buf,size);
 }
 #include "keymap-editor-ui.h"
 static void keymap_overlay_paint(uint32_t *pixels, int w, int h) {
@@ -546,7 +553,7 @@ static void keymap_overlay_button(struct object *pointer, uint32_t button,
   if(button!=0x110)return;
   int x = pointer->csd_x, y = pointer->csd_y;
   struct keymap_layout l=keymap_layout(f->piece.width,f->piece.height,f->panel_hidden);
-  int hit=keymap_ui_hit(l,x,y);
+  int hit=f->type_open?keymap_type_hit(f,x,y):keymap_ui_hit(l,x,y);
   if(!hit)hit=keymap_point_hit(m,f->piece.width,f->piece.height,x,y);
   if(!hit&&!f->panel_hidden&&keymap_contains((struct keymap_rect){12,12,
       f->piece.width<360?f->piece.width-88:236,48},x,y))hit=-1;
@@ -554,8 +561,10 @@ static void keymap_overlay_button(struct object *pointer, uint32_t button,
     pointer->overlay_pressed = hit;
     if ((hit==0||hit>=200) && !f->save_pending) {
       int found=hit>=200?hit%100:-1;
+      int added=0;
       if (m->placing && !hit) {
         if(keymap_add(m,x,y,f->piece.width,f->piece.height)) {
+          added=1;
           keymap_set_kind(&m->points[m->selected],f->placement_kind);
           m->points[m->selected].hold=f->placement_hold;
           if(f->placement_hold&&(f->placement_kind==KEYMAP_BASIC||f->placement_kind==KEYMAP_SWIPE))
@@ -565,7 +574,8 @@ static void keymap_overlay_button(struct object *pointer, uint32_t button,
       else
         m->selected = found;
       if(m->selected<0||!keymap_page_available(&m->points[m->selected],f->property_page))f->property_page=0;
-      f->binding_capture=0;
+      f->binding_capture=added&&m->points[m->selected].kind!=KEYMAP_DPAD&&
+        m->points[m->selected].source==KEYMAP_SOURCE_KEY?1:0;
       f->dragging = m->selected >= 0?(hit>=500?4:hit>=400?3:hit>=300?2:1):0;
       f->dirty = 1;
       keymap_wake();
@@ -573,6 +583,8 @@ static void keymap_overlay_button(struct object *pointer, uint32_t button,
   } else {
     f->dragging = 0;
     if (hit && hit == pointer->overlay_pressed && !f->save_pending) {
+      if(hit==-2)f->type_open=0;
+      if(hit>=40&&hit<=40+KEYMAP_LOOK)keymap_editor_choose_kind(f,hit-40);
       if(hit>=20&&hit<28)keymap_property_action(f,hit-20);
       if (hit == 1 && m->count<KEYMAP_POINTS) {
         m->placing = 1;
@@ -829,7 +841,9 @@ static void keymap_key(void *data, struct proxy *p, uint32_t serial,
     return;
   }
   if (f && state && !f->save_pending) {
-    if(f->binding_capture==1&&key!=1){
+    if(f->type_open) {
+      if(key==1)f->type_open=0;
+    } else if(f->binding_capture==1&&key!=1){
       if(keymap_assign_source(&f->model,KEYMAP_SOURCE_KEY,(int)key))f->binding_capture=0;
     } else if (key == 1 && f->binding_capture) {
       f->binding_capture=0;

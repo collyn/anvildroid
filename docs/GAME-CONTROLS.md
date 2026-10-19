@@ -2,11 +2,14 @@
 
 The attached native Wayland editor and scrcpy touch sink implement advanced
 controls with original MIT-licensed code. F2 opens the editor for the focused,
-unambiguous app task. Choose **Add control**, click its position, then use the
-type selector (**Basic >**) to choose a control. Drag its center to move it.
-Choose **Key…** or **Mouse…** on the Binding page, then press the desired key or
-mouse button. Placing or adjusting a control never assigns a binding. Escape
-cancels binding capture. WASD reserves W/A/S/D and Mouse touch needs no binding.
+unambiguous app task. Choose **Add control**, click its position, then press the
+desired key: a new control immediately waits for its binding. The type button
+(**Tap/Hold…** initially) opens a direct picker for all nine types; it also sets
+the type for the next Add. Drag a control's center to move it. To change an
+existing binding, choose **Key…** or **Mouse…** on the Binding page, then press
+the desired key or mouse button. Moving an existing control keeps its binding.
+Escape cancels binding capture or dismisses the type picker before closing the
+editor. WASD reserves W/A/S/D and Mouse touch needs no binding.
 
 The named page button advances through settings relevant to the selected type;
 **< Page** goes back. On a small window, the bottom Tap/Hold button switches the
@@ -25,7 +28,7 @@ unsaved edit session; the next app instance loads the last saved profile.
 
 ## Authoring controls
 
-- **Mouse touch:** add a control and cycle its type to **Touch >**. This enables
+- **Mouse touch:** add a control and choose **Mouse touch** from its type picker. This enables
   pointer-position finger input for this app profile: left press starts a touch,
   dragging moves it and release lifts it. Hover creates no touch. **Turn off**
   removes this entry; Save applies the change.
@@ -123,6 +126,11 @@ validated boot classpath for each attempt. Frozen/stopping guests are not woken
 to reconnect. Recovery still requires fresh input; held keys are not replayed.
 
 ## Verification and live acceptance
+
+The [installed KDE host check](KEYMAP-HOST-ACCEPTANCE-2026-10-20.md) records the
+subsequent usability fixes, real desktop authoring, Calculator response and
+seven actual Android finger-input scenarios. It also documents remaining game
+and physical-mouse compatibility limits.
 
 `tests/keymap-advanced.c` exercises diagonal/opposing movement, independent
 contacts, swipe timing, repeat cancellation, finite macros, pointer-directed

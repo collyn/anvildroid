@@ -4,6 +4,7 @@ from unittest.mock import patch
 import unittest
 import os
 import tempfile
+import sys
 
 spec=importlib.util.spec_from_file_location('keymap_worker',Path(__file__).resolve().parents[1]/'services/runtime-worker.py')
 worker=importlib.util.module_from_spec(spec);spec.loader.exec_module(worker)
@@ -68,6 +69,19 @@ class KeymapTests(unittest.TestCase):
             worker.keymap.keymap_profiles('/lxc','container','r-one')
         self.assertIn('head -c 16385',run.call_args.args[-1])
         self.assertEqual(run.call_args.kwargs['output_limit'],3*1024*1024)
+
+    def test_running_inventory_preserves_last_frame_through_process_runner(self):
+        # A real subprocess is necessary: a mocked runner hid strip() removing
+        # both the last profile newline and its framing delimiter on the host.
+        for rows in ('', '16 100 200 0\n'):
+            payload = f'ANVIL_KEYMAP 1 r-one com.game.test {int(bool(rows))}\n' + rows
+            frame = f'SIZE {len(payload.encode())}\n' + payload + '\n'
+            with patch.object(worker.keymap.linux, 'android_command',
+                              return_value=(sys.executable, '-c', 'import sys;sys.stdout.write(' + repr(frame) + ')')):
+                result = worker.keymap.keymap_profiles('/lxc', 'container', 'r-one')
+            self.assertEqual(result['invalid_count'], 0)
+            self.assertEqual(len(result['profiles']), 1)
+            self.assertEqual(len(result['profiles'][0]['bindings']), int(bool(rows)))
 
     def test_strict_decimal_lexer_and_trusted_file_framing(self):
         good='ANVIL_KEYMAP 1 default com.game.test 1\n30 100 200 0\n'
