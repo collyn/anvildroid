@@ -356,7 +356,7 @@ class ExistingRuntime:
                 if path.is_symlink() or not path.is_file(): raise RuntimeError('Unsafe existing desktop overlay path')
                 originals[relative] = path.read_bytes()
                 target = backup / relative; target.parent.mkdir(parents=True, exist_ok=True); shutil.copyfile(path, target)
-        storage.atomic(backup / 'manifest.json', json.dumps({'files': list(changes), 'created_at': time.time()}).encode())
+        storage.atomic(backup / 'manifest.json', {'files': list(changes), 'created_at': time.time()})
         try:
             for relative, value in changes.items():
                 self.replace_bytes(overlay / relative, value.encode() if isinstance(value, str) else value)

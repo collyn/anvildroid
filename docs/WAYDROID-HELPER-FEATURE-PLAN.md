@@ -27,7 +27,14 @@ route, plus 8/8 concurrent-runtime isolation checks). The remaining
 gates stay unchecked below. AppImage
 is deferred; this branch is not a merge or published release.
 
-**Latest delivery: expand the existing ARM Engine/Version catalog.**
+**Latest delivery: Android 13 controls environment and recovery matrix.**
+Managed Vanilla/GAPPS × X11/Wayland pass 45/45 editor/input/capture and 9/9
+held-input recovery cases per row. Disposable Default passes 22/22 per row
+under the explicit cgroup/cursor conditions in
+[the matrix report](CONTROLS-MATRIX.md). Physical desktops and additional images
+remain separate gates. Debian and Arch recovery packages are built and verified.
+
+**ARM catalog delivery: expand the existing ARM Engine/Version catalog.**
 The new catalog and its installation/JNI acceptance are recorded in the final
 section. The touch keymap V3 editor and gestures are implemented, with 25/25
 managed input checks on each backend recorded below; the broader manual game
@@ -241,17 +248,23 @@ no mount affects another runtime or the host session unintentionally.
 
 Owner: game-controls agent; shared-folders agent assists mount investigation.
 
-- [ ] Record Default/managed × X11/Wayland results on each actually supported
-  backend/image combination. Record explicit unsupported reasons for others.
+- [x] Record Android 13 Vanilla/GAPPS × Default/managed × native X11/nested
+  Wayland: all eight disposable rows pass. Keep Default's writable private
+  cgroup and software cursor prerequisites explicit; inherited read-only
+  cgroup recovery and ordinary software HWC SHM cursor mode are not certified.
+- [ ] Validate additional custom Android 14–16/CAR images advertising the per-app
+  composer contract, and physical GNOME/KDE/CachyOS desktops. Explicit
+  `android-display` presentation currently omits `keymap_editor`.
 - [x] Check packaged managed Android 13 raw/FUSE/app access, granted SDK28 storage
   permissions, RO/RW, clean stop and removal/restart. Permission/ACL fixtures use
   two real numeric UIDs. Other images and modern scoped-storage apps remain open.
-- [ ] Exercise Basic/WASD/swipe/repeat/skill/macro/aim-fire in Android apps on both
+- [x] Exercise Basic/WASD/swipe/repeat/skill/macro/aim-fire in Android apps on both
   display backends. Verify editor/save/reload, independent marker visibility,
   focus loss, window resize, app replacement, disconnect and restart cancellation.
-  The 2026-10-19 follow-up completes the managed graphical editor, geometry and
-  app-replacement portions; live runtime disconnect/restart under held input
-  remains separate from the deterministic native cancellation coverage.
+  The final 2026-10-19 matrix observes actual Android CANCEL with three contacts
+  held, fresh input after framework restoration/app reopen, and full runtime
+  Stop/restart with a new generation, retained profile and no held replay.
+  Managed rows pass 45+9 cases each; Default's narrower suite passes 22 each.
 - [x] Exercise all ten maintained delivery scenarios on actual managed VANILLA
   Android 13 through native X11, the production bridge and scrcpy Android sink;
   verify finger MotionEvents, finite macros, multiple contacts and blur release.
@@ -1178,9 +1191,53 @@ failed attempts, cleanup and remaining scope are in
 [real-game acceptance](GAME-ACCEPTANCE.md); reproduction is maintained in the
 [acceptance README](../tests/acceptance/README.md#offline-real-game-controls).
 
-This completes one offline game's managed input acceptance. The broader item 2
-Default/physical-desktop/image matrix stays open, including held-input runtime
-disconnect/restart. Other representative FPS/MOBA/ARM games, long sessions,
-GPU behavior and latency under load also remain open. The package remains
+This completed one offline game's managed input acceptance. Default/image
+coverage and held-input runtime disconnect/restart were still open at that
+delivery; the follow-up below records the subsequent Android 13 matrix.
+Physical desktops, other representative FPS/MOBA/ARM games, long sessions,
+GPU behavior and latency under load remain open. That package remains
 `editor.lifecycle3` (`caf0d63b…`); no personal runtime, installed service,
 RustDesk session or remote Arch host was changed. AppImage remains deferred.
+
+## Item 2: environment and held-input recovery — 2026-10-19
+
+The automated Android 13 matrix is complete for Vanilla/GAPPS on managed and
+stock Default runtimes through native X11 and nested Wayland. Each managed row
+passes **45/45 editor/input/capture + 9/9 recovery**; each Default row passes its
+narrower **22/22** suite. Actual Android finger/CANCEL events, graphical Save/
+reload/Cancel, marker pixels, maximize/restore, app replacement, three held
+contacts, disconnect/reconnect, new runtime generation, profile retention and
+fresh input are required. Prior Luanti results remain one game, 11/11 on each
+managed backend, with bounded 30-second relative capture.
+
+Live acceptance found and fixed two product defects: the managed worker now
+supervises one control receiver with bounded retry/backoff and refreshed boot
+classpath, and Default Desktop writes a valid JSON backup manifest instead of
+passing serialized bytes to the JSON writer. Maintained disposable helpers add
+exact package/image/helper provenance, isolation/teardown audits and bounded
+window rediscovery when X11 replaces a handle during restore.
+
+The complete feature script passes **311 reported Python cases (5 optional
+skips), 390 frontend cases and 12 native suites**; worker tests pass separately
+**33/33**. Debian and Arch `0.1.3+controls.recovery2` packages pass extracted
+payload/source/native/scrcpy, dependencies, CLI and Android image-tool/signing
+checks. Neither package was deployed. All eight disposable stores are stopped,
+audited, archived and removed; the copied GAPPS source is separately audited
+and removed. Exact artifact/image hashes, row evidence and reproduction are in
+[the matrix report](CONTROLS-MATRIX.md) and
+[acceptance README](../tests/acceptance/README.md#held-input-recovery-and-default-controls).
+
+Default evidence requires a writable private delegated Android cgroup so init
+can create process groups and restart Zygote. The inherited stock read-only
+policy left Zygote stopping and is not certified; the fixture changes no
+installed service or product Default configuration. Default software Wayland
+also selects stock cursor-subsurface mode because ordinary stock HWC SHM cursor
+copy crashed after app replacement; that upstream renderer path is not fixed
+here. Recovery explicitly restores the framework and reopens the app.
+
+Physical GNOME/KDE/CachyOS input/window management, custom Android 14–16/CAR
+per-app images, other commercial FPS/MOBA/ARM games, long sessions and real
+GPU/latency behavior remain open gates. Explicit android-display mode omits
+the per-app editor. These conditions are not hidden behind the passing rows.
+AppImage remains deferred; PR #2 remains a follow-up for review, not a merge or
+published release.

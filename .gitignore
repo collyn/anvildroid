@@ -6,7 +6,8 @@ __pycache__/
 *.log
 
 # Local project notes and internal documentation
-/docs/
+/docs/*
+!/docs/CONTROLS-MATRIX.md
 /PLAN.md
 /AnvilDroid-Architecture.md
 
@@ -42,6 +43,7 @@ test_*.py
 /tests/*
 !/tests/test_runtime_tools.cjs
 !/tests/test_runtime_worker.py
+!/tests/test_runtime_default_desktop.py
 !/tests/test_runtime_arm.py
 !/tests/test_runtime_arm_source.py
 !/tests/test_*.cjs
@@ -64,6 +66,8 @@ test_*.py
 !/tests/acceptance/editor-lifecycle.py
 !/tests/acceptance/probe-editor-isolation.py
 !/tests/acceptance/probe-luanti-game.py
+!/tests/acceptance/probe-controls-recovery.py
+!/tests/acceptance/default-controls.py
 !/tests/acceptance/test-controls-harness.py
 !/tests/acceptance/default-android.py
 !/tests/acceptance/test-default-harness.py

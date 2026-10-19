@@ -127,8 +127,11 @@ launch input check timed out; clean Stop and a new generation recovered it.
 Its cause is unconfirmed and no product fix is claimed for that occurrence.
 
 One game exercises touch camera, free joystick, independent action buttons
-and multi-contact input. Physical GNOME/KDE/CachyOS/Default behavior, other
-images, representative commercial FPS/MOBA/ARM games, long gameplay sessions
-and GPU/performance measurements remain separate acceptance gates. Runtime
-disconnect/restart while a contact is held is also separate from these blur,
-Escape and fresh-input checks. AppImage remains deferred.
+and multi-contact input. The later [controls environment/recovery matrix](CONTROLS-MATRIX.md)
+extends diagnostic acceptance to Android 13 Vanilla/GAPPS on managed X11 and
+Wayland, including held-input disconnect and full-runtime restart. Its stock
+Default fixture has its own stated coverage and renderer constraints. These
+diagnostic results do not extend the Luanti result to other images or Default.
+Physical GNOME/KDE/CachyOS behavior, representative commercial FPS/MOBA/ARM
+games, long gameplay sessions and GPU/performance measurements remain separate
+acceptance gates. AppImage remains deferred.

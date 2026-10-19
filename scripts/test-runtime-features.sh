@@ -12,6 +12,7 @@ for suite in compatibility shares runtime-actions; do
 done
 node --test tests/test_*.cjs
 python3 -m unittest discover -s tests -p 'test_runtime_keymap*.py'
+python3 -m unittest discover -s tests -p 'test_runtime_default_desktop.py'
 python3 -m unittest discover -s tests -p 'test_runtime_arm*.py'
 python3 tests/acceptance/test-controls-harness.py
 python3 tests/acceptance/test-default-harness.py

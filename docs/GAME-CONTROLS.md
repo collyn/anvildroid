@@ -117,6 +117,11 @@ stale MOVE/UP events and accepts only a fresh DOWN to start a new stream with
 an empty pointer list. A failed fresh DOWN keeps that recovery guard active.
 This avoids permanently disabling input after a configuration change.
 
+The managed worker also supervises the control-only receiver after framework
+disconnects. It keeps one child, retries with bounded backoff and refreshes the
+validated boot classpath for each attempt. Frozen/stopping guests are not woken
+to reconnect. Recovery still requires fresh input; held keys are not replayed.
+
 ## Verification and live acceptance
 
 `tests/keymap-advanced.c` exercises diagonal/opposing movement, independent
@@ -160,6 +165,12 @@ existing editor changes Hold Look to FPS Capture for a bounded 30-second
 relative-motion run, followed by Escape/quiescence and a fresh toggle. This
 is one offline game in disposable managed guests; it does not certify other
 games or the physical desktop matrix.
+
+The subsequent [environment and recovery matrix](CONTROLS-MATRIX.md) records
+45/45 diagnostic editor/input/capture and 9/9 held-input recovery cases for
+each Android 13 Vanilla/GAPPS managed backend. Stock Default has a separate
+fixture and explicitly narrower coverage; consult that report for cursor mode,
+framework restoration, package/image provenance and remaining manual gates.
 
 The X11 suite additionally uses a private Xvfb/XTest display, the real X11
 adapter and Wayland seat, and production keyboard/pointer mapping handlers with

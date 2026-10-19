@@ -135,7 +135,7 @@ class Endpoint:
         ox,oy,w,h=geometry
         if self.nested:
             scene=self.scene();self.offset=probe.scene_rectangle(scene,self.m['id'])
-            section=next(p for p in scene.split('\n\tView ') if 'role xdg_toplevel' in p and ' of waydroid.anvildroid.'+self.m['id']+'.'+probe.PACKAGE+',' in p)
+            section=next(p for p in scene.split('\n\tView ') if 'role xdg_toplevel' in p and ' of '+probe.surface_app_id(self.m['id'])+',' in p)
             bounds=list(map(int,re.search(r'position: \((-?\d+), (-?\d+)\) -> \((-?\d+), (-?\d+)\)',section).groups()))
             host_w,host_h=bounds[2]-bounds[0],bounds[3]-bounds[1]
         else:
@@ -145,7 +145,7 @@ class Endpoint:
         def click(point):
             self.run(self.x+self.move(frame[0]+ox+point[0],frame[1]+oy+point[1])+['click','1']);time.sleep(.15)
         buttons=probe.editor_targets(w,h)
-        click((round(self.nx*(w-1)/65535),round(50000*(h-1)/65535)))
+        click((round(self.nx*(w-1)/65535),round(getattr(self,'ny',50000)*(h-1)/65535)))
         click(buttons['bind_key']);self.run(self.x+['key',new_key]);time.sleep(.15)
         if during:during()
         old=self.profile();click(buttons['save']);deadline=time.monotonic()+5

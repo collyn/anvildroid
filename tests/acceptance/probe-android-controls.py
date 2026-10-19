@@ -36,8 +36,12 @@ def validate_nested_transport(m):
     require(transport.get('protocols',{}).get('wl_seat'),'Nested compositor has no input seat')
     return transport
 
+def surface_app_id(runtime_id):
+    # Default keeps stock Waydroid app IDs; managed windows add their ID.
+    return 'waydroid.'+PACKAGE if runtime_id=='default' else f'waydroid.anvildroid.{runtime_id}.{PACKAGE}'
+
 def scene_rectangle(scene, runtime_id):
-    marker=f'waydroid.anvildroid.{runtime_id}.{PACKAGE}'
+    marker=surface_app_id(runtime_id)
     sections=scene.split('\n\tView ')
     matching=[part for part in sections if 'role xdg_toplevel' in part and ' of '+marker+',' in part]
     require(len(matching)==1,'Expected one unambiguous scoped Android Wayland surface')

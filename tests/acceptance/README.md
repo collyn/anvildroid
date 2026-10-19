@@ -429,3 +429,84 @@ feature script runs those checks without starting Android or a game.
 After live testing, stop each store with `live-android.py --stop`, verify
 Stopped/cleanup_complete, quiescence, empty scope and no owned process/mount,
 then remove only the exact disposable stores. Retain evidence outside them.
+
+## Held-input recovery and Default controls
+
+The final Android 13 Vanilla/GAPPS matrix passes 45+9 cases on each managed
+backend and 22 cases on each Default backend, within the fixture conditions
+below. Exact hashes, per-row evidence, cleanup and remaining gates are in
+[the controls matrix report](../../docs/CONTROLS-MATRIX.md).
+
+These tests use private displays and copied userdata; they do not target
+installed personal runtimes or the host desktop.
+
+For a running disposable managed fixture, observe HWC disconnect/reconnect and
+Stop with three contacts held:
+
+```sh
+sudo python3 tests/acceptance/probe-controls-recovery.py before /tmp/anvil-live-controls/acceptance.json HOST_WORKER_PID "$PWD/target/controls-recovery-local"
+```
+
+That command stops the managed runtime. Start the same store again with the
+same selected backend using `live-android.py`, then pass its **new host worker
+PID** to `probe-controls-recovery.py after` with the same output directory.
+The probe requires a different generation/namespace, unchanged profile, rejected
+stale-generation actions, zero replay and fresh three-contact input. Reopening
+the diagnostic app after HWC recovery is explicit; the old surface need not
+survive. Stop and audit the final generation before removing the store.
+
+Prepare a **new** stock Default fixture, adding `--controls` and the desired
+`--controls-backend wayland` or `--controls-backend native-x11` to the existing
+preparation command. For example:
+
+```sh
+sudo python3 tests/acceptance/default-android.py /tmp/anvil-default-controls-local --prepare --controls --controls-backend native-x11 --owner-uid "$(id -u)" --package "$PWD/target/releases/anvildroid-controller_0.1.3+controls.recovery2_amd64.deb" --expected-package-sha256 05384586aa9205f73328d032dc1778b5627b2e7ae7bad06b6951447bc41a7346
+sudo python3 tests/acceptance/default-android.py /tmp/anvil-default-controls-local --preflight
+```
+
+Use `--image-source /absolute/copied-image-pair` during preparation for GAPPS.
+Controls and installed-ARM fixtures are separate. Backend selection is
+preparation-only. Preflight pins the four controls helpers, backend, APK,
+package, copied images and main harness. Review its namespace/device policy,
+absence of host endpoints and empty-scope/detached-loop teardown, then supply
+its exact SHA256 with the existing `--run --reviewed-preflight HASH` command.
+After any helper change, inactive fixtures require restage and a new preflight.
+
+The controls lifecycle claims the disposable stock installation through the
+actual controller, installs Desktop while stopped, boots the production stock
+service, uses only the diagnostic app and existing editor, and tests held-input
+disconnect and full stock Stop/restart. Test-only Android provisioning and
+stock app-launch immersive settings apply solely to this copied userdata.
+App launch uses the installed stock `IPlatform.launchApp` Binder API. Readiness
+requires actual focused Android content and settled fitted geometry; the
+fixture then places its pointer inside that current content. Controls scopes
+allow at most 4096 tasks (GAPPS otherwise exhausts the 2048-task baseline),
+6 GiB memory without swap and four CPU cores. Other Default fixtures retain
+their 2048-task bound.
+The harness mounts only its private, delegated Android cgroup subtree writable
+so init can create process groups and restart Zygote. Stock `cgroup:ro` prevented
+that recovery and left Zygote `stopping`. This test prerequisite changes no
+installed service or product Default configuration, and passing rows do not
+certify reconnect with the inherited read-only cgroup policy. The audit rejects
+broader automatic mounts; host cgroup ancestors remain inaccessible.
+Native X11 uses the packaged adapter on private Xvfb; Wayland uses software
+Weston on private Xvfb. X11 maximize uses an explicit EWMH/ConfigureNotify
+fixture; neither route certifies physical GNOME/KWin behavior.
+
+The Default Wayland software fixture selects stock
+`persist.waydroid.cursor_on_subsurface=true`. Its ordinary `wl_cursor` SHM path
+crashed in stock HWC's `update_shm_buffer_default` after task replacement; this
+fixture does not certify or fix that upstream renderer path. Native X11 uses
+the compositor cursor. HWC disconnect first requests stock Stop; if HWC remains
+in `stopping`, the fixture revalidates its exact guest executable and kills
+only that guest PID, then requires an actual stopped service before checking
+Android CANCEL. Recovery starts HWC and restarts SurfaceFlinger explicitly:
+deliberate Stop disables the automatic `onrestart restart surfaceflinger` rule.
+A requested Stop alone is not proof of a disconnect. This verifies recovery
+after explicit framework restoration and app reopen.
+
+Keep `controls/`, lifecycle/preflight/teardown reports and failure logs outside
+the store before removal. Require final clean stock Stop, empty scope, detached
+task loops, unchanged host device/IPv6 invariants and no owned process or host
+mount. A missing/collected cgroup is accepted only after positively observing
+its disappearance; an ENODEV read while its path remains is an error.

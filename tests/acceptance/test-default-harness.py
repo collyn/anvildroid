@@ -2,6 +2,7 @@
 import importlib.util
 import json
 import io
+import errno
 import os
 import tarfile
 import hashlib
@@ -17,6 +18,29 @@ harness = importlib.util.module_from_spec(spec); spec.loader.exec_module(harness
 
 
 class DefaultAcceptanceTests(unittest.TestCase):
+    def test_scope_collection_race_requires_positive_disappearance(self):
+        cgroup=Path('/sys/fs/cgroup/disposable.scope')
+        for code in (errno.ENOENT,errno.ENODEV):
+            with patch.object(Path,'read_text',side_effect=OSError(code,'collected')),patch.object(Path,'exists',return_value=False):
+                self.assertFalse(harness.scope_populated(cgroup))
+            with patch.object(Path,'read_text',side_effect=OSError(code,'still exists')),patch.object(Path,'exists',return_value=True):
+                with self.assertRaises(OSError):harness.scope_populated(cgroup)
+        with patch.object(Path,'read_text',return_value='populated 1\n'):
+            self.assertTrue(harness.scope_populated(cgroup))
+
+    def test_controls_provenance_is_exact_and_rejects_changed_helpers(self):
+        names=('default-controls.py','probe-controls-recovery.py','probe-editor-isolation.py','probe-android-controls.py')
+        expected={name:harness.digest(harness.SCRIPT.with_name(name)) for name in names}
+        self.assertIsNone(harness.verify_controls({}))
+        self.assertEqual(harness.verify_controls({'controls_helpers':expected}),expected)
+        self.assertEqual(harness.verify_controls({'controls_helpers':expected,'controls_backend':'native-x11'}),expected)
+        with self.assertRaisesRegex(RuntimeError,'backend'):
+            harness.verify_controls({'controls_helpers':expected,'controls_backend':'personal-display'})
+        with self.assertRaisesRegex(RuntimeError,'Incomplete'):
+            harness.verify_controls({'controls_helpers':{'../external.py':'0'*64}})
+        with self.assertRaisesRegex(RuntimeError,'changed'):
+            harness.verify_controls({'controls_helpers':{**expected,names[0]:'0'*64}})
+
     def test_arm_inputs_are_all_or_none(self):
         from itertools import product
         for flags in product((None, Path('/tmp/input')), repeat=3):
@@ -126,6 +150,10 @@ class DefaultAcceptanceTests(unittest.TestCase):
         for value in ('Delegate=yes', 'MemoryMax=6G', 'MemorySwapMax=0', 'CPUQuota=400%', 'TasksMax=2048', 'OOMPolicy=kill', '--preflight'):
             self.assertIn(value, command)
         self.assertNotIn('--run', command)
+        controls = harness.scope_command(Path('/tmp/anvil-default-test'),
+            {'scope': 'anvil-default-test.scope', 'controls_helpers': {'pinned': 'fixture'}}, 'preflight')
+        self.assertIn('TasksMax=4096', controls)
+        self.assertIn('MemoryMax=6G', controls)
     def audit(self, text):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -143,6 +171,12 @@ class DefaultAcceptanceTests(unittest.TestCase):
     def test_global_kernel_capabilities_rejected(self):
         for capability in harness.DROPPED_CAPS:
             with self.subTest(capability=capability), self.assertRaises(RuntimeError): self.audit('lxc.cap.keep = sys_admin ' + capability)
+    def test_automatic_mounts_expose_only_private_writable_cgroup(self):
+        self.audit('lxc.mount.auto = cgroup:rw sys:ro proc')
+        for value in ('cgroup:rw sys:rw proc', 'cgroup-full:rw sys:ro proc', 'cgroup:ro sys:ro proc',
+                      'cgroup:rw sys:ro proc:mixed', 'cgroup:rw sys:ro proc /host'):
+            with self.subTest(value=value), self.assertRaises(RuntimeError):
+                self.audit('lxc.mount.auto = ' + value)
     def test_private_sources_and_stock_hook_permitted(self):
         result = self.audit('lxc.rootfs.path = /var/lib/waydroid/rootfs\nlxc.hook.post-stop = /dev/null\nlxc.cap.keep = sys_admin setuid\nlxc.cgroup.dir = android\nlxc.mount.entry = /dev/anvil-fixture-binder dev/binder none bind 0 0\nlxc.mount.entry = /home/acceptance/data data none rbind 0 0')
         self.assertEqual(set(result), {'config', 'config_nodes', 'config_session'})
