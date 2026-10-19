@@ -286,18 +286,21 @@ html, body { height:100%; overflow:hidden; }
   .app-footer { padding:8px 14px; }
 }
 
-/* Shared filter strip, directly above the library caption. */
-#page-apps .unified-filters { display:flex; align-items:center; flex-wrap:nowrap; gap:12px; padding:10px 12px; margin:0 0 18px; border-radius:16px; background:linear-gradient(120deg,#192634,#101c2a); }
-.unified-filters .runtime-filter-group { flex:0 0 170px; padding-right:12px; border-right:1px solid #34465c; }
-#page-apps .unified-filters #filter-runtime { width:100%; min-width:0; height:38px !important; min-height:38px; margin:0; }
-#page-apps .unified-filters .category-filters { flex:1 1 auto; flex-wrap:nowrap; overflow-x:auto; scrollbar-width:thin; min-width:0; gap:8px; }
+/* Compact library filters, with related actions kept together. */
+#page-apps .unified-filters { display:flex; align-items:center; flex-wrap:wrap; gap:6px; padding:4px 8px; margin:0 0 12px; border-radius:8px; background:linear-gradient(120deg,#192634,#101c2a); }
+.unified-filters .runtime-filter-group { flex:0 1 140px; min-width:100px; }
+#page-apps .unified-filters #filter-runtime { width:100%; min-width:0; margin:0; }
+#page-apps .unified-filters .select-control { height:28px; min-height:28px; padding:0 26px 0 8px; border-radius:6px; background-position:right 8px center; background-size:12px 12px; }
+#page-apps .unified-filters .category-filters { flex:0 1 150px; flex-wrap:nowrap; overflow:visible; min-width:100px; padding:0; order:0; }
+#page-apps .unified-filters #filter-tag { width:100%; min-width:0; }
 #page-apps .unified-filters .category-filter { flex:none; min-height:34px; padding:6px 13px; }
-#page-apps .unified-filters #btn-manage-tags { flex:none; padding:0; width:28px; min-height:28px; border-radius:50%; font-size:19px; background:transparent; }
-.library-display-controls { display:flex; align-items:center; gap:12px; flex:none; padding-left:12px; border-left:1px solid #34465c; }
-.library-display-controls .library-view { margin:0; }
-.library-display-controls .favorites-toggle { display:flex; margin:0; padding-left:12px; border-left:1px solid #34465c; white-space:nowrap; }
+#page-apps .unified-filters #btn-manage-tags { flex:none; padding:0; margin:0; order:0; width:28px; height:28px; min-height:28px; border-radius:6px; font-size:18px; background:transparent; }
+.library-display-controls { display:flex; align-items:center; gap:8px; flex:none; margin-left:auto; }
+.library-display-controls .library-view { margin:0; height:28px; border-radius:6px; }
+.library-display-controls .favorites-toggle { display:flex; align-items:center; gap:6px; margin:0; min-height:28px; font-size:12px; white-space:nowrap; }
 .library-display-controls .favorites-label { order:-1; }
-.library-display-controls .view-button { height:36px; width:38px; }
+.library-display-controls .view-button { height:26px; width:28px; }
+.library-display-controls .view-button svg { width:16px; height:16px; }
 #page-apps .apps-topbar { margin-bottom:12px; gap:8px 12px; flex-wrap:wrap; }
 #page-apps .global-search { max-width:none; min-width:160px; }
 .search-shortcut { display:flex; gap:4px; flex:none; }
@@ -306,24 +309,11 @@ html, body { height:100%; overflow:hidden; }
 @media(max-width:1100px) {
   #page-apps .global-search { order:1; flex-basis:100%; }
   #page-apps .apps-topbar .page-actions { width:auto; }
-}
-@media(max-width:1100px) {
-  .library-display-controls { gap:8px; padding-left:8px; }
-  .library-display-controls .favorites-label { font-size:11px; }
-  .unified-filters .runtime-filter-group { flex-basis:145px; }
   .search-shortcut { display:none; }
 }
-@media(max-width:760px) {
-  #page-apps .apps-topbar { flex-wrap:wrap; }
-  #page-apps .unified-filters { flex-wrap:wrap; gap:8px; }
-  #page-apps .unified-filters .category-filters { order:3; flex-basis:calc(100% - 44px); }
-  #page-apps .unified-filters #btn-manage-tags { order:4; }
-  .library-display-controls { margin-left:auto; }
-}
-@media(min-width:761px) {
-  #page-apps .unified-filters .category-filters,
-  #page-apps .unified-filters #btn-manage-tags,
-  #page-apps .unified-filters .library-display-controls { order:0; }
+@media(max-width:600px) {
+  #page-apps .unified-filters :is(.runtime-filter-group, .category-filters) { flex:1 1 120px; }
+  .library-display-controls { flex:1 1 100%; justify-content:space-between; margin-left:0; }
 }
 /* Tag selection stays compact without a horizontal scroller. */
 .library-empty-panel { grid-column:1 / -1; width:100%; min-width:0; padding:24px; box-sizing:border-box; border:1px solid #34465c; border-radius:16px; background:linear-gradient(135deg,#203044,#172335); }
@@ -353,11 +343,6 @@ html, body { height:100%; overflow:hidden; }
 #google-registration-dialog::backdrop { background:rgba(0,0,0,.65); }
 @media(max-width:760px) { .google-registration-notice { align-items:stretch; flex-direction:column; } #google-registration-dialog { padding:16px; } }
 @media(max-width:760px) { .library-empty-panel { padding:18px; } }
-#page-apps .unified-filters .category-filters { overflow:visible; flex:1 1 150px; min-width:100px; }
-#page-apps .unified-filters #filter-tag { width:100%; max-width:220px; min-width:0; min-height:38px; height:38px; }
-@media(max-width:760px) {
-  #page-apps .unified-filters .category-filters { flex-basis:150px; }
-}
 
 /* The alpha-backed WebView clips the bottom corners; GTK owns the top corners. */
 html, body { background: transparent; }
@@ -368,8 +353,7 @@ html, body { background: transparent; }
 .window-square .layout { border-radius: 0; }
 #page-apps.active .apps-grid { scrollbar-gutter: stable; }
 .library-runtime-filter { position:relative; }
-#page-apps .unified-filters #filter-runtime { height:auto !important; }
-#page-apps .unified-filters .library-runtime-filter > summary { display:block; position:relative; height:38px; min-height:38px; line-height:36px; padding:0 30px 0 10px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; cursor:pointer; list-style:none; }
+#page-apps .unified-filters .library-runtime-filter > summary { display:block; position:relative; line-height:26px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; cursor:pointer; list-style:none; }
 .library-runtime-filter > summary::-webkit-details-marker { display:none; }
 .library-runtime-filter > summary::after { display:none; }
 .library-runtime-filter[open] > summary { border-color:var(--accent); }
