@@ -44,20 +44,10 @@
   background: #142131;
 }
 
-:is(#page-runtime, #page-runtime-settings, #page-images, #page-adb) .page-header,
-#page-settings .page-header {
-  padding: 18px 20px;
-  margin: -4px 0 18px;
-  border: 1px solid var(--mg-border);
-  border-radius: 14px;
-  background: linear-gradient(115deg, rgba(27, 48, 76, .8), rgba(18, 30, 47, .72));
-  box-shadow: 0 12px 28px rgba(0, 0, 0, .16);
-}
-:is(#page-runtime, #page-runtime-settings, #page-images, #page-adb) .page-header h1,
-#page-settings .page-header h1,
-#page-controls > h1 { letter-spacing: -.4px; }
-:is(#page-runtime, #page-runtime-settings, #page-images, #page-adb) .page-header .hint,
-#page-settings .page-header .hint { color: #9eb1ca; }
+/* Use the same unboxed toolbar on every page. */
+.page > .page-header { min-height: 36px; gap: 8px 12px; flex-wrap: wrap; margin: 0 0 12px; }
+.page > .page-header h1 { margin: 0; font-size: 22px; line-height: 1.25; letter-spacing: -.4px; }
+.page > .page-header .runtime-actions { margin: 0; gap: 6px; }
 
 :is(#page-runtime, #page-runtime-settings, #page-images, #page-adb) .controller-heading { margin: 20px 2px 12px; }
 :is(#page-runtime, #page-runtime-settings, #page-images, #page-adb) .controller-heading h2 { color: #e9f2ff; font-size: 17px; }
@@ -96,6 +86,13 @@
 #available-runtime-images td details { margin-top: 8px; }
 #available-runtime-images .image-not-cached td:not(:last-child) { opacity: .68; }
 .image-library-import[hidden] { display: none; }
+.image-library-import { margin: 0 0 12px; padding: 0 0 12px; border-top: 0; border-bottom: 1px solid var(--mg-border); }
+#custom-image-controls { display: grid; gap: 8px; }
+.custom-image-name { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-size: 13px; }
+#custom-image-name { flex: 1 1 180px; max-width: 320px; min-width: 0; min-height: 32px; padding: 5px 10px; }
+#custom-image-url { min-width: 0; min-height: 32px; padding: 5px 10px; }
+.image-import-help > summary { padding: 0; font-size: 12px; color: #9aafc7; }
+.image-import-help > .hint { margin-bottom: 0; }
 :is(#page-runtime, #page-runtime-settings, #page-images, #page-adb) .image-catalog-table { min-width: 600px; table-layout: auto; }
 :is(#page-runtime, #page-runtime-settings, #page-images, #page-adb) .image-catalog-table th { width: auto; }
 @media (max-width: 560px) {
@@ -163,8 +160,6 @@
 #page-settings details > summary { color: #c0d8f7; }
 #page-settings details[open] > summary { margin-bottom: 14px; }
 
-#page-controls .controls-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 14px; }
-#page-controls .controls-header h1 { margin: 0; }
 .controls-toolbar, .controls-diagnostics { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 #page-controls select { max-width: 300px; min-width: 180px; padding: 8px 10px; border-radius: 7px; }
 #page-controls .btn { padding: 7px 12px; font-size: 12px; }
@@ -194,7 +189,6 @@
 .controls-shortcuts { display: flex; flex-wrap: wrap; gap: 16px; font-size: 12px; }
 #probe-status:empty { display: none; }
 @media (max-width: 700px) {
-  #page-controls .controls-header { align-items: flex-start; flex-direction: column; }
   #page-controls .controls-table { min-width: 600px; }
 }
 
@@ -225,7 +219,6 @@
 #runtime-rename-error { color: #ff9db7; }
 
 @media (max-width: 780px) {
-  :is(#page-runtime, #page-runtime-settings, #page-images, #page-adb) .page-header, #page-settings .page-header { padding: 16px; }
   :is(#page-runtime, #page-runtime-settings, #page-images, #page-adb) .runtime-table th, :is(#page-runtime, #page-runtime-settings, #page-images, #page-adb) .runtime-table td { padding: 11px 10px; }
   :is(#page-runtime, #page-runtime-settings, #page-images, #page-adb) .runtime-table th:nth-child(2) { width: auto; }
 }
@@ -283,9 +276,6 @@
 :is(#page-runtime, #page-runtime-settings) .runtime-settings-group > .runtime-storage-panel,
 :is(#page-runtime, #page-runtime-settings) .runtime-settings-group > .runtime-arm-panel { margin-top: 12px; }
 
-:is(#page-runtime, #page-runtime-settings) .runtime-page-header { padding: 12px 16px; margin-bottom: 12px; gap: 12px; }
-:is(#page-runtime, #page-runtime-settings) .runtime-page-header h1 { font-size: 24px; margin: 0; }
-:is(#page-runtime, #page-runtime-settings) .runtime-page-header .runtime-actions { margin: 0; }
 #runtime-setup-panel[hidden] { display: none; }
 
 #runtime-table .runtime-checkbox-cell { width: 42px; padding: 10px; text-align: center; }
@@ -352,7 +342,8 @@
 }
 
 #page-runtime-settings .runtime-config-header { display: flex; align-items: center; justify-content: flex-start; gap: 16px; }
-.runtime-config-eyebrow { margin: 0 0 4px; font-size: 12px; color: var(--text-secondary); }
+#page-runtime-settings .runtime-config-header > div { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 10px; flex: 1; min-width: 0; }
+.runtime-config-eyebrow { margin: 0; font-size: 12px; color: var(--text-secondary); }
 #runtime-settings-title { overflow-wrap: anywhere; }
 #runtime-settings-title:focus { outline: none; }
 .runtime-inline-feature { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--mg-border); overflow-wrap: anywhere; }
@@ -472,7 +463,6 @@
 
 /* Compact image library, with controls matching the Refresh button. */
 :is(#page-images, #page-adb) .btn { min-height: 32px; padding: 5px 10px; font-size: 12px; border-radius: 8px; }
-:is(#page-images, #page-adb) .page-header { padding: 14px 18px; margin-bottom: 14px; }
 :is(#page-images, #page-adb) .runtime-images-section { padding: 16px 18px; }
 :is(#page-images, #page-adb) .section-heading { margin-bottom: 12px; gap: 12px; }
 :is(#page-images, #page-adb) .section-heading h2 { font-size: 16px; }
