@@ -2,6 +2,7 @@
 """One persistent headless Android instance; internal root-only worker protocol."""
 import argparse
 import base64
+import errno
 import fcntl
 import importlib.util
 import json
@@ -74,6 +75,16 @@ spec.loader.exec_module(adb)
 spec = importlib.util.spec_from_file_location('runtime_x11', Path(__file__).with_name('runtime-x11.py'))
 native_x11 = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(native_x11)
+
+spec = importlib.util.spec_from_file_location('runtime_compatibility', Path(__file__).with_name('runtime-compatibility.py'))
+compatibility_module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(compatibility_module)
+spec = importlib.util.spec_from_file_location('runtime_shares', Path(__file__).with_name('runtime-shares.py'))
+shares_module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(shares_module)
+spec = importlib.util.spec_from_file_location('runtime_device', Path(__file__).with_name('runtime-device.py'))
+device_module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(device_module)
 
 
 def atomic(path, value):
@@ -269,6 +280,30 @@ def ensure_binder_filesystem():
             raise RuntimeError('Cannot mount BinderFS; check kernel Binder support and privileges.' +
                                (f' ({detail})' if detail else ''))
     return Path('/dev/binderfs')
+
+
+def prepare_binder_devices(directory):
+    """Accept only kernel-created nodes in the worker's fresh BinderFS mount."""
+    with (directory / 'binder-control').open('rb') as control:
+        control_info = os.fstat(control.fileno())
+        require(stat.S_ISCHR(control_info.st_mode) and control_info.st_uid == 0,
+                'Invalid private BinderFS control device')
+        for device in ('binder', 'vndbinder', 'hwbinder'):
+            try:
+                fcntl.ioctl(control, 0xC1086201, struct.pack('256sII', device.encode(), 0, 0))
+            except OSError as error:
+                # Kernels with default Binder devices populate each new mount.
+                # Reuse only authenticated character nodes, never arbitrary
+                # existing files or devices from the host's BinderFS mount.
+                if error.errno != errno.EEXIST:
+                    raise RuntimeError(f'Cannot create BinderFS device {device}: {error}') from error
+            node = directory / device
+            info = node.lstat()
+            require(stat.S_ISCHR(info.st_mode) and info.st_uid == 0
+                    and info.st_dev == control_info.st_dev
+                    and os.major(info.st_rdev) == os.major(control_info.st_rdev),
+                    f'Invalid private BinderFS device: {device}')
+            node.chmod(0o666)
 
 
 _label_cache = {}
@@ -748,6 +783,16 @@ def app_action(instance, identifier, action, package, desktop=False, generation=
     return {'action': action, 'package': package, 'message': ('Android accepted launch in desktop preview.' if desktop else 'Android accepted launch (headless; no desktop window).') if action == 'launch' else 'Android accepted force-stop.'}
 
 
+def check_desktop_session():
+    # This private alias pins the authenticated compositor for both Wayland
+    # and nested X11. Instance paths can exceed AF_UNIX's pathname limit.
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
+        probe.settimeout(1)
+        try: probe.connect('/run/anvil-xdg/wayland-probe')
+        except OSError as error:
+            raise RuntimeError('Desktop session disconnected. Stop / clean up, then start again from your desktop.') from error
+
+
 def pin_desktop_socket(path, uid):
     path = Path(path)
     require(uid > 0 and path.parent == Path('/run/user') / str(uid) and
@@ -803,7 +848,62 @@ def pin_audio_socket(uid):
 def android_overlay_options(lower, upper, work):
     # Bionic Android 13 realpath stores ino_t in 32 bits in 32-bit HALs.
     # Overlay xino synthesizes high inode bits and makes real files fail ENOENT.
-    return f'lowerdir={lower},upperdir={upper},workdir={work},xino=off'
+    # Arch and other kernels can enable index/metadata copy-up/redirects by
+    # default. Android layers do not need those features, and not all image
+    # lower filesystems expose the export handles they require. Pin the whole
+    # compatibility policy instead of inheriting the host kernel's defaults.
+    metacopy, redirect = overlay_upper_features(upper)
+    # Existing metadata-only inodes require metacopy at lookup time; mounting
+    # with it disabled can succeed and then return EPERM on ordinary reads.
+    # Metacopy also requires redirects to be enabled on supported kernels.
+    return (f'lowerdir={lower},upperdir={upper},workdir={work},xino=off,'
+            f'index=off,metacopy={"on" if metacopy else "off"},'
+            f'redirect_dir={"on" if metacopy or redirect else "off"},nfs_export=off')
+
+
+def overlay_upper_features(upper):
+    """Inspect legacy upper inodes without following guest-created symlinks."""
+    metacopy = redirect = False
+    try:
+        root = os.open(upper, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return False, False
+    def scan_error(error):
+        raise RuntimeError('Cannot inspect existing Android overlay features: ' + str(error)) from error
+    try:
+        for _, _, files, directory in os.fwalk('.', dir_fd=root, follow_symlinks=False, onerror=scan_error):
+            attrs = os.listxattr(directory)
+            redirect |= 'trusted.overlay.redirect' in attrs
+            for name in files:
+                info = os.stat(name, dir_fd=directory, follow_symlinks=False)
+                if not stat.S_ISREG(info.st_mode): continue
+                fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+                try:
+                    attrs = os.listxattr(fd)
+                    metacopy |= 'trusted.overlay.metacopy' in attrs
+                    redirect |= 'trusted.overlay.redirect' in attrs
+                finally: os.close(fd)
+    finally: os.close(root)
+    return metacopy, redirect
+
+
+def mount_android_overlay(lower, upper, work, target, mount):
+    options = android_overlay_options(lower, upper, work)
+    # fsconfig(FSCONFIG_SET_STRING) limits each value to 256 bytes. Our
+    # colon-separated lowerdir can exceed that with ARM and image layers;
+    # recent libmount passes it as one value and fails before mounting.
+    # Keep the same overlay policy via mount(2), scoped to this command.
+    environment = dict(os.environ, LIBMOUNT_FORCE_MOUNT2='always')
+    try:
+        mount('-t', 'overlay', 'overlay', '-o', options, target, env=environment)
+    except RuntimeError as error:
+        # Keep the failing layer and exact policy in the controller error. Do
+        # not retry with fewer protections or discard a runtime's upper layer.
+        raise RuntimeError(f'Android OverlayFS mount failed at {target}: {error}\n'
+                           f'Overlay options: {options}\n'
+                           'Check the latest OverlayFS messages with sudo dmesg; '
+                           'the upper/work directories must share a local filesystem '
+                           'with extended attributes and directory entry types.') from error
 
 
 def desktop_gpu(instance, desktop):
@@ -1102,7 +1202,7 @@ def stop_android(lxc, identifier, boot_completed):
     return result
 
 
-def boot(instance, identifier, generation, state, stopping, done, desktop=None, host_net_fd=None):
+def boot(instance, identifier, generation, state, stopping, done, desktop=None, host_net_fd=None, original_mnt=None):
     root = instance / 'android'
     root.mkdir(mode=0o700, exist_ok=True)
     mounts, names, compositors, logfiles = [], [], [], []
@@ -1120,8 +1220,8 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
             return linux.run_bounded(tool, '-P', root, '-n', name, *args, timeout=timeout, umask=0o022,
                                      operation='Android ' + tool)
         return run(tool, '-P', root, '-n', name, *args, umask=0o022, timeout=timeout, include_stderr=include_stderr)
-    def mount(*args):
-        run('mount', *args)
+    def mount(*args, **kwargs):
+        run('mount', *args, **kwargs)
         mounts.append(Path(args[-1]))
     def shell(*args, timeout=20): return lxc('lxc-attach', identifier, '--', '/system/bin/' + args[0], *args[1:], timeout=timeout)
     def provision_android_user():
@@ -1315,8 +1415,8 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
             fs = work / 'rootfs'
             mount(*image_format.mount_options(instance / 'prepared/system.img'), instance / 'prepared/system.img', work / 'system-lower')
             mount(*image_format.mount_options(instance / 'prepared/vendor.img'), instance / 'prepared/vendor.img', work / 'vendor-lower')
-            mount('-t', 'overlay', 'overlay', '-o', android_overlay_options(f'{system_patches}:{work}/system-lower', work / 'system-upper', work / 'system-work'), fs)
-            mount('-t', 'overlay', 'overlay', '-o', android_overlay_options(f'{patches}/vendor:{work}/vendor-lower', work / 'vendor-upper', work / 'vendor-work'), fs / 'vendor')
+            mount_android_overlay(f'{system_patches}:{work}/system-lower', work / 'system-upper', work / 'system-work', fs, mount)
+            mount_android_overlay(f'{patches}/vendor:{work}/vendor-lower', work / 'vendor-upper', work / 'vendor-work', fs / 'vendor', mount)
             if 'presentation_mode' not in compatibility and not custom_stock_hwc:
                 single_display = b'vendor.waydroid.display@' not in (fs / 'system/bin/surfaceflinger').read_bytes()
                 state['presentation_mode'] = 'android-display' if single_display else 'app-windows'
@@ -1379,6 +1479,7 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
                 props += [key + '=' + value for key, value in arm_props.items()]
             props = [p for p in props if not p.startswith('ro.adb.secure=')] + ['ro.adb.secure=1']
             props = managed_session_properties(props)
+            props = device_module.boot_properties(instance, props)
             props = [p for p in props if not p.startswith((
                 'waydroid.anvil_shm_presentation=', 'waydroid.anvil_gpu_copy_presentation='))]
             if nvidia_rendering and compatibility.get('sdk', 0) > 33:
@@ -1481,10 +1582,7 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
             (fs / 'vendor/waydroid.prop').write_text('\n'.join(props) + '\n')
             ensure_binder_filesystem()
             mount('-t', 'binder', 'binder', work / 'binder')
-            with (work / 'binder/binder-control').open('rb') as control:
-                for device in ('binder', 'vndbinder', 'hwbinder'):
-                    fcntl.ioctl(control, 0xC1086201, struct.pack('256sII', device.encode(), 0, 0))
-                    (work / 'binder' / device).chmod(0o666)
+            prepare_binder_devices(work / 'binder')
             xdg = Path('/run/anvil-xdg')
             xdg.mkdir(mode=0o700, exist_ok=True)
             xdg.chmod(0o700)
@@ -1540,6 +1638,15 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
             except RuntimeError as error:
                 private_pid_limit = False
                 print('Android private PID limit unavailable:', error, flush=True)
+            share_owner = shares_module.configured_owner(instance)
+            if share_owner is not None:
+                require(not desktop or share_owner == desktop[1], 'Shared-folder owner differs from desktop owner')
+                state['shared_folders_mounted'] = shares_module.apply_preboot(
+                    instance, work / 'data', share_owner, mounts.append, original_mnt=original_mnt)
+            data_bind = 'rbind' if any(item.get('mounted') for item in state.get('shared_folders_mounted', {}).values()) else 'bind'
+            for share in state.get('shared_folders_mounted', {}).values():
+                if share.get('mounted'):
+                    share.update(mounted=False, raw_mounted=True, error='Waiting for Android FUSE sharing readiness')
             config += [f'lxc.rootfs.path = dir:{fs}', f'lxc.uts.name = anvil-{name}',
                        'lxc.autodev = 0', 'lxc.console.path = none',
                        # Allow Android's uid-mapped processes to open the
@@ -1655,8 +1762,8 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
             for directory in ('mnt_extra', 'tmp', 'var', 'run'):
                 config.append(f'lxc.mount.entry = tmpfs {directory} tmpfs nodev,create=dir 0 0')
             config += [f'lxc.mount.entry = {xdg} run/xdg none bind,create=dir 0 0',
-                       f'lxc.mount.entry = {work}/data data none bind,create=dir 0 0',
-                       f'lxc.mount.entry = {work}/data anvil-data none bind,create=dir 0 0']
+                       f'lxc.mount.entry = {work}/data data none {data_bind},create=dir 0 0',
+                       f'lxc.mount.entry = {work}/data anvil-data none {data_bind},create=dir 0 0']
             # LXC's directory bind is not recursive. Pin the endpoint again
             # inside Android or its socket submount becomes an empty file.
             if native or (desktop and not x11['display']):
@@ -1668,6 +1775,7 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
             names.append(name)
             lxc('lxc-start', name, '-d', '-l', 'ERROR', '-o', work / 'lxc.log')
             init_pid = int(lxc('lxc-info', name, '-pH'))
+            init_start = shares_module.process_start(init_pid)
             resources.verify_container(init_pid, identifier, generation)
             if private_pid_limit:
                 try:
@@ -1763,6 +1871,19 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
                     require(time.monotonic() < ready_deadline, 'Native X11 protocol endpoint startup timed out')
                     if stopping.wait(.1): return
                 state['x11_status'] = x11_session.state
+            if state.get('shared_folders_mounted'):
+                try:
+                    require(shares_module.process_start(init_pid) == init_start, 'Android process changed before sharing reconciliation')
+                    resources.verify_container(init_pid, identifier, generation)
+                    result = linux.run_bounded(sys.executable, shares_module.__file__, '--reconcile',
+                        instance, work / 'data', init_pid, init_start, generation, original_mnt,
+                        timeout=15, full_output=True, output_limit=16384, operation='Android FUSE sharing reconciliation')
+                    require(shares_module.process_start(init_pid) == init_start, 'Android process changed during sharing reconciliation')
+                    resources.verify_container(init_pid, identifier, generation)
+                    state['shared_folders_mounted'] = json.loads(result)
+                except (RuntimeError, OSError, ValueError) as error:
+                    state['shared_folders_mounted'] = {name: {'mounted': False, 'error': 'Android FUSE sharing unavailable: ' + str(error)[:400]}
+                        for name in state['shared_folders_mounted']}
             state.update(state='Running', error=None, android_id=android_id)
             state.pop('boot_wait', None)
             state['network'] = 'private_uplink' if uplink else 'isolated'
@@ -1793,11 +1914,7 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
             if x11_session: x11_session.check()
             if uplink: uplink.check()
             if desktop and not native:
-                watchdog_target = desktop_pin if not x11['display'] else Path('/run/anvil-xdg') / 'wayland-probe'
-                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
-                    probe.settimeout(1)
-                    try: probe.connect(str(watchdog_target))
-                    except OSError as error: raise RuntimeError('Desktop session disconnected. Stop / clean up, then start again from your desktop.') from error
+                check_desktop_session()
             require(lxc('lxc-info', identifier, '-sH') in ('RUNNING', 'FROZEN'), 'Android container exited')
             if compositors: require(compositors[0].poll() is None, 'Desktop compositor exited' if desktop else 'Headless compositor exited')
     except Exception as error:
@@ -1851,6 +1968,9 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
                     errors.append(str(error))
         if errors: state.update(state='Error', error='; '.join(errors)[-1024:])
         elif state['state'] != 'Error': state.update(state='Stopped', error=None)
+        if not errors:
+            for share in state.get('shared_folders_mounted', {}).values():
+                share['mounted'] = False
         state['cleanup_complete'] = not errors
         atomic(instance / 'worker-result.json', dict(state))
         done.set()
@@ -1867,7 +1987,7 @@ def main(instance, identifier, generation, original_mnt, original_net, desktop=N
     endpoint = instance / 'worker.sock'
     endpoint.unlink(missing_ok=True)
     state = dict(runtime_id=identifier, generation=generation, state='Starting', error=None, display_mode='desktop' if desktop else 'headless', capabilities=['graphics', 'apps', 'app_actions', 'uninstall_app', 'install_apk', 'google_services'])
-    state['capabilities'].extend(['app_states', 'adb'])
+    state['capabilities'].extend(['app_states', 'adb', 'app_compatibility', 'shared_folders'])
     if desktop: state['capabilities'].extend(['keymap_editor', 'full_ui', 'window_activation'])
     atomic(instance / 'worker-identity.json', dict(runtime_id=identifier, generation=generation))
     (instance / 'worker-result.json').unlink(missing_ok=True)
@@ -1878,7 +1998,7 @@ def main(instance, identifier, generation, original_mnt, original_net, desktop=N
     os.chmod(endpoint, 0o600)
     server.listen(4)
     server.settimeout(.5)
-    thread = threading.Thread(target=boot, args=(instance, identifier, generation, state, stopping, done, desktop, host_net_fd))
+    thread = threading.Thread(target=boot, args=(instance, identifier, generation, state, stopping, done, desktop, host_net_fd, original_mnt))
     thread.start()
     idle = IdleSuspend(instance, identifier, state, stopping)
     adb_relay = None
@@ -1948,6 +2068,19 @@ def main(instance, identifier, generation, original_mnt, original_net, desktop=N
                                 except (RuntimeError, OSError, NameError, subprocess.TimeoutExpired): pass
                             response['app_error'] = str(error)[-1024:]
                         connection.sendall(json.dumps(dict(response, state=state['state'], adb_enabled=state.get('adb_enabled', False))).encode() + b'\n')
+                        continue
+                    elif isinstance(request, dict) and request.get('op') == 'compatibility':
+                        response = dict(state)
+                        try:
+                            idle.resume()
+                            require(state['state'] == 'Running' and not stopping.is_set(), 'Start this runtime before configuring app compatibility')
+                            def compatibility_android(*args):
+                                return linux.run_bounded('lxc-attach', '-P', instance / 'android', '-n', identifier,
+                                    '--', *args, timeout=3, full_output=True, operation='App compatibility')
+                            response['compatibility'] = compatibility_module.dispatch(compatibility_android, request, identifier, generation)
+                        except (RuntimeError, OSError, ValueError, subprocess.TimeoutExpired) as error:
+                            response['app_error'] = str(error)[-1024:]
+                        connection.sendall(json.dumps(dict(response, state=state['state'])).encode() + b'\n')
                         continue
                     elif request == {'op': 'graphics'}:
                         response = dict(state)

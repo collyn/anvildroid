@@ -411,9 +411,12 @@ static void csd_resize_finished(struct object *pointer) {
                       surface->resize.width,surface->resize.height);
 }
 static int absolute_pointer_update(struct object *,int32_t,int32_t,int);
+static int map_pointer_profile(struct object *);
 static int absolute_pointer_button(struct object *,uint32_t,uint32_t);
+static int map_advanced_release(uint32_t);
 static int absolute_pointer_axis(struct object *,uint32_t,int32_t);
 static void absolute_pointer_leave(struct object *);
+static void map_pointer_enter(struct object *,struct proxy *);
 static void csd_pointer_enter(void *data, struct proxy *p, uint32_t serial,
                                struct proxy *surface, int32_t x, int32_t y) {
   struct object *o = data;
@@ -428,6 +431,7 @@ static void csd_pointer_enter(void *data, struct proxy *p, uint32_t serial,
   o->csd_focus = 0; o->csd_suppress = 0; o->csd_pressed = 0;
   o->overlay_focus=0;o->overlay_pressed=0;
   o->menu_focus=0;
+  map_pointer_enter(o,surface);
   o->pointer_surface=surface;
   o->fit_bar_focus=game_fit_bar(surface);
   if(o->fit_bar_focus){o->csd_suppress=1;pthread_mutex_unlock(mutex);return;}
@@ -512,7 +516,12 @@ static void csd_pointer_button(void *data, struct proxy *p, uint32_t serial, uin
   void *closed_data=0; struct proxy *closed_proxy=0;
   pthread_mutex_lock(mutex);
   clipboard_input(serial);
-  int suppress=o->csd_suppress;
+  /* Physical releases must drain consumed bindings even when editor/chrome
+   * owns this event. A cancelled contact must not swallow the next click. */
+  int blocked_release=!state&&o->focus_blocked_button==button;
+  if(blocked_release)o->focus_blocked_button=0;
+  int mapped_release=!state&&map_advanced_release(button);
+  int suppress=o->csd_suppress||mapped_release||blocked_release;
   struct csd_frame *f=o->csd_focus;
   if (button==0x110 && state==0) csd_resize_finished(o);
   if(o->overlay_focus)keymap_overlay_button(o,button,state);
@@ -575,17 +584,21 @@ static void csd_pointer_axis(void *d,struct proxy *p,uint32_t t,uint32_t axis,in
   }
   if (!o->csd_suppress) ((void (*)(void *,struct proxy *,uint32_t,uint32_t,int32_t))o->listener[4])(o->listener_data,p,t,axis,value);
 }
+static int csd_pointer_stream_owned(struct object *o) {
+  pthread_mutex_lock(mutex);int owned=map_pointer_profile(o);pthread_mutex_unlock(mutex);
+  return owned;
+}
 static void csd_pointer_frame(void *d,struct proxy *p) {
-  struct object *o=d; if (!o->csd_suppress && o->listener[5]) ((void (*)(void *,struct proxy *))o->listener[5])(o->listener_data,p);
+  struct object *o=d; if (!o->csd_suppress && !csd_pointer_stream_owned(o) && o->listener[5]) ((void (*)(void *,struct proxy *))o->listener[5])(o->listener_data,p);
 }
 static void csd_pointer_source(void *d,struct proxy *p,uint32_t source) {
-  struct object *o=d; if (!o->csd_suppress && o->listener[6]) ((void (*)(void *,struct proxy *,uint32_t))o->listener[6])(o->listener_data,p,source);
+  struct object *o=d; if (!o->csd_suppress && !csd_pointer_stream_owned(o) && o->listener[6]) ((void (*)(void *,struct proxy *,uint32_t))o->listener[6])(o->listener_data,p,source);
 }
 static void csd_pointer_stop(void *d,struct proxy *p,uint32_t t,uint32_t axis) {
-  struct object *o=d; if (!o->csd_suppress && o->listener[7]) ((void (*)(void *,struct proxy *,uint32_t,uint32_t))o->listener[7])(o->listener_data,p,t,axis);
+  struct object *o=d; if (!o->csd_suppress && !csd_pointer_stream_owned(o) && o->listener[7]) ((void (*)(void *,struct proxy *,uint32_t,uint32_t))o->listener[7])(o->listener_data,p,t,axis);
 }
 static void csd_pointer_discrete(void *d,struct proxy *p,uint32_t axis,int32_t steps) {
-  struct object *o=d; if (!o->csd_suppress && o->listener[8]) ((void (*)(void *,struct proxy *,uint32_t,int32_t))o->listener[8])(o->listener_data,p,axis,steps);
+  struct object *o=d; if (!o->csd_suppress && !csd_pointer_stream_owned(o) && o->listener[8]) ((void (*)(void *,struct proxy *,uint32_t,int32_t))o->listener[8])(o->listener_data,p,axis,steps);
 }
 static void (*csd_pointer_listener[])(void) = {
   (void (*)(void))csd_pointer_enter,(void (*)(void))csd_pointer_leave,

@@ -9,7 +9,7 @@ fi
 case "$1" in ''|*[!a-zA-Z0-9._-]*|.|..) echo 'Invalid release name' >&2; exit 1;; esac
 dest="$(pwd)/target/releases/$1"
 [ ! -e "$dest" ] || { echo "Release already exists: $dest" >&2; exit 1; }
-cargo build --release -p anvildroid-gui -p anvildroid-cli
+cargo build --release --locked -p anvildroid-gui -p anvildroid-cli
 # Refuse incomplete bundles before creating a staging directory. Cargo does
 # not build the Java IME/shutdown helpers, and cached native outputs may be old.
 gui_bin="${CARGO_TARGET_DIR:-target}/release/anvildroid-gui"
@@ -26,7 +26,10 @@ trap 'rm -rf "$stage"' EXIT
 mkdir -p "$stage/bin" "$stage/scripts" "$stage/services" "$stage/packaging/systemd" "$stage/target/native" "$stage/target/ime" "$stage/target/shutdown" "$stage/native"
 cp "$gui_bin" "$cli_bin" "$stage/bin/"
 cp scripts/install-portable.sh scripts/install-runtime-controller.py scripts/install-runtime-apparmor.py scripts/start-runtime-controller.py scripts/setup-waydroid.py "$stage/scripts/"
-cp packaging/systemd/anvildroid-controller.service "$stage/packaging/systemd/"
+cp packaging/systemd/anvildroid-controller.service packaging/systemd/50-anvildroid.conf "$stage/packaging/systemd/"
+# Validate source identity, manifest hashes and release-build provenance before
+# staging the payload automatically consumed by the controller installer.
+python3 scripts/build-x11-payload.py --stage-parent "$stage"
 cp services/*.py "$stage/services/"
 cp native/anvildroid-*.rc native/anvildroid-*.sh "$stage/native/"
 cp -a native/overlay "$stage/native/"

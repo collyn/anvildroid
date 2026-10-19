@@ -59,6 +59,40 @@ command -v gtk-update-icon-cache >/dev/null 2>&1 && gtk-update-icon-cache -f -t 
 exit 0
 EOF
 chmod 0755 "$PKG/DEBIAN/postinst"
+cat > "$PKG/DEBIAN/prerm" <<'EOF'
+#!/bin/sh
+set -e
+case "$1" in
+  remove|deconfigure)
+    if [ -d /run/systemd/system ]; then
+      # Stop only the controller unit. Managed worker scopes and persistent
+      # runtime data belong to their own lifecycle; do not stop Waydroid.
+      systemctl stop anvildroid-controller.service
+      systemctl disable anvildroid-controller.service
+      if systemctl is-active --quiet anvildroid-controller.service; then
+        echo 'AnvilDroid controller is still active; refusing package removal' >&2
+        exit 1
+      fi
+    fi
+    ;;
+esac
+exit 0
+EOF
+cat > "$PKG/DEBIAN/postrm" <<'EOF'
+#!/bin/sh
+set -e
+case "$1" in
+  remove|purge)
+    if [ -d /run/systemd/system ]; then
+      systemctl daemon-reload
+    fi
+    command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database /usr/share/applications || true
+    command -v gtk-update-icon-cache >/dev/null 2>&1 && gtk-update-icon-cache -f -t /usr/share/icons/hicolor || true
+    ;;
+esac
+exit 0
+EOF
+chmod 0755 "$PKG/DEBIAN/prerm" "$PKG/DEBIAN/postrm"
 # cp -a preserves source permissions, including group-write bits from a
 # developer checkout. Installed controller/payload assets must be immutable
 # to non-root users, regardless of the build host's umask.

@@ -142,6 +142,7 @@ def main(software_x11=False, xim=False):
                 assert output.count('x11_toplevel_mapped=') == 11
                 assert output.count('x11_toplevel_unmapped=') == 5
                 if software_x11:
+                    subprocess.run([str(OUT / 'keymap-client-check'), str(socket)], env=environment, check=True, timeout=30)
                     subprocess.run([str(OUT / 'feature-client-check'), str(socket)], env=environment, check=True, timeout=30)
                     assert host.poll() is None
                 print('PASS repeated client teardown and independent app windows; Start creates no window')

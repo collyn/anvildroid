@@ -11,7 +11,7 @@ printf '%s  %s\n' 59753e70a74f918389cc87f1b7d66b5c0862932559167425708ded159e3de4
 out=target/touch-probe
 mkdir -p "$out"
 work=$(mktemp -d "$out/build.XXXXXX")
-javac --release 8 -encoding UTF-8 -cp "$android_jar" -d "$work/classes" native/touch-probe/MainActivity.java
+javac --release 8 -encoding UTF-8 -cp "$android_jar" -d "$work/classes" native/touch-probe/*.java
 jar cf "$work/input.jar" -C "$work/classes" .
 java -cp "$r8" com.android.tools.r8.D8 --min-api 23 --lib "$android_jar" --output "$work" "$work/input.jar"
 aapt package -f -M native/touch-probe/AndroidManifest.xml -I "$framework" -F "$work/unsigned.apk"

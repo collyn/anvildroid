@@ -480,6 +480,7 @@ class ExistingRuntime:
         available = all((self.work / 'overlay/system' / lib / 'libndk_translation.so').is_file() for lib in ('lib', 'lib64'))
         return {'provider': bridge or 'Existing native bridge', 'enabled': bridge not in ('', '0'),
                 'supported': available and bridge in ('', '0', 'libndk_translation.so'), 'available': available,
+                'restore_available': bool(self.saved().get('arm_properties')),
                 'experimental': True, 'inherited': False, 'abis': ['armeabi-v7a', 'arm64-v8a'],
                 'detail': 'Uses installed ARM libraries. AnvilDroid does not replace an unknown native bridge.'}
 

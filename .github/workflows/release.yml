@@ -38,13 +38,30 @@ jobs:
             echo "rpm=$(python3 scripts/release-version.py --rpm)"
             case "$version" in *-*) echo 'prerelease=true';; *) echo 'prerelease=false';; esac
           } >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@v4
+        with: {node-version: '22'}
+      - name: Test runtime features without Android
+        run: sh scripts/test-runtime-features.sh
+      - name: Test shared folders in a private PID1 mount namespace
+        run: sudo python3 services/shares-test.py --mount-test
+      - name: Test Default shared-folder lifecycle in a private PID1 mount namespace
+        run: sudo python3 services/default-shares-test.py --mount-test
+      - name: Test Default native thread pools across private mount namespaces
+        run: sudo python3 services/default-native-pool-test.py --mount-test
+      - name: Test sharing ownership and ACLs with two real desktop UIDs
+        run: sudo python3 services/share-identities-test.py --mount-test
+      - name: Test Android overlays in a private PID1 mount namespace
+        run: sudo python3 services/overlay-test.py --mount-test
+      - name: Test Android FUSE sharing and existing slave namespaces
+        run: sudo python3 services/shares-fuse-test.py --mount-test
       - name: Test preparation without initialized Waydroid host
         run: python3 services/provision-support-test.py
       - name: Test legacy Debian installation permissions
         run: python3 services/install-permissions-test.py
-      - name: Test Default NVIDIA session devices and shader warm-up
+      - name: Test Default Binder, NVIDIA session devices and shader warm-up
         run: |
           python3 services/default-gpu-test.py
+          python3 services/default-binder-test.py
           python3 services/surfaceflinger-cache-test.py
       - name: Test confirmed app removal without Android
         run: |
@@ -65,7 +82,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends e2fsprogs unzip curl patch \
             build-essential pkg-config git cmake flex bison libssl-dev libjsoncpp-dev \
             libxcb1-dev libx11-dev libvulkan-dev libwayland-dev wayland-protocols \
-            libegl1-mesa-dev libgles2-mesa-dev libxkbcommon-dev libxcursor-dev libxi-dev libxfixes-dev libxext-dev libxtst-dev aapt apksigner
+            libegl1-mesa-dev libgles2-mesa-dev libgl1-mesa-dri libxkbcommon-dev libxcursor-dev libxi-dev libxfixes-dev libxext-dev libxtst-dev xvfb xauth aapt apksigner
           command -v sdkmanager >/dev/null
           yes | sdkmanager --licenses >/dev/null || true
           sdkmanager 'platforms;android-23' 'platforms;android-35' 'build-tools;35.0.0' 'ndk;26.3.11579264'
@@ -79,6 +96,8 @@ jobs:
           python3 scripts/build-x11-payload.py
       - name: Test native X11 protocols without a display
         run: python3 native/x11/host-check.py
+      - name: Test native X11 input through a private software display
+        run: python3 native/x11/host-check.py --software-x11
       - name: Prepare pinned NVIDIA archives
         env:
           GH_TOKEN: ${{ secrets.NVIDIA_ARTIFACT_TOKEN || github.token }}

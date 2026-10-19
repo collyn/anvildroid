@@ -122,11 +122,13 @@ pub(crate) fn check_output(output: Output) -> Result<String, AnvilError> {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    if !output.status.success() || runtime::launch_error(&text).is_some() {
+    let failure = runtime::launch_error(&text);
+    if !output.status.success() || failure.is_some() {
         return Err(AnvilError::BackendFailed(format!(
-            "Waydroid failed ({}): {}",
+            "Waydroid failed ({}): {}{}",
             output.status,
-            text.trim()
+            text.trim(),
+            failure.map(|reason| format!("\n{reason}")).unwrap_or_default()
         )));
     }
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
@@ -304,6 +306,24 @@ pub fn launch_app(package: &str) -> Result<(), AnvilError> {
         &["app", "launch", package],
         Duration::from_secs(15),
     )?)?;
+    Ok(())
+}
+
+/// Request Default's full Android window after the session is responsive.
+/// Command completion confirms the request only, not desktop window mapping.
+pub fn open_full_ui(activation_token: Option<&str>) -> Result<(), AnvilError> {
+    ensure_ready(BOOT_TIMEOUT)?;
+    runtime::launch_preflight()?;
+    let mut command = Command::new("waydroid");
+    command.arg("show-full-ui").env("LC_ALL", "C")
+        .env_remove("XDG_ACTIVATION_TOKEN");
+    if let Some(token) = activation_token.filter(|token| {
+        !token.is_empty() && token.len() <= 512
+            && token.bytes().all(|byte| byte > 32 && byte < 127)
+    }) {
+        command.env("XDG_ACTIVATION_TOKEN", token);
+    }
+    check_output(output_timeout(&mut command, Duration::from_secs(15))?)?;
     Ok(())
 }
 

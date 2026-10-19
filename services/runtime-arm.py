@@ -65,6 +65,9 @@ def stage(archive, destination, expected_sha256=None):
     staging = Path(tempfile.mkdtemp(prefix='.arm-', dir=destination.parent))
     try:
         hashes = {}
+        recipe = next((item for item in CATALOG if item['sha256'] == digest and item.get('patches')), None)
+        patch_target = ('lib64/' + ('libndk_translation.so' if recipe['engine'] == 'libndk' else 'libhoudini.so')) if recipe else None
+        patched = False
         try:
             package = zipfile.ZipFile(io.BytesIO(blob))
         except (zipfile.BadZipFile, OSError) as error:
@@ -87,14 +90,19 @@ def stage(archive, destination, expected_sha256=None):
                 # JNI translation needs libraries, not host-global binfmt registrations.
                 if str(relative).startswith(('etc/binfmt_misc/', 'etc/init/')): continue
                 total += entry.file_size
-                if total > 512 * 1024**2: raise RuntimeError('ARM payload exceeds size limit')
+                if entry.file_size > _source.MAX_FILE or total > _source.MAX_EXPANDED:
+                    raise RuntimeError('ARM payload exceeds size limit')
                 target = staging / 'system' / relative
                 target.parent.mkdir(parents=True, exist_ok=True)
                 data = package.read(entry)
+                if str(relative) == patch_target:
+                    data = _source.patch_library(data, recipe)
+                    patched = True
                 with target.open('xb') as output:
                     output.write(data); output.flush(); os.fsync(output.fileno())
                 target.chmod(0o755 if relative.parts[0] == 'bin' else 0o644)
                 hashes[str(PurePosixPath('system') / relative)] = hashlib.sha256(data).hexdigest()
+        if recipe and not patched: raise RuntimeError('ARM compatibility patch target is missing')
         metadata = describe(hashes, digest)
         for directory, _, _ in os.walk(staging): Path(directory).chmod(0o755)
         with (staging / 'manifest.json').open('x') as output:
@@ -124,6 +132,10 @@ def verify(directory, expected_sha256=None):
     metadata = describe(files, archive_sha256)
     if manifest.get('engine', metadata['engine']) != metadata['engine']:
         raise RuntimeError('ARM manifest engine mismatch')
+    if metadata.get('patches'):
+        library = 'libndk_translation.so' if metadata['engine'] == 'libndk' else 'libhoudini.so'
+        if files.get('system/lib64/' + library) != metadata['patch_sha256']:
+            raise RuntimeError('ARM patched library checksum mismatch')
     for name, expected in files.items():
         path = directory / name
         if path.is_symlink() or '..' in PurePosixPath(name).parts or PurePosixPath(name).is_absolute(): raise RuntimeError('Unsafe ARM payload path')
@@ -147,9 +159,11 @@ def runtime_properties(instance):
     manifest = verify(payload_path(instance, config['archive_sha256']), config['archive_sha256'])
     metadata = describe(manifest['files'], manifest['archive_sha256'])
     props = dict(PROPERTIES)
+    props.pop('ro.ndk_translation.version', None)
+    if metadata.get('library_version'):
+        props['ro.ndk_translation.version'] = metadata['library_version']
     if metadata['engine'] == 'libhoudini':
         props['ro.dalvik.vm.native.bridge'] = 'libhoudini.so'
-        props.pop('ro.ndk_translation.version', None)
     return props
 
 ARCHIVE = Path('/usr/local/lib/anvildroid-controller/libndk-0.2.3.zip')
@@ -218,10 +232,17 @@ def info(instance, supported, sources=None):
     inherited = not config and bridge in ('libndk_translation.so', 'libhoudini.so')
     available = ARCHIVE.is_file()
     configured_provider = config.get('provider', 'libndk_translation 0.2.3') if config else bridge.removesuffix('.so') if inherited else None
+    known = next((item for item in CATALOG if config and item['sha256'] == config['archive_sha256']), None)
+    if known: configured_provider = known['label']
+    sdk = None
+    try:
+        sdk = json.loads((instance / 'support/compatibility.json').read_text()).get('sdk')
+    except (OSError, ValueError, AttributeError): pass
     return {'provider': configured_provider or 'libndk_translation 0.2.3', 'archive_sha256': config.get('archive_sha256') if config else None,
             'enabled': bool(config and config['enabled']) or inherited,
             'inherited': inherited, 'supported': supported, 'available': available,
             'sources': sources or [],
+            'android_sdk': sdk if type(sdk) is int else None,
             'experimental': True, 'abis': ['armeabi-v7a', 'arm64-v8a']}
 
 

@@ -70,11 +70,11 @@ def android_pid_limit_is_private():
     return False  # Never write the host-global sysctl on older kernels.
 
 
-def run(*args, timeout=20, umask=-1, include_stderr=False):
+def run(*args, timeout=20, umask=-1, include_stderr=False, env=None):
     args = android_command(args)
     process = subprocess.Popen(list(map(str, args)), stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE, text=True,
-                               start_new_session=True, umask=umask)
+                               start_new_session=True, umask=umask, env=env)
     try:
         stdout, stderr = process.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:

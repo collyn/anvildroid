@@ -4,6 +4,7 @@
 #undef main
 #include <cassert>
 #include <sys/socket.h>
+#include <X11/extensions/XTest.h>
 
 static std::vector<uint32_t> wire(Server &s, int fd) {
   wl_display_flush_clients(s.display);
@@ -338,11 +339,65 @@ static void scroll_events() {
   puts("PASS native/emulated XInput wheel scroll reaches both Wayland axes "
        "once per notch without duplicate touch clicks");
 }
+static void game_input_lifecycle() {
+  Server s(false);
+  int fds[2];assert(!socketpair(AF_UNIX,SOCK_STREAM|SOCK_CLOEXEC,0,fds));
+  auto *client=wl_client_create(s.display,fds[0]);assert(client);
+  Node n,other;Top t{},u{};
+  n.server=other.server=&s;n.top=&t;other.top=&u;t.server=u.server=&s;t.node=&n;u.node=&other;
+  n.resource=wl_resource_create(client,&wl_surface_interface,4,2);
+  t.xdg=wl_resource_create(client,&xdg_surface_interface,3,3);
+  auto *pointer=wl_resource_create(client,&wl_pointer_interface,5,4);s.pointers.insert(pointer);
+  auto *keyboard=wl_resource_create(client,&wl_keyboard_interface,5,5);s.keyboards.insert(keyboard);
+  auto *touch=wl_resource_create(client,&wl_touch_interface,5,6);s.touches.insert(touch);
+  other.resource=wl_resource_create(client,&wl_surface_interface,4,7);
+  u.xdg=wl_resource_create(client,&xdg_surface_interface,3,8);
+  t.window.window=0x123456;u.window.window=0x123457;s.tops.insert(&t);s.tops.insert(&u);
+  n.current.image=std::make_shared<Image>();n.current.image->width=n.current.image->height=300;
+  s.keyboard_focus=&t;s.pointer_focus=&n;
+  auto key=[&](int type,unsigned code,Window window){XEvent e{};e.type=type;e.xkey.display=s.platform.display;e.xkey.window=window;e.xkey.keycode=code;e.xkey.time=0xffffffffu;s.native_event(e);};
+  assert(XTestFakeKeyEvent(s.platform.display,25,True,CurrentTime));XSync(s.platform.display,False);
+  key(KeyPress,25,t.window.window);key(KeyPress,25,t.window.window);
+  auto messages=wire(s,fds[1]);unsigned downs=0;
+  for(size_t i=0;i<messages.size();i+=(messages[i+1]>>16)/4)
+    if(messages[i]==5&&(messages[i+1]&65535)==WL_KEYBOARD_KEY&&messages[i+5])++downs;
+  assert(downs==1&&s.pressed.count(17));
+  s.grab=&n;s.pointer_buttons[1]=s.serial();
+  s.touch_event(XI_TouchBegin,100,&t,30,30,1);wire(s,fds[1]);
+  s.focus(nullptr);messages=wire(s,fds[1]);
+  unsigned keyups=0,buttonups=0,cancels=0;
+  for(size_t i=0;i<messages.size();i+=(messages[i+1]>>16)/4){
+    auto op=messages[i+1]&65535;
+    if(messages[i]==5&&op==WL_KEYBOARD_KEY&&!messages[i+5])++keyups;
+    if(messages[i]==4&&op==WL_POINTER_BUTTON&&!messages[i+5])++buttonups;
+    if(messages[i]==6&&op==WL_TOUCH_CANCEL)++cancels;
+  }
+  assert(keyups==1&&buttonups==1&&cancels==1&&s.pressed.empty()&&!s.grab&&s.touch_points.empty());
+  assert(s.blocked_until_release.count(17));
+  s.focus(&t);wire(s,fds[1]);key(KeyPress,25,t.window.window);assert(s.pressed.empty());
+  assert(XTestFakeKeyEvent(s.platform.display,25,False,CurrentTime));XSync(s.platform.display,False);
+  key(KeyRelease,25,t.window.window);assert(s.blocked_until_release.empty());
+  key(KeyPress,25,t.window.window);assert(s.pressed.count(17));wire(s,fds[1]);
+  key(KeyRelease,25,t.window.window);wire(s,fds[1]);
+  s.focus(&u);wire(s,fds[1]);key(KeyPress,38,t.window.window);assert(s.pressed.empty());
+  s.blocked_until_release.insert(30);s.focus(&t);wire(s,fds[1]);
+  assert(!s.blocked_until_release.count(30));key(KeyPress,38,t.window.window);assert(s.pressed.count(30));
+  key(KeyRelease,38,t.window.window);wire(s,fds[1]);
+  s.pointer_focus=&n;s.grab=&n;s.pointer_buttons[1]=s.serial();
+  key(KeyPress,25,t.window.window);wire(s,fds[1]);
+  XEvent unmap{};unmap.type=UnmapNotify;unmap.xunmap.display=s.platform.display;
+  unmap.xunmap.event=unmap.xunmap.window=t.window.window;s.native_event(unmap);wire(s,fds[1]);
+  assert(!s.keyboard_focus&&!s.pointer_focus&&!s.grab&&s.pressed.empty());
+  s.focus(nullptr);s.keyboard_focus=nullptr;s.pointer_focus=nullptr;
+  s.pointers.clear();s.keyboards.clear();s.touches.clear();s.tops.clear();close(fds[1]);
+  puts("PASS game keys deduplicate XKB repeat, focus cancels key/button/touch, held inputs require release, stale-window input is rejected");
+}
 int main(int argc, char **argv) {
   if (argc == 2 && !strcmp(argv[1], "--x11-input-burst")) {
     native_event_budget();
     motion_order();
     scroll_events();
+    game_input_lifecycle();
     return 0;
   }
   assert(argc == 1);

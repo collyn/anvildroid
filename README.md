@@ -14,7 +14,7 @@ GPU settings and desktop windows.
 
 ## Current status
 
-As of **2026-10-15**, AnvilDroid has a Tauri 2 desktop GUI, a Python runtime
+As of **2026-10-17**, AnvilDroid has a Tauri 2 desktop GUI, a Python runtime
 controller and isolated Android workers, plus native Wayland window and input
 integration. Managed runtimes can run concurrently with separate app data,
 namespaces, Binder devices and resource limits. Existing Waydroid installations
@@ -48,6 +48,20 @@ compatibility across custom images, desktops and games is still being developed.
   **Resize app layout** updates Android task bounds; **Keep resolution** changes
   the host window while preserving the Android rendering resolution.
 - ARM translation selection: libndk_translation and libhoudini catalogs.
+  These third-party binaries have [separate licensing terms](#optional-arm-translation-binaries).
+- Per-app Fake Wi-Fi and mouse-as-touch settings, with runtime-scoped readback,
+  reset and rollback. Image support and app behavior still need live validation.
+- Explicit shared folders for managed runtimes and integrated Default, with read-only or read/write
+  mounts activated at the next start. See [folder sharing](docs/SHARED-FOLDERS.md).
+- Native game controls: Mouse touch, fixed keyboard/mouse bindings, WASD joystick,
+  swipe, repeated clicks, skill casting, finite macros, aim/fire and Look with
+  optional FPS capture. The editor preserves older profiles until Save;
+  see [authoring controls and limits](docs/GAME-CONTROLS.md).
+- Runtime ARM translation settings show version, checksum, requirements and cache
+  status alongside the existing installer. Google Play keeps its image-creation
+  workflow. See [runtime settings](docs/RUNTIME-TOOLS.md).
+- Local JSON diagnostic export with optional bounded logs and best-effort
+  redaction. Reports are saved privately and never uploaded automatically.
 - GPU diagnostics and per-runtime RAM/CPU/GPU settings.
 - Experimental NVIDIA rendering through ANGLE/Venus, including hybrid display
   presentation and ASTC texture decoding support.
@@ -171,12 +185,17 @@ install both `anvildroid-gui` and the `anvildroid` CLI in `/usr/bin`.
 
 ## Run
 
-Open `anvildroid-gui`, start the controller from **Runtimes**, create or import
-a runtime, prepare its images, then start it. Install and launch APKs from the
-Apps page while the selected runtime is running.
+Open `anvildroid-gui`, start the controller from **Runtimes**, and create
+a runtime. AnvilDroid prepares its images and starts Android automatically.
+Keep AnvilDroid open until this finishes. Preparation and boot progress appear
+on the runtime card; failures retain the new runtime with a retry action.
+Install and launch APKs from the Apps page while the selected runtime is running.
 Use **Images** to download/import images, the runtime Settings button to adjust
 its configuration, and **Settings** for GUI preferences, runtime start on boot
 and ARM packages. **Open Waydroid** opens the selected runtime's full Android UI.
+Runtime Settings includes **Shared folders** inside **Storage** and
+**Export report** inside **Diagnostics**. In the app context menu, **Compatibility** opens the
+per-app settings; see [app compatibility](docs/APP-COMPATIBILITY.md).
 
 For CLI commands and their supported runtime scope, run `anvildroid --help`.
 The CLI's source version follows the workspace version automatically.
@@ -264,6 +283,41 @@ licenses and notices. See the [NVIDIA notices](packaging/nvidia/NOTICE),
 AnvilDroid source code is licensed under the [MIT License](LICENSE-MIT).
 Waydroid, Android/LineageOS images, Google services, ARM translation packages,
 native libraries and installed applications remain under their own licenses.
+
+### Optional ARM translation binaries
+
+The MIT license above covers AnvilDroid's own source code. The translation
+bridges are proprietary Google/Intel prebuilts obtained from community mirrors:
+
+| Component | Source / origin | License information in the pinned archives |
+| --- | --- | --- |
+| Google's `libndk_translation` | [supremegamers NDK prebuilts](https://github.com/supremegamers/vendor_google_proprietary_ndk_translation-prebuilt); ChromeOS Zork/Guybrush | All three checked revisions include [ARM_TO_AMD_DBT_LICENSE.txt](packaging/arm/ARM_TO_AMD_DBT_LICENSE.txt). This is a limited grant concerning ARM ISA copyrights. |
+| Intel's `libhoudini` | [supremegamers Houdini prebuilts](https://github.com/supremegamers/vendor_intel_proprietary_houdini); ChromeOS, Microsoft WSA and Google Play Games for PC | No standalone license notice or redistribution grant was found in the seven checked revisions. Their `Android.mk` files mark the translator modules as proprietary. |
+
+The NDK notice explicitly names `system/lib/libndk_translation.so` and
+`system/lib64/libndk_translation.so`. It covers only ARM's copyright rights in
+the ARM-v8 and ARM-v9 ISAs, requires retaining/reproducing its notices and
+disclaimer, and excludes other intellectual property rights, including patents.
+Its clause 3 permits redistribution only in conjunction with the sale of a
+semiconductor product containing an AMD-64 ISA compliant CPU core licensed or
+sold by AMD, and limits use/execution of that redistributed software to that
+core. Read the [complete notice](packaging/arm/ARM_TO_AMD_DBT_LICENSE.txt);
+it does not establish a complete license for all rights in the prebuilt package.
+The [upstream copy](https://github.com/supremegamers/vendor_google_proprietary_ndk_translation-prebuilt/blob/68734c52556d3d7a6db34c603dd9276915c29f2f/ARM_TO_AMD_DBT_LICENSE.txt)
+is pinned to the default catalog revision.
+
+For Houdini, permission to redistribute the catalog binaries has not been
+established from those archives. Public availability on GitHub and successful
+SHA-256 verification do not themselves grant distribution or modification
+rights. Applicable rightsholder terms must be checked before redistributing
+translator binaries, modified variants or images containing them. Compatibility
+patches do not replace the original licensing terms.
+
+AnvilDroid's package builders include the catalog/downloader code; the ARM
+translation archives are fetched separately during runtime preparation or
+version installation. The checked revisions, versions and patch variants are
+listed in [ARM translation documentation](docs/ARM-TRANSLATION.md), with exact
+URLs and checksums in [the catalog](services/runtime-arm-source.py).
 
 See [Waydroid documentation](https://docs.waydro.id/) for Android runtime setup.
 

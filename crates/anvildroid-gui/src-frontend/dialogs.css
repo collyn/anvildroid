@@ -35,6 +35,7 @@ body dialog input, body dialog select {
   color: var(--text-primary); background: var(--bg-secondary);
   border: 1px solid var(--dialog-border); border-radius: 8px; font: inherit;
 }
+body dialog input[type="checkbox"] { width: auto; padding: 0; margin-right: 8px; accent-color: var(--accent); }
 body dialog :is(input, select, button):focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 body dialog :is(.runtime-actions, .detail-actions, .dialog-actions) {
   display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 10px;

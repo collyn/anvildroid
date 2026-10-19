@@ -169,7 +169,7 @@ class AndroidBackend:
         identity = json.loads(identity_path.read_text()) if identity_path.exists() else None
         try:
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
-                connection.settimeout(330 if operation == 'install' else (45 if operation == 'app_action' else 8))
+                connection.settimeout(330 if operation == 'install' else (90 if operation == 'compatibility' else 45 if operation == 'app_action' else 8))
                 connection.connect(str(instance / 'worker.sock'))
                 _, uid, _ = struct.unpack('3i', connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
                 if uid != 0: raise RuntimeError('Untrusted runtime worker')

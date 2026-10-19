@@ -4,6 +4,8 @@ The distribution's Waydroid modules and Android images remain untouched.
 Guest NVIDIA libraries are read-only bind mounts for one container session.
 """
 import atexit
+import ctypes
+import gc
 import importlib.util
 import json
 import logging
@@ -11,9 +13,12 @@ import os
 from pathlib import Path
 import re
 import stat
+import subprocess
+import threading
 import sys
 import tempfile
 import time
+import types
 
 
 BASE = Path(__file__).resolve().parent
@@ -33,14 +38,140 @@ def module(name):
 gpu = module('runtime-gpu')
 existing = module('runtime-existing')
 workarea = module('runtime-workarea')
+default_shares = module('runtime-default-shares')
+
+
+def configured_binder_nodes(tools, args):
+    cfg = tools.config.load(args)['waydroid']
+    names = [cfg.get(key) for key in ('binder', 'vndbinder', 'hwbinder')]
+    if not any(names):
+        return []  # The service can run before first initialization.
+    if any(not isinstance(name, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,255}', name)
+           or name == 'binder-control' for name in names) or len(set(names)) != 3:
+        raise RuntimeError('Invalid configured Default Binder device names')
+    return names
+
+
+def prepare_host_binder(tools, args, dev=Path('/dev')):
+    """Prepare the shared stock Binder context before mount isolation.
+
+    Invoke the distribution's allocation API, without copying its driver code.
+    Never run its probe here: that probe may mount a new binderfs over an
+    existing context when only one configured node is missing.
+    """
+    names = configured_binder_nodes(tools, args)
+    def character(path):
+        try: return stat.S_ISCHR(path.stat().st_mode)
+        except FileNotFoundError: return False
+    if not names:
+        # First initialization selects devices before saving their names.
+        # Prepare its supported defaults in the host namespace now, so that
+        # the later D-Bus initializer does not create a private Binder context.
+        cfg = tools.config.load(args)['waydroid']
+        drivers = tools.helpers.drivers
+        names = []
+        for group in (drivers.BINDER_DRIVERS, drivers.VNDBINDER_DRIVERS, drivers.HWBINDER_DRIVERS):
+            candidates = group if cfg.get('vendor_type', 'MAINLINE') == 'MAINLINE' else group[:-1]
+            if not candidates: raise RuntimeError('Stock Waydroid has no supported Binder devices')
+            # Stock initialization selects the last existing supported device.
+            present = [name for name in candidates if character(dev / name)]
+            names.append(present[-1] if present else candidates[0])
+        if any(not re.fullmatch(r'[A-Za-z0-9_-]{1,255}', name) or name == 'binder-control'
+               for name in names) or len(set(names)) != 3:
+            raise RuntimeError('Invalid stock Default Binder device names')
+    missing = [name for name in names if not character(dev / name)]
+    if not missing: return
+    for name in missing:
+        target = dev / name
+        if target.exists() or target.is_symlink():
+            # The stock dangling alias is safe only at the exact fixed source.
+            if not target.is_symlink() or os.readlink(target) != str(dev / 'binderfs' / name):
+                raise RuntimeError('Refusing to replace existing Default Binder path: ' + str(target))
+    # An empty rcfile lets LXC positively report STOPPED before the first
+    # container config exists; its control identity still uses this path/name.
+    # Do not interpret a failed query as STOPPED.
+    status = existing.linux.run_bounded('lxc-info', '--rcfile=/dev/null', '-P', tools.config.defaults['lxc'],
+        '-n', 'waydroid', '-sH', timeout=3, full_output=True, output_limit=256,
+        operation='Default Binder context safety check').strip()
+    if status != 'STOPPED':
+        raise RuntimeError('Stop Default before preparing missing host Binder devices')
+    binderfs = dev / 'binderfs'
+    mounted = None
+    with open('/proc/self/mountinfo') as stream:
+        for line in stream:
+            fields = line.split()
+            if fields[4] == str(binderfs): mounted = fields[fields.index('-') + 1]
+    if mounted is not None and mounted != 'binder':
+        raise RuntimeError('Default Binder directory has an unrelated mount')
+    if mounted is None:
+        if binderfs.is_symlink() or binderfs.exists() and any(binderfs.iterdir()):
+            raise RuntimeError('Default Binder directory must be empty before mounting')
+        existing.linux.run_bounded('modprobe', 'binder_linux', timeout=10,
+                                  operation='Default Binder module preparation')
+        binderfs.mkdir(mode=0o755, exist_ok=True)
+        existing.linux.run_bounded('mount', '-t', 'binder', 'binder', binderfs, timeout=5,
+                                  operation='Default host Binder filesystem')
+    allocate = []
+    for name in missing:
+        source = binderfs / name
+        if not character(source):
+            if source.exists() or source.is_symlink():
+                raise RuntimeError('Invalid existing Default Binder source: ' + str(source))
+            allocate.append(name)
+    if allocate: tools.helpers.drivers.allocBinderNodes(args, allocate)
+    for name in missing:
+        source, target = binderfs / name, dev / name
+        if not character(source): raise RuntimeError('Default Binder allocation did not create ' + name)
+        if not target.is_symlink(): target.symlink_to(source)
+    if not all(character(dev / name) for name in names):
+        raise RuntimeError('Default host Binder devices are unavailable')
+
+
+def host_binder_child():
+    if os.geteuid() != 0: raise RuntimeError('Default Binder preparation requires root')
+    launcher = Path('/usr/bin/waydroid').resolve(strict=True)
+    sys.path.insert(0, str(launcher.parent))
+    import tools
+    args = types.SimpleNamespace()
+    tools.prep_args(args)
+    prepare_host_binder(tools, args)
 
 
 def available():
     return gpu.nvidia.system_integration_available()
 
 
+def prepare_native_thread_pool():
+    """Create GLib's shared pool spawner in the private service baseline.
+
+    libgbinder creates a nonexclusive pool on first hardware-service use.
+    GLib's process-wide spawner and its later workers otherwise inherit that
+    Android session's mounts and prevent verified teardown after stock Stop.
+    This empty pool runs no task or Binder callback. Keep the normal holder
+    guard: different GLib implementations must still fail closed on teardown.
+    """
+    glib = ctypes.CDLL('libglib-2.0.so.0')
+    function = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_void_p)
+    callback = function(lambda _data, _user_data: None)
+    glib.g_thread_pool_new.argtypes = [function, ctypes.c_void_p, ctypes.c_int,
+                                      ctypes.c_int, ctypes.POINTER(ctypes.c_void_p)]
+    glib.g_thread_pool_new.restype = ctypes.c_void_p
+    glib.g_thread_pool_free.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
+    glib.g_thread_pool_free.restype = None
+    glib.g_error_free.argtypes = [ctypes.c_void_p]
+    glib.g_error_free.restype = None
+    error = ctypes.c_void_p()
+    pool = glib.g_thread_pool_new(callback, None, 1, False, ctypes.byref(error))
+    try:
+        if error.value or not pool:
+            raise RuntimeError('Cannot initialize the Default native thread pool before starting a session')
+    finally:
+        if pool: glib.g_thread_pool_free(pool, True, True)
+        if error.value: glib.g_error_free(error)
+
+
 class Integration:
-    def __init__(self, tools, glib):
+    def __init__(self, tools, glib, original_mnt=None):
         self.tools, self.glib = tools, glib
         self.renderer = self.log = None
         self.timer = None
@@ -49,11 +180,27 @@ class Integration:
         self.dri = None
         self.dri_node = None
         self.snapshots_disabled = False
+        self.stopping = False
+        self.stop_timer = None
+        self.session_token = None
+        self.original_mnt = original_mnt
+        self.sharing = (default_shares.SessionMounts(
+            Path('/var/lib/anvildroid-controller'),
+            existing.ExistingRuntime(Path('/var/lib/anvildroid-controller')), STATE, original_mnt, self.publish)
+            if original_mnt is not None else None)
         self.original_start = tools.actions.container_manager.do_start
         self.original_freeze = tools.actions.container_manager.freeze
         self.original_stop = tools.actions.container_manager.stop
         self.original_mount = tools.helpers.images.mount_rootfs
         self.original_props = tools.helpers.images.make_prop
+
+    def publish(self):
+        if self.original_mnt is None: return
+        default_shares.storage.atomic(MARKER, {
+            'pid': os.getpid(), 'version': 2, 'sharing_version': 1,
+            'start_time': default_shares.process_start(os.getpid()),
+            'mount_namespace': os.readlink('/proc/self/ns/mnt'),
+            'original_mount_namespace': self.original_mnt})
 
     def install(self):
         self.tools.actions.container_manager.do_start = self.start
@@ -61,15 +208,64 @@ class Integration:
         self.tools.actions.container_manager.stop = self.stop
         self.tools.helpers.images.mount_rootfs = self.mount
         self.tools.helpers.images.make_prop = self.props
+        self.install_hardware_callbacks()
+        self.install_stop_manager()
+
+    def install_hardware_callbacks(self):
+        hardware = self.tools.services.hardware_manager.IHardware
+        original = hardware.add_service
+
+        def add_service(args, enableNFC, enableBluetooth, suspend, reboot, upgrade):
+            token = self.session_token
+
+            def gate(callback):
+                def invoke(*values, **keywords):
+                    # Deferred Binder transactions may run after stock Stop
+                    # joins its Python helper. They must not restart Android
+                    # or replace images while cleanup yields to GLib, nor act
+                    # on a later session.
+                    if token is None or token is not self.session_token or self.stopping:
+                        return 0
+                    return callback(*values, **keywords)
+                return invoke
+
+            return original(args, *(gate(callback) for callback in
+                                   (enableNFC, enableBluetooth, suspend, reboot, upgrade)))
+
+        hardware.add_service = add_service
+
+    def install_stop_manager(self):
+        import dbus.service
+        integration = self
+
+        class ContainerManager(self.tools.actions.container_manager.DbusContainerManager):
+            @dbus.service.method('id.waydro.ContainerManager', in_signature='b', out_signature='',
+                                 async_callbacks=('reply', 'error'))
+            def Stop(self, quit_session, reply, error):
+                integration.stop_async(self.args, quit_session, reply, error)
+
+        self.tools.actions.container_manager.DbusContainerManager = ContainerManager
 
     def start(self, args, session):
+        if self.stopping:
+            raise RuntimeError('Default is still stopping; wait for shared-folder cleanup')
         # Do not tear down an already-running session on a duplicate Start.
         if 'session' in args: return self.original_start(args, session)
+        if self.sharing and self.sharing.active:
+            raise RuntimeError('Default sharing cleanup is incomplete; retry Stop before starting')
         self.args = args
         cfg = self.tools.config.load(args)
+        for name in configured_binder_nodes(self.tools, args):
+            try: ready = stat.S_ISCHR((Path('/dev') / name).stat().st_mode)
+            except FileNotFoundError: ready = False
+            if not ready:
+                raise RuntimeError('Restart the Default container service to prepare host Binder devices')
         node = cfg['waydroid'].get('drm_device', 'auto')
         self.nvidia = gpu.is_nvidia(node)
+        if self.sharing and self.tools.helpers.lxc.status(args) != 'STOPPED':
+            raise RuntimeError('Stop the existing Default container before creating a private sharing session')
         try:
+            self.session_token = object()
             # Updating the installed GUI alone used to leave Default's bridge
             # stale, causing its CSD plus KDE's SSD to appear together.
             # The system D-Bus service outlives container restarts and package
@@ -77,6 +273,9 @@ class Integration:
             global existing
             existing = module('runtime-existing')
             runtime = existing.ExistingRuntime(Path('/var/lib/anvildroid-controller'))
+            if self.sharing:
+                self.sharing.runtime = runtime
+                self.sharing.begin(session)
             runtime.sync_desktop_assets(int(session['user_id']))
             if self.nvidia:
                 gpu.choose(node)
@@ -89,9 +288,16 @@ class Integration:
                 self.renderer = gpu.nvidia.Renderer(directory=STATE / 'venus', private_host_endpoint=True)
                 self.renderer.start(uid, self.log)
             self.original_start(args, session)
-            if self.renderer:
+            if self.sharing:
+                pid = existing.linux.run_bounded('lxc-info', '-P', Path(self.tools.config.defaults['lxc']),
+                    '-n', 'waydroid', '-pH', timeout=2, full_output=True, output_limit=256,
+                    operation='Default sharing container identity').strip()
+                if not re.fullmatch(r'[1-9][0-9]*', pid): raise RuntimeError('Default Android process identity is unavailable')
+                self.sharing.started(int(pid))
+            if self.renderer or self.sharing:
                 self.timer = self.glib.timeout_add(1000, self.watch)
         except Exception:
+            self.session_token = None
             try: self.original_stop(args)
             finally: self.close()
             raise
@@ -119,7 +325,10 @@ class Integration:
         target.write_text('\n'.join(props) + '\n')
 
     def mount(self, args, images, session):
+        if self.sharing: self.sharing.check_thread()
         self.original_mount(args, images, session)
+        if self.sharing:
+            self.sharing.prepare(Path(self.tools.config.defaults['lxc']) / 'waydroid/config_session')
         if not self.nvidia: return
         root = Path(self.tools.config.defaults['rootfs'])
         for source, target in gpu.nvidia.image_mounts(root):
@@ -153,13 +362,16 @@ class Integration:
         return self.dri
 
     def watch(self):
+        if self.stopping: return True
         try:
-            self.renderer.check()
+            if self.renderer: self.renderer.check()
             if self.tools.helpers.lxc.status(self.args) == 'STOPPED':
                 self.timer = None
                 self.stop(self.args)
                 return False
-            if not self.snapshots_disabled:
+            if self.sharing and self.sharing.active:
+                self.sharing.reconcile()
+            if self.renderer and not self.snapshots_disabled:
                 result = existing.linux.run_bounded('lxc-attach', '-P', '/var/lib/waydroid/lxc', '-n', 'waydroid',
                     '--', '/system/bin/getprop', 'sys.boot_completed', timeout=2, full_output=True,
                     output_limit=256, operation='Default NVIDIA boot check')
@@ -189,10 +401,89 @@ class Integration:
         return self.original_freeze(args)
 
     def stop(self, args, quit_session=True):
+        if self.stopping:
+            raise RuntimeError('Default is already stopping')
+        self.session_token = None
         try: return self.original_stop(args, quit_session)
         finally: self.close()
 
-    def close(self):
+    def stop_async(self, args, quit_session, reply, error):
+        if self.stopping:
+            error(RuntimeError('Default is already stopping'))
+            return
+        try:
+            if self.sharing and self.sharing.active: self.sharing.check_thread()
+        except Exception as failure:
+            error(failure)
+            return
+        self.stopping = True
+        self.session_token = None
+        stop_error = None
+        try:
+            self.original_stop(args, quit_session)
+        except Exception as failure:
+            stop_error = failure
+        deadline = time.monotonic() + 3
+        completed = False
+
+        def finish(failure=None):
+            nonlocal completed
+            if completed: return
+            completed = True
+            removal_error = None
+            if self.stop_timer is not None:
+                try: self.glib.source_remove(self.stop_timer)
+                except Exception as caught: removal_error = caught
+                finally: self.stop_timer = None
+            self.stopping = False
+            failure = stop_error or failure or removal_error
+            if failure is None: reply()
+            else: error(failure)
+
+        def poll():
+            if completed: return False
+            try:
+                # Let the ordinary GLib loop release deferred native Binder
+                # references between attempts; never dispatch a nested loop.
+                # Every attempt retains the same owner/STOPPED/helper checks.
+                self.close(wait=False)
+            except default_shares.NamespaceBusy as failure:
+                if time.monotonic() < deadline: return True
+                finish(failure)
+            except Exception as failure:
+                finish(failure)
+            else:
+                finish()
+            return False
+
+        if poll():
+            try:
+                self.stop_timer = self.glib.timeout_add(50, poll)
+                if not self.stop_timer:
+                    self.stop_timer = None
+                    raise RuntimeError('Cannot schedule Default sharing cleanup')
+            except Exception as failure:
+                finish(failure)
+
+    def close(self, wait=True):
+        if self.sharing and self.sharing.active:
+            self.sharing.check_thread()
+            # Stock hardware_manager owns an inherited namespace and can issue
+            # OTA callbacks. Never switch namespaces while that thread survives.
+            helper = getattr(self.args, 'hardware_manager', None)
+            if helper is not None and helper.is_alive():
+                if helper is threading.current_thread():
+                    raise RuntimeError('Default sharing cleanup cannot run from its hardware callback thread')
+                helper.join(timeout=3)
+                if helper.is_alive():
+                    raise RuntimeError('Default hardware callbacks did not stop; retaining shared-folder namespace')
+            if self.tools.helpers.lxc.status(self.args) != 'STOPPED':
+                raise RuntimeError('Default Android is still active; retaining shared-folder namespace')
+            # Stock hardware LocalObject handlers form a Python reference
+            # cycle. After their owning thread and Android stop, release those
+            # unreachable wrappers so their native Binder loopers can exit.
+            # The holder guard below still rejects any surviving helper.
+            gc.collect()
         if self.timer is not None:
             self.glib.source_remove(self.timer)
             self.timer = None
@@ -214,22 +505,37 @@ class Integration:
             self.dri = None
         self.dri_node = None
         self.nvidia = self.snapshots_disabled = False
+        if self.sharing and self.sharing.active:
+            if wait: self.sharing.close(True)
+            else: self.sharing.close(True, wait=False)
 
 
 def main():
     if os.geteuid() != 0: raise RuntimeError('Waydroid system integration requires root')
+    # Stock Binder is used by host clients as well as Android. Prepare it in
+    # this inherited namespace; a short exec child keeps stock imports/threads
+    # out of the parent until its private mount baseline exists.
+    existing.linux.run_bounded(sys.executable, __file__, '--prepare-host-binder',
+                              timeout=30, operation='Default host Binder preparation')
+    # This must precede importing stock Waydroid (which may create threads).
+    # All subsequent container sessions inherit only this private baseline.
+    original_mnt = os.readlink('/proc/self/ns/mnt')
+    os.unshare(os.CLONE_NEWNS)
+    subprocess.run(['mount', '--make-rprivate', '/'], check=True, capture_output=True)
+    if os.readlink('/proc/self/ns/mnt') == original_mnt:
+        raise RuntimeError('System Waydroid needs a private mount namespace')
+    prepare_native_thread_pool()
     launcher = Path('/usr/bin/waydroid').resolve(strict=True)
     sys.path.insert(0, str(launcher.parent))
     import tools
     from gi.repository import GLib
-    integration = Integration(tools, GLib)
+    integration = Integration(tools, GLib, original_mnt)
     integration.install()
     # RuntimeDirectory is created by systemd, owned by root, not caller input.
     info = STATE.lstat()
     if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
         raise RuntimeError('Unsafe system Waydroid runtime directory')
-    MARKER.write_text(json.dumps({'pid': os.getpid(), 'version': 1}) + '\n')
-    MARKER.chmod(0o644)
+    integration.publish()
     atexit.register(integration.close)
     atexit.register(lambda: MARKER.unlink(missing_ok=True))
     sys.argv = [str(launcher), 'container', 'start']
@@ -238,4 +544,7 @@ def main():
 
 
 if __name__ == '__main__':
-    sys.exit(main())
+    if sys.argv[1:] == ['--prepare-host-binder']:
+        host_binder_child()
+    else:
+        sys.exit(main())

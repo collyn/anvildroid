@@ -173,7 +173,7 @@ struct Server {
   Node *grab = nullptr;
   std::map<unsigned, uint32_t> pointer_buttons;
   Top *keyboard_focus = nullptr;
-  std::set<uint32_t> pressed;
+  std::set<uint32_t> pressed, blocked_until_release;
   std::string keymap;
   xkb_state *key_state = nullptr;
   int xkb_event = 0;
@@ -315,6 +315,17 @@ struct Server {
   }
   uint32_t serial() { return wl_display_next_serial(display); }
   void end_grab() {
+    // WM grabs/device recovery can consume the physical release. Deliver the
+    // missing releases before dropping ownership, so guest fire/touch state
+    // cannot survive a recovered grab. Normal release already erased its key.
+    if (grab) for (auto button : pointer_buttons)
+      for (auto *r : pointers)
+        if (wl_resource_get_client(r) == wl_resource_get_client(grab->resource)) {
+          wl_pointer_send_button(r, serial(), milliseconds(),
+            button.first==1?BTN_LEFT:button.first==2?BTN_MIDDLE:BTN_RIGHT,
+            WL_POINTER_BUTTON_STATE_RELEASED);
+          if(wl_resource_get_version(r)>=5)wl_pointer_send_frame(r);
+        }
     grab = nullptr;
     pointer_buttons.clear();
   }
@@ -376,6 +387,13 @@ struct Server {
         std::max(1, t->window.width - (constrained ? 0 : t->normal_padding_w)),
         std::max(1,
                  t->window.height - (constrained ? 0 : t->normal_padding_h)));
+  }
+  void cancel_window_input(Top *t) {
+    if(keyboard_focus==t)focus(nullptr);
+    if(grab&&root(grab)==t)end_grab();
+    if(active_constraint&&root(active_constraint->node)==t)release_constraint();
+    if(pointer_focus&&root(pointer_focus)==t)pointer(nullptr,0,0);
+    if(t->node)cancel_touches(t->node);
   }
   void close_top(Top *t) {
     if (t->node)
@@ -457,6 +475,7 @@ struct Server {
         bool mapped = n->current.image && t->configured && !t->dismissed;
         if (!mapped) {
           if (t->window.mapped) {
+            cancel_window_input(t);
             cancel_touches(n);
             if (active_constraint && root(active_constraint->node) == t)
               release_constraint();
@@ -588,6 +607,9 @@ struct Server {
       return;
     if (keyboard_focus) {
       auto *old = keyboard_focus;
+      blocked_until_release.insert(pressed.begin(),pressed.end());
+      if(grab&&root(grab)==old)end_grab();
+      if(old->node)cancel_touches(old->node);
       old->active = false;
       for (auto *r : keyboards)
         if (wl_resource_get_client(r) == wl_resource_get_client(old->xdg)) {
@@ -617,6 +639,13 @@ struct Server {
                                  t->node->resource, &keys);
       wl_array_release(&keys);
       if (!platform.testing()) {
+        // Focus can return after releases went to another X client. Reconcile
+        // physical state rather than swallowing the first fresh press, while
+        // preventing repeat of any key already held before this app focused.
+        char physical[32]{};XQueryKeymap(platform.display,physical);
+        for(unsigned code=8;code<256;++code)
+          if(physical[code/8]&(1u<<(code%8)))blocked_until_release.insert(code-8);
+          else blocked_until_release.erase(code-8);
         XkbStateRec state{};
         if (XkbGetState(platform.display, XkbUseCoreKbd, &state) == Success)
           modifiers(state.base_mods, state.latched_mods, state.locked_mods,
@@ -685,6 +714,11 @@ struct Server {
       else
         xdg_toplevel_send_close(t->resource);
       return;
+    }
+    if(e.type==UnmapNotify) {
+      // Do not rely on a later FocusOut: guest unmap and WM minimization must
+      // revoke contacts/timers even when no further native event arrives.
+      cancel_window_input(t);return;
     }
     if (e.type == Expose)
       t->dirty = true;
@@ -851,6 +885,16 @@ struct Server {
       return;
     }
     if (e.type == KeyPress || e.type == KeyRelease) {
+      // XIM commits may arrive as synthetic KeyPress events with keycode 0.
+      // Only physical keys participate in held-key suppression.
+      uint32_t physical_key=e.xkey.keycode>=8?e.xkey.keycode-8:0;
+      if(e.xkey.keycode>=8&&e.xkey.keycode<=255&&blocked_until_release.count(physical_key)) {
+        if(e.type==KeyRelease)blocked_until_release.erase(physical_key);
+        return;
+      }
+      // Queued events for an old native window must not become input to the
+      // guest's newly focused app. Held XKB repeat is client-side on Wayland.
+      if(keyboard_focus!=t)return;
       if (e.type == KeyPress &&
           e.xkey.keycode == XKeysymToKeycode(platform.display, XK_Escape) &&
           !popup_grabs.empty()) {
@@ -893,9 +937,10 @@ struct Server {
             }
         }
       }
-      if (handled || e.xkey.keycode < 8)
+      if (handled || e.xkey.keycode < 8 || e.xkey.keycode > 255)
         return;
       uint32_t key = e.xkey.keycode - 8;
+      if(e.type==KeyPress&&pressed.count(key))return;
       if (e.type == KeyRelease && !pressed.count(key))
         return;
       if (e.type == KeyPress)

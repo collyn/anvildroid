@@ -2,26 +2,61 @@
 #define ANVIL_KEYMAP_MODEL_H
 #include <stdint.h>
 #define KEYMAP_POINTS 64
+#define KEYMAP_PROFILE_LIMIT 16384
 struct keymap_point {
   int key, nx, ny, hold;
+  int kind, ex, ey, duration, repeats;
+  int source, end_mode, radius, ramp_ms, look_width, look_height;
+  int sensitivity_x, sensitivity_y, invert_y, activation;
 };
 struct keymap_model {
   struct keymap_point points[KEYMAP_POINTS];
   int count, selected, placing, dirty, error;
 };
 
+enum { KEYMAP_BASIC, KEYMAP_DPAD, KEYMAP_SWIPE, KEYMAP_REPEAT,
+       KEYMAP_SKILL, KEYMAP_MACRO, KEYMAP_AIM, KEYMAP_MOUSE_TOUCH, KEYMAP_LOOK };
+enum { KEYMAP_SOURCE_KEY, KEYMAP_SOURCE_MOUSE, KEYMAP_SOURCE_POINTER };
+enum { KEYMAP_END_LEGACY, KEYMAP_END_RELEASE, KEYMAP_END_HOLD };
+static __attribute__((unused)) const char *keymap_kind_name(int kind) {
+  static const char *names[]={"Basic","WASD","Swipe","Repeat","Skill","Macro","Aim","Mouse touch","Look"};
+  return kind>=0&&kind<=KEYMAP_LOOK?names[kind]:"Invalid";
+}
 static int keymap_valid(const struct keymap_model *m, int assigned) {
-  if (m->count < 0 || m->count > KEYMAP_POINTS)
+  if (!m || m->count < 0 || m->count > KEYMAP_POINTS)
     return 0;
   for (int i = 0; i < m->count; ++i) {
     const struct keymap_point *p = &m->points[i];
-    if (p->key < 0 || p->key > 767 || (assigned && !p->key) || p->key == 1 ||
+    if (p->key < 0 || p->key > 767 || (assigned && !p->key && p->source!=KEYMAP_SOURCE_POINTER) || p->key == 1 ||
         p->nx < 0 || p->nx > 65535 || p->ny < 0 || p->ny > 65535 ||
-        (p->hold != 0 && p->hold != 1))
+        (p->hold != 0 && p->hold != 1) || p->kind<0 || p->kind>KEYMAP_LOOK ||
+        p->ex<0 || p->ex>65535 || p->ey<0 || p->ey>65535 ||
+        p->duration<0 || p->duration>5000 || p->repeats<0 || p->repeats>20 ||
+        (p->kind && (p->duration<50 || p->duration>5000 || p->repeats<1 || p->repeats>20)))
       return 0;
-    for (int j = 0; j < i; ++j)
-      if (p->key && p->key == m->points[j].key)
-        return 0;
+    if (p->source<0 || p->source>2 || p->end_mode<0 || p->end_mode>2 ||
+        (p->radius && (p->radius<256 || p->radius>32767)) || p->ramp_ms<0 || p->ramp_ms>1000 ||
+        p->look_width<0 || p->look_width>32767 || p->look_height<0 || p->look_height>32767 ||
+        p->sensitivity_x<0 || p->sensitivity_x>1000 || p->sensitivity_y<0 || p->sensitivity_y>1000 ||
+        p->invert_y<0 || p->invert_y>1 || p->activation<0 || p->activation>1) return 0;
+    if (p->source==KEYMAP_SOURCE_MOUSE && (p->key<272 || p->key>276)) return 0;
+    if ((p->source==KEYMAP_SOURCE_POINTER)!=(p->kind==KEYMAP_MOUSE_TOUCH) ||
+        (p->source==KEYMAP_SOURCE_POINTER && p->key!=0)) return 0;
+    if (p->kind==KEYMAP_LOOK && (p->look_width<256 || p->look_height<256 ||
+        p->nx<p->look_width || p->nx+p->look_width>65535 ||
+        p->ny<p->look_height || p->ny+p->look_height>65535 ||
+        p->sensitivity_x<10 || p->sensitivity_y<10)) return 0;
+    if (p->kind==KEYMAP_MACRO && p->duration*p->repeats*2>10000) return 0;
+    if (p->kind==KEYMAP_DPAD && (p->key!=17 || p->source!=KEYMAP_SOURCE_KEY)) return 0;
+    for (int j = 0; j < m->count; ++j) {
+      const struct keymap_point *q=&m->points[j];
+      if (i==j) continue;
+      if (p->kind==KEYMAP_DPAD && q->source==KEYMAP_SOURCE_KEY &&
+          (q->key==17 || q->key==30 || q->key==31 || q->key==32)) return 0;
+      if ((p->kind==KEYMAP_MOUSE_TOUCH || p->kind==KEYMAP_LOOK) && q->kind==p->kind) return 0;
+      if (p->kind==KEYMAP_AIM && q->source==KEYMAP_SOURCE_MOUSE && q->key==272) return 0;
+      if (p->key && p->source==q->source && p->key==q->key) return 0;
+    }
   }
   return 1;
 }
@@ -34,6 +69,7 @@ static int __attribute__((unused))
 keymap_bindings(const struct keymap_model *m, struct mapping_binding *out,
                 int capacity) {
   if (!m || !out || capacity < m->count || !keymap_valid(m, 1)) return 0;
+  for (int i = 0; i < m->count; ++i) if(m->points[i].kind || m->points[i].source) return 0;
   for (int i = 0; i < m->count; ++i) {
     out[i].key = (uint16_t)m->points[i].key;
     out[i].nx = (uint16_t)m->points[i].nx;
@@ -56,6 +92,13 @@ static void keymap_move(struct keymap_model *m, int i, int x, int y, int w,
     return;
   m->points[i].nx = keymap_normalize(x, w);
   m->points[i].ny = keymap_normalize(y, h);
+  if (m->points[i].kind==KEYMAP_LOOK) {
+    struct keymap_point *p=&m->points[i];
+    if(p->nx<p->look_width)p->nx=p->look_width;
+    if(p->nx>65535-p->look_width)p->nx=65535-p->look_width;
+    if(p->ny<p->look_height)p->ny=p->look_height;
+    if(p->ny>65535-p->look_height)p->ny=65535-p->look_height;
+  }
   m->dirty = 1;
 }
 static int keymap_add(struct keymap_model *m, int x, int y, int w, int h) {
@@ -68,19 +111,40 @@ static int keymap_add(struct keymap_model *m, int x, int y, int w, int h) {
   m->error = 0;
   return 1;
 }
-static int keymap_assign(struct keymap_model *m, int key) {
-  if (m->selected < 0 || m->selected >= m->count || key < 2 || key > 767 ||
-      (key >= 60 && key <= 62))
-    return 0;
-  for (int i = 0; i < m->count; ++i)
-    if (i != m->selected && m->points[i].key == key) {
-      m->error = 1;
-      return 0;
-    }
-  m->points[m->selected].key = key;
-  m->dirty = 1;
-  m->error = 0;
-  return 1;
+static void keymap_set_kind(struct keymap_point *p, int kind) {
+  p->kind=kind; p->source=KEYMAP_SOURCE_KEY; p->end_mode=KEYMAP_END_LEGACY;
+  p->radius=p->ramp_ms=p->look_width=p->look_height=0;
+  p->sensitivity_x=p->sensitivity_y=p->invert_y=p->activation=0;
+  p->duration=250; p->repeats=3;
+  p->ex=p->nx>49151?65535:p->nx+16384; p->ey=p->ny;
+  if (kind==KEYMAP_BASIC) { p->end_mode=KEYMAP_END_RELEASE; p->duration=50; }
+  if (kind==KEYMAP_SWIPE) p->end_mode=KEYMAP_END_RELEASE;
+  if (kind==KEYMAP_DPAD) { p->key=17; p->radius=8192; p->ramp_ms=80; }
+  if (kind==KEYMAP_MOUSE_TOUCH) { p->source=KEYMAP_SOURCE_POINTER; p->key=0; }
+  if (kind==KEYMAP_LOOK) {
+    if(p->nx<256)p->nx=256;
+    if(p->nx>65279)p->nx=65279;
+    if(p->ny<256)p->ny=256;
+    if(p->ny>65279)p->ny=65279;
+    p->look_width=p->nx<32768?p->nx:65535-p->nx;
+    p->look_height=p->ny<32768?p->ny:65535-p->ny;
+    if(p->look_width>8192)p->look_width=8192;
+    if(p->look_height>8192)p->look_height=8192;
+    p->sensitivity_x=p->sensitivity_y=100;
+  }
+}
+static int keymap_assign_source(struct keymap_model *m, int source, int key) {
+  if (m->selected<0 || m->selected>=m->count || source<0 || source>2 ||
+      (source==KEYMAP_SOURCE_KEY && (key<2 || key>767 || (key>=60 && key<=62))) ||
+      (source==KEYMAP_SOURCE_MOUSE && (key<272 || key>276)) ||
+      (source==KEYMAP_SOURCE_POINTER && key!=0)) return 0;
+  struct keymap_point old=m->points[m->selected];
+  m->points[m->selected].source=source; m->points[m->selected].key=key;
+  if (!keymap_valid(m,0)) { m->points[m->selected]=old; m->error=1; return 0; }
+  m->dirty=1; m->error=0; return 1;
+}
+static int __attribute__((unused)) keymap_assign(struct keymap_model *m, int key) {
+  return keymap_assign_source(m,KEYMAP_SOURCE_KEY,key);
 }
 static void keymap_remove(struct keymap_model *m) {
   if (m->selected < 0 || m->selected >= m->count)

@@ -355,6 +355,18 @@
 .runtime-config-eyebrow { margin: 0 0 4px; font-size: 12px; color: var(--text-secondary); }
 #runtime-settings-title { overflow-wrap: anywhere; }
 #runtime-settings-title:focus { outline: none; }
+.runtime-inline-feature { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--mg-border); overflow-wrap: anywhere; }
+.runtime-inline-feature h4 { margin: 0 0 10px; font-size: 13px; }
+.runtime-inline-feature form { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; margin: 14px 0; }
+.runtime-inline-feature input:not([type="checkbox"]) { width: 100%; min-width: 0; box-sizing: border-box; padding: 9px 12px; color: var(--text-primary); background: var(--mg-panel-raised); border: 1px solid var(--mg-border-strong); border-radius: 8px; font: inherit; }
+.runtime-inline-feature label { display: flex; align-items: flex-start; gap: 8px; color: var(--text-secondary); font-size: 12px; line-height: 1.5; }
+.runtime-inline-feature input[type="checkbox"] { flex-shrink: 0; width: 16px; height: 16px; margin: 2px 0 0; padding: 0; accent-color: var(--mg-blue); }
+.runtime-inline-feature button { justify-self: start; }
+.runtime-inline-feature p > button { margin: 6px 0 0 8px; }
+.runtime-inline-feature [role="status"] { font-size: 12px; color: var(--text-secondary); }
+.runtime-inline-feature [role="status"]:empty { display: none; }
+.runtime-inline-feature :is(input,button):focus-visible { outline: 2px solid var(--mg-blue); outline-offset: 3px; }
+.arm-package-details code { overflow-wrap: anywhere; }
 #runtime-settings-content .runtime-card { max-width: none; margin: 0; }
 #legacy-runtime-detail[hidden] { display: none; }
 
@@ -381,13 +393,19 @@
 #page-runtime-settings [data-settings-key$=":display"] { order: 3; }
 #page-runtime-settings [data-settings-key$=":storage"] { order: 4; }
 #page-runtime-settings [data-settings-key$=":arm"] { order: 5; }
-#page-runtime-settings [data-settings-key$=":google"] { order: 6; }
-#page-runtime-settings [data-settings-key$=":boot"] { order: 7; }
-#page-runtime-settings [data-settings-key$=":health"] { order: 8; }
+#page-runtime-settings [data-settings-key$=":device"] { order: 6; }
+#page-runtime-settings [data-settings-key$=":google"] { order: 7; }
+#page-runtime-settings [data-settings-key$=":boot"] { order: 8; }
+#page-runtime-settings [data-settings-key$=":health"] { order: 9; }
 #page-runtime-settings [data-settings-key$=":import"],
-#page-runtime-settings .runtime-details { order: 9; }
+#page-runtime-settings .runtime-details { order: 10; }
 #page-runtime-settings .runtime-setting-row summary small { display: none; }
 #page-runtime-settings .runtime-gpu-panel { padding: 0; border: 0; background: transparent; }
+.runtime-device-panel > label, .runtime-device-fields label { display: flex; flex-direction: column; gap: 6px; }
+.runtime-device-panel select { width: 100%; max-width: 560px; }
+.runtime-device-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin-top: 12px; }
+.runtime-device-fields input { width: 100%; min-width: 0; padding: 8px; box-sizing: border-box; }
+.runtime-device-fields label:last-child { grid-column: 1 / -1; }
 
 /* Use the same spaced stack for system and isolated runtime settings. */
 #page-runtime-settings #existing-runtime-management,

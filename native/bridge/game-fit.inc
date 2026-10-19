@@ -108,12 +108,12 @@ static int32_t game_fit_input(struct proxy *p,int32_t value,int axis) {
   if(surface==s)n+=256LL*(axis?s->fit_y:s->fit_x);
   return n>INT32_MAX?INT32_MAX:n<INT32_MIN?INT32_MIN:(int32_t)n;
 }
-static int game_fit_bar(struct proxy *p) {
-  for(struct object *s=objects;s;s=s->next)if(s->fit) {
-    for(int i=0;i<4;++i)if(s->fit->bars[i].surface==p)return 1;
-  }
+static struct object *game_fit_bar_owner(struct proxy *p) {
+  if(p)for(struct object *s=objects;s;s=s->next)if(s->fit)
+    for(int i=0;i<4;++i)if(s->fit->bars[i].surface==p)return s;
   return 0;
 }
+static int game_fit_bar(struct proxy *p) {return game_fit_bar_owner(p)!=0;}
 static void game_fit_destroy(struct object *s) {
   if(!s||!s->fit)return;
   struct game_fit_state *f=s->fit;s->fit=0;
