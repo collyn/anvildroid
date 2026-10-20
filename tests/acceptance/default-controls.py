@@ -262,7 +262,7 @@ def delivery(s):
         results.append(label)
     # Actual existing editor Save migrates V2, then app replacement reloads it.
     s.nx = 20000; s.ny = 45000; s.editor('v'); saved = s.profile()
-    require(saved.startswith('ANVIL_KEYMAP 3 default '), 'Default editor did not Save V3')
+    require(saved.startswith('ANVIL_KEYMAP 4 default '), 'Default editor did not Save V4')
     require(saved.splitlines()[-1].split()[0] == '47', 'Default editor did not rebind the selected Basic control')
     (s.output / 'editor-saved-profile.txt').write_text(saved)
     for action in ('force_stop', 'launch'): s.request('app_action', action=action, package=probe.PACKAGE)

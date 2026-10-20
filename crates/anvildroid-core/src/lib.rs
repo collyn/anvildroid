@@ -19,3 +19,4 @@ pub mod managed;
 
 pub mod adb;
 pub mod diagnostics;
+pub mod keymap_export;

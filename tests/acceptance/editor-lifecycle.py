@@ -35,9 +35,9 @@ def exercise(c):
         return data
     def rows_from(text):
         lines=text.splitlines();header=lines[0].split()
-        require(header[:4]==['ANVIL_KEYMAP','3',runtime,package],'Saved profile lost runtime/package scope')
+        require(header[:4]==['ANVIL_KEYMAP','4',runtime,package],'Saved profile lost runtime/package scope')
         rows=[tuple(map(int,line.split())) for line in lines[1:]]
-        require(len(rows)==int(header[4]) and all(len(row)==19 for row in rows),'Incomplete V3 profile')
+        require(len(rows)==int(header[4]) and all(len(row)==31 for row in rows),'Incomplete V4 profile')
         return rows
     def wait_save(label,before):
         deadline=time.monotonic()+5
@@ -51,19 +51,87 @@ def exercise(c):
         finish(label,rows,downs=1,peak=1)
         return rows
     baseline=saved_bytes();original=rows_from(baseline)
+    # An empty saved profile has no passive hints object. Try must still own
+    # focus cleanup for its unsaved draft, even when only keyboard focus leaves
+    # the app/outer Weston and the pointer remains completely stationary.
+    reload([],'editor-life-empty-try-baseline')
+    empty=saved_bytes();require(rows_from(empty)==[],'Empty Try fixture retained saved controls')
+    geometry,frame,_=open_editor('editor-life-empty-try-open')
+    w,h=geometry[2:];buttons=targets(w,h)
+    point=((w-min(w-16,276)-8)//2,round(h*.64))
+    click('editor-life-empty-try-add',geometry,frame,buttons['add'])
+    click('editor-life-empty-try-place',geometry,frame,point)
+    quiet('editor-life-empty-try-bind',['key','j'])
+    # A freshly placed Basic defaults to Tap. Explicitly switch its named
+    # second inspector row to Hold, then witness that it stays down below.
+    click('editor-life-empty-try-hold',geometry,frame,buttons['tap'])
+    click('editor-life-empty-try-start',geometry,frame,buttons['try'])
+    require(saved_bytes()==empty,'Try persisted its first unsaved control')
+    held=stage('editor-life-empty-try-down',['keydown','j'],lambda r:count(r,'DOWN')==1,settle=.35)
+    require(not count(held,'UP') and not count(held,'CANCEL'),
+            'Draft Basic did not remain held while its physical key was down')
+    pointer_before=run(c['x']+['getmouselocation','--shell'])
+    root_window=c['root_window'][1]
+    blurred=stage('editor-life-empty-try-keyboard-blur',['windowfocus','--sync',root_window],
+                  lambda r:complete(held+r),settle=.25)
+    require(int(run(c['x']+['getwindowfocus']).strip(),0)==int(root_window,0),
+            'Keyboard-only blur did not focus the private X11 root')
+    pointer_after=run(c['x']+['getmouselocation','--shell'])
+    def pointer_xy(text):
+        values=dict(line.split('=',1) for line in text.splitlines() if '=' in line)
+        return values.get('X'),values.get('Y')
+    require(pointer_xy(pointer_before)==pointer_xy(pointer_after),'Keyboard-only blur moved the pointer')
+    (output/'editor-life-empty-try-focus.txt').write_text(
+        'private_root='+root_window+'\nBEFORE\n'+pointer_before+'AFTER\n'+pointer_after)
+    held+=blurred
+    finish('editor-life-empty-try-blur-terminal',held,downs=1,peak=1)
+    # No key-up has been sent yet: restoring keyboard focus must not replay
+    # the held trigger, and releasing that cancelled key must remain silent.
+    refocused=quiet('editor-life-empty-try-refocus',['windowfocus','--sync',window(),'sleep','.35'])
+    c['require_no_mapped_contact'](refocused,'Empty Try replayed its held key during refocus')
+    require(int(run(c['x']+['getwindowfocus']).strip(),0)==int(window(),0),
+            'Keyboard-only refocus did not restore the private app/Weston focus')
+    if nested:
+        # X11 FocusIn restores the outer Weston window, not its inner
+        # wl_keyboard focus. The stationary-pointer blur above is already
+        # proved. Activate this app away from Return and the sole draft point,
+        # then require one ordinary mouse click and no mapped finger replay.
+        ox,oy=geometry[:2]
+        activation=stage('editor-life-empty-try-inner-activation',
+                         move(frame[0]+ox+w//2,frame[1]+oy+80)+['click','1'],settle=.25)
+        c['require_no_mapped_contact'](activation,'Empty Try replayed a held key during inner app activation')
+        clicks=observed(activation)
+        require(len(clicks)==2 and ' ACTION_DOWN ' in clicks[0] and
+                ' ACTION_UP ' in clicks[-1] and 'activeAfter=0' in clicks[-1] and
+                all('source=0x2002' in row and 'tool=MOUSE(3)' in row for row in clicks),
+                'Empty Try inner activation was not one ordinary mouse click')
+    released=quiet('editor-life-empty-try-cancelled-keyup',['keyup','j'])
+    c['require_no_mapped_contact'](released,'Empty Try emitted touch when the cancelled key was released')
+    playback('editor-life-empty-try-fresh','j')
+    quiet('editor-life-empty-try-return',['key','Escape'])
+    require(saved_bytes()==empty,'Returning from Try persisted the draft')
+    click('editor-life-empty-try-cancel',geometry,frame,buttons['cancel'])
+    require(saved_bytes()==empty,'Cancelling the first draft changed empty persisted bytes')
+    record('editor-life-empty-try-keyboard-focus',empty_profile_preserved=True,
+           stationary_pointer=True,held_refocus_suppressed=True,fresh_press_recovered=True)
+    reload(original,'editor-life-empty-try-restore')
+    require(saved_bytes()==baseline,'Empty Try test did not restore the original profile bytes')
+
     geometry,frame,_=open_editor('editor-life-open');w,h=geometry[2:];buttons=targets(w,h)
     authored=original[-1];point=(round(authored[1]*(w-1)/65535),round(authored[2]*(h-1)/65535))
     click('editor-life-select',geometry,frame,point)
-    destination=(round(w*.38),round(h*.71));ox,oy=geometry[:2]
+    destination=((w-min(w-16,276)-8)//2,round(h*.71));ox,oy=geometry[:2]
     quiet('editor-life-drag',move(frame[0]+ox+point[0],frame[1]+oy+point[1])+['mousedown','1']+
           move(frame[0]+ox+destination[0],frame[1]+oy+destination[1])+['sleep','.15','mouseup','1'])
     click('editor-life-bind',geometry,frame,buttons['bind_key'])
     # WASD owns W even though it is represented by one control. The rejected
     # rebind must keep the original Z control and show a rendered error.
-    status=(122,120) if w<600 else (130,44)
-    before=pixels('editor-life-before-conflict',geometry,frame,status,(min(w-32,220),24))
+    panel_x=w-min(w-16,276)-8;status_width=min(panel_x-24,220)
+    require(status_width>=32,'Editor status area too narrow for pixel oracle')
+    status=(12+status_width//2,h-27)
+    before=pixels('editor-life-before-conflict',geometry,frame,status,(status_width,24))
     quiet('editor-life-conflict',['key','w'])
-    after=pixels('editor-life-conflict-pixels',geometry,frame,status,(min(w-32,220),24))
+    after=pixels('editor-life-conflict-pixels',geometry,frame,status,(status_width,24))
     require(after!=before,'Binding conflict had no visible feedback')
     require(any(after[i]>180 and after[i+1]<190 and after[i+2]<180 for i in range(0,len(after),3)),
             'Conflict feedback did not render its error color')

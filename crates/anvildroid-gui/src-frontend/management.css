@@ -175,6 +175,14 @@
 #page-controls .runtime-action-icon { display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px; min-width: 34px; padding: 0; border-radius: 8px; }
 #page-controls .runtime-action-icon svg { width: 17px; height: 17px; pointer-events: none; }
 .controls-package { overflow-wrap: anywhere; }
+.controls-schemes { margin-top: 6px; font-size: 12px; }
+.controls-schemes summary { cursor: pointer; color: var(--text-secondary); }
+.controls-scheme-body { margin-top: 8px; }
+.controls-scheme-tools { display: flex; flex-wrap: wrap; gap: 6px; }
+.controls-scheme-tools select, .controls-scheme-tools input { min-width: 0; max-width: 100%; font-size: 12px; }
+.controls-scheme-tools select, .controls-scheme-tools input[type=text] { width: 100%; }
+.controls-scheme-tools .btn { min-height: 28px; padding: 4px 8px; font-size: 11px; }
+.controls-scheme-body .hint { margin: 8px 0 0; font-size: 11px; line-height: 1.5; }
 .controls-runtime-name, .controls-runtime-state { display: block; overflow-wrap: anywhere; }
 .controls-runtime-state { color: var(--text-secondary); font-size: 11px; margin-top: 4px; }
 .controls-key-chips { display: flex; gap: 5px; flex-wrap: wrap; }

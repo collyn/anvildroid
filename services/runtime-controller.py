@@ -50,7 +50,7 @@ spec.loader.exec_module(worker_module)
 spec = importlib.util.spec_from_file_location('runtime_adb', Path(__file__).with_name('runtime-adb.py'))
 adb_module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(adb_module)
-MAX_REQUEST = 16384
+MAX_REQUEST = 65536
 spec = importlib.util.spec_from_file_location('runtime_catalog', Path(__file__).with_name('runtime-catalog.py'))
 catalog_module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(catalog_module)
@@ -924,6 +924,7 @@ class Store:
         fields['adb_info'] = {'op', 'id'}
         fields['adb_set'] = {'op', 'id', 'enabled'}
         fields['keymaps']={'op','id'}
+        fields['keymap_scheme']={'op','id','package','action','scheme_id','name','revision','content'}
         fields['app_states']={'op','id'}
         fields['existing_claim'] = {'op', 'id'}
         fields['system_integration'] = {'op', 'id'}
@@ -1163,6 +1164,12 @@ class Store:
             require(record['state'] in ('Running', 'Frozen'), 'INVALID_STATE', 'Start this runtime before checking Google services')
             self.storage.ensure(record['id'])
             return self.android.google_services(record['id'])
+        if operation == 'keymap_scheme':
+            require(record['id'] not in self.active_jobs, 'BUSY', 'Wait for the runtime operation to finish')
+            require(record['state'] in ('Running', 'Frozen'), 'INVALID_STATE', 'Start this runtime before managing schemes')
+            self.storage.ensure(record['id'])
+            try: return self.android.keymap_scheme(record['id'], request)
+            except (OSError, RuntimeError, ValueError) as error: raise RequestError('KEYMAP_SCHEME', str(error))
         if operation == 'keymaps':
             require(record['id'] not in self.active_jobs, 'BUSY', 'Wait for the runtime operation to finish')
             self.storage.ensure(record['id'])

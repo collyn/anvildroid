@@ -10,6 +10,34 @@ spec=importlib.util.spec_from_file_location('keymap_worker',Path(__file__).resol
 worker=importlib.util.module_from_spec(spec);spec.loader.exec_module(worker)
 
 class KeymapTests(unittest.TestCase):
+    def test_v4_parameters_and_shared_keyboard_reservations(self):
+        def row(key, kind, **changes):
+            values=[key,32768,32768,0,kind,49152,32768,250,3,0,1,8192,80,8192,8192,100,150,0,0]+[0]*12
+            fields=('key','x','y','hold','kind','ex','ey','duration','repeats','source','end','radius','ramp','lw','lh','sx','sy','invert','activation',
+                    'up','left','down','right','walk','walk_radius','suspend','drag','skill','cancel','cx','cy')
+            for name,value in changes.items(): values[fields.index(name)]=value
+            return ' '.join(map(str,values))
+        def profile(rows): return 'BEGIN\nANVIL_KEYMAP 4 default com.game.test '+str(len(rows))+'\n'+'\n'.join(rows)+'\nEND\n'
+        movement=row(103,1,up=103,left=105,down=108,right=106,walk=42,walk_radius=40)
+        look=row(57,8,activation=1,suspend=56)
+        skill=row(16,4,skill=2,cancel=18,cx=100,cy=200)
+        walking=row(273,9,source=1)
+        report=worker.parse_keymaps(profile([movement,look,skill,walking]),'default')
+        self.assertEqual(report['invalid_count'],0)
+        self.assertEqual(report['profiles'][0]['bindings'][0]['up_key'],103)
+        self.assertEqual(report['profiles'][0]['bindings'][2]['skill_mode'],2)
+        self.assertEqual(report['profiles'][0]['bindings'][3]['kind'],'walk')
+        for rows in ([row(103,1,up=103,left=103,down=108,right=106)],
+                     [row(103,1,up=103,left=105,down=108,right=106,walk=60)],
+                     [movement,row(42,0)],[look,row(56,0)],[skill,row(18,0)],
+                     [row(273,9,source=1,radius=0)],[row(16,0,drag=1)],
+                     [row(272,0,source=1,end=2,drag=1),row(273,0,source=1,end=2,drag=1)]):
+            self.assertEqual(worker.parse_keymaps(profile(rows),'default')['invalid_count'],1,rows)
+        canonical=profile([look])
+        for bad in (canonical.replace('ANVIL_KEYMAP',' ANVIL_KEYMAP'), canonical.replace('4 default','4\r default'), canonical.replace('4 default','4\ndefault')):
+            self.assertEqual(worker.parse_keymaps(bad,'default')['invalid_count'],1)
+        self.assertEqual(worker.parse_keymaps(canonical.replace('ANVIL_KEYMAP ','ANVIL_KEYMAP\t'),'default')['invalid_count'],0)
+
     def test_inventory_scope_and_validation(self):
         good='BEGIN\nANVIL_KEYMAP 1 r-one com.game.test 2\n30 100 200 0\n57 65535 0 1\nEND\n'
         report=worker.parse_keymaps(good,'r-one')

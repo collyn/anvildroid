@@ -654,6 +654,19 @@ class ExistingRuntime:
             if request.get('action') != 'keymap_edit':
                 raise RuntimeError('Unsupported Default app action')
             return self.edit_keymap(request.get('package'))
+        if op == 'keymap_scheme':
+            keymap.validate_scheme_request(request)
+            if self.state() == 'FROZEN':
+                linux.run_bounded('gdbus', 'call', '--system', '--dest', 'id.waydro.Container',
+                    '--object-path', '/ContainerManager', '--method', 'id.waydro.ContainerManager.Unfreeze',
+                    timeout=3, operation='Resume Default runtime')
+            if self.state() != 'RUNNING': raise RuntimeError('Start Default runtime before managing schemes')
+            text = self.read(self.work / 'overlay/system/etc/init/init.waydroid.rc')
+            match = re.search(r'^    setenv ANVILDROID_RUNTIME_GENERATION ([0-9a-f]{32})$', text, re.M)
+            if not match:
+                raise RuntimeError('Restart Default runtime once to enable scheme management')
+            return keymap.keymap_schemes(self.work / 'lxc', 'waydroid', 'default', request,
+                lambda *args: self.android('/system/bin/' + args[0], *args[1:]), match[1])
         if op == 'keymaps':
             state = self.state()
             if state == 'FROZEN':
@@ -877,15 +890,41 @@ def prepare_imported_profiles(data, identifier):
         directory = base / kind
         if not directory.exists(): continue
         if directory.is_symlink() or not directory.is_dir(): raise RuntimeError('Unsafe imported profile directory')
+        profiles = {}
         for profile in directory.iterdir():
             info = profile.lstat()
-            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > 4096:
+            limit = (keymap.SCHEME_META_LIMIT if profile.name.startswith('.schemes-') else 16384) if kind == 'keymaps' else 4096
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > limit:
                 raise RuntimeError('Unsafe imported profile')
-            text = profile.read_text()
+            profiles[profile.name] = profile.read_text()
+        rewritten = {}
+        for name, text in profiles.items():
             if kind == 'keymaps':
-                text = re.sub(r'\AANVIL_KEYMAP 1 (?:default|existing) ', 'ANVIL_KEYMAP 1 ' + identifier + ' ', text)
+                if name.startswith('.schemes-'):
+                    package = name[len('.schemes-'):]
+                    metadata = json.loads(text)
+                    source = metadata.get('runtime') if isinstance(metadata, dict) else None
+                    if source not in ('default', 'existing') or package not in profiles:
+                        raise RuntimeError('Invalid imported scheme scope')
+                    state = keymap._scheme_state(profiles[package], text, source, package)
+                    state['runtime'] = identifier
+                    for scheme in state['schemes']:
+                        header, separator, rows = scheme['profile'].partition('\n')
+                        parts = header.split(); parts[2] = identifier
+                        scheme['profile'] = keymap._scheme_profile(' '.join(parts) + separator + rows, identifier, package)
+                    text = json.dumps(state, ensure_ascii=True, separators=(',', ':'))
+                else:
+                    match = re.match(r'\AANVIL_KEYMAP[ \t]+[1-4][ \t]+(default|existing)[ \t]+', text)
+                    if not match: raise RuntimeError('Invalid imported keymap scope')
+                    keymap._scheme_profile(text, match[1], name)
+                    header, separator, rows = text.partition('\n')
+                    parts = header.split(); parts[2] = identifier
+                    text = keymap._scheme_profile(' '.join(parts) + separator + rows, identifier, name)
             else:
                 text = re.sub(r'\A\{"version":1,"runtime":"(?:default|existing)"',
                               '{"version":1,"runtime":"' + identifier + '"', text)
+            rewritten[name] = text
+        for name, text in rewritten.items():
+            profile = directory / name
             with profile.open('w') as stream:
                 stream.write(text); stream.flush(); os.fsync(stream.fileno())

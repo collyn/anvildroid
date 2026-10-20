@@ -141,5 +141,38 @@ int main(void) {
   assert(keymap_capture_remove(&registry,7)&&!keymap_capture.owner&&!map_count);
   assert(!keymap_capture_supported(&owner));
   keymap_capture_disconnect((void *)17);assert(!keymap_capture_bindings);
+  /* Suspend releases the contact and lock; resume requires a fresh grant. */
+  capture_setup();profile.model.points[0].suspend_key=56;
+  scrcpy_mapping_key(&owner,&profile,38,1);keymap_locked(0,&lock_proxy);
+  scrcpy_mapping_key(&owner,&profile,56,1);
+  assert(map_count==1&&!map_advanced[0].down&&map_advanced[0].suspended&&!keymap_capture.owner);
+  before=packets;keymap_relative_motion(0,&relative_proxy,0,0,256,0,512,0);assert(packets==before);
+  assert(!map_pointer_profile(&pointer));
+  scrcpy_mapping_key(&owner,&profile,56,0);assert(keymap_capture_status(&owner)==2&&packets==before);
+  keymap_locked(0,&lock_proxy);assert(keymap_capture_active(&owner)&&last[1]==0);
+  scrcpy_mapping_key(&owner,&profile,56,1);keyboard.keyboard_focus=0;
+  map_advanced_advance(1);assert(!map_count&&!keymap_capture.owner);
+  before=packets;scrcpy_mapping_key(&owner,&profile,56,0);assert(!map_count&&packets==before);
+  /* Relative drag-shot owns each delta once, then camera resumes at center. */
+  capture_setup();profile.model.count=2;
+  profile.model.points[1]=(struct keymap_point){.key=272,.nx=45000,.ny=45000};
+  keymap_set_kind(&profile.model.points[1],KEYMAP_BASIC);
+  profile.model.points[1].source=KEYMAP_SOURCE_MOUSE;profile.model.points[1].end_mode=KEYMAP_END_HOLD;
+  profile.model.points[1].drag_shot=1;
+  assert(keymap_valid(&profile.model,1));
+  scrcpy_mapping_key(&owner,&profile,38,1);keymap_locked(0,&lock_proxy);
+  int handoff=sequence_count;
+  absolute_pointer_button(&pointer,272,1);assert(map_count==2&&map_drag_slot==1&&!map_advanced[0].down);
+  assert(sequence[handoff][1]==1&&sequence[handoff][9]==0);
+  assert(sequence[handoff+1][1]==0&&sequence[handoff+1][9]==1);
+  initial_x=map_advanced[1].lx;before=packets;
+  keymap_relative_motion(0,&relative_proxy,0,0,256,0,512,0);
+  assert(packets==before+1&&map_advanced[1].lx>initial_x&&!map_advanced[0].down);
+  absolute_pointer_button(&pointer,272,0);
+  assert(map_count==1&&map_drag_slot==-1&&map_advanced[0].down&&map_advanced[0].lx==32768);
+  absolute_pointer_button(&pointer,272,1);keyboard.keyboard_focus=0;
+  keymap_relative_motion(0,&relative_proxy,0,0,256,0,512,0);
+  assert(!map_count&&map_drag_slot==-1&&!keymap_capture.owner);
+  before=packets;absolute_pointer_button(&pointer,272,0);assert(packets==before);
   return 0;
 }

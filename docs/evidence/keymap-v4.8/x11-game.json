@@ -1,0 +1,102 @@
+{
+  "runtime": "r-26b031aec6f74b408b3674d4f7069867",
+  "generation": "e3c5dad4f42446f38ae57f92ab79a954",
+  "package_sha256": "a0d9a7116cd9db436d2b725dac3c21ad314412010dce74fd555b3e5037579fee",
+  "game": "Minetest Game 5.8.0",
+  "engine": "Luanti 5.17.0 x86_64",
+  "input_backend": "native-x11",
+  "inputs": {
+    "apk": "d0e8bea52462d7e743d411e79c9eaa6b55f382f88ab1644d6ef727b320fae148",
+    "game": "33a3bb43b08497a0bdb2f49f140a2829e582d5c16c0ad52be1595c803f706912"
+  },
+  "epoch": "78356999309",
+  "game_window": {
+    "max_formspec_size": {
+      "x": 19.57647132873535,
+      "y": 15.058823585510254
+    },
+    "real_gui_scaling": 1.125,
+    "real_hud_scaling": 1.125,
+    "size": {
+      "x": 1664,
+      "y": 1280
+    },
+    "touch_controls": true
+  },
+  "fixture_mod": "scene initialization and player state observation; no synthetic input",
+  "results": [
+    {
+      "scenario": "mapped-button-digs-real-node",
+      "passed": true,
+      "digs": 1,
+      "target": "air"
+    },
+    {
+      "scenario": "mouse-as-finger-tap-hotbar",
+      "passed": true,
+      "wield": 2
+    },
+    {
+      "scenario": "native-mouse-camera-and-unmapped-w",
+      "passed": true,
+      "distance": 0.0,
+      "yaw_delta": 0.0
+    },
+    {
+      "scenario": "mouse-as-finger-camera",
+      "passed": true,
+      "yaw_delta": 2.1368063131915496
+    },
+    {
+      "scenario": "joystick-drag-and-hold",
+      "passed": true,
+      "distance": 0.9490426765273284,
+      "release_drift": 0.012206530302263017
+    },
+    {
+      "scenario": "swipe-endpoint-hold",
+      "passed": true,
+      "distance": 0.41584858431335514
+    },
+    {
+      "scenario": "look-binding-camera",
+      "passed": true,
+      "yaw_delta": 1.711993932723999
+    },
+    {
+      "scenario": "simultaneous-joystick-look-dig",
+      "passed": true,
+      "movement": 1,
+      "dig": true
+    },
+    {
+      "scenario": "blur-cancels-game-movement",
+      "passed": true
+    },
+    {
+      "scenario": "fresh-input-after-blur",
+      "passed": true
+    },
+    {
+      "scenario": "sustained-fps-capture-escape-recovery",
+      "passed": true,
+      "seconds": 30.208192692996818,
+      "batch_yaw_deltas": [
+        2.9735171238528655,
+        3.0250049829483032,
+        3.1023227612124846,
+        3.025004744529724,
+        2.98643154302706,
+        3.0250059366226196
+      ],
+      "released_pointer_before": [
+        588,
+        291
+      ],
+      "released_pointer_after": [
+        598,
+        291
+      ]
+    }
+  ]
+}

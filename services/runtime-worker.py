@@ -2040,7 +2040,7 @@ def main(instance, identifier, generation, original_mnt, original_net, desktop=N
     endpoint.unlink(missing_ok=True)
     state = dict(runtime_id=identifier, generation=generation, state='Starting', error=None, display_mode='desktop' if desktop else 'headless', capabilities=['graphics', 'apps', 'app_actions', 'uninstall_app', 'install_apk', 'google_services'])
     state['capabilities'].extend(['app_states', 'adb', 'app_compatibility', 'shared_folders'])
-    if desktop: state['capabilities'].extend(['keymap_editor', 'full_ui', 'window_activation'])
+    if desktop: state['capabilities'].extend(['keymap_editor', 'keymap_schemes', 'full_ui', 'window_activation'])
     atomic(instance / 'worker-identity.json', dict(runtime_id=identifier, generation=generation))
     (instance / 'worker-result.json').unlink(missing_ok=True)
     stopping, done = threading.Event(), threading.Event()
@@ -2076,7 +2076,7 @@ def main(instance, identifier, generation, original_mnt, original_net, desktop=N
                 if uid != 0: continue
                 apk_fd = None
                 try:
-                    request, apk_fd = transfer.receive(connection, 1024)
+                    request, apk_fd = transfer.receive(connection, 65536)
                     if apk_fd is not None and (not isinstance(request, dict) or request.get('op') != 'install'):
                         raise ValueError('Unexpected file descriptor')
                     if request == {'op': 'stop'}:
@@ -2173,6 +2173,24 @@ def main(instance, identifier, generation, original_mnt, original_net, desktop=N
                             require(idle.apps is not None, 'Sleeping app inventory unavailable; resume this runtime')
                             response['apps'] = idle.apps
                         except (RuntimeError, OSError, subprocess.TimeoutExpired) as error:
+                            response['app_error'] = str(error)[-1024:]
+                        connection.sendall(json.dumps(dict(response, state=state['state'])).encode() + b'\n')
+                        continue
+                    elif isinstance(request, dict) and request.get('op') == 'keymap_scheme':
+                        response = dict(state)
+                        try:
+                            require(request.get('generation') == generation, 'Worker generation changed; scheme operation refused')
+                            payload = dict(request)
+                            del payload['generation']
+                            keymap.validate_scheme_request(payload)
+                            require(payload['id'] == identifier, 'Invalid scheme runtime')
+                            idle.resume()
+                            require(desktop and state['state'] == 'Running' and not stopping.is_set(), 'Desktop runtime must be running')
+                            def scheme_android(*args):
+                                return linux.run_bounded('lxc-attach', '-P', instance / 'android', '-n', identifier,
+                                    '--', '/system/bin/' + args[0], *args[1:], timeout=4, operation='Scheme package check', full_output=True)
+                            response['keymap_scheme'] = keymap.keymap_schemes(instance / 'android', identifier, identifier, payload, scheme_android, generation)
+                        except (RuntimeError, OSError, ValueError, subprocess.TimeoutExpired) as error:
                             response['app_error'] = str(error)[-1024:]
                         connection.sendall(json.dumps(dict(response, state=state['state'])).encode() + b'\n')
                         continue

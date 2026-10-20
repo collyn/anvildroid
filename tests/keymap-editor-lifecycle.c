@@ -14,11 +14,12 @@ static void test_delete_capture(void) {
   assert(keymap_add(&f.model,250,250,1000,700));
   assert(keymap_assign(&f.model,44));
   struct keymap_layout l=keymap_layout(1000,700,0);
-  click(&pointer,l.properties[4].x+2,l.properties[4].y+2);
+  click(&pointer,l.properties[0].x+2,l.properties[0].y+2);
   assert(f.binding_capture==1);
   click(&pointer,275,225); /* Selected marker's delete badge. */
   assert(!f.model.count&&f.model.selected==-1);
   assert(!f.binding_capture&&!f.property_page&&!f.dragging);
+  free(f.history);
 }
 static void test_geometry_cancel(void) {
   for(int origin=0;origin<2;++origin) {
@@ -38,6 +39,7 @@ static void test_geometry_cancel(void) {
     /* The old press cannot Save when released over the relocated toolbar. */
     keymap_overlay_button(&pointer,272,0);
     assert(!f.save_pending&&!f.model.dirty);
+    free(f.history);
   }
 }
 static void test_stale_selection(void) {
@@ -59,13 +61,14 @@ static void test_conflict_feedback(void) {
   uint32_t *pixels=calloc(448*700,4);assert(pixels);
   keymap_editor_paint(pixels,448,700,&f);
   int error_pixels=0;
-  for(int y=104;y<136;++y)for(int x=12;x<436;++x)
+  for(int y=658;y<688;++y)for(int x=12;x<156;++x)
     if(((pixels[y*448+x]>>16)&255)>((pixels[y*448+x]>>8)&255)+30)++error_pixels;
   assert(error_pixels>20);free(pixels);
-  assert(keymap_ui_hit(keymap_layout(448,700,0),30,120)==-1);
+  assert(keymap_ui_hit(keymap_layout(448,700,0),30,670)==-1);
   assert(!keymap_assign(&f.model,60)&&f.model.error==2);
   assert(!memcmp(&before,&f.model.points[1],sizeof(before)));
   assert(keymap_assign(&f.model,45)&&!f.model.error&&keymap_valid(&f.model,1));
+  free(f.history);
 }
 static void test_task_replacement(void) {
   struct object owner={.app=1,.app_id="org.anvildroid.touchprobe",.has_bounds=1};

@@ -302,6 +302,11 @@ async fn export_runtime_diagnostics(id: String, path: String, include_logs: bool
 }
 
 #[tauri::command]
+async fn export_keymap_scheme(id: String, package: String, scheme_id: String, revision: String, path: String) -> Result<serde_json::Value, String> {
+    blocking(move || anvildroid_core::keymap_export::export(&id, &package, &scheme_id, &revision, std::path::Path::new(&path))).await
+}
+
+#[tauri::command]
 async fn adb_host_status(adb_path: Option<String>) -> Result<anvildroid_core::adb::HostReport, String> {
     blocking(move || anvildroid_core::adb::status(adb_path.as_deref()).map_err(|e| e.to_string())).await
 }
@@ -1299,6 +1304,7 @@ fn main() {
             get_runtime_catalog,
             runtime_controller,
             export_runtime_diagnostics,
+            export_keymap_scheme,
             adb_host_status,
             adb_host_action,
             start_runtime_controller,

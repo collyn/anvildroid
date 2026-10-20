@@ -53,6 +53,79 @@ int main(void) {
   assert(!strcmp(canvas.hints->package,"org.test.app"));
   int x,y,w,h;assert(map_task(&canvas,&x,&y,&w,&h));
   assert(x==100&&y==60&&w==1800&&h==1080);
+  /* A killed native read lock recovers without opening the scheme library. */
+  const char *lock_generation="01234567890123456789012345678901";
+  char lock_owner[128];
+  for(int journal=0;journal<2;++journal){
+    assert(!mkdir("keymaps/.scheme-lock",0700));
+    int lock_fd=open("keymaps/.scheme-lock/pid",1|PROFILE_CREAT|PROFILE_EXCL|PROFILE_NOFOLLOW|PROFILE_CLOEXEC,0600);
+    int lock_n=snprintf(lock_owner,sizeof(lock_owner),"2147483647 1 %s\n",lock_generation);
+    assert(lock_fd>=0&&write(lock_fd,lock_owner,(unsigned long)lock_n)==lock_n);close(lock_fd);
+    if(journal){
+      lock_fd=open("keymaps/.scheme-lock/ready",1|PROFILE_CREAT|PROFILE_EXCL|PROFILE_NOFOLLOW|PROFILE_CLOEXEC,0600);assert(lock_fd>=0);close(lock_fd);
+      assert(!keymap_scheme_lock(lock_generation)); /* journal remains untouched */
+      lock_fd=open("keymaps/.scheme-lock/pid",PROFILE_NOFOLLOW|PROFILE_CLOEXEC);assert(lock_fd>=0);close(lock_fd);
+      assert(!unlinkat(-100,"keymaps/.scheme-lock/ready",0));
+    }
+    assert(keymap_scheme_lock(lock_generation)); /* stale PID-only lock */
+    assert(!keymap_scheme_lock(lock_generation)); /* live owner stays locked */
+    keymap_scheme_unlock();
+  }
+  /* F2's marker path also reaps a stale lock when no marker existed. */
+  assert(!mkdir("keymaps/.scheme-lock",0700));
+  int lock_fd=open("keymaps/.scheme-lock/pid",1|PROFILE_CREAT|PROFILE_EXCL|PROFILE_NOFOLLOW|PROFILE_CLOEXEC,0600);
+  int lock_n=snprintf(lock_owner,sizeof(lock_owner),"2147483647 1 %s\n",lock_generation);
+  assert(lock_fd>=0&&write(lock_fd,lock_owner,(unsigned long)lock_n)==lock_n);close(lock_fd);
+  assert(keymap_marker_begin(lock_generation,"org.test.app"));keymap_marker_end();
+  /* Native editor first-open recovers stale sessions without a GUI mutation. */
+  const char *generation="01234567890123456789012345678901";
+  char process_start[32],session[352];assert(keymap_process_start(getpid(),process_start,sizeof(process_start))==1);
+  assert(keymap_marker_begin(generation,"org.test.app"));
+  assert(!keymap_marker_begin(generation,"org.test.app")); /* live session */
+  keymap_marker_end();
+  snprintf(session,sizeof(session),"old-generation org.test.app %d %s\n",getpid(),process_start);
+  assert(keymap_worker_file("keymap-editing",session));
+  assert(keymap_marker_begin(generation,"org.test.app"));keymap_marker_end();
+  snprintf(session,sizeof(session),"%s org.test.app 2147483647 1\n",generation);
+  assert(keymap_worker_file("keymap-editing",session));
+  assert(keymap_marker_begin(generation,"org.test.app"));keymap_marker_end();
+  snprintf(session,sizeof(session),"%s org.test.app %d 0\n",generation,getpid());
+  assert(keymap_worker_file("keymap-editing",session));
+  assert(keymap_marker_begin(generation,"org.test.app"));keymap_marker_end(); /* reused PID */
+  snprintf(session,sizeof(session),"%s org.test.app %d\n",generation,getpid());
+  assert(keymap_worker_file("keymap-editing",session));
+  assert(!keymap_marker_begin(generation,"org.test.app"));keymap_marker_end(); /* old live marker */
+  assert(keymap_worker_file("keymap-editing","malformed\n"));
+  assert(!keymap_marker_begin(generation,"org.test.app"));keymap_marker_end();
+  /* Scheme selection reloads the existing app, but only after its lock exits. */
+  assert(keymap_worker_file("keymap-scheme-reload","01234567890123456789012345678901 org.other.app reload-1\n"));
+  assert(!mkdir("keymaps/.scheme-lock",0700));keymap_io_poll();
+  assert(canvas.hints&&!canvas.hints->close_pending);
+  assert(!rmdir("keymaps/.scheme-lock"));keymap_io_poll();
+  assert(canvas.hints&&canvas.hints->close_pending);
+  keymap_overlay_sync(&canvas,50,80,900,540);assert(!canvas.hints);
+  keymap_io_poll();assert(canvas.hints&&canvas.hints->model.points[0].key==30);
+  /* A library mutation lock refuses an editor before loading any draft. */
+  assert(!mkdir("keymaps/.scheme-lock",0700));
+  frame.menu_open=1;csd_menu_activate(&frame,0);keymap_io_poll();
+  assert(!canvas.overlay);
+  int marker=open("keymap-editing",PROFILE_NOFOLLOW|PROFILE_CLOEXEC);assert(marker<0);
+  assert(!rmdir("keymaps/.scheme-lock"));
+  /* Cancel and a Save after Undo preserve exact imported V1 bytes. */
+  const char legacy[]="ANVIL_KEYMAP 1 default org.test.app 1\n30 12345 23456 1\n";
+  int legacy_fd=open("keymaps/org.test.app",1|01000|PROFILE_NOFOLLOW|PROFILE_CLOEXEC);
+  assert(legacy_fd>=0&&write(legacy_fd,legacy,sizeof(legacy)-1)==sizeof(legacy)-1);close(legacy_fd);
+  for(int save=0;save<2;++save) {
+    frame.menu_open=1;csd_menu_activate(&frame,0);keymap_io_poll();assert(canvas.overlay);
+    struct keymap_overlay *edit=canvas.overlay;edit->model.selected=0;
+    keymap_history_init(edit);edit->model.points[0].nx+=1000;edit->model.dirty=1;keymap_history_commit(edit);
+    if(save){keymap_history_step(edit,-1);assert(!edit->model.dirty);edit->save_pending=1;keymap_io_poll();assert(edit->close_result==2);}
+    else{edit->close_pending=1;edit->close_result=3;}
+    keymap_overlay_destroy(&canvas);keymap_io_poll();
+    char bytes[128]={0};legacy_fd=open("keymaps/org.test.app",PROFILE_NOFOLLOW|PROFILE_CLOEXEC);
+    assert(legacy_fd>=0&&read(legacy_fd,bytes,sizeof(bytes))==sizeof(legacy)-1);close(legacy_fd);
+    assert(!memcmp(bytes,legacy,sizeof(legacy)-1));
+  }
   /* App switch cancels the editor, never saves bindings to the new app. */
   keymap_key(&keyboard,0,1,1,60,1);keymap_key(&keyboard,0,1,1,60,0);
   keymap_io_poll();assert(canvas.overlay);
@@ -73,6 +146,8 @@ int main(void) {
   task_count=0;keymap_canvas_bounds(&canvas);assert(!canvas.has_bounds);
   objects=0;
   assert(!unlinkat(-100,"keymaps/org.test.app",0));assert(!rmdir("keymaps"));
+  keymap_io_poll();
+  assert(!unlinkat(-100,"keymap-scheme-protocol",0));
   assert(!chdir("/tmp"));assert(!rmdir(path));
   return 0;
 }

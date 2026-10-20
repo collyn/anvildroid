@@ -69,9 +69,9 @@ static int keymap_capture_owner_valid(void) {
   for(struct object *o=objects;o;o=o->next) {
     if(o==keymap_capture.owner)owner=1;
     if(o==keymap_capture.pointer)pointer=1;
-    if(o->keyboard_focus==keymap_capture.owner&&!o->keyboard_leave_pending)focus=1;
+    if(o->keyboard_focus==keymap_capture.owner&&!o->keyboard_leave_pending&&!o->keymap_panel_focus)focus=1;
   }
-  return owner&&pointer&&focus&&!keymap_capture.owner->overlay&&
+  return owner&&pointer&&focus&&(!keymap_capture.owner->overlay||keymap_capture.owner->overlay->testing)&&
     !keymap_capture.owner->keymap_disabled&&!keymap_capture.owner->resize.dragging&&
     game_fit_owner(find(keymap_capture.pointer->pointer_surface))==keymap_capture.owner;
 }

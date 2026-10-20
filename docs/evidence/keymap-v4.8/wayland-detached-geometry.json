@@ -1,0 +1,22 @@
+{
+  "app_id": "waydroid.anvildroid.r-831aa1b002544edc9044b475f18ea2e3.org.anvildroid.touchprobe.keymap-editor",
+  "before": [
+    615,
+    236,
+    915,
+    973
+  ],
+  "after": [
+    690,
+    64,
+    990,
+    801
+  ],
+  "android": [
+    218,
+    196,
+    666,
+    900
+  ],
+  "movement": "Weston compositor"
+}

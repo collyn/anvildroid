@@ -269,15 +269,28 @@ class Session(isolation.Endpoint):
             require(match is not None,'Game surface bounds missing')
             return tuple(map(int,match.groups()))
         x,y,right,bottom=bounds()
-        if 0<=x<right<=1600 and 0<=y<bottom<=1000:return
-        require(x<=700<right and y<=400<bottom,'Cannot safely reach game CSD')
-        self.run(self.x+['windowfocus','--sync',self.window]+self.move(700,400)+
-                 ['keydown','Super_L','mousedown','1','mousemove_relative','--','0','140',
-                  'mouseup','1','keyup','Super_L'])
-        time.sleep(.3);x,y,right,bottom=bounds()
-        require(0<=x<1500 and 33<=y<=800,'Cannot safely reach game header')
-        self.run(self.x+self.move(x+min(700,(right-x)//2),y-16)+['click','--repeat','2','--delay','150','1'])
-        time.sleep(.5)
+        # A valid small landscape window can fit the output while being too
+        # short for the editor. Maximize it through its own production CSD,
+        # rather than treating transport visibility as editor usability.
+        if 0<=x<right<=1600 and 33<=y<bottom<=1000 and right-x>=330 and bottom-y>=420:return
+        px=min(x+(right-x)//2,right-112,1590);py=y-16
+        if not (x+32<=px<right-100 and 33<=py<1000):
+            # Weston can put this small game's CSD underneath its own panel.
+            # Move only the authenticated game using the private compositor's
+            # standard Super-drag, then re-read its actual header bounds.
+            left,top=max(x,0),max(y,33);edge,base=min(right,1600),min(bottom,1000)
+            require(edge-left>=64 and base-top>=64,'Cannot safely reach game CSD')
+            self.run(self.x+['windowfocus','--sync',self.window]+self.move((left+edge)//2,(top+base)//2)+
+                     ['keydown','Super_L','mousedown','1','mousemove_relative','--','0','140',
+                      'mouseup','1','keyup','Super_L'])
+            time.sleep(.3);x,y,right,bottom=bounds()
+            px=min(x+(right-x)//2,right-112,1590);py=y-16
+        require(x+32<=px<right-100 and 33<=py<1000,'Cannot safely reach game header')
+        self.run(self.x+['windowfocus','--sync',self.window]+self.move(px,py)+
+                 ['click','--repeat','2','--delay','150','1'])
+        time.sleep(.5);x,y,right,bottom=bounds()
+        require(0<=x<right<=1600 and 0<=y<bottom<=1000 and right-x>=330 and bottom-y>=420,
+                'Maximized game does not fit the private output/editor')
 
     def point(self,nx,ny):
         return self.move(self.frame[0]+round(nx*(self.width-1)),self.frame[1]+round(ny*(self.height-1)))
@@ -297,15 +310,16 @@ class Session(isolation.Endpoint):
         self.locate()
         def click(x,y):
             self.run(self.x+self.move(self.frame[0]+x,self.frame[1]+y)+['click','1']);time.sleep(.3)
-        self.run(self.x+self.point(45000/65535,30000/65535)+['click','1'])
-        time.sleep(.3)
         w,h=self.width,self.height;buttons=probe.editor_targets(w,h)
+        # The camera marker can sit under the inspector in a narrow window.
+        # Hide the panel through its production control, select, then reveal.
+        panel_x=w-min(w-16,276)-8
+        covered=round(45000*(w-1)/65535)>=panel_x
+        if covered:click(*( (w-34,h-25) if w<600 or h<420 else (42,25)))
+        self.run(self.x+self.point(45000/65535,30000/65535)+['click','1']);time.sleep(.3)
+        if covered:click(42,25)
         click(*buttons['bind_key']);self.run(self.x+['key','l']);time.sleep(.15)
-        compact=w<600 or h<420;cols=2 if not compact and h>=540 else 4
-        rh=32 if cols==2 else 24;px,py,pw=(12,12,w-88) if compact else (w-236,304,208)
-        def prop(i):return px+(i%cols)*pw//cols+(pw//cols-2)//2,py+(i//cols)*rh+(rh-2)//2
-        for _ in range(3):click(*prop(2))  # Binding -> Region -> Sensitivity -> Look
-        click(*prop(5))  # Hold -> Capture
+        click(*buttons['capture'])  # Look inspector: Hold -> Capture
         click(*buttons['save'])
         path='/data/waydroid_tmp/anvildroid/keymaps/'+PACKAGE
         deadline=time.monotonic()+5

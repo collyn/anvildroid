@@ -42,7 +42,7 @@ int main(void){
   keymap_key(&keyboard,0,5,5,31,1);
   assert(!s.overlay->model.points[0].key); /* Existing selection needs explicit rebind. */
   struct keymap_layout binding_layout=keymap_layout(800,600,0);
-  pointer.csd_x=binding_layout.properties[4].x+2;pointer.csd_y=binding_layout.properties[4].y+2;
+  pointer.csd_x=binding_layout.properties[0].x+2;pointer.csd_y=binding_layout.properties[0].y+2;
   csd_pointer_button(&pointer,0,5,5,272,1);csd_pointer_button(&pointer,0,5,5,272,0);
   assert(s.overlay->binding_capture==1);
   keymap_key(&keyboard,0,5,5,30,1);
@@ -50,13 +50,17 @@ int main(void){
   /* Real authoring events: Add, place, key without a separate Key... click. */
   pointer.csd_x=binding_layout.add.x+2;pointer.csd_y=binding_layout.add.y+2;
   csd_pointer_button(&pointer,0,5,5,272,1);csd_pointer_button(&pointer,0,5,5,272,0);
+  assert(s.overlay->type_open);
+  struct keymap_rect basic=keymap_type_rect(s.overlay,KEYMAP_BASIC);
+  pointer.csd_x=basic.x+2;pointer.csd_y=basic.y+2;
+  csd_pointer_button(&pointer,0,5,5,272,1);csd_pointer_button(&pointer,0,5,5,272,0);
   pointer.csd_x=300;pointer.csd_y=350;
   csd_pointer_button(&pointer,0,5,5,272,1);csd_pointer_button(&pointer,0,5,5,272,0);
   assert(s.overlay->binding_capture==1&&s.overlay->model.count==2);
   keymap_key(&keyboard,0,5,5,44,1);keymap_key(&keyboard,0,5,5,44,0);
   assert(s.overlay->model.points[1].key==44&&!s.overlay->binding_capture&&!forwarded);
   keymap_remove(&s.overlay->model);s.overlay->model.selected=0;
-  pointer.csd_x=binding_layout.properties[0].x+2;pointer.csd_y=binding_layout.properties[0].y+2;
+  pointer.csd_x=binding_layout.add.x+2;pointer.csd_y=binding_layout.add.y+2;
   csd_pointer_button(&pointer,0,5,5,272,1);csd_pointer_button(&pointer,0,5,5,272,0);
   assert(s.overlay->type_open);
   keymap_key(&keyboard,0,5,5,1,1);keymap_key(&keyboard,0,5,5,1,0);
@@ -73,7 +77,7 @@ int main(void){
   s.overlay->model.points[0].kind=KEYMAP_MACRO;
   keymap_key(&keyboard,0,5,5,67,1);assert(s.overlay->model.points[0].repeats==4);
   assert(keymap_valid(&s.overlay->model,1)&&!forwarded);
-  csd_pointer_motion(&pointer,0,5,780*256,20*256);
+  csd_pointer_motion(&pointer,0,5,(binding_layout.cancel.x+2)*256,(binding_layout.cancel.y+2)*256);
   csd_pointer_button(&pointer,0,6,5,0x110,1);csd_pointer_button(&pointer,0,7,5,0x110,0);
   assert(s.overlay && s.overlay->close_pending);
   keymap_overlay_sync(&s,0,0,800,600);wayland_send(s.p,6,0);

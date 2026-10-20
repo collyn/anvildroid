@@ -18,8 +18,8 @@ sharing probes verify the selected private worker
 before changing its diagnostic app or writing inside its selected test share.
 
 Prerequisites include root namespace privileges, systemd/cgroup-v2 CPU and
-memory controllers, Binder already available, LXC, Weston, Xvfb, xauth,
-xdotool/xwininfo, and the image/build inputs used by this checkout. The harness
+memory controllers, Binder already available, LXC, Weston, Xwayland, xauth,
+glxinfo, xdotool/xwininfo, and the image/build inputs used by this checkout. The harness
 does not change persistent sysctls, load kernel modules, install a host package,
 or initialize the user's installed Android runtime. Adequate inotify capacity
 is required by Android system_server.
@@ -34,8 +34,25 @@ Prepare and start a new test store (start blocks for the worker lifetime):
 
 ```sh
 sudo python3 tests/acceptance/live-android.py /tmp/anvil-live-local --prepare --owner-uid "$(id -u)" --package "$PWD/target/releases/anvildroid-controller_0.1.3_amd64.deb"
-sudo python3 tests/acceptance/live-android.py /tmp/anvil-live-local --start --x11 --package "$PWD/target/releases/anvildroid-controller_0.1.3_amd64.deb"
+sudo python3 tests/acceptance/live-android.py /tmp/anvil-live-local --start --x11 --gpu-node /dev/dri/renderD128 --package "$PWD/target/releases/anvildroid-controller_0.1.3_amd64.deb"
 ```
+
+Select the actual AMD/Intel Mesa render node for this host. GPU acceptance uses
+private headless Weston with its GL renderer and GPU Xwayland/GLAMOR instead of
+Xvfb. It requires direct, accelerated GLX and rejects software renderer names.
+The explicit node is also written to the disposable Android runtime's GPU
+selection. Record `dumpsys SurfaceFlinger`'s GLES renderer and the guest's open
+DRM render device before running input/game acceptance; desktop GLX alone does
+not prove that Android used the GPU. Retain the generation-specific
+`gpu-transport-*.json`, GLX/Weston/Xwayland logs and Android renderer evidence.
+
+On a host with an existing separate matching Mesa installation, the optional
+`--host-mesa-prefix /opt/amdgpu` selects its root-owned libraries only for these
+private fixture processes. It does not alter host driver links or desktop
+configuration. A GPU setup failure must be fixed or reported; do not count a
+software fallback as GPU acceptance. The options require `--start --x11` or
+`--start --wayland-x11`. Software display modes below are retained for
+historical reproduction and inert harness development.
 
 The harness records runtime ID, generation, image/store paths, chosen owner,
 resource scope and the staged package checksum in `acceptance.json`. A new
@@ -57,9 +74,11 @@ The tested headless Weston advertises no `wl_seat`, virtual keyboard/pointer or
 test-input protocol; boot, mapped app content and clean stop do not establish
 actual Wayland input acceptance.
 
-For actual Wayland input checks, use `--wayland-x11` instead. The product guest
-still connects through Wayland. A private software Weston using its X11 backend
-runs inside authenticated private Xvfb; XTest injects into that compositor only.
+For actual Wayland input checks, use `--wayland-x11` instead and retain
+`--gpu-node`. The product guest still connects through Wayland. A private
+GPU Weston using its X11 backend runs inside authenticated private GPU
+Xwayland; XTest injects into that compositor only. Without `--gpu-node`, the
+historical transport uses software Weston inside Xvfb.
 Weston supplies the Wayland seat, keyboard and pointer events to the production
 bridge, mapper and Android sink. No host input devices or personal desktop
 sockets are used. Verify this display-only fixture before starting Android:
@@ -82,15 +101,26 @@ From another terminal, exercise the actual mapper and Android input sink:
 sudo python3 tests/acceptance/probe-android-controls.py /tmp/anvil-live-local/acceptance.json HOST_WORKER_PID "$PWD/target/live-controls-local"
 ```
 
-Append `--keymap-v3 --editor-v3 --capture-v3` for the 25-case editor/input
+Append `--keymap-v3 --editor-v3 --capture-v3` for the extended editor/input
 matrix. V3 adds real finger mouse click/drag, fixed-button routing, center-first
 joystick, held swipe endpoint, relative hold-look with edge restart, and three
-simultaneous movement/look/fire contacts. Editor checks click Add/place/Key/Save,
-validate persisted V3 rows and fresh playback, then change a rendered property
+simultaneous movement/look/fire contacts. Editor checks Tools/Basic/place/direct binding/Save,
+validate persisted V4 rows with unchanged legacy values and fresh playback, then change a rendered property
 and Cancel while requiring exact saved bytes to survive. Geometry includes
 centered letterboxing; unknown frame geometry fails closed.
 
-Add `--editor-lifecycle` (requires `--editor-v3`) for the full 45-case run. It
+Add `--keymap-v4` with `--keymap-v3` for custom IJKL movement and a held
+walk modifier, circular Skill radius, release/immediate/toggle cast and authored
+cancel position, plus right-click joystick direction. With `--capture-v3`, it
+also requires cursor suspension/resume, drag-shot camera/fire handoff and focus
+recovery with no held-input replay. With `--editor-v3`, the editor tests draft
+Try after Undo/Redo without persisting; the scheme API tests inactive
+create/clone/import, stale revisions, live switching without an app restart,
+editor read/write exclusion, bounded import/export and restoration of the exact
+original profile. V4 modules inherit the parent's authenticated disposable
+endpoints and use actual Android finger events; they cannot select a desktop.
+
+Add `--editor-lifecycle` (requires `--editor-v3`) for the full lifecycle run. It
 drives select/drag/rebind, rendered duplicate-binding feedback, toolbar Delete,
 unassigned Save rejection and marker Delete while binding capture is armed.
 It compares actual marker pixels across F4 hide/show, requires saved bytes to
@@ -98,6 +128,16 @@ survive Cancel and dirty task replacement, then exercises resize during drag,
 maximize/restore, actual Android density and 90-degree rotation while holding
 a contact, followed by fresh input. Wayland maximize uses the production CSD;
 X11 has no desktop WM and uses an explicit private EWMH/ConfigureNotify fixture.
+
+Add `--detached-editor` with `--editor-v3` to test the separate native editor
+window. This checks its exact runtime/package identity, header drag outside
+Android with unchanged canvas geometry, shared Undo/Redo/Try, binding and numeric
+Save with actual Android tap timing, panel keyboard suppression, Close→Dock
+without saving, byte-preserving Cancel, and task destruction/reopen without
+orphan windows or editing markers. The X11 route uses a narrowly scoped EWMH
+move fixture because its private display has no desktop window manager; the
+Wayland route uses Weston's actual move implementation. PNG, geometry and scene
+evidence are retained. This does not certify ordinary KDE/GNOME window behavior.
 
 Readiness waits for the current observer PID's content size and focused,
 contact-free state. It collapses the private guest's NotificationShade when

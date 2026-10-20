@@ -129,6 +129,15 @@ resize_app_task() {
 
 publish_task_snapshot() {
     snapshot=$(cmd activity stack list) || return 1
+    # HWC displayFrame is in the physical display's orientation; task bounds
+    # are logical Android coordinates. Publish the actual default-display
+    # viewport in this same atomic snapshot, never infer it from an app buffer.
+    viewport=$(dumpsys display 2>/dev/null | sed -n '/mViewports=/{p;q;}')
+    viewport=$(printf '%s\n' "$viewport" | tr '}' '\n' | sed -n '/type=INTERNAL, /{/valid=true, /{/isActive=true, /{/displayId=0, /s/.*orientation=\([0-3]\), .*logicalFrame=Rect(0, 0 - \([0-9]*\), \([0-9]*\)), .*deviceWidth=\([0-9]*\), deviceHeight=\([0-9]*\).*/# anvil-viewport \1 \2 \3 \4 \5/p;}}}')
+    case "$viewport" in *'
+'*) viewport=;; esac # Ambiguous default display: do not retain old rotation.
+    [ -z "$viewport" ] || snapshot="$viewport
+$snapshot"
     # Keep the same inode when bounds are unchanged, allowing the bridge to
     # consume notifications without reparsing the task list on every tick.
     if [ "$snapshot_published" -eq 0 ] || [ "$snapshot" != "$last_snapshot" ] || [ ! -f tasks ]; then

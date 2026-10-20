@@ -56,6 +56,11 @@ test_*.py
 !/tests/keymap-hints.c
 !/tests/boot-canvas.c
 !/tests/test_runtime_keymaps.py
+!/tests/test_runtime_keymap_schemes.py
+!/tests/test-keymap-codec-parity.py
+!/tests/keymap-codec-probe.c
+!/tests/keymap-detached-panel.c
+!/tests/keymap-detached-protocol.c
 !/tests/test_runtime_keymap_receiver.py
 !/tests/test_keymap_library.cjs
 !/tests/acceptance/
@@ -64,6 +69,11 @@ test_*.py
 !/tests/acceptance/probe-android-shares.py
 !/tests/acceptance/probe-android-controls.py
 !/tests/acceptance/editor-lifecycle.py
+!/tests/acceptance/controls-v4.py
+!/tests/acceptance/controls-schemes.py
+!/tests/acceptance/detached-editor.py
+!/tests/acceptance/test-detached-editor.py
+!/tests/acceptance/gpu-desktop.py
 !/tests/acceptance/probe-editor-isolation.py
 !/tests/acceptance/probe-luanti-game.py
 !/tests/acceptance/probe-controls-recovery.py

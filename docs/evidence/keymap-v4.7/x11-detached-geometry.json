@@ -1,0 +1,22 @@
+{
+  "app_id": "waydroid.anvildroid.r-26b031aec6f74b408b3674d4f7069867.org.anvildroid.touchprobe.keymap-editor",
+  "before": [
+    0,
+    0,
+    300,
+    737
+  ],
+  "after": [
+    482,
+    64,
+    782,
+    801
+  ],
+  "android": [
+    0,
+    0,
+    458,
+    769
+  ],
+  "movement": "private scoped EWMH WM fixture"
+}

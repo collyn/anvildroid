@@ -6,7 +6,7 @@
 struct game_fit_state {
   struct csd_piece bars[4];
   struct proxy *viewports[4];
-  int applied, x, y, sw, sh, w, h, csd, fullscreen, rx, ry, rw, rh;
+  int applied, x, y, sw, sh, w, h, csd, fullscreen, rx, ry, rw, rh, rotation;
   struct proxy *above;
 };
 static int game_fit_enabled(struct object *s) {
@@ -155,17 +155,33 @@ static void game_fit_request(struct object *o,const char *cls,const char *method
   struct object *s=game_fit_owner(!strcmp(cls,"wl_surface")?o:o->surface);
   if(!s||!s->fit||s->fit_sw<1)return;
   struct game_fit_rect r=game_fit_area(s);
-  if(!strcmp(cls,"wl_surface")&&!strcmp(method,"damage")&&o!=s)
-    game_fit_damage(s,a);
+  struct object *layer=!strcmp(cls,"wl_surface")?o:o->surface;
+  int rotation=app_layer_rotation(layer);
+  if(!strcmp(cls,"wl_surface")&&!strcmp(method,"damage")&&o!=s) {
+    if(rotation) {
+      struct object *vp=o->viewport;int w=vp?vp->width:s->fit_sw,h=vp?vp->height:s->fit_sh;
+      if(rotation&1){int tmp=w;w=h;h=tmp;}
+      a[0].i=a[1].i=0;a[2].i=game_fit_scaled(s,w,0);a[3].i=game_fit_scaled(s,h,1);
+    }
+    else game_fit_damage(s,a);
+  }
+  if(!strcmp(cls,"wl_surface")&&!strcmp(method,"set_buffer_transform")&&o!=s)
+    a[0].i=app_rotation_transform(a[0].i,rotation);
+  if(!strcmp(cls,"wp_viewport")&&!strcmp(method,"set_source")&&o->surface!=s)
+    app_rotation_source(o->surface,a);
   if(!strcmp(cls,"wp_viewport")&&!strcmp(method,"set_destination")&&a[0].i>0&&a[1].i>0) {
     if(o->surface==s){a[0].i=s->fit_w;a[1].i=s->fit_h;}
     else {
+      if(rotation&1){int tmp=a[0].i;a[0].i=a[1].i;a[1].i=tmp;}
       a[0].i=game_fit_scaled(s,a[0].i,0);a[1].i=game_fit_scaled(s,a[1].i,1);
       if(a[0].i<1)a[0].i=1;
       if(a[1].i<1)a[1].i=1;
     }
   }
   if(!strcmp(cls,"wl_subsurface")&&!strcmp(method,"set_position")) {
+    struct object *vp=o->surface?o->surface->viewport:0;
+    int w=vp?vp->width:0,h=vp?vp->height:0;
+    if(w>0&&h>0)app_rotation_rect(o,&a[0].i,&a[1].i,&w,&h);
     a[0].i=r.x+game_fit_scaled(s,a[0].i-s->fit_x,0);
     a[1].i=r.y+game_fit_scaled(s,a[1].i-s->fit_y,1);
   }
@@ -175,8 +191,9 @@ static void game_fit_request(struct object *o,const char *cls,const char *method
     int px=0,py=0;
     if(o!=s)for(struct object *sub=objects;sub;sub=sub->next)
       if(sub->surface==o&&sub->parent==s&&object_is(sub,"wl_subsurface")) {
-        px=r.x+game_fit_scaled(s,sub->x-s->fit_x,0);
-        py=r.y+game_fit_scaled(s,sub->y-s->fit_y,1);break;
+        int x,y;app_rotation_origin(sub,&x,&y);
+        px=r.x+game_fit_scaled(s,x-s->fit_x,0);
+        py=r.y+game_fit_scaled(s,y-s->fit_y,1);break;
       }
     if(csd_compositor&&csd_region_i) {
       union argument id={.o=0};
@@ -207,7 +224,7 @@ static int game_fit_geometry(struct object *s,int x,int y,int sw,int sh) {
   int csd=s->csd&&s->csd->pieces[0].surface,fullscreen=s->csd&&s->csd->fullscreen;
   int changed=!f->applied||f->x!=x||f->y!=y||f->sw!=sw||f->sh!=sh||
     f->w!=s->fit_w||f->h!=s->fit_h||f->csd!=csd||f->fullscreen!=fullscreen||
-    f->rx!=r.x||f->ry!=r.y||f->rw!=r.width||f->rh!=r.height;
+    f->rx!=r.x||f->ry!=r.y||f->rw!=r.width||f->rh!=r.height||f->rotation!=app_rotation(s);
   if(changed){
     __android_log_print(4,game_fit_enabled(s)?"AnvilGameFit":"AnvilWindowFit",
       "presentation app=%s source=%dx%d host=%dx%d content=%d,%d %dx%d task_resize=%d",
@@ -223,10 +240,21 @@ static int game_fit_geometry(struct object *s,int x,int y,int sw,int sh) {
     if(!vp||vp->width<1||vp->height<1)continue;
     if(!changed&&sub->fit_applied&&sub->fit_last_x==sub->x&&sub->fit_last_y==sub->y&&
        sub->fit_last_w==vp->width&&sub->fit_last_h==vp->height)continue;
-    int px=r.x+game_fit_scaled(s,sub->x-x,0),py=r.y+game_fit_scaled(s,sub->y-y,1);
+    int lx=sub->x,ly=sub->y,lw=vp->width,lh=vp->height;
+    app_rotation_rect(sub,&lx,&ly,&lw,&lh);
+    int px=r.x+game_fit_scaled(s,lx-x,0),py=r.y+game_fit_scaled(s,ly-y,1);
     union argument pos[2]={{.i=px},{.i=py}};
     wayland_send(sub->p,1,pos);
-    int dw=game_fit_scaled(s,vp->width,0),dh=game_fit_scaled(s,vp->height,1);
+    if(changed) {
+      union argument t={.i=app_rotation_transform(sub->surface->buffer_transform,app_layer_rotation(sub->surface))};
+      if(app_rotation(s)||f->rotation)wayland_send(sub->surface->p,7,&t);
+      if((app_rotation(s)||f->rotation)&&vp->source_width>0&&vp->source_height>0) {
+        union argument source[4]={{.i=vp->source_x},{.i=vp->source_y},
+          {.i=vp->source_width},{.i=vp->source_height}};
+        app_rotation_source(sub->surface,source);wayland_send(vp->p,1,source);
+      }
+    }
+    int dw=game_fit_scaled(s,lw,0),dh=game_fit_scaled(s,lh,1);
     union argument d[2]={{.i=dw>0?dw:1},{.i=dh>0?dh:1}};
     wayland_send(vp->p,2,d);
     csd_input(sub->surface->p,r.x-px,r.y-py,r.width,r.height);
@@ -268,6 +296,7 @@ static int game_fit_geometry(struct object *s,int x,int y,int sw,int sh) {
   f->applied=painted;f->x=x;f->y=y;f->sw=sw;f->sh=sh;f->w=s->fit_w;f->h=s->fit_h;
   f->csd=csd;f->fullscreen=fullscreen;f->above=above;
   f->rx=r.x;f->ry=r.y;f->rw=r.width;f->rh=r.height;
+  f->rotation=app_rotation(s);
   s->bx=0;s->by=0;s->bw=s->fit_w;s->bh=s->fit_h;s->has_bounds=1;
   return 1;
 }

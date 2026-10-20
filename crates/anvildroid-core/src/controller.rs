@@ -160,6 +160,16 @@ pub enum Request {
     Keymaps {
         id: String,
     },
+    #[serde(rename = "keymap_scheme")]
+    KeymapScheme {
+        id: String,
+        package: String,
+        action: String,
+        scheme_id: String,
+        name: String,
+        revision: String,
+        content: String,
+    },
     Health {
         id: String,
     },
@@ -441,6 +451,8 @@ fn exchange_files(
     } else if matches!(&request, Request::CompatibilityGet { .. } | Request::CompatibilitySet { .. }
         | Request::CompatibilityReset { .. } | Request::DiagnosticsCollect { .. } | Request::ComponentsGet { .. }) {
         120
+    } else if matches!(&request, Request::KeymapScheme { .. }) {
+        25
     } else if matches!(&request, Request::SharesSet { .. }) {
         15
     } else if matches!(&request, Request::SystemIntegration { .. } | Request::BackendSet { .. }) {
@@ -568,6 +580,25 @@ mod tests {
         ] {
             assert!(serde_json::from_value::<Request>(value).is_err());
         }
+    }
+
+    #[test]
+    fn scheme_request_is_typed_and_cannot_select_a_privileged_file_or_command() {
+        let value = serde_json::json!({"op":"keymap_scheme","id":"default","package":"com.example.game",
+            "action":"import","scheme_id":"","name":"Imported","revision":"a".repeat(64),"content":"{\"format\":\"anvildroid-scheme\"}"});
+        let parsed: Request = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(serde_json::to_value(parsed).unwrap(), value);
+        for field in ["path", "socket", "uid", "command", "generation"] {
+            let mut invalid = value.clone();
+            invalid[field] = serde_json::json!("/etc/shadow");
+            assert!(serde_json::from_value::<Request>(invalid).is_err());
+        }
+        let mut missing = value.clone();
+        missing.as_object_mut().unwrap().remove("revision");
+        assert!(serde_json::from_value::<Request>(missing).is_err());
+        let mut wrong_type = value;
+        wrong_type["content"] = serde_json::json!({"path":"/etc/shadow"});
+        assert!(serde_json::from_value::<Request>(wrong_type).is_err());
     }
 
     #[test]

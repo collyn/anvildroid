@@ -1,0 +1,25 @@
+{
+  "runtime": "r-26b031aec6f74b408b3674d4f7069867",
+  "generation": "e3c5dad4f42446f38ae57f92ab79a954",
+  "package_sha256": "a0d9a7116cd9db436d2b725dac3c21ad314412010dce74fd555b3e5037579fee",
+  "app": "net.minetest.minetest",
+  "guest_pids": [
+    26317
+  ],
+  "node": "/dev/dri/renderD128",
+  "driver": "amdgpu",
+  "pci": "0000:08:00.0",
+  "gfx_engine_ns_samples": [
+    3328289074,
+    3328289074,
+    3330008014,
+    3374309170,
+    3375300011,
+    3376831518,
+    3424517573,
+    3424517573,
+    3426215312
+  ],
+  "native_bridge_sha256": "27a6f857ed9b40edc0a7d20912bec429747c92a4d301c136a602707c330b8097",
+  "passed": true
+}
