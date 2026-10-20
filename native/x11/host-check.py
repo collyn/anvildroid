@@ -7,6 +7,7 @@ import subprocess
 import tempfile
 import time
 import select
+import shutil
 import sys
 from contextlib import contextmanager, ExitStack
 
@@ -63,6 +64,10 @@ def private_xim(environment, root, enabled):
 
 def main(software_x11=False, xim=False):
     assert not xim or software_x11, 'XIM tests require a private Xvfb'
+    if software_x11:
+        missing = [name for name in ('Xvfb', 'xclip') if shutil.which(name) is None]
+        if missing:
+            raise RuntimeError('Software X11 test dependencies missing from PATH: ' + ', '.join(missing))
     subprocess.run([str(OUT / 'surface-tree-check')], check=True)
     subprocess.run([str(OUT / 'feature-state-check')], check=True)
     with tempfile.TemporaryDirectory(prefix='anvil-x11-host-', dir='/tmp') as directory, ExitStack() as cleanup:
