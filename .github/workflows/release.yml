@@ -40,6 +40,10 @@ jobs:
           } >> "$GITHUB_OUTPUT"
       - uses: actions/setup-node@v4
         with: {node-version: '22'}
+      - name: Install runtime feature test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential libx11-dev
       - name: Test runtime features without Android
         run: sh scripts/test-runtime-features.sh
       - name: Test shared folders in a private PID1 mount namespace

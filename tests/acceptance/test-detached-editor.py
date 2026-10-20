@@ -125,8 +125,9 @@ class DetachedSafety(unittest.TestCase):
     def test_scoped_wm_fixture_compiles_without_opening_display(self):
         with tempfile.TemporaryDirectory() as directory:
             source=Path(directory)/'fixture.c';source.write_text(detached.MOVE_FIXTURE)
-            subprocess.run(['cc','-Wall','-Wextra','-Werror','-fsyntax-only',str(source)],
-                           check=True,capture_output=True,timeout=20)
+            result=subprocess.run(['cc','-Wall','-Wextra','-Werror','-fsyntax-only',str(source)],
+                                  capture_output=True,text=True,timeout=20)
+            self.assertEqual(result.returncode,0,result.stdout+result.stderr)
         self.assertIn('e.xclient.window==target',detached.MOVE_FIXTURE)
         self.assertIn('strcmp(cls.res_name,argv[2])',detached.MOVE_FIXTURE)
         self.assertNotIn('SubstructureRedirectMask',detached.MOVE_FIXTURE)
