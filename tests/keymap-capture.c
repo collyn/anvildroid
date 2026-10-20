@@ -62,6 +62,108 @@ static void capture_setup(void) {
   *keymap_capture_bindings=(struct keymap_capture_binding){.display=(void *)17,
     .relative_manager=&relative_manager_proxy,.constraints=&constraints_proxy,.relative_name=7,.constraints_name=8};
 }
+static void auto_setup(void) {
+  capture_setup();
+  profile.model.points[0].activation=KEYMAP_CAMERA_AUTO;
+  profile.model.points[0].key=63;
+  assert(keymap_valid(&profile.model,1));
+}
+static void test_automatic_camera(void) {
+  auto_setup();int before=packets;
+  scrcpy_mapping_tick();
+  assert(map_count==1&&keymap_capture_status(&owner)==2&&packets==before);
+  scrcpy_mapping_tick();assert(map_count==1&&packets==before);
+  keymap_locked(0,&lock_proxy);assert(hidden==1&&last[1]==0);
+  int x=map_advanced[0].lx;
+  keymap_relative_motion(0,&relative_proxy,0,0,0,0,512,0);
+  assert(map_advanced[0].lx>x&&last[1]==2); /* No key or M1 was pressed. */
+  assert(scrcpy_mapping_escape()&&owner.keymap_auto_paused&&!map_count&&restored==1);
+  before=packets;
+  for(int i=0;i<3;++i)scrcpy_mapping_tick();
+  assert(!map_count&&!keymap_capture.owner&&packets==before);
+  /* After Escape, M1 becomes real touch rather than fire or relocking. */
+  profile.model.count=2;
+  profile.model.points[1]=(struct keymap_point){.key=272,.nx=45000,.ny=45000};
+  keymap_set_kind(&profile.model.points[1],KEYMAP_BASIC);
+  profile.model.points[1].source=KEYMAP_SOURCE_MOUSE;profile.model.points[1].end_mode=KEYMAP_END_HOLD;
+  absolute_pointer_update(&pointer,810*256,234*256,1);before=packets;
+  absolute_pointer_button(&pointer,272,1);
+  assert(owner.keymap_auto_paused&&map_count==1&&packets==before+1&&last[1]==0);
+  assert(map_advanced[0].point.kind==KEYMAP_MOUSE_TOUCH);
+  assert(last[2]==0&&last[9]==0); /* Finger ID, not the all-ones mouse ID. */
+  assert(last[10]==0&&last[11]==0&&last[12]==3&&last[13]==42); /* Actual cursor x=810, not Fire x. */
+  int touch_x=map_advanced[0].lx;
+  absolute_pointer_update(&pointer,830*256,234*256,1);
+  assert(last[1]==2&&map_advanced[0].lx>touch_x);
+  absolute_pointer_button(&pointer,272,0);assert(!map_count&&last[1]==1);
+  scrcpy_mapping_tick();assert(!map_count&&!keymap_capture.owner&&owner.keymap_auto_paused);
+  scrcpy_mapping_key(&owner,&profile,63,1);scrcpy_mapping_key(&owner,&profile,63,0);
+  keymap_locked(0,&lock_proxy);assert(map_count==1&&last[9]==0);
+  absolute_pointer_button(&pointer,272,1);assert(map_count==2&&last[9]==1);
+  absolute_pointer_button(&pointer,272,0);assert(map_count==1&&last[1]==1&&last[9]==1);
+  /* Alt returns M1 to free touch while preserving the camera's resume state. */
+  profile.model.points[0].suspend_key=56;
+  map_advanced[0].point.suspend_key=56;
+  scrcpy_mapping_key(&owner,&profile,56,1);assert(map_advanced[0].suspended);
+  absolute_pointer_update(&pointer,820*256,254*256,1);
+  absolute_pointer_button(&pointer,272,1);
+  assert(map_count==2&&map_advanced[1].point.kind==KEYMAP_MOUSE_TOUCH&&last[1]==0);
+  absolute_pointer_button(&pointer,272,0);assert(map_count==1&&last[1]==1);
+  scrcpy_mapping_key(&owner,&profile,56,0);keymap_locked(0,&lock_proxy);
+  assert(keymap_capture_active(&owner)&&map_advanced[0].down);
+  /* Releasing Alt while M1 is down ends the free-touch finger before capture. */
+  scrcpy_mapping_key(&owner,&profile,56,1);
+  absolute_pointer_update(&pointer,820*256,254*256,1);
+  absolute_pointer_button(&pointer,272,1);assert(map_count==2);
+  scrcpy_mapping_key(&owner,&profile,56,0);assert(map_count==1&&!map_advanced[1].owner);
+  keymap_locked(0,&lock_proxy);before=packets;
+  absolute_pointer_button(&pointer,272,0);assert(map_count==1&&packets==before);
+  /* Compositor escape, refused requests and timeout cannot cause lock loops. */
+  keymap_unlocked(0,&lock_proxy);before=packets;
+  scrcpy_mapping_tick();assert(owner.keymap_auto_paused&&!map_count&&packets==before);
+  auto_setup();constructor_fail=2;scrcpy_mapping_tick();before=packets;
+  scrcpy_mapping_tick();assert(owner.keymap_auto_paused&&!map_count&&packets==before);
+  auto_setup();unavailable=1;scrcpy_mapping_tick();
+  assert(owner.keymap_auto_paused&&!map_count&&!keymap_capture.owner);
+  auto_setup();scrcpy_mapping_tick();keymap_capture.requested-=3000;
+  scrcpy_mapping_tick();before=packets;scrcpy_mapping_tick();
+  assert(owner.keymap_auto_paused&&!map_count&&!keymap_capture.owner&&packets==before);
+  /* Hover, pending blur, panel focus, decorations and letterboxes never lock. */
+  for(int mode=0;mode<8;++mode) {
+    auto_setup();before=packets;
+    if(mode==0)keyboard.keyboard_focus=0;
+    if(mode==1)keyboard.keyboard_leave_pending=1;
+    if(mode==2)keyboard.keymap_panel_focus=1;
+    if(mode==3)pointer.csd_suppress=1;
+    if(mode==4)pointer.fit_bar_focus=1;
+    if(mode==5)pointer.overlay_focus=&owner;
+    if(mode==6)pointer.keymap_pointer_leave_pending=1;
+    if(mode==7)keymap_capture_bindings->constraints=0;
+    scrcpy_mapping_tick();assert(!map_count&&!keymap_capture.owner&&packets==before);
+  }
+  auto_setup();owner.overlay=&profile;profile.passive=0;
+  scrcpy_mapping_tick();assert(!map_count&&!keymap_capture.owner);
+  profile.testing=1;scrcpy_mapping_tick();assert(map_count==1&&keymap_capture_status(&owner)==2);
+  /* Old hold/toggle profiles never acquire automatically. */
+  for(int mode=0;mode<2;++mode) {
+    capture_setup();profile.model.points[0].activation=mode;
+    scrcpy_mapping_tick();assert(!map_count&&!keymap_capture.owner);
+  }
+  capture_setup();profile.model.points[0].key=272;profile.model.points[0].source=KEYMAP_SOURCE_MOUSE;
+  profile.model.points[0].activation=KEYMAP_CAMERA_HOLD;
+  absolute_pointer_update(&pointer,810*256,234*256,1);
+  absolute_pointer_button(&pointer,272,1);assert(map_count==1&&map_advanced[0].point.kind==KEYMAP_LOOK);
+  absolute_pointer_button(&pointer,272,0);assert(!map_count);
+  /* An optional lock key toggles without being immediately rearmed by poll. */
+  auto_setup();profile.model.points[0].key=63;scrcpy_mapping_tick();keymap_locked(0,&lock_proxy);
+  scrcpy_mapping_key(&owner,&profile,63,1);scrcpy_mapping_key(&owner,&profile,63,0);
+  before=packets;scrcpy_mapping_tick();assert(owner.keymap_auto_paused&&!map_count&&packets==before);
+  scrcpy_mapping_key(&owner,&profile,63,1);assert(!owner.keymap_auto_paused&&map_count==1);
+  /* Pause lookup must tolerate an owner removed before the queued callback. */
+  auto_setup();scrcpy_mapping_tick();objects=&pointer;keyboard.keyboard_focus=0;
+  assert(!keymap_capture_active(&owner)&&!map_count);
+  objects=0;
+}
 int main(void) {
   capture_setup();int before=packets;
   assert(keymap_capture_status(&owner)==1);
@@ -147,7 +249,7 @@ int main(void) {
   scrcpy_mapping_key(&owner,&profile,56,1);
   assert(map_count==1&&!map_advanced[0].down&&map_advanced[0].suspended&&!keymap_capture.owner);
   before=packets;keymap_relative_motion(0,&relative_proxy,0,0,256,0,512,0);assert(packets==before);
-  assert(!map_pointer_profile(&pointer));
+  assert(map_pointer_profile(&pointer)); /* Suspended FPS accepts finger touch. */
   scrcpy_mapping_key(&owner,&profile,56,0);assert(keymap_capture_status(&owner)==2&&packets==before);
   keymap_locked(0,&lock_proxy);assert(keymap_capture_active(&owner)&&last[1]==0);
   scrcpy_mapping_key(&owner,&profile,56,1);keyboard.keyboard_focus=0;
@@ -174,5 +276,6 @@ int main(void) {
   keymap_relative_motion(0,&relative_proxy,0,0,256,0,512,0);
   assert(!map_count&&map_drag_slot==-1&&!keymap_capture.owner);
   before=packets;absolute_pointer_button(&pointer,272,0);assert(packets==before);
+  test_automatic_camera();
   return 0;
 }

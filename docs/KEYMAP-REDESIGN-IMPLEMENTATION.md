@@ -185,3 +185,30 @@ installed KDE run. Commercial FPS/MOBA/ARM games, physical mouse feel,
 end-to-end latency, NVIDIA/Intel GPU acceptance, ordinary KDE/GNOME/CachyOS
 window behavior and long sessions remain separate acceptance work. AppImage
 is deferred.
+
+## Automatic FPS camera and unlocked M1 touch (v4.9)
+
+New Mouse camera and FPS starter controls default to Automatic capture. They
+preassign F5 for lock/unlock and Left Alt for temporary cursor access; placing
+the camera does not open a binding prompt. Capture starts when the game canvas
+has keyboard and pointer focus, including Try. No Android camera contact starts
+before the compositor grants the lock. Escape, compositor release and failed
+requests pause automatic capture until an explicit F5 activation; polling does
+not fight an unlock. Hold/Toggle remain available and old files retain their
+saved mode. Activation value 2 is accepted only for Look, consistently in the
+native codec, Python inventory and Game Controls library.
+
+An M1 Fire binding applies while Look is active. After Escape or while Alt is
+held, M1 instead injects touchscreen finger DOWN/MOVE/UP at the actual pointer
+position, even without a separate Mouse touch control. Clicking the screen
+does not relock or fire. Returning to capture releases any free-touch finger
+and drains its physical mouse-up. A legacy Look explicitly triggered by M1
+keeps that trigger; profiles without Look retain their existing mouse bindings.
+
+Native regressions cover automatic acquisition/grant, relative camera motion,
+Escape persistence, ordinary M1 touch/drag versus authored Fire, Alt suspension,
+Alt release while M1 is held, compositor unlock, request failure/timeout,
+focus/editor/decoration/letterbox exclusion and legacy Hold/Toggle/M1 behavior.
+The codec storage regression round-trips Automatic with a suspend key. See
+[v4.9 evidence](evidence/keymap-v4.9/README.md) for package hashes and the explicit
+distinction between host checks and game acceptance.

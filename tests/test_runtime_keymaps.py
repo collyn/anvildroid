@@ -10,6 +10,22 @@ spec=importlib.util.spec_from_file_location('keymap_worker',Path(__file__).resol
 worker=importlib.util.module_from_spec(spec);spec.loader.exec_module(worker)
 
 class KeymapTests(unittest.TestCase):
+    def test_automatic_camera_roundtrip_and_mode_validation(self):
+        values=[63,32768,32768,0,8,49152,32768,250,3,0,1,0,0,8192,8192,100,100,0,2]+[0]*12
+        values[25]=56
+        def parse(row):
+            return worker.parse_keymaps('BEGIN\nANVIL_KEYMAP 4 default com.game.test 1\n'+' '.join(map(str,row))+'\nEND\n','default')
+        result=parse(values)
+        self.assertEqual(result['invalid_count'],0)
+        binding=result['profiles'][0]['bindings'][0]
+        self.assertEqual((binding['activation'],binding['evdev'],binding['suspend_key']),('auto',63,56))
+        for field,value in ((0,0),(4,0),(18,3)):
+            bad=values.copy();bad[field]=value
+            self.assertEqual(parse(bad)['invalid_count'],1)
+        for mode,name in ((0,'hold'),(1,'capture')):
+            old=values.copy();old[18]=mode;old[25]=0
+            self.assertEqual(parse(old)['profiles'][0]['bindings'][0]['activation'],name)
+
     def test_v4_parameters_and_shared_keyboard_reservations(self):
         def row(key, kind, **changes):
             values=[key,32768,32768,0,kind,49152,32768,250,3,0,1,8192,80,8192,8192,100,150,0,0]+[0]*12

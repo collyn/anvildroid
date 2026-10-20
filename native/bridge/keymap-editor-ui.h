@@ -69,7 +69,7 @@ static const char *keymap_type_label(int kind) {
   return kind>=0&&kind<=10?names[kind]:"Unknown";
 }
 static const char *keymap_type_description(int kind) {
-  static const char *help[]={"Fixed touch point; keyboard or mouse","Four keys move one thumbstick","Drag from start to endpoint","Repeat while the trigger is held","Aim, cast, or cancel a skill","Bounded touch sequence (advanced)","Legacy pointer aim with fire point","Touch where the mouse clicks","Relative mouse; place away from HUD","Right button steers a thumbstick","Place camera, then move M1 fire point"};
+  static const char *help[]={"Fixed touch point; keyboard or mouse","Four keys move one thumbstick","Drag from start to endpoint","Repeat while the trigger is held","Aim, cast, or cancel a skill","Bounded touch sequence (advanced)","Legacy pointer aim with fire point","Touch where the mouse clicks","Auto lock; Esc releases the mouse","Right button steers a thumbstick","Auto camera and separate M1 fire"};
   return kind>=0&&kind<=10?help[kind]:"";
 }
 static int keymap_palette_count(void) { return 11; }
@@ -194,7 +194,11 @@ static const char *keymap_property_label(const struct keymap_overlay *f,int i,ch
   if(f->numeric_capture&&fields[row]==f->numeric_field){snprintf(b,n,"Value: %d [Enter applies]",f->numeric_value);return b;}
   const struct keymap_point *q=&f->model.points[f->model.selected];char k[20];
   switch(fields[row]) {
-    case KP_BIND:if(f->binding_capture)return "Press keyboard / mouse...";snprintf(b,n,"Binding: %s  [change]",keymap_point_label(q,k,sizeof(k)));break;
+    case KP_BIND:if(f->binding_capture)return "Press keyboard / mouse...";
+      if(q->kind==KEYMAP_LOOK&&q->activation==KEYMAP_CAMERA_AUTO)
+        snprintf(b,n,"Lock/unlock: %s [change]",keymap_point_label(q,k,sizeof(k)));
+      else snprintf(b,n,"Binding: %s  [change]",keymap_point_label(q,k,sizeof(k)));
+      break;
     case KP_END:return keymap_effective_hold(q)?"Touch: hold while pressed":"Touch: tap then release";
     case KP_DURATION:snprintf(b,n,"- Duration: %d ms +",q->duration);break;
     case KP_REPEATS:snprintf(b,n,"- Repeat count: %d +",q->repeats);break;
@@ -206,7 +210,8 @@ static const char *keymap_property_label(const struct keymap_overlay *f,int i,ch
     case KP_WALK_RADIUS:snprintf(b,n,"- Walk radius: %d%% +",q->walk_radius?q->walk_radius:40);break;
     case KP_CAPTURE:{const char *status[]={"No API","Ready","Pending","Active"};
       int state=f->capture_status>=0&&f->capture_status<=3?f->capture_status:0;
-      snprintf(b,n,"Camera: %s [%s]",q->activation?"toggle":"hold",status[state]);break;}
+      const char *modes[]={"hold","toggle","automatic"};
+      snprintf(b,n,"Camera: %s [%s]",modes[q->activation],status[state]);break;}
     case KP_SUSPEND:snprintf(b,n,"Show cursor key: %s [change]",q->suspend_key?keymap_label(q->suspend_key,k,sizeof(k)):"none");break;
     case KP_WIDTH:case KP_HEIGHT:snprintf(b,n,"- Camera %s: %d%% +",fields[row]==KP_WIDTH?"width":"height",(fields[row]==KP_WIDTH?q->look_width:q->look_height)*200/65535);break;
     case KP_SENSX:case KP_SENSY:snprintf(b,n,"- Sensitivity %c: %d%% +",fields[row]==KP_SENSX?'X':'Y',fields[row]==KP_SENSX?q->sensitivity_x:q->sensitivity_y);break;
@@ -268,7 +273,11 @@ static void keymap_property_action(struct keymap_overlay *f,int i,int delta) {
     case KP_RAMP:v=&q->ramp_ms;step=20;max=1000;break;
     case KP_DIRECTIONS:if(q->up_key==103){q->up_key=17;q->left_key=30;q->down_key=31;q->right_key=32;}else{q->up_key=103;q->left_key=105;q->down_key=108;q->right_key=106;}q->key=q->up_key;break;
     case KP_WALK_RADIUS:v=&q->walk_radius;step=10;min=10;max=100;if(!*v)*v=40;break;
-    case KP_CAPTURE:if(q->activation||f->capture_status){q->activation=!q->activation;if(!q->activation)q->suspend_key=0;}break;
+    case KP_CAPTURE:if(q->activation||f->capture_status){
+      q->activation=(q->activation+1)%3;
+      if(!q->activation)q->suspend_key=0;
+      if(q->activation!=KEYMAP_CAMERA_AUTO&&!q->key){f->binding_capture=1;f->capture_field=KP_BIND;}
+    }break;
     case KP_WIDTH:case KP_HEIGHT:{int c=field==KP_WIDTH?q->nx:q->ny;v=field==KP_WIDTH?&q->look_width:&q->look_height;min=256;max=c<32768?c:65535-c;step=1024;break;}
     case KP_SENSX:case KP_SENSY:v=field==KP_SENSX?&q->sensitivity_x:&q->sensitivity_y;min=10;max=1000;step=10;break;
     case KP_INVERT:q->invert_y=!q->invert_y;break;

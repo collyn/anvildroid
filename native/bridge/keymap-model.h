@@ -21,6 +21,7 @@ enum { KEYMAP_BASIC, KEYMAP_DPAD, KEYMAP_SWIPE, KEYMAP_REPEAT,
 enum { KEYMAP_SKILL_RELEASE, KEYMAP_SKILL_IMMEDIATE, KEYMAP_SKILL_TOGGLE };
 enum { KEYMAP_SOURCE_KEY, KEYMAP_SOURCE_MOUSE, KEYMAP_SOURCE_POINTER };
 enum { KEYMAP_END_LEGACY, KEYMAP_END_RELEASE, KEYMAP_END_HOLD };
+enum { KEYMAP_CAMERA_HOLD, KEYMAP_CAMERA_TOGGLE, KEYMAP_CAMERA_AUTO };
 static __attribute__((unused)) const char *keymap_kind_name(int kind) {
   static const char *names[]={"Basic","WASD","Swipe","Repeat","Skill","Macro","Aim","Mouse touch","Look","Right-click walk"};
   return kind>=0&&kind<=KEYMAP_WALK?names[kind]:"Invalid";
@@ -61,7 +62,8 @@ static int keymap_valid(const struct keymap_model *m, int assigned) {
         (p->radius && (p->radius<256 || p->radius>32767)) || p->ramp_ms<0 || p->ramp_ms>1000 ||
         p->look_width<0 || p->look_width>32767 || p->look_height<0 || p->look_height>32767 ||
         p->sensitivity_x<0 || p->sensitivity_x>1000 || p->sensitivity_y<0 || p->sensitivity_y>1000 ||
-        p->invert_y<0 || p->invert_y>1 || p->activation<0 || p->activation>1) return 0;
+        p->invert_y<0 || p->invert_y>1 || p->activation<0 || p->activation>KEYMAP_CAMERA_AUTO ||
+        (p->activation==KEYMAP_CAMERA_AUTO&&p->kind!=KEYMAP_LOOK)) return 0;
     if (p->source==KEYMAP_SOURCE_MOUSE && (p->key<272 || p->key>276)) return 0;
     if ((p->source==KEYMAP_SOURCE_POINTER)!=(p->kind==KEYMAP_MOUSE_TOUCH) ||
         (p->source==KEYMAP_SOURCE_POINTER && p->key!=0)) return 0;

@@ -139,6 +139,8 @@ static void test_availability_affordance(void) {
   f.capture_status=0;keymap_property_action(&f,row,0);assert(!q->activation);
   f.capture_status=1;keymap_property_action(&f,row,0);assert(q->activation);
   f.capture_status=0;assert(keymap_property_enabled(&f,row)); /* Can leave saved capture mode. */
+  keymap_property_action(&f,row,0);assert(q->activation==KEYMAP_CAMERA_AUTO);
+  assert(strstr(keymap_property_label(&f,row,text,sizeof(text)),"automatic"));
   keymap_property_action(&f,row,0);assert(!q->activation&&!keymap_property_enabled(&f,row));
   int singletons[]={KEYMAP_LOOK,KEYMAP_MOUSE_TOUCH,KEYMAP_WALK};
   for(unsigned i=0;i<sizeof(singletons)/sizeof(singletons[0]);++i){
@@ -147,6 +149,26 @@ static void test_availability_affordance(void) {
   }
   keymap_set_kind(q,KEYMAP_BASIC);assert(keymap_editor_can_clone(&f));
   free(f.history);
+}
+static void test_automatic_camera_authoring(void) {
+  struct keymap_overlay f={.piece={.width=1000,.height=700},.capture_status=1};f.model.selected=-1;
+  struct object owner={.overlay=&f},pointer={.overlay_focus=&owner};
+  choose_type(&pointer,&f,KEYMAP_LOOK);at(&pointer,400,350);
+  struct keymap_point *q=&f.model.points[0];
+  assert(q->kind==KEYMAP_LOOK&&q->activation==KEYMAP_CAMERA_AUTO&&q->key==63&&q->suspend_key==56);
+  assert(!f.binding_capture&&keymap_valid(&f.model,1));
+  char label[100];assert(!strcmp(keymap_point_label(q,label,sizeof(label)),"F5"));
+  field(&pointer,&f,KP_BIND,0);assert(f.binding_capture);
+  assert(keymap_editor_assign(&f,KEYMAP_SOURCE_KEY,87));f.binding_capture=0;
+  field(&pointer,&f,KP_CAPTURE,0);assert(q->activation==KEYMAP_CAMERA_HOLD&&!f.binding_capture);
+  field(&pointer,&f,KP_CAPTURE,0);assert(q->activation==KEYMAP_CAMERA_TOGGLE);
+  field(&pointer,&f,KP_CAPTURE,0);assert(q->activation==KEYMAP_CAMERA_AUTO);
+  click(&pointer,keymap_layout(1000,700,0).test);assert(f.testing&&!f.save_pending);
+  free(f.history);
+  f=(struct keymap_overlay){.piece={.width=1000,.height=700}};
+  keymap_editor_fps(&f,400,350);
+  assert(f.model.count==2&&f.model.points[0].activation==KEYMAP_CAMERA_AUTO);
+  assert(f.model.points[0].key==63&&f.model.points[1].key==272&&keymap_valid(&f.model,1));
 }
 static void test_inspector(void) {
   struct keymap_overlay f={.piece={.width=1000,.height=700},.capture_status=1};f.model.selected=-1;
@@ -177,6 +199,7 @@ int main(int argc, char **argv) {
   test_inspector();
   test_capture_then_drag();
   test_availability_affordance();
+  test_automatic_camera_authoring();
   test_ui(1200, 700);
   test_ui(800, 600);
   test_ui(600, 420);

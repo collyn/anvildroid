@@ -124,7 +124,8 @@ def parse_keymaps(output, identifier):
                 source,end,radius,ramp,lw,lh,sx,sy,invert,activation=values[9:19] if header[1] in ('3','4') else (0,)*10
                 require(source in (0,1,2) and end in (0,1,2) and (radius==0 or 256<=radius<=32767) and
                         0<=ramp<=1000 and 0<=lw<=32767 and 0<=lh<=32767 and 0<=sx<=1000 and 0<=sy<=1000 and
-                        invert in (0,1) and activation in (0,1), 'Invalid V3 parameters')
+                        invert in (0,1) and activation in (0,1,2) and
+                        (activation!=2 or kind==8), 'Invalid V3 parameters')
                 require((source==2)==(kind==7) and (source!=2 or key==0) and
                         (source!=1 or 272<=key<=276) and (source!=0 or 2<=key<=767) and
                         (kind!=1 or source==0), 'Invalid input source')
@@ -134,7 +135,7 @@ def parse_keymaps(output, identifier):
                 require(not any(directions) or kind==1 and all(directions), 'Invalid movement keys')
                 require(kind!=1 or key==(up or 17), 'Invalid movement trigger')
                 require((not walk or kind==1) and (not walk_radius or walk and 10<=walk_radius<=100) and
-                        (not suspend or kind==8 and activation==1), 'Invalid secondary key')
+                        (not suspend or kind==8 and activation in (1,2)), 'Invalid secondary key')
                 require(drag in (0,1) and (not drag or kind==0 and source==1 and (end==2 or end==0 and hold==1)), 'Invalid drag shot')
                 require(0<=skill<=2 and (not any((skill,cancel,cx,cy)) or kind==4) and
                         (not (cx or cy) or cancel), 'Invalid skill parameters')
@@ -150,7 +151,7 @@ def parse_keymaps(output, identifier):
                     **({'end_nx':ex,'end_ny':ey,'duration_ms':duration,'repeat_count':repeats} if kind else {}),
                     **({'input_source':('keyboard','mouse','pointer')[source], 'end_mode':('legacy','release','hold')[end],
                         'radius':radius,'ramp_ms':ramp,'look_width':lw,'look_height':lh,'sensitivity_x':sx,'sensitivity_y':sy,
-                        'invert_y':invert,'activation':('hold','capture')[activation]} if header[1] in ('3','4') else {}),
+                        'invert_y':invert,'activation':('hold','capture','auto')[activation]} if header[1] in ('3','4') else {}),
                     **(dict(zip(('up_key','left_key','down_key','right_key','walk_key','walk_radius','suspend_key','drag_shot','skill_mode','cancel_key','cancel_x','cancel_y'), values[19:])) if header[1]=='4' else {})})
             require(sum(b['kind']=='look' for b in bindings)<=1 and sum(b['kind']=='mouse_touch' for b in bindings)<=1, 'Duplicate pointer control')
             require(sum(b.get('drag_shot',0) for b in bindings)<=1, 'Duplicate drag shot control')

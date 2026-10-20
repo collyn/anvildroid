@@ -80,10 +80,20 @@ the next app instance loads the saved profile.
   the trigger early ends the swipe at its current position.
 - **Mouse camera (FPS / Look):** place the camera region away from HUD buttons.
   Drag **+** to resize, or enter its width/height as percentages of the app area.
-  Set sensitivity X/Y and optional vertical inversion. Hold follows mouse deltas
-  while its binding is held. Toggle capture requests relative mouse input and
-  hides the cursor only after the compositor grants the lock. Escape releases
-  capture and active contacts. The status shows Ready, Pending or Active;
+  Set sensitivity X/Y and optional vertical inversion. New cameras default to
+  **Automatic**: Try/Save locks the mouse when the game canvas has keyboard and
+  pointer focus; moving the mouse turns the camera without holding any button.
+  **F5** is preassigned to lock/unlock and **Left Alt** temporarily shows the
+  cursor. **Esc** releases the lock and keeps it released until F5 is pressed.
+  While unlocked or Alt is held, M1 taps/drags the screen as an Android finger,
+  even if M1 is assigned to Fire and no Mouse touch control was added. While
+  looking, the M1 binding fires at its authored position. Unlocking never makes
+  the next screen click relock or fire. Other mouse buttons keep their bindings.
+  Old profiles retain their Hold/Toggle mode; select **Camera: automatic** in
+  the inspector to opt in. Hold follows mouse deltas while its binding is held.
+  Toggle capture requests relative mouse input. Automatic and Toggle hide the
+  cursor and begin camera touch only after the compositor grants the lock.
+  The status shows Ready, Pending or Active;
   No FPS/No API means the required compositor protocols are unavailable.
   A Show cursor key temporarily releases the camera touch and pointer lock
   while held. Releasing it requests a fresh lock only if the same app remains
@@ -92,7 +102,7 @@ the next app instance loads the saved profile.
   restarts at the center. Large deltas are bounded to one region traversal per
   event, so sensitivity and touch restarts need tuning in each game.
 - **FPS starter:** place the camera, then move the separate M1 fire control onto
-  the game's fire button. It creates Look Capture toggled by **F5**, **Left Alt**
+  the game's fire button. It creates an Automatic camera, **F5** to lock/unlock, **Left Alt**
   to show the cursor temporarily, and a Basic **M1 Hold** contact. Drag shot is
   off initially. Conflicting F5/Alt/M1 bindings or an existing camera reject the
   addition. This is a layout starting point; it does not know a game's HUD.
@@ -182,7 +192,7 @@ Missing/extra fields, unsupported versions and malformed rows are rejected.
 | `end_mode` | Legacy 0, Release 1, Hold 2. |
 | `radius`, `ramp_ms` | Radius zero preserves legacy behavior; an explicit radius is 256..32767 in units of the shorter edge/65535. Ramp is 0..1000 ms. Right-click walk requires a positive radius. |
 | `look_width`, `look_height` | Half extents, 0..32767; Look requires at least 256 and its entire region must remain inside the app. The editor displays full width/height percentages. |
-| `sensitivity_x`, `sensitivity_y`, `invert_y`, `activation` | Sensitivity 0..1000, with Look requiring 10..1000%; inversion 0/1; activation Hold 0 or Capture 1. |
+| `sensitivity_x`, `sensitivity_y`, `invert_y`, `activation` | Sensitivity 0..1000, with Look requiring 10..1000%; inversion 0/1; activation Hold 0, Toggle capture 1, Automatic capture 2 (Look only). |
 | `up_key left_key down_key right_key` | All zero means WASD (17/30/31/32). A custom joystick requires all four distinct keys and `evdev == up_key`. Other kinds leave these zero. |
 | `walk_key`, `walk_radius` | Optional keyboard modifier for the movement joystick; radius percentage 10..100, or zero for the 40% default. With no modifier, both fields are zero. |
 | `suspend_key` | Optional keyboard Show cursor key on Look Capture. |

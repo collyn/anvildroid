@@ -3,6 +3,7 @@ static int map_advanced_motion(struct object *,int32_t,int32_t);
 static int map_advanced_button(struct object *,uint32_t,uint32_t);
 static int map_pointer_profile(struct object *);
 static int map_pointer_xy(struct object *,int32_t,int32_t,int *,int *);
+static void map_auto_capture_poll(void);
 /* Experimental keymap sink. The runtime worker owns a control-only scrcpy
  * server at the fixed abstract name; network namespaces keep runtimes apart. */
 extern int socket(int, int, int);
@@ -375,6 +376,7 @@ static void map_advanced_advance(int milliseconds) {
   }
 }
 static void scrcpy_mapping_tick(void) {
+  map_auto_capture_poll();
   long now=map_monotonic_ms();
   for(int i=0;i<10;++i)if(map_advanced[i].owner) {
     if(!map_advanced[i].started)map_advanced[i].started=now;
@@ -427,17 +429,29 @@ static int map_advanced_key(struct object *s,struct keymap_overlay *h,int index,
   }
   if(!state){if(slot>=0)map_advanced_end(slot);return 1;}
   if(slot>=0&&p.kind==KEYMAP_SKILL&&p.skill_mode==KEYMAP_SKILL_TOGGLE){map_advanced_end(slot);return 1;}
-  if(slot>=0){if(p.kind==KEYMAP_LOOK&&p.activation){map_advanced_end(slot);keymap_capture_stop();}return 1;}
+  if(slot>=0){if(p.kind==KEYMAP_LOOK&&p.activation){
+    if(p.activation==KEYMAP_CAMERA_AUTO)s->keymap_auto_paused=1;
+    map_advanced_end(slot);keymap_capture_stop();
+  }return 1;}
+  if(p.kind==KEYMAP_LOOK&&p.activation)for(int i=0;i<10;++i)
+    if(map_advanced[i].owner==s&&map_advanced[i].point.kind==KEYMAP_MOUSE_TOUCH)map_advanced_end(i);
   for(int i=0;i<10;++i)if(!map_points[i]){slot=i;break;}
   if(slot<0)return 1;
   map_advanced[slot]=(struct map_advanced){.owner=s,.point=p,.task=h->task};
   /* Connect before registering state: a fresh connection clears contact slots. */
-  if(!map_connect()){map_advanced_reset();return 1;}
+  if(!map_connect()){
+    if(p.kind==KEYMAP_LOOK&&p.activation==KEYMAP_CAMERA_AUTO)s->keymap_auto_paused=1;
+    map_advanced_reset();return 1;
+  }
   map_points[slot]=p.key?p.key:769;++map_count;
   map_advanced[slot].started=map_monotonic_ms();
   if(p.kind==KEYMAP_LOOK&&p.activation) {
+    if(p.activation==KEYMAP_CAMERA_AUTO)s->keymap_auto_paused=0;
     if(p.suspend_key&&map_held[p.suspend_key]){map_advanced[slot].suspended=1;return 1;}
-    if(!keymap_capture_start(s)){memset(&map_advanced[slot],0,sizeof(map_advanced[slot]));map_points[slot]=0;--map_count;}
+    if(!keymap_capture_start(s)){
+      if(p.activation==KEYMAP_CAMERA_AUTO)s->keymap_auto_paused=1;
+      memset(&map_advanced[slot],0,sizeof(map_advanced[slot]));map_points[slot]=0;--map_count;
+    }
     return 1;
   }
   if(p.kind==KEYMAP_LOOK)for(struct object *pointer=objects;pointer;pointer=pointer->next)
@@ -472,21 +486,71 @@ static int map_pointer_xy(struct object *o,int32_t x,int32_t y,int *nx,int *ny) 
   int py=(int)(((int64_t)y+256LL*sy)*hwc_scale_120/(256*120))+s->frame_origin_y;
   *nx=keymap_normalize(px-tx,w);*ny=keymap_normalize(py-ty,h);return 1;
 }
-static struct keymap_overlay *map_pointer_hints(struct object *o,struct object **owner) {
+static struct keymap_overlay *map_pointer_hints_raw(struct object *o,struct object **owner) {
   struct object *s=game_fit_owner(find(o->pointer_surface));*owner=s;
   if(!s||s->keymap_disabled||s->resize.dragging||(s->overlay&&!s->overlay->testing))return 0;
   struct keymap_overlay *h=s->overlay&&s->overlay->testing?s->overlay:s->hints;
   if(!h||(!h->testing&&h->passive!=1))return 0;
-  for(int i=0;i<10;++i)if(map_advanced[i].owner==s&&map_advanced[i].suspended)return 0;
   for(struct object *keyboard=objects;keyboard;keyboard=keyboard->next)
     if(keyboard->display==o->display&&keyboard->keyboard_focus&&
        (keyboard->keyboard_focus!=s||keyboard->keymap_panel_focus))return 0;
   const char *package=keymap_package(s);
   return package&&!strcmp(package,h->package)&&keymap_task_owner(s)==h->task?h:0;
 }
+static struct keymap_overlay *map_pointer_hints(struct object *o,struct object **owner) {
+  struct keymap_overlay *h=map_pointer_hints_raw(o,owner);
+  for(int i=0;i<10;++i)if(map_advanced[i].owner==*owner&&map_advanced[i].suspended)return 0;
+  return h;
+}
+static int map_camera_running(struct object *owner) {
+  for(int i=0;i<10;++i)if(map_advanced[i].owner==owner&&owner&&
+      map_advanced[i].point.kind==KEYMAP_LOOK&&!map_advanced[i].suspended)
+    return !map_advanced[i].point.activation||keymap_capture_active(owner);
+  return 0;
+}
+static int map_camera_free_touch(struct keymap_overlay *h,struct object *owner) {
+  if(!h)return 0;
+  for(int i=0;i<h->model.count;++i)if(h->model.points[i].kind==KEYMAP_LOOK) {
+    const struct keymap_point *p=&h->model.points[i];
+    /* A legacy camera explicitly triggered by M1 still owns that button. */
+    if(p->source==KEYMAP_SOURCE_MOUSE&&p->key==272)return 0;
+    return !map_camera_running(owner);
+  }
+  return 0;
+}
+/* Automatic cameras need a real focused gameplay surface. Merely hovering an
+ * inactive window or the editor, decoration, or letterbox cannot take a lock. */
+static int map_auto_profile(struct object *pointer,struct object **owner,struct keymap_overlay **profile) {
+  struct keymap_overlay *h=map_pointer_hints(pointer,owner);
+  if(!h||h->close_pending||pointer->csd_suppress||pointer->csd_focus||pointer->overlay_focus||
+     pointer->fit_bar_focus||pointer->keymap_pointer_leave_pending)return -1;
+  int focused=0;
+  for(struct object *o=objects;o;o=o->next)if(o->display==pointer->display) {
+    if(o->keyboard_leave_pending)return -1;
+    if(o->keyboard_focus==*owner&&!o->keymap_panel_focus)focused=1;
+  }
+  if(!focused||!keymap_capture_supported(*owner)||((*owner)->csd&&(*owner)->csd->menu_open))return -1;
+  for(int i=0;i<h->model.count;++i)if(h->model.points[i].kind==KEYMAP_LOOK&&
+      h->model.points[i].activation==KEYMAP_CAMERA_AUTO){*profile=h;return i;}
+  return -1;
+}
+static void map_auto_capture_poll(void) {
+  for(struct object *pointer=objects;pointer;pointer=pointer->next) {
+    if(!object_is(pointer,"wl_pointer")||!pointer->pointer_surface)continue;
+    struct object *owner;struct keymap_overlay *h;
+    int i=map_auto_profile(pointer,&owner,&h);
+    if(i<0||owner->keymap_auto_paused)continue;
+    for(int slot=0;slot<10;++slot)if(map_advanced[slot].owner&&map_advanced[slot].point.kind==KEYMAP_LOOK)return;
+    /* No synthetic keyboard event, held-key mutation, or Android contact until
+     * the compositor grants this one-shot request. */
+    map_advanced_key(owner,h,i,0,1);return;
+  }
+}
 static int map_pointer_profile(struct object *o) {
   struct object *s;struct keymap_overlay *h=map_pointer_hints(o,&s);
   if(h)for(int i=0;i<h->model.count;++i)if(h->model.points[i].kind==KEYMAP_MOUSE_TOUCH)return 1;
+  h=map_pointer_hints_raw(o,&s);
+  if(map_camera_free_touch(h,s))return 1;
   for(int i=0;i<10;++i)if(map_advanced[i].owner==s&&s&&map_advanced[i].point.kind==KEYMAP_LOOK&&!map_advanced[i].suspended)return 1;
   return 0;
 }
@@ -555,7 +619,11 @@ static void scrcpy_mapping_relative(struct object *owner,int32_t dx_fixed,int32_
   }
 }
 static int scrcpy_mapping_escape(void) {
-  int consumed=0;for(int i=0;i<10;++i)if(map_advanced[i].owner)consumed=1;
+  int consumed=0;for(int i=0;i<10;++i)if(map_advanced[i].owner) {
+    consumed=1;
+    if(map_advanced[i].point.kind==KEYMAP_LOOK&&map_advanced[i].point.activation==KEYMAP_CAMERA_AUTO)
+      map_advanced[i].owner->keymap_auto_paused=1;
+  }
   scrcpy_mapping_cancel();return consumed;
 }
 static int map_advanced_motion(struct object *o,int32_t x,int32_t y) {
@@ -608,6 +676,20 @@ static int map_advanced_button(struct object *o,uint32_t button,uint32_t state) 
   if(!state&&map_advanced_release(button))return 1;
   int bi=(int)button-272;
   struct object *target;struct keymap_overlay *h=map_pointer_hints(o,&target);
+  struct keymap_overlay *raw=map_pointer_hints_raw(o,&target);
+  /* FPS fire applies only while looking. Unlocked/Alt-suspended M1 is one
+   * Android finger at the actual cursor, even without a Mouse touch control.
+   * Never send POINTER_ID_MOUSE here: many games reject mouse-source events. */
+  if(button==272&&map_camera_free_touch(raw,target)) {
+    if(state&&!map_mouse_latched[0]&&o->absolute_valid) {
+      map_mouse_latched[0]=1;
+      struct keymap_overlay touch={.passive=1,.task=raw->task,.model={.count=1}};
+      touch.model.points[0]=(struct keymap_point){.kind=KEYMAP_MOUSE_TOUCH,.source=KEYMAP_SOURCE_POINTER,
+        .nx=o->absolute_x,.ny=o->absolute_y,.duration=250,.repeats=3};
+      map_advanced_key(target,&touch,0,272,1);
+    }
+    return 1;
+  }
   if(h&&bi>=0&&bi<5){
     int index=-1;
     for(int i=0;i<h->model.count;++i)if(h->model.points[i].source==1&&h->model.points[i].key==(int)button){index=i;break;}
@@ -679,6 +761,7 @@ static int scrcpy_mapping_key(struct object *s, struct keymap_overlay *h, int ke
         if(a->down&&!map_advanced_emit(slot,1,a->lx,a->ly))return 1;
         a->suspended=1;a->relative_x=a->relative_y=0;keymap_capture_stop();
       } else if(a->suspended) {
+        for(int i=0;i<10;++i)if(map_advanced[i].owner==s&&map_advanced[i].point.kind==KEYMAP_MOUSE_TOUCH)map_advanced_end(i);
         a->suspended=0;
         if(!map_advanced_valid(a)||!keymap_capture_start(s))scrcpy_mapping_cancel();
       }

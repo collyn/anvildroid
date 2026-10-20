@@ -529,6 +529,7 @@ static void keymap_overlay_pointer_cancel(struct object *pointer) {
 }
 static void keymap_editor_testing(struct keymap_overlay *f,int testing) {
   scrcpy_mapping_cancel();
+  if(testing)for(struct object *o=objects;o;o=o->next)if(o->overlay==f)o->keymap_auto_paused=0;
   f->testing=testing;f->binding_capture=0;f->numeric_capture=0;f->type_open=0;f->dragging=0;
   f->dirty=1;keymap_wake();
 }
@@ -550,8 +551,8 @@ static void keymap_editor_fps(struct keymap_overlay *f,int x,int y) {
   struct keymap_model old=*m;
   if(!keymap_add(m,x,y,f->piece.width,f->piece.height))return;
   struct keymap_point *q=&m->points[m->selected];keymap_set_kind(q,KEYMAP_LOOK);
-  q->key=63;q->activation=1; /* F5 toggles capture; M1 fires independently. */
-  q->suspend_key=56; /* Left Alt temporarily shows the cursor. */
+  q->key=63;q->source=KEYMAP_SOURCE_KEY;q->activation=KEYMAP_CAMERA_AUTO;
+  q->suspend_key=56;
   keymap_add(m,f->piece.width*4/5,f->piece.height*3/4,f->piece.width,f->piece.height);
   q=&m->points[m->selected];keymap_set_kind(q,KEYMAP_BASIC);
   q->key=272;q->source=KEYMAP_SOURCE_MOUSE;keymap_editor_set_end(q,1);
@@ -595,6 +596,12 @@ static void keymap_overlay_button(struct object *pointer,uint32_t button,uint32_
       if(f->placement_kind==10)keymap_editor_fps(f,x,y);
       else if(keymap_add(m,x,y,f->piece.width,f->piece.height)){
         keymap_set_kind(&m->points[m->selected],f->placement_kind);
+        if(f->placement_kind==KEYMAP_LOOK){
+          struct keymap_point *q=&m->points[m->selected];
+          q->key=63;q->source=KEYMAP_SOURCE_KEY;q->activation=KEYMAP_CAMERA_AUTO;
+          q->suspend_key=56;
+          if(!keymap_valid(m,0))q->suspend_key=0;
+        }
         if(f->placement_hold&&(f->placement_kind==KEYMAP_BASIC||f->placement_kind==KEYMAP_SWIPE))keymap_editor_set_end(&m->points[m->selected],1);
         f->placement_release=1;
       }
@@ -611,7 +618,8 @@ static void keymap_overlay_button(struct object *pointer,uint32_t button,uint32_
     if(keymap_editor_assign(f,KEYMAP_SOURCE_MOUSE,272))f->binding_capture=0;
   }else if(f->placement_release){
     f->placement_release=0;
-    if(m->selected>=0&&m->points[m->selected].kind!=KEYMAP_DPAD&&m->points[m->selected].source==KEYMAP_SOURCE_KEY){f->binding_capture=1;f->capture_field=KP_BIND;}
+    if(m->selected>=0&&m->points[m->selected].kind!=KEYMAP_DPAD&&m->points[m->selected].source==KEYMAP_SOURCE_KEY&&
+       !(m->points[m->selected].kind==KEYMAP_LOOK&&m->points[m->selected].activation==KEYMAP_CAMERA_AUTO)){f->binding_capture=1;f->capture_field=KP_BIND;}
   }else if(hit&&hit==pointer->overlay_pressed&&!dragged){
     if(hit==-2)f->type_open=0;
     else if(hit>=40&&hit<40+keymap_palette_count())keymap_editor_choose_kind(f,hit-40);
@@ -1091,6 +1099,7 @@ static void (*keymap_touch_listener[])(void) = {
 
 /* Called under the bridge mutex; only model state, no Wayland work here. */
 static void keymap_hints_set(struct object *s,const struct keymap_model *model,int task) {
+  s->keymap_auto_paused=0;
   s->hints_task=task;
   if(!s->hints&&model->count)s->hints=calloc(1,sizeof(*s->hints));
   if(!s->hints)return;

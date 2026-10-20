@@ -151,6 +151,7 @@ struct object {
   unsigned long hints_probe;
   int hints_task;
   int keymap_disabled, keymap_hidden;
+  int keymap_auto_paused; /* Escape/compositor unlock requires an explicit resume. */
   struct object *overlay_focus;
   int overlay_dismissed, overlay_pressed;
   struct object *keyboard_focus;

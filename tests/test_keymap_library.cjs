@@ -218,3 +218,20 @@ test('Export uses native Save dialog and bounded Rust file command; cancel and e
   const rust=fs.readFileSync('crates/anvildroid-gui/src/main.rs','utf8');
   assert.match(rust,/async fn export_keymap_scheme/);assert.match(rust,/export_runtime_diagnostics,\s*export_keymap_scheme,/);
 });
+
+test('Automatic FPS camera inventory keeps F5 and Alt, rejects auto on other controls',async()=>{
+  const {api,states,el}=setup();
+  const r=report('default');
+  r.profiles[0].bindings=[{kind:'look',evdev:63,input_source:'keyboard',nx:32768,ny:32768,
+    end_nx:49152,end_ny:32768,duration_ms:250,repeat_count:3,end_mode:'release',radius:0,ramp_ms:0,
+    look_width:8192,look_height:8192,sensitivity_x:100,sensitivity_y:100,invert_y:0,activation:'auto',
+    up_key:0,left_key:0,down_key:0,right_key:0,walk_key:0,walk_radius:0,suspend_key:56,
+    drag_shot:0,skill_mode:0,cancel_key:0,cancel_x:0,cancel_y:0}];
+  states.profiles.set('default',r);await api.refresh();
+  const chip=descendants(el('keymap-saved-list'),'kbd')[0];
+  assert.equal(chip.textContent,'F5');assert.match(chip.title,/auto.*show cursor Left Alt/);
+  const bad=JSON.parse(JSON.stringify(r));bad.profiles[0].package='com.bad.auto';
+  bad.profiles[0].bindings[0].kind='swipe';bad.profiles[0].bindings[0].suspend_key=0;
+  states.profiles.set('default',bad);await api.refresh();
+  assert.doesNotMatch(el('keymap-saved-list').textContent,/com.bad.auto/);
+});

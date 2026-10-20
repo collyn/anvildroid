@@ -44,7 +44,8 @@
             (b.kind==='macro'&&b.duration_ms*b.repeat_count*2>10000)||
             (b.kind==='wasd'&&(b.evdev!==(b.up_key||17)||source!=='keyboard'))))throw new Error('Invalid advanced keymap binding');
         if((['mouse_touch','look'].includes(b.kind)&&!v3)||(v3&&(
-           !['legacy','release','hold'].includes(b.end_mode)||!['hold','capture'].includes(b.activation)||
+           !['legacy','release','hold'].includes(b.end_mode)||!['hold','capture','auto'].includes(b.activation)||
+           (b.activation==='auto'&&b.kind!=='look')||
            !Number.isInteger(b.invert_y)||![0,1].includes(b.invert_y)||
            !Number.isInteger(b.radius)||(b.radius!==0&&(b.radius<256||b.radius>32767))||
            !Number.isInteger(b.ramp_ms)||b.ramp_ms<0||b.ramp_ms>1000||
@@ -58,7 +59,7 @@
         const directions=[b.up_key||0,b.left_key||0,b.down_key||0,b.right_key||0];
         if(v4&&((directions.some(Boolean)&&(b.kind!=='wasd'||!directions.every(Boolean)))||
           (b.walk_key&&b.kind!=='wasd')||(b.walk_radius&&(!b.walk_key||b.walk_radius<10||b.walk_radius>100))||
-          (b.suspend_key&&(b.kind!=='look'||b.activation!=='capture'))||![0,1].includes(b.drag_shot)||
+          (b.suspend_key&&(b.kind!=='look'||!['capture','auto'].includes(b.activation)))||![0,1].includes(b.drag_shot)||
           (b.drag_shot&&(b.kind!=='hold'||source!=='mouse'||b.end_mode==='release'))||b.skill_mode>2||
           ([b.skill_mode,b.cancel_key,b.cancel_x,b.cancel_y].some(Boolean)&&b.kind!=='skill')||
           ((b.cancel_x||b.cancel_y)&&!b.cancel_key)))throw new Error('Invalid V4 keymap binding');

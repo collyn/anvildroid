@@ -88,10 +88,14 @@ static void keymap_capture_stop(void) {
 static int keymap_capture_hides_cursor(struct object *pointer) {
   return keymap_capture.pointer==pointer&&keymap_capture.active;
 }
+static void keymap_capture_pause_owner(void) {
+  for(struct object *o=objects;o;o=o->next)if(o==keymap_capture.owner)o->keymap_auto_paused=1;
+}
 static int keymap_capture_active(struct object *owner) {
   if(keymap_capture.owner!=owner||!keymap_capture.locked)return 0;
   if(!keymap_capture_owner_valid()||(!keymap_capture.active&&
       map_monotonic_ms()-keymap_capture.requested>2000)) {
+    keymap_capture_pause_owner();
     scrcpy_mapping_cancel();return 0;
   }
   return keymap_capture.active;
@@ -126,7 +130,10 @@ static void keymap_locked(void *data,struct proxy *p) {
 static void keymap_unlocked(void *data,struct proxy *p) {
   (void)data;
   pthread_mutex_lock(mutex);
-  if(p==keymap_capture.locked)scrcpy_mapping_cancel();
+  if(p==keymap_capture.locked){
+    keymap_capture_pause_owner();
+    scrcpy_mapping_cancel();
+  }
   pthread_mutex_unlock(mutex);
 }
 static void (*keymap_relative_listener[])(void)={(void (*)(void))keymap_relative_motion};

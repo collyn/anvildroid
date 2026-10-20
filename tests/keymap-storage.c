@@ -77,6 +77,10 @@ int main(void){
   assert(keymap_save(dir,"com.game.test","r-one",&m));
   assert(keymap_load(dir,"com.game.test","r-one",&loaded)==1);
   assert(!memcmp(m.points,loaded.points,sizeof(m.points)));
+  m.points[3].activation=KEYMAP_CAMERA_AUTO;
+  assert(keymap_save(dir,"com.game.test","r-one",&m));
+  assert(keymap_load(dir,"com.game.test","r-one",&loaded)==1);
+  assert(!memcmp(m.points,loaded.points,sizeof(m.points)));
   int inspect=openat(dir,"com.game.test",PROFILE_NOFOLLOW);assert(inspect>=0);
   char header[16]={0};assert(read(inspect,header,14)==14);close(inspect);
   assert(!memcmp(header,"ANVIL_KEYMAP 4",14));
