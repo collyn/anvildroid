@@ -15,7 +15,9 @@ from unittest.mock import Mock, patch
 
 spec = importlib.util.spec_from_file_location('default_shares', Path(__file__).with_name('runtime-default-shares.py'))
 default = importlib.util.module_from_spec(spec); spec.loader.exec_module(default)
-UID = 1000
+# Unprivileged fixtures own their temporary userdata (CI runners may use 1001).
+# Root mount tests still model a non-root desktop account.
+UID = os.getuid() or 1000
 
 
 class Runtime:
