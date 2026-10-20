@@ -14,11 +14,16 @@ GPU settings and desktop windows.
 
 ## Current status
 
-As of **2026-10-17**, AnvilDroid has a Tauri 2 desktop GUI, a Python runtime
+As of **2026-10-20**, source version **0.1.4** has a Tauri 2 desktop GUI, a Python runtime
 controller and isolated Android workers, plus native Wayland window and input
 integration. Managed runtimes can run concurrently with separate app data,
 namespaces, Binder devices and resource limits. Existing Waydroid installations
 can also be managed from the GUI.
+
+Game controls now include a detached editor, named control schemes and automatic
+FPS mouse capture with unlocked mouse-to-touch input. New and reinstalled
+x86_64 runtimes use libhoudini HPE com1.3 by default. Tab headers and Apps filters
+have been made more compact.
 
 Live checks have covered official Android 13 images, concurrent runtime
 isolation, app management, full Android UI open/close recovery and shutdown data
@@ -29,7 +34,8 @@ compatibility across custom images, desktops and games is still being developed.
 ## Features
 
 - Managed runtimes with independent start, stop, restart, storage and resource
-  limits; batch actions and per-runtime settings.
+  limits; batch actions and per-runtime settings. Creating a runtime prepares
+  its images and starts Android automatically, with progress and retry actions.
 - Runtime Memory/CPU/Disk usage display and optional start on boot.
 - Image library for official images and custom Waydroid images from a folder,
   ZIP or ZIP URL; ext4, EROFS, SquashFS and Android sparse image handling.
@@ -48,15 +54,23 @@ compatibility across custom images, desktops and games is still being developed.
   **Resize app layout** updates Android task bounds; **Keep resolution** changes
   the host window while preserving the Android rendering resolution.
 - ARM translation selection: libndk_translation and libhoudini catalogs;
-  new/reinstalled x86_64 runtimes default to libhoudini HPE com1.3.
+  new/reinstalled x86_64 runtimes default to unpatched libhoudini HPE com1.3
+  targeting Android 13, including Default runtime reinstall. Prepare retries
+  preserve saved ARM choices; reinstall verifies the package before clearing data.
   These third-party binaries have [separate licensing terms](#optional-arm-translation-binaries).
 - Per-app Fake Wi-Fi and mouse-as-touch settings, with runtime-scoped readback,
   reset and rollback. Image support and app behavior still need live validation.
+- Device identity profiles and custom Android build properties, with reset to
+  the original identity.
 - Explicit shared folders for managed runtimes and integrated Default, with read-only or read/write
   mounts activated at the next start.
-- Native game controls: Mouse touch, fixed keyboard/mouse bindings, WASD joystick,
-  swipe, repeated clicks, skill casting, finite macros, aim/fire and Look with
-  optional FPS capture. The editor preserves older profiles until Save.
+- Native game controls: mouse-to-touch, keyboard/mouse bindings, customizable
+  movement keys and walk modifier, swipe/hold, repeated clicks, skill casting,
+  finite macros, drag shot, aim/fire and automatic FPS mouse capture.
+- Detached keymap tools and inspector with direct binding, numeric editing,
+  Clone, Undo/Redo and Try before Save. Older profiles keep their saved behavior
+  until edited and saved. Game Controls manages named schemes per runtime/app,
+  including create, clone, rename, select, reset, import and export.
 - Runtime ARM translation settings show version, checksum, requirements and cache
   status alongside the existing installer. Google Play keeps its image-creation
   workflow.
@@ -84,7 +98,8 @@ compatibility across custom images, desktops and games is still being developed.
   still require live verification. See the [NVIDIA payload notes](native/nvidia/README.md).
 - ARM translation and game support depend on the selected image, translator and
   graphics backend. Broad gameplay, mixed-DPI, desktop compatibility and long
-  endurance testing remain incomplete.
+  endurance testing remain incomplete. FPS capture depends on compositor support;
+  sensitivity and achievable frame rate vary by game, translator and hardware.
 - The CLI is a smaller experimental Waydroid interface, not equivalent to the GUI.
   Most commands target Default; managed runtime selection currently supports app
   launch through `anvildroid --runtime ID run PACKAGE`.
@@ -200,10 +215,29 @@ per-app settings.
 For CLI commands and their supported runtime scope, run `anvildroid --help`.
 The CLI's source version follows the workspace version automatically.
 
+## Game Controls
+
+Open an Android app, then choose **Edit keymap** from its window header menu or
+press **F2**. Choose a tool, place it on the Android canvas and bind its input.
+Use **Detach** to move the tools and inspector outside the game window, and
+**Dock** to bring them back. **Try** previews the draft; **Save** publishes it
+and **Cancel** keeps the saved profile. **F2** returns from Try to editing.
+
+New **Mouse camera (FPS)** controls use automatic capture with **F5** to toggle
+mouse lock and **Left Alt** held for temporary cursor access. Once capture is
+granted, moving the mouse turns the camera without holding a mouse button.
+**Escape** releases capture. While unlocked, M1 touches/drags at the cursor;
+while captured, an M1 Fire binding targets its configured button. Adjust the
+camera's X/Y sensitivity in the inspector. Existing profiles retain their
+saved activation mode; select Automatic to use this behavior.
+
+The **Game Controls** tab lists saved profiles and their **Schemes**. Save or
+cancel the app editor before switching, importing or editing schemes.
+
 ## Automated releases
 
-Push a tag matching the workspace version (update `Cargo.toml` before tagging
-a new version). GitHub Actions runs separate Debian,
+Push a tag matching the workspace version (update `Cargo.toml` and refresh
+`Cargo.lock` before tagging a new version). GitHub Actions runs separate Debian,
 RPM and Arch package jobs, verifies their extracted payloads, and tests actual
 installation, controller IPC, CLI execution, GUI rendering and removal in
 Ubuntu, Fedora and Arch containers. The release job runs only after all checks
@@ -304,7 +338,7 @@ sold by AMD, and limits use/execution of that redistributed software to that
 core. Read the [complete notice](packaging/arm/ARM_TO_AMD_DBT_LICENSE.txt);
 it does not establish a complete license for all rights in the prebuilt package.
 The [upstream copy](https://github.com/supremegamers/vendor_google_proprietary_ndk_translation-prebuilt/blob/68734c52556d3d7a6db34c603dd9276915c29f2f/ARM_TO_AMD_DBT_LICENSE.txt)
-is pinned to the default catalog revision.
+is pinned to the NDK catalog revision.
 
 For Houdini, permission to redistribute the catalog binaries has not been
 established from those archives. Public availability on GitHub and successful
