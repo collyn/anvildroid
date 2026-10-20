@@ -6,8 +6,7 @@ __pycache__/
 *.log
 
 # Local project notes and internal documentation
-/docs/*
-!/docs/CONTROLS-MATRIX.md
+/docs/
 /PLAN.md
 /AnvilDroid-Architecture.md
 

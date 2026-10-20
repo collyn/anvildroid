@@ -53,14 +53,13 @@ compatibility across custom images, desktops and games is still being developed.
 - Per-app Fake Wi-Fi and mouse-as-touch settings, with runtime-scoped readback,
   reset and rollback. Image support and app behavior still need live validation.
 - Explicit shared folders for managed runtimes and integrated Default, with read-only or read/write
-  mounts activated at the next start. See [folder sharing](docs/SHARED-FOLDERS.md).
+  mounts activated at the next start.
 - Native game controls: Mouse touch, fixed keyboard/mouse bindings, WASD joystick,
   swipe, repeated clicks, skill casting, finite macros, aim/fire and Look with
-  optional FPS capture. The editor preserves older profiles until Save;
-  see [authoring controls and limits](docs/GAME-CONTROLS.md).
+  optional FPS capture. The editor preserves older profiles until Save.
 - Runtime ARM translation settings show version, checksum, requirements and cache
   status alongside the existing installer. Google Play keeps its image-creation
-  workflow. See [runtime settings](docs/RUNTIME-TOOLS.md).
+  workflow.
 - Local JSON diagnostic export with optional bounded logs and best-effort
   redaction. Reports are saved privately and never uploaded automatically.
 - GPU diagnostics and per-runtime RAM/CPU/GPU settings.
@@ -196,7 +195,7 @@ its configuration, and **Settings** for GUI preferences, runtime start on boot
 and ARM packages. **Open Waydroid** opens the selected runtime's full Android UI.
 Runtime Settings includes **Shared folders** inside **Storage** and
 **Export report** inside **Diagnostics**. In the app context menu, **Compatibility** opens the
-per-app settings; see [app compatibility](docs/APP-COMPATIBILITY.md).
+per-app settings.
 
 For CLI commands and their supported runtime scope, run `anvildroid --help`.
 The CLI's source version follows the workspace version automatically.
@@ -316,9 +315,8 @@ patches do not replace the original licensing terms.
 
 AnvilDroid's package builders include the catalog/downloader code; the ARM
 translation archives are fetched separately during runtime preparation or
-version installation. The checked revisions, versions and patch variants are
-listed in [ARM translation documentation](docs/ARM-TRANSLATION.md), with exact
-URLs and checksums in [the catalog](services/runtime-arm-source.py).
+version installation. The checked revisions, versions, patch variants, URLs
+and checksums are listed in [the catalog](services/runtime-arm-source.py).
 
 See [Waydroid documentation](https://docs.waydro.id/) for Android runtime setup.
 
