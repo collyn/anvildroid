@@ -825,7 +825,8 @@ static void keymap_key(void *data, struct proxy *p, uint32_t serial,
   keymap_finish_keyboard_leave(o);
   if(!state)scrcpy_mapping_release_key((int)key);
   if(key==1 && scrcpy_mapping_escape()) {
-    if(state&&o->keyboard_focus&&o->keyboard_focus->overlay&&o->keyboard_focus->overlay->testing)keymap_editor_testing(o->keyboard_focus->overlay,0);
+    /* Releasing a camera must leave Try in gameplay mode so unlocked M1
+     * can tap the game. A second Escape (or F2) returns to the editor. */
     if(state)o->keymap_blocked_keys[key/32]|=1u<<(key%32);
     else o->keymap_blocked_keys[key/32]&=~(1u<<(key%32));
     pthread_mutex_unlock(mutex);return;

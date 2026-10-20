@@ -379,7 +379,7 @@ static void keymap_editor_paint(uint32_t *p,int w,int h,const struct keymap_over
   struct keymap_layout l=keymap_layout(w,h,f->panel_hidden);
   if(f->testing){
     if(!f->panel_paint)keymap_hints_paint(p,w,h,f);
-    keymap_ui_button(p,w,h,(struct keymap_rect){12,12,184,30},"Return to editing (Esc)",1,1);
+    keymap_ui_button(p,w,h,(struct keymap_rect){12,12,184,30},"Return to editing (F2)",1,1);
     if(f->panel_paint)keymap_text_scaled(p,w,h,12,62,"Click game window to try draft",0xffa8bed4,1);
     return;
   }

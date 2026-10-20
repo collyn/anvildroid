@@ -42,8 +42,10 @@ Delete or the marker's **X** removes the selected control. The editor reports
 missing bindings and conflicts; a rejected binding keeps its previous value.
 
 **Try** runs the current valid draft in the app without saving. Entering Try
-releases all existing contacts; **Return to editing (Esc)**, Escape or F2 returns
-to editing and releases the test contacts. Try accepts gameplay input only
+releases all existing contacts; **Return to editing (F2)** or F2 returns
+to editing and releases the test contacts. Escape first releases active input
+and leaves Try running so the unlocked mouse can tap the game; another Escape
+returns to editing. Try accepts gameplay input only
 while the Android canvas has focus. Focusing the detached inspector releases
 test contacts; it offers **Return to editing** without sending gameplay input.
 **Save** persists and closes;
@@ -93,6 +95,9 @@ the next app instance loads the saved profile.
   the inspector to opt in. Hold follows mouse deltas while its binding is held.
   Toggle capture requests relative mouse input. Automatic and Toggle hide the
   cursor and begin camera touch only after the compositor grants the lock.
+  Capture requests the app window first for KWin compatibility. If the
+  compositor instead requires the focused Android content subsurface, it tries
+  that surface once after 250 ms, within the original two-second deadline.
   The status shows Ready, Pending or Active;
   No FPS/No API means the required compositor protocols are unavailable.
   A Show cursor key temporarily releases the camera touch and pointer lock
