@@ -39,7 +39,12 @@ int main(void){
   assert(keymap_load(dir,"com.game.test","r-one",&loaded)==1&&loaded.count==64&&loaded.points[63].duration==5000);
   assert(!unlinkat(dir,"com.game.test",0));
   const char *invalid[]={
-    "ANVIL_KEYMAP 4 r-one com.game.test 0\n",
+    "ANVIL_KEYMAP 5 r-one com.game.test 0\n",
+    " ANVIL_KEYMAP 1 r-one com.game.test 1\n30 100 200 1\n",
+    "ANVIL_KEYMAP1 r-one com.game.test 1\n30 100 200 1\n",
+    "ANVIL_KEYMAP 1\nr-one com.game.test 1\n30 100 200 1\n",
+    "ANVIL_KEYMAP 1 r-one com.game.test 1\r\r\n30 100 200 1\n",
+    "ANVIL_KEYMAP 1 r-one com.game.test 1\n30 100 200 1\r\r\n",
     "ANVIL_KEYMAP 1 r-one com.game.test 1 30 100 200 1\n",
     "ANVIL_KEYMAP 1 r-one com.game.test 2\n30 100 200 1 31 100 200 1\n",
     "ANVIL_KEYMAP 1 r-one com.game.test 1\n30 100\n200 1\n",
@@ -67,13 +72,40 @@ int main(void){
   m.points[3]=(struct keymap_point){.key=34,.nx=42000,.ny=33000};
   keymap_set_kind(&m.points[3],KEYMAP_LOOK);m.points[3].activation=1;
   m.points[3].invert_y=1;m.points[3].sensitivity_x=250;m.points[3].sensitivity_y=175;
+  m.points[3].suspend_key=56;
+  m.points[1].end_mode=KEYMAP_END_HOLD;m.points[1].drag_shot=1;
+  assert(keymap_save(dir,"com.game.test","r-one",&m));
+  assert(keymap_load(dir,"com.game.test","r-one",&loaded)==1);
+  assert(!memcmp(m.points,loaded.points,sizeof(m.points)));
+  m.points[3].activation=KEYMAP_CAMERA_AUTO;
   assert(keymap_save(dir,"com.game.test","r-one",&m));
   assert(keymap_load(dir,"com.game.test","r-one",&loaded)==1);
   assert(!memcmp(m.points,loaded.points,sizeof(m.points)));
   int inspect=openat(dir,"com.game.test",PROFILE_NOFOLLOW);assert(inspect>=0);
   char header[16]={0};assert(read(inspect,header,14)==14);close(inspect);
-  assert(!memcmp(header,"ANVIL_KEYMAP 3",14));
+  assert(!memcmp(header,"ANVIL_KEYMAP 4",14));
   assert(!unlinkat(dir,"com.game.test",0));
+  /* All old versions retain zero extensions and loading never rewrites bytes. */
+  const char *old_profiles[]={
+    "ANVIL_KEYMAP 1 r-one com.game.test 1\n30 100 200 1\n",
+    "ANVIL_KEYMAP\t1 r-one com.game.test 1\r\n000000000000030 100 200 1\r\n",
+    "ANVIL_KEYMAP 2 r-one com.game.test 1\n30 100 200 0 4 500 500 250 3\n",
+    "ANVIL_KEYMAP 3 r-one com.game.test 1\n30 100 200 0 4 500 500 250 3 0 0 0 0 0 0 0 0 0 0\n"};
+  for(unsigned v=0;v<sizeof(old_profiles)/sizeof(*old_profiles);++v) {
+    const char *text=old_profiles[v];
+    int fd=openat(dir,"com.game.test",1|PROFILE_CREAT|PROFILE_EXCL,0600);assert(fd>=0);
+    assert(write(fd,text,strlen(text))==(long)strlen(text));close(fd);
+    assert(keymap_load(dir,"com.game.test","r-one",&loaded)==1);
+    assert(!loaded.points[0].up_key&&!loaded.points[0].skill_mode&&!loaded.points[0].cancel_key);
+    fd=openat(dir,"com.game.test",PROFILE_NOFOLLOW);char original[256]={0};
+    assert(read(fd,original,sizeof(original))==(long)strlen(text));close(fd);
+    assert(!strcmp(original,text));assert(!unlinkat(dir,"com.game.test",0));
+  }
+  char wire[KEYMAP_PROFILE_LIMIT+1];int wire_size=keymap_profile_format(wire,sizeof(wire),"com.game.test","r-one",&m);
+  assert(wire_size>0&&keymap_profile_parse(wire,wire_size,"com.game.test","r-one",&loaded));
+  wire[wire_size-1]=' ';assert(!keymap_profile_parse(wire,wire_size,"com.game.test","r-one",&loaded));
+  wire[wire_size-1]='\n';wire[wire_size/2]=0;
+  assert(!keymap_profile_parse(wire,wire_size,"com.game.test","r-one",&loaded));
   int oversized=openat(dir,"com.game.test",1|PROFILE_CREAT|PROFILE_EXCL,0600);assert(oversized>=0);
   const char *empty="ANVIL_KEYMAP 3 r-one com.game.test 0\n";
   assert(write(oversized,empty,strlen(empty))==(long)strlen(empty));

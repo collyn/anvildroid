@@ -16,9 +16,12 @@ Use the existing engine/version selectors and install button for a managed
 runtime. Applying to a running or frozen runtime uses the existing confirmation,
 stop, apply and restart workflow; a stopped runtime activates changes next start.
 Import another version opens the existing ARM package catalog in GUI Settings.
-Default uses its installed libndk provider and can restore only a configuration
+Default uses its installed libndk or libhoudini provider and can restore only a configuration
 previously saved when AnvilDroid disabled that provider. It does not install a
 selected archive through this view.
+
+Create and Reinstall select the pinned libhoudini HPE com1.3 package by default.
+Ordinary preparation retries retain the saved ARM provider or disabled state.
 
 Google Play keeps its existing package checks, registration help and verified
 GAPPS image-creation workflow. Create a separate runtime for a different image;

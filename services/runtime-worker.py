@@ -783,6 +783,52 @@ def app_action(instance, identifier, action, package, desktop=False, generation=
     return {'action': action, 'package': package, 'message': ('Android accepted launch in desktop preview.' if desktop else 'Android accepted launch (headless; no desktop window).') if action == 'launch' else 'Android accepted force-stop.'}
 
 
+class ControlReceiver:
+    """One control-only Android child, restarted after framework disconnects."""
+    def __init__(self, start, stopping, clock=time.monotonic):
+        self.start = start
+        self.stopping = stopping
+        self.clock = clock
+        self.process = None
+        self.next_attempt = 0
+        self.delay = 1
+        self.started = 0
+        self.error = None
+
+    def check(self, running):
+        if self.stopping.is_set(): return
+        now = self.clock()
+        if self.process is not None:
+            if self.process.poll() is None:
+                if now - self.started >= 10: self.delay = 1
+                return
+            self.process.wait()
+            self.process = None
+            self.error = 'Android input receiver disconnected; reconnecting'
+            self.next_attempt = now + self.delay
+            self.delay = min(self.delay * 2, 8)
+        # Do not wake a frozen guest or start during Android teardown.
+        if not running or now < self.next_attempt: return
+        try:
+            self.process = self.start()
+            self.started = now
+            self.error = None
+        except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
+            self.error = 'Android input receiver unavailable: ' + str(error)[-400:]
+            self.next_attempt = now + self.delay
+            self.delay = min(self.delay * 2, 8)
+
+    def close(self):
+        if self.process is None: return
+        if self.process.poll() is None:
+            self.process.terminate()
+            try: self.process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                self.process.kill(); self.process.wait(timeout=3)
+        else: self.process.wait()
+        self.process = None
+
+
 def check_desktop_session():
     # This private alias pins the authenticated compositor for both Wayland
     # and nested X11. Instance paths can exceed AF_UNIX's pathname limit.
@@ -1896,18 +1942,23 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
                 guest_jar = loc(identifier) / 'data/local/tmp/anvildroid-scrcpy-server.jar'
                 shutil.copyfile(server_jar, guest_jar)
                 guest_jar.chmod(0o644)
-                environment = shutdown_environment(lxc, identifier)
-                scrcpy_process = subprocess.Popen(
-                    list(linux.android_command(['lxc-attach', '-P', root, '-n', identifier])) +
-                    environment + ['-u', '2000', '-g', '2000', '--set-var',
-                    'CLASSPATH=/data/local/tmp/anvildroid-scrcpy-server.jar', '--',
-                    '/system/bin/timeout', '-s', 'KILL', '86400',
-                    '/system/bin/app_process', '/system/bin',
-                    'com.genymobile.scrcpy.Server', '3.3.1', 'scid=0',
-                    'tunnel_forward=true', 'video=false', 'audio=false',
-                    'control=true', 'clipboard_autosync=false', 'power_on=false',
-                    'cleanup=false', 'send_device_meta=false', 'send_dummy_byte=true'],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                def start_receiver():
+                    # Android may recreate its framework after HWC disconnects.
+                    # Obtain the current validated classpath on every attempt.
+                    environment = shutdown_environment(lxc, identifier)
+                    return subprocess.Popen(
+                        list(linux.android_command(['lxc-attach', '-P', root, '-n', identifier])) +
+                        environment + ['-u', '2000', '-g', '2000', '--set-var',
+                        'CLASSPATH=/data/local/tmp/anvildroid-scrcpy-server.jar', '--',
+                        '/system/bin/timeout', '-s', 'KILL', '86400',
+                        '/system/bin/app_process', '/system/bin',
+                        'com.genymobile.scrcpy.Server', '3.3.1', 'scid=0',
+                        'tunnel_forward=true', 'video=false', 'audio=false',
+                        'control=true', 'clipboard_autosync=false', 'power_on=false',
+                        'cleanup=false', 'send_device_meta=false', 'send_dummy_byte=true'],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                scrcpy_process = ControlReceiver(start_receiver, stopping)
+                scrcpy_process.check(True)
                 state['keymap_backend'] = 'scrcpy-control'
         while not stopping.wait(1):
             if venus: venus.check()
@@ -1917,6 +1968,10 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
                 check_desktop_session()
             require(lxc('lxc-info', identifier, '-sH') in ('RUNNING', 'FROZEN'), 'Android container exited')
             if compositors: require(compositors[0].poll() is None, 'Desktop compositor exited' if desktop else 'Headless compositor exited')
+            if scrcpy_process is not None:
+                scrcpy_process.check(state.get('state') == 'Running')
+                if scrcpy_process.error: state['keymap_warning'] = scrcpy_process.error
+                else: state.pop('keymap_warning', None)
     except Exception as error:
         detail = str(error)
         if isinstance(error, gpu.nvidia.RendererFailure):
@@ -1924,10 +1979,7 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
         state.update(state='Error', error=detail[-1024:])
     finally:
         if scrcpy_process is not None:
-            scrcpy_process.terminate()
-            try: scrcpy_process.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                scrcpy_process.kill(); scrcpy_process.wait(timeout=3)
+            scrcpy_process.close()
         errors = []
         for name in names:
             try:
@@ -1988,7 +2040,7 @@ def main(instance, identifier, generation, original_mnt, original_net, desktop=N
     endpoint.unlink(missing_ok=True)
     state = dict(runtime_id=identifier, generation=generation, state='Starting', error=None, display_mode='desktop' if desktop else 'headless', capabilities=['graphics', 'apps', 'app_actions', 'uninstall_app', 'install_apk', 'google_services'])
     state['capabilities'].extend(['app_states', 'adb', 'app_compatibility', 'shared_folders'])
-    if desktop: state['capabilities'].extend(['keymap_editor', 'full_ui', 'window_activation'])
+    if desktop: state['capabilities'].extend(['keymap_editor', 'keymap_schemes', 'full_ui', 'window_activation'])
     atomic(instance / 'worker-identity.json', dict(runtime_id=identifier, generation=generation))
     (instance / 'worker-result.json').unlink(missing_ok=True)
     stopping, done = threading.Event(), threading.Event()
@@ -2024,7 +2076,7 @@ def main(instance, identifier, generation, original_mnt, original_net, desktop=N
                 if uid != 0: continue
                 apk_fd = None
                 try:
-                    request, apk_fd = transfer.receive(connection, 1024)
+                    request, apk_fd = transfer.receive(connection, 65536)
                     if apk_fd is not None and (not isinstance(request, dict) or request.get('op') != 'install'):
                         raise ValueError('Unexpected file descriptor')
                     if request == {'op': 'stop'}:
@@ -2121,6 +2173,24 @@ def main(instance, identifier, generation, original_mnt, original_net, desktop=N
                             require(idle.apps is not None, 'Sleeping app inventory unavailable; resume this runtime')
                             response['apps'] = idle.apps
                         except (RuntimeError, OSError, subprocess.TimeoutExpired) as error:
+                            response['app_error'] = str(error)[-1024:]
+                        connection.sendall(json.dumps(dict(response, state=state['state'])).encode() + b'\n')
+                        continue
+                    elif isinstance(request, dict) and request.get('op') == 'keymap_scheme':
+                        response = dict(state)
+                        try:
+                            require(request.get('generation') == generation, 'Worker generation changed; scheme operation refused')
+                            payload = dict(request)
+                            del payload['generation']
+                            keymap.validate_scheme_request(payload)
+                            require(payload['id'] == identifier, 'Invalid scheme runtime')
+                            idle.resume()
+                            require(desktop and state['state'] == 'Running' and not stopping.is_set(), 'Desktop runtime must be running')
+                            def scheme_android(*args):
+                                return linux.run_bounded('lxc-attach', '-P', instance / 'android', '-n', identifier,
+                                    '--', '/system/bin/' + args[0], *args[1:], timeout=4, operation='Scheme package check', full_output=True)
+                            response['keymap_scheme'] = keymap.keymap_schemes(instance / 'android', identifier, identifier, payload, scheme_android, generation)
+                        except (RuntimeError, OSError, ValueError, subprocess.TimeoutExpired) as error:
                             response['app_error'] = str(error)[-1024:]
                         connection.sendall(json.dumps(dict(response, state=state['state'])).encode() + b'\n')
                         continue

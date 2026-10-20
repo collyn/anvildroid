@@ -16,11 +16,16 @@ probe APK identities. See `README.md` for build and invocation commands.
   copied. Images are copied and hashed; packaged runtime payload bytes are
   checked against the pinned Debian archive before launch.
 - A unique delegated systemd scope bounds memory to 6 GiB, swap to zero, CPU to
-  four cores, and tasks to 2048. A private cgroup namespace exposes only that
-  scope; its processes move into a supervisor leaf before controller delegation.
+  four cores, and tasks to 2048 (4096 for opt-in controls fixtures). A private
+  cgroup namespace exposes only that scope; its processes move into a supervisor
+  leaf before controller delegation.
   The actual Android init PID/starttime and cgroup are read after every Start.
   `/supervisor/android/lxc.payload.waydroid` has been observed and accepted by
   the strict descendant oracle; merely checking the service scope is insufficient.
+  Android receives a writable mount of only that private subtree so init can
+  create process groups. The inherited stock read-only mount left Zygote
+  `stopping` during SurfaceFlinger restart; acceptance does not certify that
+  read-only recovery path or change installed Default configuration.
 - A PID1 supervisor uses private mount, network, PID, IPC and UTS namespaces.
   All inherited mounts become recursively private and read-only. Private tmpfs
   mounts cover `/run`, `/dev`, `/tmp`, `/home`, `/var/lib`, `/var/log` and `/root`.
@@ -55,9 +60,10 @@ probe APK identities. See `README.md` for build and invocation commands.
 - Private DBus has no activation directories. The actual packaged service and
   controller use conventional paths inside the fixture, including
   `/run/anvildroid/control.sock`. Desktop, bus, SSH, PipeWire and Pulse endpoint
-  environment variables are cleared. Weston uses explicit headless/software
-  arguments and `--no-config`; actual PipeWire/Pulse use minimal explicit Unix
-  socket configurations with no device discovery, session manager or network
+  environment variables are cleared. Weston uses explicit software arguments
+  and `--no-config` (headless normally, private Xvfb for controls); native X11
+  controls use the packaged adapter on private Xvfb. Actual PipeWire/Pulse use
+  minimal explicit Unix socket configurations with no device discovery, session manager or network
   listeners. Their owner UID and processes remain inside the bounded scope.
   A synthetic resolver replaces the conventional resolver symlink's private
   `/run` target; no host resolver socket is restored.

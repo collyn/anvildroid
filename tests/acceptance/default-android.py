@@ -8,6 +8,7 @@ No installed service, personal runtime or host kernel setting is modified.
 """
 import argparse
 import ctypes
+import errno
 import fcntl
 import hashlib
 import importlib.util
@@ -227,6 +228,10 @@ def prepare(args):
     write_json(root / 'acceptance.json', value)
     stage_probe(root, value, args.probe_apk)
     stage_arm_inputs(root, value, args)
+    if args.controls:
+        require(not value.get('arm_inputs'), 'Controls and ARM fixtures must be separate')
+        value['controls_backend'] = args.controls_backend or 'wayland'
+        stage_controls(root, value)
     print(json.dumps(value), flush=True)
 
 
@@ -234,6 +239,24 @@ def stage_probe(root, value, source):
     require(source.is_file() and not source.is_symlink(), 'Build the maintained touch probe APK first')
     shutil.copyfile(source, root / 'probe.apk')
     value['probe_apk_sha256'] = digest(root / 'probe.apk'); write_json(root / 'acceptance.json', value)
+
+
+def verify_controls(value):
+    expected = value.get('controls_helpers')
+    if expected is None: return None
+    require(value.get('controls_backend', 'wayland') in ('wayland', 'native-x11'), 'Invalid controls backend')
+    names = {'default-controls.py', 'probe-controls-recovery.py', 'probe-editor-isolation.py', 'probe-android-controls.py'}
+    require(set(expected) == names, 'Incomplete controls helper provenance')
+    for name, checksum in expected.items():
+        path = SCRIPT.with_name(name)
+        require(path.is_file() and not path.is_symlink() and digest(path) == checksum, 'Controls helper changed: ' + name)
+    return dict(expected)
+
+
+def stage_controls(root, value):
+    value['controls_helpers'] = {name: digest(SCRIPT.with_name(name)) for name in
+        ('default-controls.py', 'probe-controls-recovery.py', 'probe-editor-isolation.py', 'probe-android-controls.py')}
+    write_json(root / 'acceptance.json', value)
 
 
 def restage(args):
@@ -247,12 +270,14 @@ def restage(args):
     run('dpkg-deb', '-x', args.root / 'controller.deb', args.root / 'package')
     value['package_sha256'] = args.expected_package_sha256
     stage_probe(args.root, value, args.probe_apk)
+    if value.get('controls_helpers'): stage_controls(args.root, value)
 
 
 def scope_command(root, value, mode, reviewed=None, checkpoint_seconds=0):
     args = ['systemd-run', '--scope', '--collect', '--quiet', '--unit=' + value['scope'],
             '-p', 'Delegate=yes', '-p', 'MemoryMax=6G', '-p', 'MemorySwapMax=0', '-p', 'CPUQuota=400%',
-            '-p', 'TasksMax=2048', '-p', 'OOMPolicy=kill', '--', sys.executable, str(SCRIPT), str(root), '--scoped', '--' + mode]
+            '-p', 'TasksMax=' + ('4096' if value.get('controls_helpers') else '2048'),
+            '-p', 'OOMPolicy=kill', '--', sys.executable, str(SCRIPT), str(root), '--scoped', '--' + mode]
     if checkpoint_seconds: args += ['--checkpoint-seconds', str(checkpoint_seconds)]
     if reviewed: args += ['--reviewed-preflight', reviewed]
     return args
@@ -265,7 +290,7 @@ def scoped(args):
     require(cgroup.name == value['scope'] and cgroup.is_dir(), 'Launcher is outside its task-owned scope')
     require((cgroup / 'memory.max').read_text().strip() == str(6 * 1024**3), 'Memory bound missing')
     require((cgroup / 'memory.swap.max').read_text().strip() == '0', 'Swap bound missing')
-    require((cgroup / 'pids.max').read_text().strip() == '2048', 'Task bound missing')
+    require((cgroup / 'pids.max').read_text().strip() == ('4096' if value.get('controls_helpers') else '2048'), 'Task bound missing')
     quota, period = (cgroup / 'cpu.max').read_text().split(); require(quota != 'max' and int(quota) <= 4 * int(period), 'CPU bound missing')
     # Root this cgroup namespace at the delegated scope, then move every
     # task-owned scope process to a leaf so its root can delegate controllers.
@@ -415,6 +440,16 @@ def loop_identity(path):
         return {'backing_device': device, 'backing_inode': inode, 'offset': offset, 'limit': limit, 'number': number,
                 'flags': flags, 'filename': bytes(status[56:120]).split(b'\0', 1)[0].decode()}
     finally: os.close(fd)
+
+
+def scope_populated(cgroup):
+    try:
+        return 'populated 1' in (cgroup / 'cgroup.events').read_text()
+    except OSError as error:
+        # systemd --collect may remove an empty scope between lookup and read.
+        # ENODEV alone is not evidence of emptiness: require its disappearance.
+        if error.errno in (errno.ENOENT, errno.ENODEV) and not cgroup.exists(): return False
+        raise
 
 
 def clean_task_loops(root):
@@ -567,6 +602,13 @@ def configure_stock(root, value):
     config = ('[waydroid]\narch=x86_64\nvendor_type=MAINLINE\nimages_path=/var/lib/waydroid/images\nmount_overlays=True\n'
               'binder=' + names[0] + '\nvndbinder=' + names[1] + '\nhwbinder=' + names[2] + '\nsystem_ota=None\nvendor_ota=None\n'
               '\n[properties]\nro.hardware.gralloc=default\nro.hardware.egl=angle\nro.hardware.vulkan=pastel\nwaydroid.stub_sensors_hal=1\nro.waydroid.software_rendering=1\nro.waydroid.override_props=false\ndebug.hwui.renderer=skiagl\n')
+    if value.get('controls_helpers'):
+        config += 'persist.waydroid.multi_windows=true\n'
+        if value.get('controls_backend', 'wayland') == 'wayland':
+            # Stock software HWC's forced wl_cursor SHM copy can read stale
+            # layer metadata after task replacement. Select its supported
+            # subsurface cursor path for this software-rendered input fixture.
+            config += 'persist.waydroid.cursor_on_subsurface=true\n'
     if value.get('arm_inputs'):
         verify_arm_inputs(root, value)
         arm = load_module('runtime-arm')
@@ -606,6 +648,13 @@ def configure_stock(root, value):
     lines = []
     for line in text.splitlines():
         if line.startswith('lxc.console.path'): continue
+        if line.startswith('lxc.mount.auto'):
+            # Android init must create its own process groups to restart
+            # Zygote after SurfaceFlinger dies. Only the task-delegated
+            # cgroup subtree is visible here; host ancestors remain hidden.
+            require(line.split('=', 1)[1].split() == ['cgroup:ro', 'sys:ro', 'proc'],
+                    'Unexpected stock automatic mounts')
+            line = 'lxc.mount.auto = cgroup:rw sys:ro proc'
         if line.startswith('lxc.cap.keep'):
             key, caps = line.split('=', 1)
             line = key + '= ' + ' '.join(cap for cap in caps.split() if cap not in DROPPED_CAPS)
@@ -632,6 +681,8 @@ def audit_lxc(directory, home='/home/acceptance', hook=None):
                         (key == 'lxc.hook.pre-start' and hook is not None and value == hook), 'Unexpected stock LXC hook')
             if key == 'lxc.include': require(value in [str(directory / 'config_nodes'), str(directory / 'config_session')], 'Unexpected stock LXC include')
             if key == 'lxc.cap.keep': require(not set(value.split()) & DROPPED_CAPS.keys(), 'Unsafe guest capabilities')
+            if key == 'lxc.mount.auto':
+                require(value.split() == ['cgroup:rw', 'sys:ro', 'proc'], 'Unexpected automatic mount policy')
             if key.startswith('lxc.cgroup.dir'): require(value == 'android', 'LXC cgroup path escapes delegation')
             require(not key.startswith('lxc.namespace.') and key != 'lxc.mount.fstab', 'Unexpected external namespace or mount table')
             if key.startswith('lxc.cgroup'):
@@ -820,12 +871,19 @@ def run_lifecycle(root, value, proxy, service, processes, report):
         require(result.returncode == 0, 'Actual core diagnostics acceptance failed: ' + result.stderr[-1000:])
         record('diagnostics-' + phase, output=result.stdout[-2000:])
     env = dict(os.environ, HOME=str(home), XDG_RUNTIME_DIR=str(home / 'runtime'), LIBGL_ALWAYS_SOFTWARE='1', GALLIUM_DRIVER='llvmpipe')
-    log = (root / 'weston.log').open('ab')
-    try:
-        weston = subprocess.Popen(['weston', '--no-config', '--backend=headless-backend.so', '--renderer=gl', '--socket=fixture-wayland', '--idle-time=0'],
-            env=env, user=value['owner_uid'], group=value['owner_gid'], extra_groups=[], stdout=log, stderr=log)
-    finally: log.close()
-    processes.append(weston)
+    controls = None
+    if value.get('controls_helpers'):
+        verify_controls(value)
+        spec = importlib.util.spec_from_file_location('default_controls', SCRIPT.with_name('default-controls.py'))
+        controls = importlib.util.module_from_spec(spec); spec.loader.exec_module(controls)
+        weston = controls.start_display(root, value, processes)
+    else:
+        log = (root / 'weston.log').open('ab')
+        try:
+            weston = subprocess.Popen(['weston', '--no-config', '--backend=headless-backend.so', '--renderer=gl', '--socket=fixture-wayland', '--idle-time=0'],
+                env=env, user=value['owner_uid'], group=value['owner_gid'], extra_groups=[], stdout=log, stderr=log)
+        finally: log.close()
+        processes.append(weston)
     deadline = time.monotonic() + 20
     while not (home / 'runtime/fixture-wayland').is_socket():
         require(weston.poll() is None and time.monotonic() < deadline, 'Private software Weston failed'); time.sleep(.1)
@@ -861,6 +919,11 @@ def run_lifecycle(root, value, proxy, service, processes, report):
                 raise RuntimeError('Disposable Android boot timed out')
             time.sleep(2)
         record('boot-' + phase)
+        if controls:
+            # Represents a user-completed stock installation, confined to this
+            # disposable userdata. GAPPS setup is offline and is not the test.
+            android('settings --user 0 put secure user_setup_complete 1')
+            android('settings put global device_provisioned 1')
     def mounted():
         deadline = time.monotonic() + 300
         while True:
@@ -993,6 +1056,22 @@ def run_lifecycle(root, value, proxy, service, processes, report):
         require(final == baseline, 'Restored boot changed saved ARM or unrelated configuration')
         record('complete', clean_stock_stop=True, default_arm_disable_restore=True, app_data_preserved=True)
     start('claim'); request('existing_claim'); stop()
+    if controls:
+        # Supply the controller's stopped-install source from the copied image,
+        # read-only in this fixture namespace. Stock Stop unmounted its rootfs.
+        run('mount', '-o', 'ro,noload', WORK / 'images/system.img', WORK / 'rootfs')
+        try: request('display_set', mode='desktop')
+        finally: run('umount', WORK / 'rootfs')
+        try:
+            controls.exercise(root, value, request, start, stop, weston, record)
+        except BaseException:
+            for label, command in (('logcat', 'logcat -d -t 2000'), ('properties', 'getprop'),
+                                   ('tasks', 'cmd activity stack list'),
+                                   ('processes', 'ps -A'), ('windows', 'dumpsys window windows')):
+                try: (root / ('controls-failure-' + label + '.txt')).write_text(android(command, timeout=10))
+                except (RuntimeError, OSError): pass
+            raise
+        return
     if value.get('arm_inputs'):
         arm_lifecycle(); return
     diagnostics('stopped')
@@ -1049,6 +1128,8 @@ def inside(args):
         finally: network_log.close()
         report.update(verify_copies(root, value))
         report['arm_inputs'] = verify_arm_inputs(root, value)
+        report['controls_helpers'] = verify_controls(value)
+        report['controls_backend'] = value.get('controls_backend')
         report['arm_overlay_manifest_sha256'] = verify_arm_overlay(root, value)
         prepare_audio(root, value, processes)
         report['private_audio_socket'] = True
@@ -1100,6 +1181,8 @@ def main():
     mode.add_argument('--audit-start', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--package', type=Path, default=REPO / 'target/releases/anvildroid-controller_0.1.3_amd64.deb')
     parser.add_argument('--probe-apk', type=Path, default=REPO / 'target/touch-probe/AnvilDroidTouchProbe.apk')
+    parser.add_argument('--controls', action='store_true', help='Prepare a separate stock Default input fixture')
+    parser.add_argument('--controls-backend', choices=('wayland', 'native-x11'), help='Prepare controls on a private display backend')
     for name in ('arm-archive', 'arm-probe32', 'arm-probe64'): parser.add_argument('--' + name, type=Path)
     parser.add_argument('--checkpoint-seconds', type=int, default=0)
     parser.add_argument('--host-proc-fd', type=int, help=argparse.SUPPRESS)
@@ -1112,6 +1195,8 @@ def main():
     args = parser.parse_args(); require(os.geteuid() == 0, 'Root is required')
     arm_inputs(args)
     require(args.prepare or not any(arm_inputs(args) or ()), 'ARM input paths are preparation-only')
+    require(args.prepare or not args.controls, 'Controls selection is preparation-only')
+    require(not args.controls_backend or args.prepare and args.controls, 'Controls backend requires --prepare --controls')
     require(0 <= args.checkpoint_seconds <= 600, 'Checkpoint bound invalid')
     if args.prepare: return prepare(args)
     if args.restage: return restage(args)
@@ -1126,6 +1211,8 @@ def main():
                 prior['package_sha256'] == value['package_sha256'] and prior['harness_sha256'] == digest(SCRIPT), 'Reviewed preflight identity or code changed')
         require(prior['probe_apk_sha256'] == value['probe_apk_sha256'] == digest(args.root / 'probe.apk'), 'Reviewed probe APK changed')
         require(prior.get('arm_inputs') == verify_arm_inputs(args.root, value), 'Reviewed ARM inputs changed')
+        require(prior.get('controls_helpers') == verify_controls(value), 'Reviewed controls helpers changed')
+        require(prior.get('controls_backend') == value.get('controls_backend'), 'Reviewed controls backend changed')
         require(prior.get('arm_overlay_manifest_sha256') == verify_arm_overlay(args.root, value), 'Reviewed ARM overlay changed')
         copies = verify_copies(args.root, value)
         require(copies['copied_images'] == prior['copied_images'] and copies['payload_manifest_sha256'] == prior['payload_manifest_sha256'], 'Reviewed preflight image or payload provenance changed')
@@ -1145,7 +1232,7 @@ def main():
         latest = metadata(args.root); cgroup = Path(latest.get('host_cgroup', cgroup))
         require(cgroup.name == value['scope'] and str(cgroup).startswith('/sys/fs/cgroup/'), 'Unexpected teardown cgroup')
         deadline = time.monotonic() + 5
-        while cgroup.exists() and 'populated 1' in (cgroup / 'cgroup.events').read_text():
+        while scope_populated(cgroup):
             require(time.monotonic() < deadline, 'Fixture cgroup still populated; retaining task loops'); time.sleep(.1)
         clean_task_loops(args.root)
         write_json(args.root / 'teardown.json', {'scope': value['scope'], 'scope_empty': True, 'task_loops_detached': True, 'time': time.time()})

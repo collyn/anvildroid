@@ -138,7 +138,7 @@ def reap_android_orphans():
     return reaped
 
 
-def run_bounded(*args, timeout, umask=-1, stdin=subprocess.DEVNULL, operation="Android shutdown", output_limit=8192, full_output=False):
+def run_bounded(*args, timeout, umask=-1, stdin=subprocess.DEVNULL, operation="Android shutdown", output_limit=8192, full_output=False, preserve_whitespace=False):
     """A timed-out attach must not leave children holding LXC control descriptors."""
     args = android_command(args)
     with tempfile.TemporaryFile() as output:
@@ -155,7 +155,9 @@ def run_bounded(*args, timeout, umask=-1, stdin=subprocess.DEVNULL, operation="A
         size=output.tell()
         require(not full_output or size<=output_limit, operation+' output exceeds limit')
         output.seek(max(0, size - output_limit))
-        text = output.read().decode(errors='replace').strip()
+        text = output.read().decode(errors='replace')
+        if not preserve_whitespace:
+            text = text.strip()
         require(process.returncode == 0, operation + ' failed: ' + (text[:512] or 'command returned an error'))
         return text
 

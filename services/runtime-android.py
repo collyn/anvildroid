@@ -169,7 +169,7 @@ class AndroidBackend:
         identity = json.loads(identity_path.read_text()) if identity_path.exists() else None
         try:
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
-                connection.settimeout(330 if operation == 'install' else (90 if operation == 'compatibility' else 45 if operation == 'app_action' else 8))
+                connection.settimeout(330 if operation == 'install' else (90 if operation == 'compatibility' else 45 if operation == 'app_action' else 20 if operation == 'keymap_scheme' else 8))
                 connection.connect(str(instance / 'worker.sock'))
                 _, uid, _ = struct.unpack('3i', connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
                 if uid != 0: raise RuntimeError('Untrusted runtime worker')
@@ -180,7 +180,7 @@ class AndroidBackend:
                 data = bytearray()
                 while not data.endswith(b'\n'):
                     part = connection.recv(4096)
-                    if not part or len(data) > (1024 * 1024 if operation in ('apps','keymaps') else 8192): raise RuntimeError('Invalid worker response')
+                    if not part or len(data) > (1024 * 1024 if operation in ('apps','keymaps','keymap_scheme') else 8192): raise RuntimeError('Invalid worker response')
                     data.extend(part)
                 report = json.loads(data)
         except (FileNotFoundError, ConnectionRefusedError):
@@ -212,6 +212,20 @@ class AndroidBackend:
         if report.get('generation')!=status['generation'] or report['state']!='Running': raise RuntimeError('Runtime changed during keymap read')
         result=report.get('keymaps')
         if not isinstance(result,dict) or result.get('runtime_id')!=identifier: raise RuntimeError('Invalid keymap response')
+        return result
+
+    def keymap_scheme(self, identifier, request):
+        status = self.status(identifier)
+        if status['state'] not in ('Running', 'Frozen') or 'keymap_schemes' not in status.get('capabilities', []):
+            raise RuntimeError('Start an updated desktop runtime to manage schemes')
+        payload = dict(request, generation=status['generation'])
+        report = self.status(identifier, 'keymap_scheme', payload)
+        if report.get('app_error'): raise RuntimeError(report['app_error'])
+        if report.get('generation') != status['generation'] or report['state'] != 'Running':
+            raise RuntimeError('Runtime changed during scheme operation')
+        result = report.get('keymap_scheme')
+        if not isinstance(result, dict) or result.get('runtime_id') != identifier or result.get('package') != request['package']:
+            raise RuntimeError('Invalid scheme response')
         return result
 
     def app_states(self, identifier):

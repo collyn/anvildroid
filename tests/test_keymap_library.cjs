@@ -11,18 +11,24 @@ class Element{
   setAttribute(name,value){this.attributes[name]=value;}
 }
 function setup(){
-  const elements=new Map(),calls=[],edits=[],states={managed:[],default:{id:'default',state:'Running'},profiles:new Map(),failList:false};
+  const elements=new Map(),calls=[],edits=[],exports=[],dialogs=[],states={managed:[],default:{id:'default',state:'Running'},profiles:new Map(),schemes:null,exportPath:null,exportError:null,failList:false};
   const el=id=>{if(!elements.has(id))elements.set(id,new Element());return elements.get(id);};
-  const invoke=async(command,{request})=>{
+  const invoke=async(command,payload)=>{
+    if(command==='export_keymap_scheme'){
+      exports.push(payload);if(states.exportError)throw states.exportError;
+      return {runtime_id:payload.id,package:payload.package,scheme_id:payload.schemeId,path:payload.path,bytes:128};
+    }
+    const {request}=payload;
     calls.push(request);
     if(request.op==='list'){if(states.failList)throw new Error('Controller unavailable');return states.managed;}
     if(request.op==='refresh')return states.default;
     if(request.op==='keymaps'){const report=states.profiles.get(request.id);if(report instanceof Error)throw report;return report||{runtime_id:request.id,profiles:[],invalid_count:0};}
+    if(request.op==='keymap_scheme'){if(states.schemes instanceof Error)throw states.schemes;return states.schemes;}
     throw new Error('Unexpected operation');
   };
-  const ctx=vm.createContext({window:{AnvilKeymapDrafts:model,AnvilKeymapActions:{open:async(...args)=>edits.push(args)},localStorage:{length:0},__TAURI__:{core:{invoke}},addEventListener(){}},document:{getElementById:el,createElement:tag=>new Element(tag),createDocumentFragment:()=>new Element('#fragment')}});
+  const ctx=vm.createContext({window:{AnvilKeymapDrafts:model,AnvilKeymapActions:{open:async(...args)=>edits.push(args)},localStorage:{length:0},__TAURI__:{core:{invoke},dialog:{save:async options=>{dialogs.push(options);return states.exportPath;}}},addEventListener(){}},document:{getElementById:el,createElement:tag=>new Element(tag),createDocumentFragment:()=>new Element('#fragment')}});
   vm.runInContext(source,ctx);
-  return {el,calls,edits,states,api:ctx.window.AnvilKeymapLibrary};
+  return {el,calls,edits,exports,dialogs,states,api:ctx.window.AnvilKeymapLibrary};
 }
 function report(runtime,pkg='com.test.game'){
   return {runtime_id:runtime,invalid_count:0,profiles:[{runtime,package:pkg,bindings:[{evdev:30,nx:100,ny:200,kind:'tap'}],source:'runtime'}]};
@@ -125,4 +131,107 @@ test('V3 sources display mouse, pointer and look settings and reject invalid reg
   }
   const duplicate=report('default','com.bad.duplicate');duplicate.profiles[0].bindings=[binding('look','mouse',273),binding('look','keyboard',17)];
   states.profiles.set('default',duplicate);await api.refresh();assert.doesNotMatch(el('keymap-saved-list').textContent,/com.bad.duplicate/);
+});
+
+test('Scheme requests use exact typed scope, fresh revisions and validated response',async()=>{
+  const {api,states,calls}=setup(),p={runtime:'default',package:'com.test.game'};
+  const result={runtime_id:'default',package:p.package,revision:'a'.repeat(64),selected:'default',schemes:[{id:'default',name:'Default',binding_count:1,reference:null}]};
+  states.schemes=result;await api.schemeRequest(p);
+  assert.deepEqual(JSON.parse(JSON.stringify(calls.at(-1))),{op:'keymap_scheme',id:'default',package:p.package,action:'list',scheme_id:'',name:'',revision:'',content:''});
+  await api.schemeRequest(p,'clone','default','New name');
+  assert.equal(calls.at(-1).revision,result.revision);assert.equal(calls.at(-1).name,'New name');
+  states.schemes={...result,package:'com.other.app',revision:'b'.repeat(64)};
+  await assert.rejects(api.schemeRequest(p,'rename','default','Bad response'),/Invalid scheme response/);
+  states.schemes=result;await api.schemeRequest(p,'rename','default','Good response');
+  assert.equal(calls.at(-1).revision,result.revision);
+  for(const bad of [{...result,selected:'missing'},{...result,schemes:[...result.schemes,...result.schemes]},
+    {...result,schemes:[{...result.schemes[0],binding_count:65}]},
+    {...result,schemes:[{...result.schemes[0],reference:{width:0,height:1080,orientation:'landscape'}}]}]){
+    assert.throws(()=>api.validateSchemes(bad,p));
+  }
+});
+
+test('Schemes live in existing app library row and load only when expanded',async()=>{
+  const {api,states,el,calls}=setup();states.profiles.set('default',report('default'));
+  states.schemes={runtime_id:'default',package:'com.test.game',revision:'a'.repeat(64),selected:'default',schemes:[{id:'default',name:'Default',binding_count:1,reference:null}]};
+  await api.refresh();assert.ok(!calls.some(r=>r.op==='keymap_scheme'));
+  const detail=descendants(el('keymap-saved-list'),'details').find(d=>d.children.some(c=>c.textContent==='Schemes'));
+  assert.ok(detail);detail.open=true;detail.events.toggle();await new Promise(resolve=>setImmediate(resolve));
+  assert.ok(calls.some(r=>r.op==='keymap_scheme'&&r.action==='list'));
+  for(const label of ['Use','New','Clone','Rename','Reset','Remove','Export'])assert.ok(detail.textContent.includes(label));
+  assert.match(detail.textContent,/Save or cancel the open app editor/);
+});
+
+test('Scheme names share the backend 48 Unicode code point bound in responses and authoring',async()=>{
+  const {api,states,el,calls}=setup(),p={runtime:'default',package:'com.test.game'};
+  states.profiles.set('default',report('default'));
+  states.schemes={runtime_id:p.runtime,package:p.package,revision:'a'.repeat(64),selected:'default',
+    schemes:[{id:'default',name:'🎮'.repeat(48),binding_count:1,reference:null}]};
+  assert.equal(api.validateSchemes(states.schemes,p).schemes[0].name,states.schemes.schemes[0].name);
+  assert.throws(()=>api.validateSchemes({...states.schemes,schemes:[{...states.schemes.schemes[0],name:'🎮'.repeat(49)}]},p));
+  await api.refresh();
+  const detail=descendants(el('keymap-saved-list'),'details').find(d=>d.children.some(c=>c.textContent==='Schemes'));
+  detail.open=true;detail.events.toggle();await new Promise(resolve=>setImmediate(resolve));
+  const input=descendants(detail,'input').find(e=>e.type==='text');assert.equal(input.maxLength,96);
+  input.value='🎮'.repeat(48);
+  await descendants(detail,'button').find(b=>b.textContent==='Rename').events.click();
+  assert.equal(calls.at(-1).name,'🎮'.repeat(48));
+  const sent=calls.length;
+  await assert.rejects(api.schemeRequest(p,'rename','default','🎮'.repeat(49)),/at most 48 characters/);
+  await assert.rejects(api.schemeRequest(p,'rename','default','A'.repeat(49)),/at most 48 characters/);
+  assert.equal(calls.length,sent);
+});
+
+test('V4 custom directions, walk modifier, suspend, skill cancel and pointer walk validate',async()=>{
+  const {api,el,states}=setup();
+  const base={nx:32768,ny:32768,end_nx:40000,end_ny:40000,duration_ms:250,repeat_count:1,input_source:'keyboard',end_mode:'release',radius:8192,ramp_ms:80,
+    look_width:8192,look_height:8192,sensitivity_x:100,sensitivity_y:100,invert_y:0,activation:'hold',
+    up_key:0,left_key:0,down_key:0,right_key:0,walk_key:0,walk_radius:0,suspend_key:0,drag_shot:0,skill_mode:0,cancel_key:0,cancel_x:0,cancel_y:0};
+  const r=report('default');r.profiles[0].bindings=[{...base,kind:'wasd',evdev:103,up_key:103,left_key:105,down_key:108,right_key:106,walk_key:42,walk_radius:40},
+    {...base,kind:'look',evdev:57,activation:'capture',suspend_key:56},
+    {...base,kind:'skill',evdev:16,skill_mode:2,cancel_key:18,cancel_x:0,cancel_y:0},
+    {...base,kind:'walk',input_source:'mouse',evdev:273}];
+  states.profiles.set('default',r);await api.refresh();
+  const titles=descendants(el('keymap-saved-list'),'kbd').map(c=>c.title);
+  assert.match(titles[0],/Custom movement joystick.*directions ↑ \/ ← \/ ↓ \/ →.*40% radius/);
+  assert.match(titles[0],/walk Left Shift/);assert.match(titles[1],/show cursor Left Alt/);assert.match(titles[2],/toggle cast.*cancel/);assert.match(titles[3],/Right-click to walk/);
+  for(const mutate of [b=>b.left_key=103,b=>b.walk_key=60,b=>b.walk_radius=9,b=>b.suspend_key=56,b=>delete b.right_key]){
+    const bad=JSON.parse(JSON.stringify(r));bad.profiles[0].package='com.bad.vfour';mutate(bad.profiles[0].bindings[0]);
+    states.profiles.set('default',bad);await api.refresh();assert.doesNotMatch(el('keymap-saved-list').textContent,/com.bad.vfour/);
+  }
+});
+
+test('Export uses native Save dialog and bounded Rust file command; cancel and errors are truthful',async()=>{
+  const {api,states,el,exports,dialogs}=setup();states.profiles.set('default',report('default'));
+  states.schemes={runtime_id:'default',package:'com.test.game',revision:'a'.repeat(64),selected:'default',schemes:[{id:'default',name:'Default',binding_count:1,reference:null}]};
+  await api.refresh();const detail=descendants(el('keymap-saved-list'),'details').find(d=>d.children.some(c=>c.textContent==='Schemes'));
+  detail.open=true;detail.events.toggle();await new Promise(resolve=>setImmediate(resolve));
+  const save=descendants(detail,'button').find(b=>b.textContent==='Export');
+  await save.events.click();assert.equal(exports.length,0);assert.match(detail.textContent,/Export cancelled/);
+  assert.match(dialogs[0].defaultPath,/com.test.game-default.anvildroid.json$/);
+  states.exportPath='/tmp/my-controls.json';await save.events.click();assert.equal(exports.length,1);
+  assert.deepEqual(JSON.parse(JSON.stringify(exports[0])),{id:'default',package:'com.test.game',schemeId:'default',revision:'a'.repeat(64),path:states.exportPath});
+  assert.match(detail.textContent,/Scheme file saved/);
+  states.exportError=new Error('Choose a new scheme export filename');await save.events.click();
+  assert.match(detail.textContent,/Choose a new scheme export filename/);assert.doesNotMatch(detail.textContent,/Scheme file saved/);
+  assert.doesNotMatch(source,/createObjectURL|revokeObjectURL|link.download/);
+  const rust=fs.readFileSync('crates/anvildroid-gui/src/main.rs','utf8');
+  assert.match(rust,/async fn export_keymap_scheme/);assert.match(rust,/export_runtime_diagnostics,\s*export_keymap_scheme,/);
+});
+
+test('Automatic FPS camera inventory keeps F5 and Alt, rejects auto on other controls',async()=>{
+  const {api,states,el}=setup();
+  const r=report('default');
+  r.profiles[0].bindings=[{kind:'look',evdev:63,input_source:'keyboard',nx:32768,ny:32768,
+    end_nx:49152,end_ny:32768,duration_ms:250,repeat_count:3,end_mode:'release',radius:0,ramp_ms:0,
+    look_width:8192,look_height:8192,sensitivity_x:100,sensitivity_y:100,invert_y:0,activation:'auto',
+    up_key:0,left_key:0,down_key:0,right_key:0,walk_key:0,walk_radius:0,suspend_key:56,
+    drag_shot:0,skill_mode:0,cancel_key:0,cancel_x:0,cancel_y:0}];
+  states.profiles.set('default',r);await api.refresh();
+  const chip=descendants(el('keymap-saved-list'),'kbd')[0];
+  assert.equal(chip.textContent,'F5');assert.match(chip.title,/auto.*show cursor Left Alt/);
+  const bad=JSON.parse(JSON.stringify(r));bad.profiles[0].package='com.bad.auto';
+  bad.profiles[0].bindings[0].kind='swipe';bad.profiles[0].bindings[0].suspend_key=0;
+  states.profiles.set('default',bad);await api.refresh();
+  assert.doesNotMatch(el('keymap-saved-list').textContent,/com.bad.auto/);
 });

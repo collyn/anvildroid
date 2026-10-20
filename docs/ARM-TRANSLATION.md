@@ -6,9 +6,17 @@ existing stop/apply/restart flow. Download, checksum, extraction or patch failur
 retains the previous saved configuration. App data and earlier staged versions
 are retained when switching engines.
 
+New and reinstalled x86_64 runtimes enable **libhoudini HPE 14.0.0 GoogleGame
+com1.3 (unpatched)** by default, including Default runtime reinstallation.
+Prepare downloads and verifies the pinned archive when it is not cached;
+reinstallation checks the archive before clearing existing data. Retrying
+Prepare preserves an explicitly selected provider or disabled translation.
+The default package targets Android 13; other Android versions remain
+experimental. Engine and Version can be changed in the same settings row.
+
 The catalog follows waydroid-helper/extensions revision
 `a2c9f98548a9f1aa9cf25f1ea56347e1e4930e29`: 13 upstream choices, plus the
-previously supported unpatched HPE archive for existing installations.
+unpatched HPE archive used by the runtime default.
 
 | Engine | Source / versions | Android target | Upstream CPU target |
 | --- | --- | --- | --- |

@@ -32,6 +32,9 @@ long test_recv(int fd,void *data,size_t size,int flags) {
 long test_send(int fd,const void *data,size_t size,int flags) {
   (void)fd;(void)flags;assert(size==32||size==21);memcpy(last,data,size);if(sequence_count<4096){memset(sequence[sequence_count],0,32);memcpy(sequence[sequence_count++],data,size);}packet_size=(int)size;++packets;return unavailable==2?(long)size-1:(long)size;
 }
+static void keyboard_leave(void *data,struct proxy *proxy,uint32_t serial,struct proxy *surface) {
+  (void)data;(void)proxy;(void)serial;(void)surface;
+}
 int main(void) {
   struct object s={.app=1,.has_bounds=1,.app_id="org.test"};objects=&s;
   tasks[0]=(struct task){.id=5,.x=760,.y=154,.width=464,.height=824,.package="org.test"};task_count=1;
@@ -87,5 +90,21 @@ int main(void) {
   assert(packets==before); /* No mouse hover mixed into active keymap fingers. */
   map_count=0;absolute_pointer_enabled=0;
   assert(!absolute_pointer_update(&pointer,1,1,1));
+  /* A new/empty profile has no passive hints. Try still releases a held
+   * contact on keyboard-only focus loss, with the pointer staying put. */
+  scrcpy_mapping_cancel();memset(map_held,0,sizeof(map_held));
+  struct keymap_overlay draft={.testing=1,.task=5,.package="org.test",.model={.count=1,
+    .points={{.key=30,.nx=32768,.ny=32768,.hold=1}}}};
+  s.overlay=&draft;assert(!s.hints);
+  void (*keyboard_callbacks[])(void)={0,0,(void (*)(void))keyboard_leave};
+  struct object keyboard={.keyboard_focus=&s,.listener=keyboard_callbacks};
+  layer.next=&keyboard;
+  assert(scrcpy_mapping_key(&s,&draft,30,1)&&map_count==1&&last[1]==0);
+  keymap_kleave(&keyboard,0,10,&root);
+  assert(map_count==1&&keyboard.keyboard_leave_pending);
+  keymap_finish_keyboard_leaves(0);
+  assert(!keyboard.keyboard_focus&&!map_count&&last[1]==3);
+  before=packets;map_advanced_advance(100);
+  assert(!map_count&&packets==before);
   return 0;
 }

@@ -18,8 +18,8 @@ sharing probes verify the selected private worker
 before changing its diagnostic app or writing inside its selected test share.
 
 Prerequisites include root namespace privileges, systemd/cgroup-v2 CPU and
-memory controllers, Binder already available, LXC, Weston, Xvfb, xauth,
-xdotool/xwininfo, and the image/build inputs used by this checkout. The harness
+memory controllers, Binder already available, LXC, Weston, Xwayland, xauth,
+glxinfo, xdotool/xwininfo, and the image/build inputs used by this checkout. The harness
 does not change persistent sysctls, load kernel modules, install a host package,
 or initialize the user's installed Android runtime. Adequate inotify capacity
 is required by Android system_server.
@@ -34,8 +34,25 @@ Prepare and start a new test store (start blocks for the worker lifetime):
 
 ```sh
 sudo python3 tests/acceptance/live-android.py /tmp/anvil-live-local --prepare --owner-uid "$(id -u)" --package "$PWD/target/releases/anvildroid-controller_0.1.3_amd64.deb"
-sudo python3 tests/acceptance/live-android.py /tmp/anvil-live-local --start --x11 --package "$PWD/target/releases/anvildroid-controller_0.1.3_amd64.deb"
+sudo python3 tests/acceptance/live-android.py /tmp/anvil-live-local --start --x11 --gpu-node /dev/dri/renderD128 --package "$PWD/target/releases/anvildroid-controller_0.1.3_amd64.deb"
 ```
+
+Select the actual AMD/Intel Mesa render node for this host. GPU acceptance uses
+private headless Weston with its GL renderer and GPU Xwayland/GLAMOR instead of
+Xvfb. It requires direct, accelerated GLX and rejects software renderer names.
+The explicit node is also written to the disposable Android runtime's GPU
+selection. Record `dumpsys SurfaceFlinger`'s GLES renderer and the guest's open
+DRM render device before running input/game acceptance; desktop GLX alone does
+not prove that Android used the GPU. Retain the generation-specific
+`gpu-transport-*.json`, GLX/Weston/Xwayland logs and Android renderer evidence.
+
+On a host with an existing separate matching Mesa installation, the optional
+`--host-mesa-prefix /opt/amdgpu` selects its root-owned libraries only for these
+private fixture processes. It does not alter host driver links or desktop
+configuration. A GPU setup failure must be fixed or reported; do not count a
+software fallback as GPU acceptance. The options require `--start --x11` or
+`--start --wayland-x11`. Software display modes below are retained for
+historical reproduction and inert harness development.
 
 The harness records runtime ID, generation, image/store paths, chosen owner,
 resource scope and the staged package checksum in `acceptance.json`. A new
@@ -57,9 +74,11 @@ The tested headless Weston advertises no `wl_seat`, virtual keyboard/pointer or
 test-input protocol; boot, mapped app content and clean stop do not establish
 actual Wayland input acceptance.
 
-For actual Wayland input checks, use `--wayland-x11` instead. The product guest
-still connects through Wayland. A private software Weston using its X11 backend
-runs inside authenticated private Xvfb; XTest injects into that compositor only.
+For actual Wayland input checks, use `--wayland-x11` instead and retain
+`--gpu-node`. The product guest still connects through Wayland. A private
+GPU Weston using its X11 backend runs inside authenticated private GPU
+Xwayland; XTest injects into that compositor only. Without `--gpu-node`, the
+historical transport uses software Weston inside Xvfb.
 Weston supplies the Wayland seat, keyboard and pointer events to the production
 bridge, mapper and Android sink. No host input devices or personal desktop
 sockets are used. Verify this display-only fixture before starting Android:
@@ -82,13 +101,54 @@ From another terminal, exercise the actual mapper and Android input sink:
 sudo python3 tests/acceptance/probe-android-controls.py /tmp/anvil-live-local/acceptance.json HOST_WORKER_PID "$PWD/target/live-controls-local"
 ```
 
-Append `--keymap-v3 --editor-v3 --capture-v3` for the 25-case editor/input
+Append `--keymap-v3 --editor-v3 --capture-v3` for the extended editor/input
 matrix. V3 adds real finger mouse click/drag, fixed-button routing, center-first
 joystick, held swipe endpoint, relative hold-look with edge restart, and three
-simultaneous movement/look/fire contacts. Editor checks click Add/place/Key/Save,
-validate persisted V3 rows and fresh playback, then change a rendered property
+simultaneous movement/look/fire contacts. Editor checks Tools/Basic/place/direct binding/Save,
+validate persisted V4 rows with unchanged legacy values and fresh playback, then change a rendered property
 and Cancel while requiring exact saved bytes to survive. Geometry includes
 centered letterboxing; unknown frame geometry fails closed.
+
+Add `--keymap-v4` with `--keymap-v3` for custom IJKL movement and a held
+walk modifier, circular Skill radius, release/immediate/toggle cast and authored
+cancel position, plus right-click joystick direction. With `--capture-v3`, it
+also requires cursor suspension/resume, drag-shot camera/fire handoff and focus
+recovery with no held-input replay. With `--editor-v3`, the editor tests draft
+Try after Undo/Redo without persisting; the scheme API tests inactive
+create/clone/import, stale revisions, live switching without an app restart,
+editor read/write exclusion, bounded import/export and restoration of the exact
+original profile. V4 modules inherit the parent's authenticated disposable
+endpoints and use actual Android finger events; they cannot select a desktop.
+
+Add `--editor-lifecycle` (requires `--editor-v3`) for the full lifecycle run. It
+drives select/drag/rebind, rendered duplicate-binding feedback, toolbar Delete,
+unassigned Save rejection and marker Delete while binding capture is armed.
+It compares actual marker pixels across F4 hide/show, requires saved bytes to
+survive Cancel and dirty task replacement, then exercises resize during drag,
+maximize/restore, actual Android density and 90-degree rotation while holding
+a contact, followed by fresh input. Wayland maximize uses the production CSD;
+X11 has no desktop WM and uses an explicit private EWMH/ConfigureNotify fixture.
+
+Add `--detached-editor` with `--editor-v3` to test the separate native editor
+window. This checks its exact runtime/package identity, header drag outside
+Android with unchanged canvas geometry, shared Undo/Redo/Try, binding and numeric
+Save with actual Android tap timing, panel keyboard suppression, Close→Dock
+without saving, byte-preserving Cancel, and task destruction/reopen without
+orphan windows or editing markers. The X11 route uses a narrowly scoped EWMH
+move fixture because its private display has no desktop window manager; the
+Wayland route uses Weston's actual move implementation. PNG, geometry and scene
+evidence are retained. This does not certify ordinary KDE/GNOME window behavior.
+
+Readiness waits for the current observer PID's content size and focused,
+contact-free state. It collapses the private guest's NotificationShade when
+necessary and reacquires mapped native windows after Activity recreation.
+The longer run uses a bounded 16 MiB private log buffer and keeps the exact log
+prefix oracle. Only density/rotation cases allow Android's framework-generated
+terminal CANCEL with touchscreen source, device zero, raw coordinates zero and
+UNKNOWN tool type. DOWN/MOVE/UP still require FINGER, and all other cases retain
+the strict finger-only oracle. A production-method Java regression also covers
+failed CANCEL, stale MOVE/UP rejection and fresh-DOWN recovery after recreation;
+the scrcpy builder runs it against the pinned, patched upstream sources.
 
 The separate capture opt-in requires the actual compositor's relative-pointer
 and pointer-constraints capabilities. It observes lock-dependent Android DOWN,
@@ -182,12 +242,55 @@ subset now passes alongside V3 finger gestures and capture lifecycle.
 These runs use actual Android 13 Vanilla with software rendering, private
 networking and fresh desktop processes. All disposable roots were removed
 after authenticated stop and quiescence checks. Neither package was installed
-over personal services. Full live drag/delete/conflict/resize/rotation/app
-replacement, concurrent windows/runtimes, physical GNOME/KDE/Default input and
+over personal services. At that delivery, full live drag/delete/conflict/resize/
+rotation/app replacement and concurrent runtimes remained open; the follow-up
+below closes those managed cases. Physical GNOME/KDE/Default input and
 representative games remain open. Finite capture tests explicitly record
 `unlimited_movement_verified: false`; they do not establish sustained FPS
 movement, game feel or physical mouse latency. Earlier failed runs remain in
 `target/keymap-v3-verification/` for diagnosis.
+
+The 2026-10-19 editor-lifecycle follow-up passes **45/45 on each route** with
+`--keymap-v3 --editor-v3 --editor-lifecycle --capture-v3`. The pinned package is
+`target/releases/anvildroid-controller_0.1.3+editor.lifecycle3_amd64.deb`, SHA256
+`caf0d63bc2abca3a065981df1b7252af9eb7660e960eb23b3e72368b6f1c1b1f`.
+Its patched scrcpy JAR SHA256 is
+`855be209a8719a964827cc990ed84a406119f4110c77f2074d215bba20cb2ca7`.
+
+| Guest backend | Final lifecycle evidence | Cleanup before fresh isolation desktops |
+| --- | --- | --- |
+| Native X11 | [45/45 summary](../../target/editor-lifecycle-20261019/recovery-x11-v2/summary.json) | [Stopped and quiescent](../../target/editor-lifecycle-20261019/cleanup-before-isolation-x11.json) |
+| Wayland | [45/45 summary](../../target/editor-lifecycle-20261019/recovery-wayland-v5/summary.json) | [Stopped and quiescent](../../target/editor-lifecycle-20261019/cleanup-before-isolation-wl.json) |
+
+For simultaneous-runtime isolation, first complete the normal probe on two
+different disposable stores so the observer is installed in each guest. Stop
+them cleanly and start fresh private desktop processes with the same pinned
+package (relative capture can leave the outer pointer offset). Wait for both
+workers to be Running and rediscover their exact host PIDs/new generations:
+
+```sh
+sudo python3 tests/acceptance/probe-editor-isolation.py /tmp/anvil-live-a/acceptance.json HOST_WORKER_PID_A /tmp/anvil-live-b/acceptance.json HOST_WORKER_PID_B "$PWD/target/live-editor-isolation"
+```
+
+This probe validates private worker/compositor identities before each operation.
+It writes different scoped profiles for the same observer package, alternates
+real mapped input and checks own-profile DOWN coordinates within four pixels.
+It then edits/rebinds/Saves each through the visible editor while playing the
+peer, requiring no leaked contact or peer saved-byte change. The final mixed
+native-X11/Wayland run passes **8/8**, with actual DOWN x=109/334 matching the
+two authored positions. See [isolation summary](../../target/editor-lifecycle-20261019/isolation-v2/summary.json).
+Both final generations reached Stopped/cleanup_complete and quiescence, with
+empty scopes, no owned worker/display processes and no host fixture mounts:
+[X11 cleanup](../../target/editor-lifecycle-20261019/cleanup-final-x11.json),
+[Wayland cleanup](../../target/editor-lifecycle-20261019/cleanup-final-wl.json).
+Their disposable roots were removed after preserving metadata and evidence.
+
+These results close the managed graphical editor lifecycle and same-package
+two-runtime isolation gates above. Multiple ambiguous same-package tasks in
+one runtime remain rejected. Physical GNOME/KDE/CachyOS/Default input, popup/chat/
+IME gameplay, sustained capture, representative games and latency under load
+remain separate gates. No package from this follow-up was installed over the
+personal controller/runtime or remote desktop session.
 
 Shared-folder checks require a test-owned source with the sentinel
 `acceptance-read` containing TOKEN, configured through production shared-folder
@@ -324,3 +427,126 @@ This lifecycle passed on 2026-10-18 using launcher SHA256
 Evidence and positive scope/loop teardown are retained in
 `target/plan-completion-20261018/default-arm/`. The probes' JNI results establish
 actual ARM code execution, not representative ARM game compatibility.
+
+## Offline real-game controls
+
+`probe-luanti-game.py` uses the official unmodified Luanti 5.17.0 x86_64 APK
+and Minetest Game 5.8.0 in a managed disposable Android guest. Obtain the two
+release files from the pinned sources in [game acceptance](../../docs/GAME-ACCEPTANCE.md).
+The helper checks their SHA256 before installation. It downloads nothing and
+uses the same worker/generation/namespace and private display guards as the
+two-runtime controls probe. It never connects to the installed controller.
+
+Prepare/start separate stores with `live-android.py` as above, using `--x11`
+or `--wayland-x11`. From a second terminal, pass that store's actual host worker
+PID, absolute output directory and downloaded input paths:
+
+```sh
+sudo python3 tests/acceptance/probe-luanti-game.py /tmp/anvil-live-game-local/acceptance.json HOST_WORKER_PID "$PWD/target/game-local" --prepare --apk /absolute/luanti-5.17.0-x86_64.apk --game /absolute/minetest_game-5.8.0.tar.gz --normalize-window --enter --run
+```
+
+`--prepare` resets only the probe's `Acceptance` world inside that authenticated
+disposable guest. It installs a world-local scene/telemetry mod, enables the
+game's touch controls, remaps native W/A/S/D away from movement, and creates
+the package's V3 profile as Android UID 1000 so the production editor can Save.
+The observer sets the initial scene once, then records actual player state;
+it does not move the player or synthesize input during measurement.
+
+Window normalization uses the production CSD on private Weston; native X11
+uses its private Xvfb window. The probe rejects invisible/ambiguous surfaces
+and stale fitted geometry. A new server epoch and advancing sequence numbers
+are required. Tests observe node removal, hotbar selection, position, camera
+and simultaneous game controls through real XTest → bridge → mapper → Android
+input. Hold Look is changed to FPS Capture using the existing graphical editor.
+Capture receives relative motion for at least 30 seconds; Escape, camera
+quiescence and a fresh toggle are checked separately. Final/failed runs blur
+the private client and release inputs, including a toggle that survives key-up.
+
+Run `python3 tests/acceptance/test-controls-harness.py` for inert archive,
+pinning, stale-oracle, endpoint and profile checks. The actual game profile and
+its Capture variant are checked by the production C validator. The ordinary
+feature script runs those checks without starting Android or a game.
+After live testing, stop each store with `live-android.py --stop`, verify
+Stopped/cleanup_complete, quiescence, empty scope and no owned process/mount,
+then remove only the exact disposable stores. Retain evidence outside them.
+
+## Held-input recovery and Default controls
+
+The final Android 13 Vanilla/GAPPS matrix passes 45+9 cases on each managed
+backend and 22 cases on each Default backend, within the fixture conditions
+below. Exact hashes, per-row evidence, cleanup and remaining gates are in
+[the controls matrix report](../../docs/CONTROLS-MATRIX.md).
+
+These tests use private displays and copied userdata; they do not target
+installed personal runtimes or the host desktop.
+
+For a running disposable managed fixture, observe HWC disconnect/reconnect and
+Stop with three contacts held:
+
+```sh
+sudo python3 tests/acceptance/probe-controls-recovery.py before /tmp/anvil-live-controls/acceptance.json HOST_WORKER_PID "$PWD/target/controls-recovery-local"
+```
+
+That command stops the managed runtime. Start the same store again with the
+same selected backend using `live-android.py`, then pass its **new host worker
+PID** to `probe-controls-recovery.py after` with the same output directory.
+The probe requires a different generation/namespace, unchanged profile, rejected
+stale-generation actions, zero replay and fresh three-contact input. Reopening
+the diagnostic app after HWC recovery is explicit; the old surface need not
+survive. Stop and audit the final generation before removing the store.
+
+Prepare a **new** stock Default fixture, adding `--controls` and the desired
+`--controls-backend wayland` or `--controls-backend native-x11` to the existing
+preparation command. For example:
+
+```sh
+sudo python3 tests/acceptance/default-android.py /tmp/anvil-default-controls-local --prepare --controls --controls-backend native-x11 --owner-uid "$(id -u)" --package "$PWD/target/releases/anvildroid-controller_0.1.3+controls.recovery2_amd64.deb" --expected-package-sha256 05384586aa9205f73328d032dc1778b5627b2e7ae7bad06b6951447bc41a7346
+sudo python3 tests/acceptance/default-android.py /tmp/anvil-default-controls-local --preflight
+```
+
+Use `--image-source /absolute/copied-image-pair` during preparation for GAPPS.
+Controls and installed-ARM fixtures are separate. Backend selection is
+preparation-only. Preflight pins the four controls helpers, backend, APK,
+package, copied images and main harness. Review its namespace/device policy,
+absence of host endpoints and empty-scope/detached-loop teardown, then supply
+its exact SHA256 with the existing `--run --reviewed-preflight HASH` command.
+After any helper change, inactive fixtures require restage and a new preflight.
+
+The controls lifecycle claims the disposable stock installation through the
+actual controller, installs Desktop while stopped, boots the production stock
+service, uses only the diagnostic app and existing editor, and tests held-input
+disconnect and full stock Stop/restart. Test-only Android provisioning and
+stock app-launch immersive settings apply solely to this copied userdata.
+App launch uses the installed stock `IPlatform.launchApp` Binder API. Readiness
+requires actual focused Android content and settled fitted geometry; the
+fixture then places its pointer inside that current content. Controls scopes
+allow at most 4096 tasks (GAPPS otherwise exhausts the 2048-task baseline),
+6 GiB memory without swap and four CPU cores. Other Default fixtures retain
+their 2048-task bound.
+The harness mounts only its private, delegated Android cgroup subtree writable
+so init can create process groups and restart Zygote. Stock `cgroup:ro` prevented
+that recovery and left Zygote `stopping`. This test prerequisite changes no
+installed service or product Default configuration, and passing rows do not
+certify reconnect with the inherited read-only cgroup policy. The audit rejects
+broader automatic mounts; host cgroup ancestors remain inaccessible.
+Native X11 uses the packaged adapter on private Xvfb; Wayland uses software
+Weston on private Xvfb. X11 maximize uses an explicit EWMH/ConfigureNotify
+fixture; neither route certifies physical GNOME/KWin behavior.
+
+The Default Wayland software fixture selects stock
+`persist.waydroid.cursor_on_subsurface=true`. Its ordinary `wl_cursor` SHM path
+crashed in stock HWC's `update_shm_buffer_default` after task replacement; this
+fixture does not certify or fix that upstream renderer path. Native X11 uses
+the compositor cursor. HWC disconnect first requests stock Stop; if HWC remains
+in `stopping`, the fixture revalidates its exact guest executable and kills
+only that guest PID, then requires an actual stopped service before checking
+Android CANCEL. Recovery starts HWC and restarts SurfaceFlinger explicitly:
+deliberate Stop disables the automatic `onrestart restart surfaceflinger` rule.
+A requested Stop alone is not proof of a disconnect. This verifies recovery
+after explicit framework restoration and app reopen.
+
+Keep `controls/`, lifecycle/preflight/teardown reports and failure logs outside
+the store before removal. Require final clean stock Stop, empty scope, detached
+task loops, unchanged host device/IPv6 invariants and no owned process or host
+mount. A missing/collected cgroup is accepted only after positively observing
+its disappearance; an ENODEV read while its path remains is an error.

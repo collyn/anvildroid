@@ -1,0 +1,16 @@
+{
+  "runtime": "r-26b031aec6f74b408b3674d4f7069867",
+  "generation": "dd6190d8fd664406b8dfdf6c9e597b72",
+  "package_sha256": "0037c9cd655e4465978bbfdaee3a56d335e650f2f7d54682162e6d4b75aedb6e",
+  "app": "net.minetest.minetest",
+  "guest_pid": 26818,
+  "node": "/dev/dri/renderD128",
+  "driver": "amdgpu",
+  "pci": "0000:08:00.0",
+  "gfx_engine_ns_samples": [
+    2589069497,
+    2590216811,
+    2590353656
+  ],
+  "passed": true
+}

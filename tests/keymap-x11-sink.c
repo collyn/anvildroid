@@ -53,3 +53,40 @@ int anvil_mapper_contacts(void) {return map_count;}
 int anvil_mapper_packets(void) {return packets;}
 int anvil_mapper_forwarded(void) {return forwarded;}
 int anvil_mapper_action(void) {return last[1];}
+
+/* Use the real Wayland transport for cursor checks; Android touch remains
+ * the deterministic sink above. Exercise the production SHM arrow as well
+ * as cursor arbitration, rather than substituting a test cursor image. */
+void anvil_mapper_cursor_bind(struct proxy *compositor,struct proxy *shm,
+    struct proxy *surface,struct proxy *pointer,uint32_t serial,
+    marshal_fn marshal,listen_fn listen,void (*destroy)(struct proxy *),
+    uint32_t (*version)(struct proxy *)) {
+  real_marshal=marshal;real_listen=listen;real_destroy=destroy;get_version=version;
+  csd_compositor=compositor;csd_surface_i=compositor->interface->methods[0].types[0];
+  csd_shm=shm;csd_pool_i=shm->interface->methods[0].types[0];
+  csd_buffer_i=csd_pool_i->methods[0].types[0];
+  fixture_app.p=surface;fixture_pointer.p=pointer;
+  fixture_pointer.pointer_surface=surface;fixture_pointer.cursor_serial=serial;
+  csd_cursor_show(&fixture_pointer);
+}
+void anvil_mapper_cursor_request(struct proxy *surface,int x,int y) {
+  if(surface)track(surface);
+  union argument a[4]={{.u=fixture_pointer.cursor_serial},{.o=surface},{.i=x},{.i=y}};
+  keymap_capture_cursor_request(&fixture_pointer,a);
+  csd_cursor_request(&fixture_pointer,a);
+  wayland_send(fixture_pointer.p,0,a);
+}
+void anvil_mapper_cursor_frame(struct proxy *surface,int attached) {
+  struct object *o=track(surface);o->attached=attached;csd_cursor_commit(o);
+}
+void anvil_mapper_cursor_capture(void) {
+  keymap_capture.pointer=&fixture_pointer;keymap_capture.active=1;
+  anvil_mapper_cursor_request(0,0,0);
+}
+void anvil_mapper_cursor_release(void) {keymap_capture_stop();}
+void anvil_mapper_cursor_finish(void) {
+  fixture_pointer.pointer_surface=0;csd_cursor_destroy(&fixture_pointer);
+  while(objects!=&fixture_app)forget_proxy(objects->p);
+  while(csd_buffers)csd_release(csd_buffers,csd_buffers->proxy);
+  csd_compositor=csd_shm=0;
+}

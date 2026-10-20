@@ -12,9 +12,11 @@ static struct {
   struct object *owner,*pointer;
   struct proxy *relative,*locked;
   struct wl_display *display;
+  struct proxy *surface;
   int active;
   long requested;
 } keymap_capture;
+static int keymap_capture_request_lock(struct proxy *surface);
 static const struct interface keymap_relative_interface;
 static const struct interface keymap_locked_interface;
 static const struct interface keymap_confined_interface;
@@ -69,9 +71,9 @@ static int keymap_capture_owner_valid(void) {
   for(struct object *o=objects;o;o=o->next) {
     if(o==keymap_capture.owner)owner=1;
     if(o==keymap_capture.pointer)pointer=1;
-    if(o->keyboard_focus==keymap_capture.owner&&!o->keyboard_leave_pending)focus=1;
+    if(o->keyboard_focus==keymap_capture.owner&&!o->keyboard_leave_pending&&!o->keymap_panel_focus)focus=1;
   }
-  return owner&&pointer&&focus&&!keymap_capture.owner->overlay&&
+  return owner&&pointer&&focus&&(!keymap_capture.owner->overlay||keymap_capture.owner->overlay->testing)&&
     !keymap_capture.owner->keymap_disabled&&!keymap_capture.owner->resize.dragging&&
     game_fit_owner(find(keymap_capture.pointer->pointer_surface))==keymap_capture.owner;
 }
@@ -83,20 +85,34 @@ static void keymap_capture_stop(void) {
   memset(&keymap_capture,0,sizeof(keymap_capture));
   if(locked){wayland_send(locked,0,0);real_destroy(locked);}
   if(relative){wayland_send(relative,0,0);real_destroy(relative);}
-  if(restore&&pointer&&pointer->pointer_surface&&pointer->cursor_serial&&pointer->cursor_requested) {
-    struct proxy *surface=pointer->cursor_surface;
-    if(surface&&!find(surface))surface=0;
-    union argument a[4]={{.u=pointer->cursor_serial},{.o=surface},
-      {.i=pointer->cursor_hotspot_x},{.i=pointer->cursor_hotspot_y}};
-    wayland_send(pointer->p,0,a);
-    csd_cursor_show(pointer);
-  }
+  if(restore)csd_cursor_restore(pointer);
+}
+static int keymap_capture_hides_cursor(struct object *pointer) {
+  return keymap_capture.pointer==pointer&&keymap_capture.active;
+}
+static void keymap_capture_pause_owner(void) {
+  for(struct object *o=objects;o;o=o->next)if(o==keymap_capture.owner)o->keymap_auto_paused=1;
 }
 static int keymap_capture_active(struct object *owner) {
   if(keymap_capture.owner!=owner||!keymap_capture.locked)return 0;
-  if(!keymap_capture_owner_valid()||(!keymap_capture.active&&
-      map_monotonic_ms()-keymap_capture.requested>2000)) {
+  long elapsed=map_monotonic_ms()-keymap_capture.requested;
+  if(!keymap_capture_owner_valid()||(!keymap_capture.active&&elapsed>2000)) {
+    __android_log_print(4,"AnvilKeymapCapture","capture cancelled: %s",
+      keymap_capture_owner_valid()?"grant timed out":"focus lost");
+    keymap_capture_pause_owner();
     scrcpy_mapping_cancel();return 0;
+  }
+  /* KWin grants constraints on the xdg window, even when wl_pointer.enter
+   * names an Android content subsurface. Other compositors (including our
+   * X11 backend) require that exact entered surface. Try the window first,
+   * then its focused content once, within the original request deadline. */
+  if(!keymap_capture.active&&elapsed>250&&keymap_capture.surface==owner->p&&
+      keymap_capture.pointer->pointer_surface!=owner->p) {
+    struct proxy *old=keymap_capture.locked;keymap_capture.locked=0;
+    wayland_send(old,0,0);real_destroy(old);
+    if(!keymap_capture_request_lock(keymap_capture.pointer->pointer_surface)) {
+      keymap_capture_pause_owner();scrcpy_mapping_cancel();return 0;
+    }
   }
   return keymap_capture.active;
 }
@@ -118,9 +134,10 @@ static void keymap_locked(void *data,struct proxy *p) {
   pthread_mutex_lock(mutex);
   if(p==keymap_capture.locked&&keymap_capture_owner_valid()) {
     keymap_capture.active=1;
-    /* Preserve an unknown compositor cursor. Once upstream supplies its
-     * cursor, interception below hides it and retains an exact restore value. */
-    if(keymap_capture.pointer->cursor_requested) {
+    __android_log_print(4,"AnvilKeymapCapture","pointer locked: %s",
+      keymap_capture.surface==keymap_capture.owner->p?"window":"content");
+    /* A bridge arrow is restorable even before HWC's first cursor request. */
+    if(keymap_capture.pointer->cursor_requested||keymap_capture.pointer->cursor_fallback) {
       union argument a[4]={{.u=keymap_capture.pointer->cursor_serial},{.o=0},{.i=0},{.i=0}};
       wayland_send(keymap_capture.pointer->p,0,a);
     }
@@ -131,17 +148,33 @@ static void keymap_locked(void *data,struct proxy *p) {
 static void keymap_unlocked(void *data,struct proxy *p) {
   (void)data;
   pthread_mutex_lock(mutex);
-  if(p==keymap_capture.locked)scrcpy_mapping_cancel();
+  if(p==keymap_capture.locked){
+    keymap_capture_pause_owner();
+    scrcpy_mapping_cancel();
+  }
   pthread_mutex_unlock(mutex);
 }
 static void (*keymap_relative_listener[])(void)={(void (*)(void))keymap_relative_motion};
 static void (*keymap_locked_listener[])(void)={(void (*)(void))keymap_locked,(void (*)(void))keymap_unlocked};
+static int keymap_capture_request_lock(struct proxy *surface) {
+  struct keymap_capture_binding *b=keymap_capture_for(keymap_capture.display);
+  union argument lock[5]={{.o=0},{.o=surface},{.o=keymap_capture.pointer->p},{.o=0},{.u=1}};
+  keymap_capture.surface=surface;
+  keymap_capture.locked=real_marshal(b->constraints,1,lock,&keymap_locked_interface,1);
+  if(!keymap_capture.locked)return 0;
+  if(real_set_queue)real_set_queue(keymap_capture.locked,0);
+  if(real_listen(keymap_capture.locked,keymap_locked_listener,0))return 0;
+  if(real_display_flush&&real_display_flush(keymap_capture.display)<0&&PROFILE_ERRNO!=11)return 0;
+  __android_log_print(4,"AnvilKeymapCapture","request pointer lock: %s",
+    surface==keymap_capture.owner->p?"window":"content");
+  return 1;
+}
 static int keymap_capture_start(struct object *owner) {
   if(!keymap_capture_supported(owner)||!real_marshal||!real_listen||!real_destroy||!get_version)return 0;
   if(keymap_capture.owner)return keymap_capture.owner==owner;
   struct object *pointer=0;
   for(struct object *o=objects;o;o=o->next)
-    if(object_is(o,"wl_pointer")&&o->display==owner->display&&o->cursor_serial&&
+    if(object_is(o,"wl_pointer")&&o->display==owner->display&&o->pointer_surface&&
        game_fit_owner(find(o->pointer_surface))==owner) {pointer=o;break;}
   if(!pointer)return 0;
   keymap_capture.owner=owner;keymap_capture.pointer=pointer;
@@ -153,14 +186,7 @@ static int keymap_capture_start(struct object *owner) {
   if(!keymap_capture.relative){keymap_capture_stop();return 0;}
   if(real_set_queue)real_set_queue(keymap_capture.relative,0);
   if(real_listen(keymap_capture.relative,keymap_relative_listener,0)) {keymap_capture_stop();return 0;}
-  union argument lock[5]={{.o=0},{.o=pointer->pointer_surface},{.o=pointer->p},{.o=0},{.u=1}};
-  keymap_capture.locked=real_marshal(b->constraints,1,lock,&keymap_locked_interface,1);
-  if(!keymap_capture.locked){keymap_capture_stop();return 0;}
-  if(real_set_queue)real_set_queue(keymap_capture.locked,0);
-  if(real_listen(keymap_capture.locked,keymap_locked_listener,0)) {keymap_capture_stop();return 0;}
-  if(real_display_flush&&real_display_flush(owner->display)<0&&PROFILE_ERRNO!=11) {
-    keymap_capture_stop();return 0;
-  }
+  if(!keymap_capture_request_lock(owner->p)){keymap_capture_stop();return 0;}
   return 1;
 }
 static int keymap_capture_global(struct object *registry,uint32_t name,const char *interface,uint32_t version) {
@@ -213,7 +239,10 @@ static void keymap_capture_forget(struct object *o) {
   if(o==keymap_capture.owner||o==keymap_capture.pointer ||
      (keymap_capture.pointer&&o->p==keymap_capture.pointer->pointer_surface))
     scrcpy_mapping_cancel();
-  for(struct object *p=objects;p;p=p->next)if(p->cursor_surface==o->p)p->cursor_surface=0;
+  for(struct object *p=objects;p;p=p->next)if(p->cursor_surface==o->p) {
+    p->cursor_surface=0;
+    if(p!=o&&p->pointer_surface!=o->p)csd_cursor_show(p);
+  }
 }
 static void keymap_capture_cursor_request(struct object *o,union argument *a) {
   if(!o)return;

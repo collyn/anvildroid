@@ -273,5 +273,42 @@ int main(void) {
   s.fit_w=440;h.dirty=1;keymap_callback=&repaint_callback;
   keymap_done((void *)(uintptr_t)keymap_display_epoch,&repaint_callback,0);
   assert(!map_count&&last[1]==3); /* genuine presentation resize still cancels */
+  /* Custom directions retain one joystick; walk changes its physical radius. */
+  setup(&s,&h,KEYMAP_DPAD);s.p=&root;s.viewport=&s;s.hints=&h;
+  h.model.points[0].key=23;h.model.points[0].up_key=23;h.model.points[0].left_key=36;
+  h.model.points[0].down_key=37;h.model.points[0].right_key=38;
+  h.model.points[0].walk_key=42;h.model.points[0].walk_radius=40;h.model.points[0].radius=8192;
+  assert(keymap_valid(&h.model,1));
+  scrcpy_mapping_key(&s,&h,42,1);assert(!map_count);
+  scrcpy_mapping_key(&s,&h,23,1);assert(map_count==1);
+  int walk_y=map_advanced[0].ly;assert(walk_y==32768-(8192*40/100)*464/824);
+  scrcpy_mapping_key(&s,&h,38,1);assert(map_count==1&&map_advanced[0].dx==1);
+  scrcpy_mapping_key(&s,&h,42,0);assert(map_advanced[0].ly<walk_y);
+  scrcpy_mapping_key(&s,&h,23,0);scrcpy_mapping_key(&s,&h,38,0);assert(!map_count);
+  /* Radius projection bounds skill displacement in physical pixels. */
+  setup(&s,&h,KEYMAP_SKILL);s.p=&root;s.viewport=&s;s.hints=&h;
+  pointer=(struct object){.pointer_surface=&root};s.next=&pointer;
+  h.model.points[0].radius=8192;h.model.points[0].cancel_key=46;
+  h.model.points[0].cancel_x=60000;h.model.points[0].cancel_y=10000;
+  scrcpy_mapping_key(&s,&h,17,1);
+  map_advanced_motion(&pointer,1223*256,977*256);
+  int64_t sx=(int64_t)(map_advanced[0].lx-32768)*464,sy=(int64_t)(map_advanced[0].ly-32768)*824;
+  assert(map_length((uint64_t)(sx*sx+sy*sy))<=8192ULL*464);
+  scrcpy_mapping_key(&s,&h,46,1);assert(!map_count&&last[1]==1);
+  assert(sequence[sequence_count-2][1]==2);
+  scrcpy_mapping_key(&s,&h,17,1);assert(!map_count); /* no replay after cancel */
+  setup(&s,&h,KEYMAP_SKILL);h.model.points[0].skill_mode=KEYMAP_SKILL_TOGGLE;
+  scrcpy_mapping_key(&s,&h,17,1);scrcpy_mapping_key(&s,&h,17,0);assert(map_count==1);
+  scrcpy_mapping_key(&s,&h,17,1);assert(!map_count&&last[1]==1);
+  setup(&s,&h,KEYMAP_SKILL);h.model.points[0].skill_mode=KEYMAP_SKILL_IMMEDIATE;
+  scrcpy_mapping_key(&s,&h,17,1);assert(!map_count&&sequence_count==2&&last[1]==1);
+  before=packets;scrcpy_mapping_key(&s,&h,17,1);assert(packets==before);
+  /* Right-click walk converts cursor direction to joystick, never cursor tap. */
+  setup(&s,&h,KEYMAP_BASIC);keymap_set_kind(&h.model.points[0],KEYMAP_WALK);
+  s.p=&root;s.viewport=&s;s.hints=&h;pointer=(struct object){.pointer_surface=&root};s.next=&pointer;
+  absolute_pointer_update(&pointer,1223*256,566*256,1);
+  absolute_pointer_button(&pointer,273,1);assert(map_count==1&&sequence[0][1]==0);
+  assert(map_advanced[0].lx>32768&&map_advanced[0].ly>=32668&&map_advanced[0].ly<=32868);
+  absolute_pointer_button(&pointer,273,0);assert(!map_count&&last[1]==1);
   return 0;
 }

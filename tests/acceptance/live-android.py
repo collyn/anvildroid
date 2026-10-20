@@ -36,6 +36,11 @@ def module(name):
     value = importlib.util.module_from_spec(spec); spec.loader.exec_module(value)
     return value
 
+def acceptance_module(name):
+    spec = importlib.util.spec_from_file_location(name.replace('-', '_'), SCRIPT.with_name(name + '.py'))
+    value = importlib.util.module_from_spec(spec); spec.loader.exec_module(value)
+    return value
+
 def require(value, message):
     if not value: raise RuntimeError(message)
 
@@ -140,8 +145,8 @@ def bind_fixture_descriptor(descriptor, root):
     if libc.mount(os.fsencode('/proc/self/fd/' + str(descriptor)), os.fsencode(root), None, 4096, None) < 0:
         raise OSError(ctypes.get_errno(), 'Disposable fixture descriptor bind failed')
 
-def nested_wayland(root, owner_uid, generation):
-    """Only private Xvfb → UID-owned Weston; never touch host input devices."""
+def nested_wayland(root, owner_uid, generation, gpu_env=None):
+    """Private X11 transport → UID-owned Weston; never use host input devices."""
     validate_root(root)
     require(os.readlink('/proc/self/ns/mnt') != os.readlink('/proc/1/ns/mnt'), 'Private inner mount namespace required')
     account = pwd.getpwuid(owner_uid)
@@ -159,10 +164,17 @@ def nested_wayland(root, owner_uid, generation):
     display = 'wayland-anvil-' + generation
     env = {'PATH': os.environ['PATH'], 'XDG_RUNTIME_DIR': str(user_run), 'HOME': str(user_run),
            'LIBGL_ALWAYS_SOFTWARE': '1', 'GALLIUM_DRIVER': 'llvmpipe', 'DISPLAY': ':77', 'XAUTHORITY': str(user_authority)}
+    if gpu_env:
+        env.pop('LIBGL_ALWAYS_SOFTWARE'); env.pop('GALLIUM_DRIVER'); env.update(gpu_env)
     try:
-        with (root / 'nested-xvfb.log').open('a') as log:
-            processes.append(subprocess.Popen(['Xvfb', ':77', '-nolock', '-screen', '0', '1700x1100x24',
-                '-nolisten', 'tcp', '-noreset', '-auth', str(authority)], stdout=log, stderr=log))
+        gpu_report = None
+        if gpu_env:
+            processes, gpu_report = acceptance_module('gpu-desktop').start_x11(
+                root, owner_uid, generation, user_authority, (1700,1100), gpu_env)
+        else:
+            with (root / 'nested-xvfb.log').open('a') as log:
+                processes.append(subprocess.Popen(['Xvfb', ':77', '-nolock', '-screen', '0', '1700x1100x24',
+                    '-nolisten', 'tcp', '-noreset', '-auth', str(authority)], stdout=log, stderr=log))
         deadline = time.monotonic() + 10
         while not Path('/tmp/.X11-unix/X77').exists():
             require(processes[0].poll() is None and time.monotonic() < deadline, 'Private Xvfb failed')
@@ -170,7 +182,8 @@ def nested_wayland(root, owner_uid, generation):
         with (root / 'nested-weston.log').open('a') as log:
             processes.append(subprocess.Popen(['weston', '--backend=x11', '--renderer=gl', '--no-config',
                 '--socket=' + display, '--width=1600', '--height=1000', '--idle-time=0', '--debug'],
-                env=env, cwd='/', user=owner_uid, group=account.pw_gid, extra_groups=[], stdout=log, stderr=log))
+                env=env, cwd='/', user=owner_uid, group=account.pw_gid,
+                extra_groups=sorted({p.stat().st_gid for p in Path('/dev/dri').glob('renderD*')}) if gpu_env else [], stdout=log, stderr=log))
         deadline = time.monotonic() + 15
         while not (user_run / display).exists():
             require(processes[-1].poll() is None and time.monotonic() < deadline, 'Private nested Weston failed')
@@ -190,10 +203,16 @@ def nested_wayland(root, owner_uid, generation):
             if len(windows)==1: break
             require(time.monotonic()<deadline,'Expected exactly one private Weston X11 output: '+tree)
             time.sleep(.1)
-        return processes, dict(kind='nested-weston-x11', x11_display=':77', authority=str(user_authority),
+        transport = dict(kind='nested-weston-x11', x11_display=':77', authority=str(user_authority),
             wayland_display=display, compositor_namespace_pid=processes[-1].pid, x11_window=windows[0],
             compositor_mount_namespace=os.readlink('/proc/self/ns/mnt'),
             compositor_pid_namespace=os.readlink('/proc/self/ns/pid'), protocols=protocols)
+        if gpu_report:
+            renderers = __import__('re').findall(r'GL renderer: (.+)', (root/'nested-weston.log').read_text())
+            require(renderers and not any(v in renderers[-1].lower() for v in ('llvmpipe','softpipe','software','lavapipe')),
+                    'Nested Weston did not use hardware rendering')
+            transport['gpu_transport'] = dict(gpu_report, nested_renderer=renderers[-1])
+        return processes, transport
     except BaseException:
         close_displays(processes); raise
 
@@ -237,13 +256,24 @@ def prepare(root, package, owner_uid, image_source, flavor):
     (root / 'acceptance.json').write_text(json.dumps(value, indent=2))
     print(json.dumps(value), flush=True)
 
-def start(root, package, x11, wayland=False, wayland_x11=False):
+def start(root, package, x11, wayland=False, wayland_x11=False, gpu_node=None, host_mesa_prefix=None):
     wayland = wayland or wayland_x11
     metadata = read_metadata(root); instance = Path(metadata['instance'])
     owner_uid = metadata.get('owner_uid', metadata.get('desktop_uid'))
     require(type(owner_uid) is int and owner_uid > 0, 'Missing desktop owner')
     account = pwd.getpwuid(owner_uid)
+    gpu_env = None
+    if gpu_node:
+        require(x11 or wayland_x11, 'GPU input acceptance requires --x11 or --wayland-x11')
+        selected = module('runtime-gpu').choose(gpu_node)
+        require(selected['node'] != 'software' and selected['node'] != 'auto', 'Select an explicit hardware GPU')
+        gpu_env = acceptance_module('gpu-desktop').renderer_environment(gpu_node, host_mesa_prefix)
+        (instance/'gpu.json').write_text(json.dumps(selected))
+        metadata['requested_gpu'] = selected
     isolate_session(root, owner_uid)
+    if gpu_env:
+        os.environ.pop('LIBGL_ALWAYS_SOFTWARE', None); os.environ.pop('GALLIUM_DRIVER', None)
+        os.environ.update(gpu_env)
     lock = os.open(instance / 'worker.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     payload = assets(root, package)
@@ -277,17 +307,24 @@ def start(root, package, x11, wayland=False, wayland_x11=False):
         authority = instance / 'x11-authority'; authority.touch(mode=0o600)
         subprocess.run(['xauth', '-f', str(authority), 'add', ':77', '.', secrets.token_hex(16)], check=True)
         subprocess.run(['mount', '-t', 'tmpfs', '-o', 'mode=1777', 'tmpfs', '/tmp/.X11-unix'], check=True)
-        with (root / 'xvfb.log').open('a') as log:
-            xserver = subprocess.Popen(['Xvfb', ':77', '-nolock', '-screen', '0', '1600x1000x24', '-nolisten',
-                                        'tcp', '-noreset', '-auth', str(authority)], stdout=log, stderr=log)
-        time.sleep(1); require(xserver.poll() is None, 'Private Xvfb exited')
+        if gpu_env:
+            private_authority = Path('/run/user') / str(owner_uid) / 'gpu-authority'
+            shutil.copyfile(authority, private_authority); os.chown(private_authority, owner_uid, account.pw_gid)
+            private_authority.chmod(0o600)
+            nested_processes, metadata['gpu_transport'] = acceptance_module('gpu-desktop').start_x11(
+                root, owner_uid, metadata['generation'], private_authority, (1600,1000), gpu_env)
+        else:
+            with (root / 'xvfb.log').open('a') as log:
+                xserver = subprocess.Popen(['Xvfb', ':77', '-nolock', '-screen', '0', '1600x1000x24', '-nolisten',
+                                            'tcp', '-noreset', '-auth', str(authority)], stdout=log, stderr=log)
+            time.sleep(1); require(xserver.poll() is None, 'Private Xvfb exited')
         metadata.update(x11_display=':77', desktop_uid=owner_uid)
         (root / 'acceptance.json').write_text(json.dumps(metadata, indent=2))
         command += ['--desktop-display', 'x11::77', '--desktop-uid', str(owner_uid)]
     elif wayland:
         (instance / 'display-backend.json').write_text(json.dumps({'backend': 'legacy', 'presenter': 'amd'}))
         if wayland_x11:
-            nested_processes, transport = nested_wayland(root, owner_uid, metadata['generation'])
+            nested_processes, transport = nested_wayland(root, owner_uid, metadata['generation'], gpu_env)
             metadata.update(wayland_display=transport['wayland_display'], desktop_uid=owner_uid, input_transport=transport)
             (root / 'acceptance.json').write_text(json.dumps(metadata, indent=2))
             command += ['--desktop-display', transport['wayland_display'], '--desktop-uid', str(owner_uid)]
@@ -325,14 +362,18 @@ def main():
     display = parser.add_mutually_exclusive_group()
     display.add_argument('--x11', action='store_true')
     display.add_argument('--wayland', action='store_true', help='Private software Weston desktop acceptance')
-    display.add_argument('--wayland-x11', action='store_true', help='Guest Wayland with private Xvfb/Weston X11 input transport')
+    display.add_argument('--wayland-x11', action='store_true', help='Guest Wayland with private Weston X11 input transport (GPU with --gpu-node)')
     parser.add_argument('--image-source', type=Path, default=Path('/var/lib/waydroid/images'))
     parser.add_argument('--flavor', choices=('VANILLA','GAPPS'), default='VANILLA')
     parser.add_argument('--owner-uid', type=int, default=int(os.environ.get('SUDO_UID', '0')))
+    parser.add_argument('--gpu-node', help='Explicit Mesa DRM render node; requires verified hardware display transport')
+    parser.add_argument('--host-mesa-prefix', type=Path, help='Optional existing matching host Mesa stack, confined to fixture processes')
     mode.add_argument('--stop', action='store_true', help='Request production worker stop for this disposable store')
     parser.add_argument('--package', type=Path, default=REPO / 'target/releases/anvildroid-controller_0.1.3_amd64.deb')
     parser.add_argument('--inside', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args(); require(os.geteuid() == 0, 'Root required')
+    require(not args.gpu_node or args.start, '--gpu-node is a start-only option')
+    require(not args.host_mesa_prefix or args.gpu_node, '--host-mesa-prefix requires --gpu-node')
     validate_root(args.root, existing=args.start or args.stop)
     if args.stop:
         metadata = read_metadata(args.root)
@@ -346,9 +387,11 @@ def main():
         require(os.readlink('/proc/self/ns/net') != os.readlink('/proc/1/ns/net'), 'Private inner network namespace required')
         subprocess.run(['mount', '--make-rprivate', '/'], check=True)
         if args.preflight_wayland_input: return preflight_wayland_input(args.root, args.owner_uid)
-        return prepare(args.root, args.package, args.owner_uid, args.image_source, args.flavor) if args.prepare else start(args.root, args.package, args.x11, args.wayland, args.wayland_x11)
+        return prepare(args.root, args.package, args.owner_uid, args.image_source, args.flavor) if args.prepare else start(args.root, args.package, args.x11, args.wayland, args.wayland_x11, args.gpu_node, args.host_mesa_prefix)
     command = [sys.executable, str(SCRIPT), str(args.root), '--inside', '--package', str(args.package),
                '--preflight-wayland-input' if args.preflight_wayland_input else '--prepare' if args.prepare else '--start', '--owner-uid', str(args.owner_uid), '--image-source', str(args.image_source), '--flavor', args.flavor] + (['--x11'] if args.x11 else []) + (['--wayland'] if args.wayland else []) + (['--wayland-x11'] if args.wayland_x11 else [])
+    if args.gpu_node: command += ['--gpu-node', args.gpu_node]
+    if args.host_mesa_prefix: command += ['--host-mesa-prefix', str(args.host_mesa_prefix)]
     # Give the inner setup a second network namespace as well as mountns.
     command = isolate(['unshare', '--net', *command])
     if args.start:

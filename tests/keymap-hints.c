@@ -20,12 +20,17 @@ static struct proxy app = {&si}, hint = {&si}, region = {&ri}, sub = {&subi},
 static int region_add, input_empty, attached, fail_region, keys, buttons,
     motions, leaves;
 static int requests;
+static int hint_x, hint_y;
 static void *release_data;
 static struct proxy *marshal(struct proxy *p, uint32_t op, union argument *a,
                              const struct interface *i, uint32_t v) {
   (void)i;
   (void)v;
   ++requests;
+  if (p == &sub && op == 1) {
+    hint_x = a[0].i;
+    hint_y = a[1].i;
+  }
   if (p == &compositor)
     return op == 0 ? &hint : fail_region ? 0 : &region;
   if (p == &region && op == 1)
@@ -192,6 +197,26 @@ int main(void) {
     assert((pixels[i] & 255) <= a);
   }
   free(pixels);
+  /* A rotated portrait task can remain inside a landscape host. Its fitted
+   * passive canvas is narrower than the inspector's 300px minimum: do not
+   * close the hints or leave their previous wide attachment behind. */
+  const int fitted[][4] = {{0,2,704,444}, {209,0,285,448},
+                           {0,0,120,80}, {0,0,1,1}};
+  struct keymap_model saved = s.hints->model;
+  for (unsigned i=0;i<sizeof(fitted)/sizeof(fitted[0]);++i) {
+    int before = attached;
+    keymap_overlay_sync(&s,fitted[i][0],fitted[i][1],fitted[i][2],fitted[i][3]);
+    assert(s.hints && !s.hints->close_pending && attached == before+1);
+    assert(s.hints->piece.width == fitted[i][2] &&
+           s.hints->piece.height == fitted[i][3]);
+    assert(hint_x == fitted[i][0] && hint_y == fitted[i][1] &&
+           s.hints->sync_x == hint_x && s.hints->sync_y == hint_y);
+    assert(input_empty && !region_add && !memcmp(&saved,&s.hints->model,sizeof(saved)));
+    int unchanged = requests;
+    keymap_overlay_sync(&s,fitted[i][0],fitted[i][1],fitted[i][2],fitted[i][3]);
+    assert(requests == unchanged);
+    csd_release(release_data,&buffer);
+  }
   /* Draft/cancel never mutates saved hints; deleting all saved points removes
    * them, and a recycled/ambiguous task cannot inherit an old surface's hints.
    */
@@ -200,6 +225,8 @@ int main(void) {
   edit->model = m;
   s.overlay = edit;
   s.overlay->model.points[0].key = 31;
+  keymap_overlay_sync(&s,209,0,285,448);
+  assert(s.overlay->close_pending && !s.overlay->piece.surface);
   keymap_overlay_destroy(&s);
   assert(s.hints->model.points[0].key == 30);
   tasks[0].id = 8;

@@ -4,11 +4,56 @@ from unittest.mock import patch
 import unittest
 import os
 import tempfile
+import sys
 
 spec=importlib.util.spec_from_file_location('keymap_worker',Path(__file__).resolve().parents[1]/'services/runtime-worker.py')
 worker=importlib.util.module_from_spec(spec);spec.loader.exec_module(worker)
 
 class KeymapTests(unittest.TestCase):
+    def test_automatic_camera_roundtrip_and_mode_validation(self):
+        values=[63,32768,32768,0,8,49152,32768,250,3,0,1,0,0,8192,8192,100,100,0,2]+[0]*12
+        values[25]=56
+        def parse(row):
+            return worker.parse_keymaps('BEGIN\nANVIL_KEYMAP 4 default com.game.test 1\n'+' '.join(map(str,row))+'\nEND\n','default')
+        result=parse(values)
+        self.assertEqual(result['invalid_count'],0)
+        binding=result['profiles'][0]['bindings'][0]
+        self.assertEqual((binding['activation'],binding['evdev'],binding['suspend_key']),('auto',63,56))
+        for field,value in ((0,0),(4,0),(18,3)):
+            bad=values.copy();bad[field]=value
+            self.assertEqual(parse(bad)['invalid_count'],1)
+        for mode,name in ((0,'hold'),(1,'capture')):
+            old=values.copy();old[18]=mode;old[25]=0
+            self.assertEqual(parse(old)['profiles'][0]['bindings'][0]['activation'],name)
+
+    def test_v4_parameters_and_shared_keyboard_reservations(self):
+        def row(key, kind, **changes):
+            values=[key,32768,32768,0,kind,49152,32768,250,3,0,1,8192,80,8192,8192,100,150,0,0]+[0]*12
+            fields=('key','x','y','hold','kind','ex','ey','duration','repeats','source','end','radius','ramp','lw','lh','sx','sy','invert','activation',
+                    'up','left','down','right','walk','walk_radius','suspend','drag','skill','cancel','cx','cy')
+            for name,value in changes.items(): values[fields.index(name)]=value
+            return ' '.join(map(str,values))
+        def profile(rows): return 'BEGIN\nANVIL_KEYMAP 4 default com.game.test '+str(len(rows))+'\n'+'\n'.join(rows)+'\nEND\n'
+        movement=row(103,1,up=103,left=105,down=108,right=106,walk=42,walk_radius=40)
+        look=row(57,8,activation=1,suspend=56)
+        skill=row(16,4,skill=2,cancel=18,cx=100,cy=200)
+        walking=row(273,9,source=1)
+        report=worker.parse_keymaps(profile([movement,look,skill,walking]),'default')
+        self.assertEqual(report['invalid_count'],0)
+        self.assertEqual(report['profiles'][0]['bindings'][0]['up_key'],103)
+        self.assertEqual(report['profiles'][0]['bindings'][2]['skill_mode'],2)
+        self.assertEqual(report['profiles'][0]['bindings'][3]['kind'],'walk')
+        for rows in ([row(103,1,up=103,left=103,down=108,right=106)],
+                     [row(103,1,up=103,left=105,down=108,right=106,walk=60)],
+                     [movement,row(42,0)],[look,row(56,0)],[skill,row(18,0)],
+                     [row(273,9,source=1,radius=0)],[row(16,0,drag=1)],
+                     [row(272,0,source=1,end=2,drag=1),row(273,0,source=1,end=2,drag=1)]):
+            self.assertEqual(worker.parse_keymaps(profile(rows),'default')['invalid_count'],1,rows)
+        canonical=profile([look])
+        for bad in (canonical.replace('ANVIL_KEYMAP',' ANVIL_KEYMAP'), canonical.replace('4 default','4\r default'), canonical.replace('4 default','4\ndefault')):
+            self.assertEqual(worker.parse_keymaps(bad,'default')['invalid_count'],1)
+        self.assertEqual(worker.parse_keymaps(canonical.replace('ANVIL_KEYMAP ','ANVIL_KEYMAP\t'),'default')['invalid_count'],0)
+
     def test_inventory_scope_and_validation(self):
         good='BEGIN\nANVIL_KEYMAP 1 r-one com.game.test 2\n30 100 200 0\n57 65535 0 1\nEND\n'
         report=worker.parse_keymaps(good,'r-one')
@@ -68,6 +113,19 @@ class KeymapTests(unittest.TestCase):
             worker.keymap.keymap_profiles('/lxc','container','r-one')
         self.assertIn('head -c 16385',run.call_args.args[-1])
         self.assertEqual(run.call_args.kwargs['output_limit'],3*1024*1024)
+
+    def test_running_inventory_preserves_last_frame_through_process_runner(self):
+        # A real subprocess is necessary: a mocked runner hid strip() removing
+        # both the last profile newline and its framing delimiter on the host.
+        for rows in ('', '16 100 200 0\n'):
+            payload = f'ANVIL_KEYMAP 1 r-one com.game.test {int(bool(rows))}\n' + rows
+            frame = f'SIZE {len(payload.encode())}\n' + payload + '\n'
+            with patch.object(worker.keymap.linux, 'android_command',
+                              return_value=(sys.executable, '-c', 'import sys;sys.stdout.write(' + repr(frame) + ')')):
+                result = worker.keymap.keymap_profiles('/lxc', 'container', 'r-one')
+            self.assertEqual(result['invalid_count'], 0)
+            self.assertEqual(len(result['profiles']), 1)
+            self.assertEqual(len(result['profiles'][0]['bindings']), int(bool(rows)))
 
     def test_strict_decimal_lexer_and_trusted_file_framing(self):
         good='ANVIL_KEYMAP 1 default com.game.test 1\n30 100 200 0\n'

@@ -39,7 +39,7 @@
                  Ln.d("Controller stopped");
                  if (uhidManager != null) {
                      uhidManager.closeAll();
-@@ -405,7 +413,37 @@
+@@ -405,7 +413,52 @@
          return Pair.create(point, targetDisplayId);
      }
  
@@ -71,9 +71,24 @@
 +        if (action == MotionEvent.ACTION_CANCEL) {
 +            return cancelTouches();
 +        }
-+        if (touchResetFailed) {
++        if (touchResetFailed && action != MotionEvent.ACTION_DOWN) {
 +            return false;
 +        }
++        if (touchResetFailed) {
++            // Activity recreation may already have canceled Android's stream,
++            // making our subsequent CANCEL fail. Only a fresh DOWN may recover:
++            // Android starts a new stream and cancels any remaining old target.
++            // Never turn stale MOVE/UP into a new contact or reuse old pointer IDs.
++            pointersState.clear();
++            lastTouchDown = 0;
++            boolean applied = injectTouchInternal(action, pointerId, position, pressure, actionButton, buttons);
++            touchResetFailed = !applied;
++            return applied;
++        }
++        return injectTouchInternal(action, pointerId, position, pressure, actionButton, buttons);
++    }
++
++    private boolean injectTouchInternal(int action, long pointerId, Position position, float pressure, int actionButton, int buttons) {
          long now = SystemClock.uptimeMillis();
  
          Pair<Point, Integer> pair = getEventPointAndDisplayId(position);

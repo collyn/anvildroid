@@ -1,6 +1,7 @@
 # Waydroid Helper feature implementation plan
 
-Last updated: 2026-10-18. Branch: `dev/waydroid-helper-features`.
+Last updated: 2026-10-19. Original branch: `dev/waydroid-helper-features`;
+current follow-up: `fix/compact-page-headers` (PR #2).
 
 The user requested implementation of all five recommendations, parallel agent
 work, thorough testing, and commits on a development branch. Existing installed
@@ -19,13 +20,21 @@ results and current package hashes are recorded at the end of this document.
 Arch installation, boot, restart and GPU checks pass on CachyOS; the user also
 confirmed the runtime works after the OverlayFS/BinderFS fixes.
 Remaining acceptance requires representative apps/games,
-physical desktop/editor interactions, the graphical managed ARM workflow, and
+physical desktop input/gameplay, the graphical managed ARM workflow, and
 online Google account/Integrity checks. Disposable Default ARM disable/restore
-and managed X11/Wayland editor/playback cancellation now pass. The remaining
+and the managed X11/Wayland graphical editor lifecycle now pass (45/45 on each
+route, plus 8/8 concurrent-runtime isolation checks). The remaining
 gates stay unchecked below. AppImage
 is deferred; this branch is not a merge or published release.
 
-**Latest delivery: expand the existing ARM Engine/Version catalog.**
+**Latest delivery: Android 13 controls environment and recovery matrix.**
+Managed Vanilla/GAPPS × X11/Wayland pass 45/45 editor/input/capture and 9/9
+held-input recovery cases per row. Disposable Default passes 22/22 per row
+under the explicit cgroup/cursor conditions in
+[the matrix report](CONTROLS-MATRIX.md). Physical desktops and additional images
+remain separate gates. Debian and Arch recovery packages are built and verified.
+
+**ARM catalog delivery: expand the existing ARM Engine/Version catalog.**
 The new catalog and its installation/JNI acceptance are recorded in the final
 section. The touch keymap V3 editor and gestures are implemented, with 25/25
 managed input checks on each backend recorded below; the broader manual game
@@ -239,14 +248,23 @@ no mount affects another runtime or the host session unintentionally.
 
 Owner: game-controls agent; shared-folders agent assists mount investigation.
 
-- [ ] Record Default/managed × X11/Wayland results on each actually supported
-  backend/image combination. Record explicit unsupported reasons for others.
+- [x] Record Android 13 Vanilla/GAPPS × Default/managed × native X11/nested
+  Wayland: all eight disposable rows pass. Keep Default's writable private
+  cgroup and software cursor prerequisites explicit; inherited read-only
+  cgroup recovery and ordinary software HWC SHM cursor mode are not certified.
+- [ ] Validate additional custom Android 14–16/CAR images advertising the per-app
+  composer contract, and physical GNOME/KDE/CachyOS desktops. Explicit
+  `android-display` presentation currently omits `keymap_editor`.
 - [x] Check packaged managed Android 13 raw/FUSE/app access, granted SDK28 storage
   permissions, RO/RW, clean stop and removal/restart. Permission/ACL fixtures use
   two real numeric UIDs. Other images and modern scoped-storage apps remain open.
-- [ ] Exercise Basic/WASD/swipe/repeat/skill/macro/aim-fire in Android apps on both
+- [x] Exercise Basic/WASD/swipe/repeat/skill/macro/aim-fire in Android apps on both
   display backends. Verify editor/save/reload, independent marker visibility,
   focus loss, window resize, app replacement, disconnect and restart cancellation.
+  The final 2026-10-19 matrix observes actual Android CANCEL with three contacts
+  held, fresh input after framework restoration/app reopen, and full runtime
+  Stop/restart with a new generation, retained profile and no held replay.
+  Managed rows pass 45+9 cases each; Default's narrower suite passes 22 each.
 - [x] Exercise all ten maintained delivery scenarios on actual managed VANILLA
   Android 13 through native X11, the production bridge and scrcpy Android sink;
   verify finger MotionEvents, finite macros, multiple contacts and blur release.
@@ -947,14 +965,19 @@ the controls owner. Acceptance work uses separate harness/probe files.
   task/package replacement, runtime disconnect and capture-release shortcut
   release every contact/timer/capture. Consume stale button/key releases;
   require fresh input after refocus, with toggle capture remaining off.
-- [ ] Actual Android probe on managed X11 and Wayland observes
+- [x] Actual Android probe on managed X11 and Wayland observes
   SOURCE_TOUCHSCREEN and TOOL_TYPE_FINGER, correct coordinates/IDs and exact
   gesture order. Exercise joystick + camera + fire simultaneously and profile
   isolation across concurrent app windows/runtimes. Report supported Default
   combinations separately; earlier 13/13 results do not cover these additions.
-- [ ] Drive the graphical editor: add/select/rebind/drag/delete, invalid/conflict
+  The 2026-10-19 managed runs pass 45/45 per backend and 8/8 same-package,
+  concurrent-runtime isolation cases. Multiple ambiguous same-package tasks in
+  one runtime remain rejected; physical Default input is not covered here.
+- [x] Drive the graphical editor: add/select/rebind/drag/delete, invalid/conflict
   states, Save/reload/Cancel, marker visibility and window resizing. Round-trip
-  old and new profiles through native persistence and GUI inventory.
+  old and new profiles through native persistence and GUI inventory. The
+  2026-10-19 disposable managed runs add real DPI/rotation and task replacement;
+  physical GNOME/KDE/Default behavior remains a separate acceptance gate.
 - [ ] Test representative games: a game rejecting mouse input, a drag-to-start
   joystick game, and a camera-swiping FPS/MOBA. Record games/builds/backends and
   known limits. Diagnostic MotionEvents establish delivery, not game feel or
@@ -1037,9 +1060,10 @@ the passing evidence.
 All test runtimes reached `Stopped`, complete cleanup and empty scopes, with
 no owned processes or host mounts, before removing their disposable stores.
 No package was installed over personal services, and no physical Arch-host
-deployment is claimed for this editor build. The composite Android and editor
-gates above remain open for concurrent app/runtime isolation and the full live
-drag/delete/conflict/resize/rotation/replacement matrix. Physical GNOME/KDE/
+deployment is claimed for this editor build. At that delivery, the composite
+Android/editor gates remained open for concurrent runtime isolation and live
+drag/delete/conflict/resize/rotation/replacement; the 2026-10-19 follow-up below
+closes those managed cases. Physical GNOME/KDE/
 Default input, representative mouse-rejecting/joystick/FPS/MOBA games, ARM game
 compatibility, tuning and latency under load remain manual acceptance gates.
 AppImage remains deferred; this delivery does not merge or publish a release.
@@ -1072,3 +1096,148 @@ RustDesk, desktop session or service was a test target. Android 11 live executio
 the graphical install workflow, representative games and physical Arch testing
 remain open. See [ARM translation](ARM-TRANSLATION.md) for the full version table,
 checksums/provenance and retained evidence.
+
+## Keymap editor lifecycle completion — 2026-10-19
+
+This completes item 1 of the remaining-work review in the existing editor.
+Compact layouts now show binding/validation errors; invalid bindings preserve
+the prior control. Deleting a marker clears binding capture/property state.
+Resize or fitted-origin changes cancel dragging and stale toolbar presses, so
+an old release cannot activate a relocated Save/Delete target. Replaced or
+ambiguous task ownership cancels the draft before it can save to another task.
+
+Actual Android density testing exposed a receiver fault: Activity recreation
+can already cancel Android's gesture, causing our subsequent CANCEL to fail
+and latch all later input off. The patched scrcpy receiver still blocks stale
+MOVE/UP after a failed reset, but permits only a fresh DOWN to recover with an
+empty pointer list. A failed fresh DOWN keeps the guard latched. The build now
+tests these production Java methods against the real upstream pointer state
+before compiling the pinned Android server.
+
+| Managed acceptance | Result | Evidence |
+| --- | --- | --- |
+| Native X11 editor/input/capture | 45/45 pass | [summary](../target/editor-lifecycle-20261019/recovery-x11-v2/summary.json) |
+| Nested Wayland editor/input/capture | 45/45 pass | [summary](../target/editor-lifecycle-20261019/recovery-wayland-v5/summary.json) |
+| Same package in concurrent X11 and Wayland runtimes | 8/8 pass | [summary](../target/editor-lifecycle-20261019/isolation-v2/summary.json) |
+
+The full runs include add/select/drag/rebind/delete, rendered conflict feedback,
+unassigned Save rejection, Save/reload/Cancel, actual marker hide/restore pixels,
+dirty app replacement/reopen, resize during drag, maximize/restore, real Android
+density 220 and 90-degree rotation while a contact is held, and fresh playback
+after each transition. Existing finger mouse/joystick/swipe/look/multicontact and
+capture tests remain enabled. Wayland maximize uses the production CSD; native
+X11 supplies an explicit private EWMH/ConfigureNotify WM fixture. This does not
+certify physical KWin/GNOME maximize behavior.
+
+The isolation probe alternates real input between two distinct profiles for
+`org.anvildroid.touchprobe`, checks the authored positions (actual x=109/334),
+edits/Saves each binding while the peer plays, and requires zero cross-runtime
+contacts and unchanged peer profile bytes. Multiple ambiguous same-package
+tasks in one runtime are still rejected rather than sharing an editor owner.
+
+Verification also passes the complete feature script (backend/frontend and
+12 native suites), full native regressions, new editor ASan/UBSan/leak checks,
+private native-X11 host regressions, the Android x86_64 bridge warning-as-error
+build, production-method Java reset regression/full scrcpy build, and the final
+22 inert controls-harness tests. The extracted Debian package passes pinned
+source/native/scrcpy parity, dependencies, CLI routing and image-tool checks.
+Logs are under `target/editor-lifecycle-*.log`; live evidence and failed attempts
+are retained under `target/editor-lifecycle-20261019/`.
+
+| Final artifact | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `target/releases/anvildroid-controller_0.1.3+editor.lifecycle3_amd64.deb` | 26,285,118 | `caf0d63bc2abca3a065981df1b7252af9eb7660e960eb23b3e72368b6f1c1b1f` |
+| Packaged patched scrcpy server | — | `855be209a8719a964827cc990ed84a406119f4110c77f2074d215bba20cb2ca7` |
+
+The scrcpy revision remains `f01231dff8294fe2c99045a4f9a14b233a71bb86`;
+patch SHA256 is `ccbc0a0bd85eb17d8acf643f6b2431fc4fcb635e3eeea4359189de2b43d8930a`.
+Both acceptance generations were cleanly stopped before fresh isolation
+desktops. Final isolation generations also reached Stopped/cleanup_complete,
+quiescence and empty scopes, with no owned process or host mount before removal:
+[X11](../target/editor-lifecycle-20261019/cleanup-final-x11.json),
+[Wayland](../target/editor-lifecycle-20261019/cleanup-final-wl.json).
+
+All live work used disposable Android 13 Vanilla guests, software rendering and
+private namespaces/displays. No new package was installed over personal services.
+Physical GNOME/KDE/CachyOS/Default input, representative games and ARM game feel,
+sustained FPS capture and latency under game load remain open. No new Arch build
+or host deployment is claimed here. AppImage stays deferred; this follow-up is
+submitted on PR #2 without merging or publishing a release.
+
+## Item 2: real-game controls acceptance — 2026-10-19
+
+The managed real-game portion now has reproducible **11/11 native X11 and
+11/11 nested Wayland** passes using the official Luanti 5.17.0 x86_64 APK and
+Minetest Game 5.8.0. Actual game state confirms node digging, hotbar taps,
+mouse-as-finger camera movement, center-first drag/hold joystick, held swipe
+endpoints, Hold Look, simultaneous movement/look/dig, blur cancellation and
+fresh input after refocus. Mapping-off native mouse/W are negative controls.
+The existing editor changes the same Look to Capture and Saves it. Relative
+camera movement continues for 30.496/30.586 seconds, Escape releases it, and a
+fresh toggle works again. No new runtime settings section was created.
+
+The maintained probe pins official APK/game bytes, reuses authenticated private
+endpoints and requires a fresh game epoch/advancing telemetry. A world-local
+mod initializes the scene once and only observes player state during testing.
+The nested XTest/Weston cursor positions are normalized after unlocking; the
+outer transport cursor is distinct from the locked Wayland pointer. This is
+fixture routing, with no product input or binary change in this follow-up.
+
+The complete feature regression script and 26 inert controls-harness tests
+pass. Both final Android generations reached Stopped/cleanup_complete,
+quiescence and empty scopes, with no owned process/host mount before removing
+their disposable stores. Exact inputs, licensing, scenario results, summaries,
+failed attempts, cleanup and remaining scope are in
+[real-game acceptance](GAME-ACCEPTANCE.md); reproduction is maintained in the
+[acceptance README](../tests/acceptance/README.md#offline-real-game-controls).
+
+This completed one offline game's managed input acceptance. Default/image
+coverage and held-input runtime disconnect/restart were still open at that
+delivery; the follow-up below records the subsequent Android 13 matrix.
+Physical desktops, other representative FPS/MOBA/ARM games, long sessions,
+GPU behavior and latency under load remain open. That package remains
+`editor.lifecycle3` (`caf0d63b…`); no personal runtime, installed service,
+RustDesk session or remote Arch host was changed. AppImage remains deferred.
+
+## Item 2: environment and held-input recovery — 2026-10-19
+
+The automated Android 13 matrix is complete for Vanilla/GAPPS on managed and
+stock Default runtimes through native X11 and nested Wayland. Each managed row
+passes **45/45 editor/input/capture + 9/9 recovery**; each Default row passes its
+narrower **22/22** suite. Actual Android finger/CANCEL events, graphical Save/
+reload/Cancel, marker pixels, maximize/restore, app replacement, three held
+contacts, disconnect/reconnect, new runtime generation, profile retention and
+fresh input are required. Prior Luanti results remain one game, 11/11 on each
+managed backend, with bounded 30-second relative capture.
+
+Live acceptance found and fixed two product defects: the managed worker now
+supervises one control receiver with bounded retry/backoff and refreshed boot
+classpath, and Default Desktop writes a valid JSON backup manifest instead of
+passing serialized bytes to the JSON writer. Maintained disposable helpers add
+exact package/image/helper provenance, isolation/teardown audits and bounded
+window rediscovery when X11 replaces a handle during restore.
+
+The complete feature script passes **311 reported Python cases (5 optional
+skips), 390 frontend cases and 12 native suites**; worker tests pass separately
+**33/33**. Debian and Arch `0.1.3+controls.recovery2` packages pass extracted
+payload/source/native/scrcpy, dependencies, CLI and Android image-tool/signing
+checks. Neither package was deployed. All eight disposable stores are stopped,
+audited, archived and removed; the copied GAPPS source is separately audited
+and removed. Exact artifact/image hashes, row evidence and reproduction are in
+[the matrix report](CONTROLS-MATRIX.md) and
+[acceptance README](../tests/acceptance/README.md#held-input-recovery-and-default-controls).
+
+Default evidence requires a writable private delegated Android cgroup so init
+can create process groups and restart Zygote. The inherited stock read-only
+policy left Zygote stopping and is not certified; the fixture changes no
+installed service or product Default configuration. Default software Wayland
+also selects stock cursor-subsurface mode because ordinary stock HWC SHM cursor
+copy crashed after app replacement; that upstream renderer path is not fixed
+here. Recovery explicitly restores the framework and reopens the app.
+
+Physical GNOME/KDE/CachyOS input/window management, custom Android 14–16/CAR
+per-app images, other commercial FPS/MOBA/ARM games, long sessions and real
+GPU/latency behavior remain open gates. Explicit android-display mode omits
+the per-app editor. These conditions are not hidden behind the passing rows.
+AppImage remains deferred; PR #2 remains a follow-up for review, not a merge or
+published release.

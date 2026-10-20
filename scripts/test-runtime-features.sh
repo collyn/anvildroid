@@ -12,16 +12,23 @@ for suite in compatibility shares runtime-actions; do
 done
 node --test tests/test_*.cjs
 python3 -m unittest discover -s tests -p 'test_runtime_keymap*.py'
+python3 tests/test-keymap-codec-parity.py
+python3 -m unittest discover -s tests -p 'test_runtime_default_desktop.py'
 python3 -m unittest discover -s tests -p 'test_runtime_arm*.py'
 python3 tests/acceptance/test-controls-harness.py
+python3 tests/acceptance/test-detached-editor.py
 python3 tests/acceptance/test-default-harness.py
+python3 native/bridge/display-size-shell-test.py
 native_checks=$(mktemp -d /tmp/anvil-feature-native.XXXXXX)
 trap 'rm -rf "$native_checks"' EXIT HUP INT TERM
-for suite in keymap-model-v3 keymap-capture keymap-editor-ui keymap-full-ui keymap-advanced keymap-storage scrcpy-mapping keymap-overlay keymap-hints boot-canvas; do
+for suite in keymap-model-v3 keymap-capture keymap-editor-ui keymap-editor-lifecycle keymap-full-ui keymap-advanced keymap-storage scrcpy-mapping keymap-detached-panel keymap-detached-protocol keymap-overlay keymap-hints boot-canvas; do
   cc -Wall -Wextra -Werror "tests/$suite.c" native/ime/text-state.c -ldl -pthread -o "$native_checks/$suite"
   "$native_checks/$suite"
   printf 'Native %s: PASS\n' "$suite"
 done
+cc -Wall -Wextra -Werror native/bridge/app-rotation-test.c native/ime/text-state.c -ldl -pthread -o "$native_checks/app-rotation"
+"$native_checks/app-rotation"
+printf 'Native app-rotation: PASS\n'
 cc -Wall -Wextra -Werror -rdynamic native/bridge/absolute-pointer-test.c native/ime/text-state.c -ldl -pthread -o "$native_checks/absolute-pointer"
 "$native_checks/absolute-pointer"
 printf 'Native absolute-pointer: PASS\n'

@@ -167,30 +167,51 @@ def runtime_properties(instance):
     return props
 
 ARCHIVE = Path('/usr/local/lib/anvildroid-controller/libndk-0.2.3.zip')
+DEFAULT_SHA256 = '2e82cdc88ddc4d418f7fb861aeebb7c49c83a91b97f57da10510b5e1146a4ed5'
+DEFAULT_SOURCE = next(item for item in CATALOG if item['sha256'] == DEFAULT_SHA256)
+
+
+def default_archive():
+    return ARCHIVE.with_name('libhoudini-hpe-com1.3.zip')
+
+
+def cached_archive(digest):
+    return ARCHIVE if digest == SHA256 else default_archive() if digest == DEFAULT_SHA256 else None
+
+
+def _ensure_archive(archive, digest, url):
+    """Verify and atomically cache a pinned package across concurrent jobs."""
+    archive.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+    lock = os.open(archive.with_suffix('.lock'), os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if archive.is_file() and not archive.is_symlink():
+            info = archive.stat()
+            if info.st_uid == 0 and not info.st_mode & 0o022 and info.st_size <= 256 * 1024**2 and hashlib.sha256(archive.read_bytes()).hexdigest() == digest:
+                return archive
+        fd, temporary = tempfile.mkstemp(prefix='.arm-download-', dir=archive.parent)
+        try:
+            with os.fdopen(fd, 'wb') as output:
+                _source.download(url, output, digest)
+                output.flush(); os.fsync(output.fileno())
+                os.fchmod(output.fileno(), 0o644)
+            os.replace(temporary, archive)
+        finally:
+            Path(temporary).unlink(missing_ok=True)
+        return archive
+    finally:
+        os.close(lock)
 
 
 def ensure_archive():
-    """Reuse the pinned default package or download it once across prepare jobs."""
-    ARCHIVE.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
-    lock = os.open(ARCHIVE.with_suffix('.lock'), os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
-    try:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        if ARCHIVE.is_file() and not ARCHIVE.is_symlink():
-            info = ARCHIVE.stat()
-            if info.st_uid == 0 and not info.st_mode & 0o022 and info.st_size <= 256 * 1024**2 and hashlib.sha256(ARCHIVE.read_bytes()).hexdigest() == SHA256:
-                return ARCHIVE
-        fd, temporary = tempfile.mkstemp(prefix='.libndk-', dir=ARCHIVE.parent)
-        try:
-            with os.fdopen(fd, 'wb') as output:
-                _source.download('https://codeload.github.com/supremegamers/vendor_google_proprietary_ndk_translation-prebuilt/zip/' + COMMIT, output, SHA256)
-                output.flush(); os.fsync(output.fileno())
-                os.fchmod(output.fileno(), 0o644)
-            os.replace(temporary, ARCHIVE)
-        finally:
-            Path(temporary).unlink(missing_ok=True)
-        return ARCHIVE
-    finally:
-        os.close(lock)
+    """Retain the original libndk cache for explicit legacy installations."""
+    return _ensure_archive(ARCHIVE, SHA256,
+        'https://codeload.github.com/supremegamers/vendor_google_proprietary_ndk_translation-prebuilt/zip/' + COMMIT)
+
+
+def ensure_default_archive():
+    """New and reinstalled runtimes use the pinned, unpatched HPE Houdini."""
+    return _ensure_archive(default_archive(), DEFAULT_SHA256, DEFAULT_SOURCE['url'])
 
 
 def read_config(instance):
@@ -238,7 +259,7 @@ def info(instance, supported, sources=None):
     try:
         sdk = json.loads((instance / 'support/compatibility.json').read_text()).get('sdk')
     except (OSError, ValueError, AttributeError): pass
-    return {'provider': configured_provider or 'libndk_translation 0.2.3', 'archive_sha256': config.get('archive_sha256') if config else None,
+    return {'provider': configured_provider or DEFAULT_SOURCE['label'], 'archive_sha256': config.get('archive_sha256') if config else None,
             'enabled': bool(config and config['enabled']) or inherited,
             'inherited': inherited, 'supported': supported, 'available': available,
             'sources': sources or [],

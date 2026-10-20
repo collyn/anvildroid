@@ -51,6 +51,7 @@ KEYMAP_ASSETS = {
 RESOURCE_KEYS = ('lxc.cgroup2.memory.max', 'lxc.cgroup2.memory.swap.max', 'lxc.cgroup2.cpu.max')
 ARM_KEYS = ('ro.product.cpu.abilist', 'ro.product.cpu.abilist32', 'ro.product.cpu.abilist64',
             'ro.dalvik.vm.native.bridge', 'ro.dalvik.vm.isa.arm', 'ro.dalvik.vm.isa.arm64',
+            'ro.ndk_translation.version',
             'ro.enable.native.bridge.exec', 'ro.vendor.enable.native.bridge.exec', 'ro.vendor.enable.native.bridge.exec64')
 
 
@@ -356,7 +357,7 @@ class ExistingRuntime:
                 if path.is_symlink() or not path.is_file(): raise RuntimeError('Unsafe existing desktop overlay path')
                 originals[relative] = path.read_bytes()
                 target = backup / relative; target.parent.mkdir(parents=True, exist_ok=True); shutil.copyfile(path, target)
-        storage.atomic(backup / 'manifest.json', json.dumps({'files': list(changes), 'created_at': time.time()}).encode())
+        storage.atomic(backup / 'manifest.json', {'files': list(changes), 'created_at': time.time()})
         try:
             for relative, value in changes.items():
                 self.replace_bytes(overlay / relative, value.encode() if isinstance(value, str) else value)
@@ -476,16 +477,21 @@ class ExistingRuntime:
     def arm_info(self):
         props = properties(self.read(self.work / 'waydroid.prop'))
         bridge = props.get('ro.dalvik.vm.native.bridge', '')
-        # Existing providers are preserved; never overwrite an unknown ARM stack.
-        available = all((self.work / 'overlay/system' / lib / 'libndk_translation.so').is_file() for lib in ('lib', 'lib64'))
-        return {'provider': bridge or 'Existing native bridge', 'enabled': bridge not in ('', '0'),
-                'supported': available and bridge in ('', '0', 'libndk_translation.so'), 'available': available,
+        saved = self.saved().get('arm_properties') or {}
+        libraries = ('libndk_translation.so', 'libhoudini.so')
+        provider = bridge if bridge not in ('', '0') else saved.get('ro.dalvik.vm.native.bridge')
+        if not provider:
+            provider = next((library for library in libraries if all(
+                (self.work / 'overlay/system' / lib / library).is_file() for lib in ('lib', 'lib64'))), None)
+        available = provider in libraries and all((self.work / 'overlay/system' / lib / provider).is_file() for lib in ('lib', 'lib64'))
+        return {'provider': provider or 'Existing native bridge', 'enabled': bridge not in ('', '0'),
+                'supported': available and bridge in ('', '0', *libraries), 'available': available,
                 'restore_available': bool(self.saved().get('arm_properties')),
                 'experimental': True, 'inherited': False, 'abis': ['armeabi-v7a', 'arm64-v8a'],
                 'detail': 'Uses installed ARM libraries. AnvilDroid does not replace an unknown native bridge.'}
 
-    def apply_defaults(self):
-        """Configure stopped system Waydroid without replacing an unknown ARM provider."""
+    def apply_defaults(self, *, reset_arm=False):
+        """Set fresh defaults; preserve an active ARM provider unless reinstalling."""
         self.stopped()
         cfg = self.config()
         if not cfg.has_section('properties'): cfg.add_section('properties')
@@ -502,12 +508,12 @@ class ExistingRuntime:
             nodes.append(f'lxc.mount.entry = {node} {node[1:]} none bind,create=file 0 0')
             changes[nodes_path] = '\n'.join(nodes) + '\n'
         bridge = properties(self.read(self.work / 'waydroid.prop')).get('ro.dalvik.vm.native.bridge', '')
-        if platform.machine() == 'x86_64' and bridge in ('', '0', 'libndk_translation.so'):
-            arm.ensure_archive()
+        if platform.machine() == 'x86_64' and (reset_arm or bridge in ('', '0')):
+            archive = arm.ensure_default_archive()
             with tempfile.TemporaryDirectory(prefix='.default-arm-', dir=self.store) as folder:
                 payload = Path(folder) / 'payload'
-                arm.stage(arm.ARCHIVE, payload, arm.SHA256)
-                manifest = arm.verify(payload, arm.SHA256)
+                arm.stage(archive, payload, arm.DEFAULT_SHA256)
+                manifest = arm.verify(payload, arm.DEFAULT_SHA256)
                 overlay = self.work / 'overlay'
                 trusted_owners = {0, self.work.stat().st_uid}
                 for relative in manifest['files']:
@@ -521,7 +527,10 @@ class ExistingRuntime:
                     if target.is_symlink(): raise RuntimeError('Unsafe system ARM overlay file')
                     self.replace_bytes(target, (payload / relative).read_bytes())
                     target.chmod(stat.S_IMODE((payload / relative).stat().st_mode))
+            values.update({key: None for key in ARM_KEYS})
             values.update(arm.PROPERTIES)
+            values['ro.dalvik.vm.native.bridge'] = 'libhoudini.so'
+            values['ro.ndk_translation.version'] = None
         for key, value in values.items():
             if value is None: cfg.remove_option('properties', key)
             else: cfg.set('properties', key, value)
@@ -538,7 +547,7 @@ class ExistingRuntime:
         if not saved:
             raise RuntimeError('Enable management while Default runtime is running once before reinstalling')
         self.stopped()
-        if platform.machine() == 'x86_64': arm.ensure_archive()
+        if platform.machine() == 'x86_64': arm.ensure_default_archive()
         data_path = Path(saved.get('data_path', ''))
         if not data_path.is_absolute() or data_path == Path('/'):
             raise RuntimeError('Default Android data directory is unavailable')
@@ -573,6 +582,8 @@ class ExistingRuntime:
             os.fsync(fd)
         finally:
             os.close(fd)
+        self.apply_defaults(reset_arm=True)
+        storage.atomic(self.metadata, {key: value for key, value in saved.items() if key != 'arm_properties'})
         return self.record({}, self.saved())
 
     def dispatch(self, request, uid):
@@ -654,6 +665,19 @@ class ExistingRuntime:
             if request.get('action') != 'keymap_edit':
                 raise RuntimeError('Unsupported Default app action')
             return self.edit_keymap(request.get('package'))
+        if op == 'keymap_scheme':
+            keymap.validate_scheme_request(request)
+            if self.state() == 'FROZEN':
+                linux.run_bounded('gdbus', 'call', '--system', '--dest', 'id.waydro.Container',
+                    '--object-path', '/ContainerManager', '--method', 'id.waydro.ContainerManager.Unfreeze',
+                    timeout=3, operation='Resume Default runtime')
+            if self.state() != 'RUNNING': raise RuntimeError('Start Default runtime before managing schemes')
+            text = self.read(self.work / 'overlay/system/etc/init/init.waydroid.rc')
+            match = re.search(r'^    setenv ANVILDROID_RUNTIME_GENERATION ([0-9a-f]{32})$', text, re.M)
+            if not match:
+                raise RuntimeError('Restart Default runtime once to enable scheme management')
+            return keymap.keymap_schemes(self.work / 'lxc', 'waydroid', 'default', request,
+                lambda *args: self.android('/system/bin/' + args[0], *args[1:]), match[1])
         if op == 'keymaps':
             state = self.state()
             if state == 'FROZEN':
@@ -773,7 +797,7 @@ class ExistingRuntime:
                         raise RuntimeError('No saved ARM configuration; enable the installed provider through its installer first')
                 else:
                     current = properties(self.read(self.work / 'waydroid.prop'))
-                    if current.get('ro.dalvik.vm.native.bridge') != 'libndk_translation.so':
+                    if current.get('ro.dalvik.vm.native.bridge') not in ('libndk_translation.so', 'libhoudini.so'):
                         raise RuntimeError('ARM translation is already disabled')
                     storage.atomic(self.metadata, {**saved, 'arm_properties': {key: current.get(key) for key in ARM_KEYS}})
                     values = {key: None for key in ARM_KEYS}
@@ -877,15 +901,41 @@ def prepare_imported_profiles(data, identifier):
         directory = base / kind
         if not directory.exists(): continue
         if directory.is_symlink() or not directory.is_dir(): raise RuntimeError('Unsafe imported profile directory')
+        profiles = {}
         for profile in directory.iterdir():
             info = profile.lstat()
-            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > 4096:
+            limit = (keymap.SCHEME_META_LIMIT if profile.name.startswith('.schemes-') else 16384) if kind == 'keymaps' else 4096
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > limit:
                 raise RuntimeError('Unsafe imported profile')
-            text = profile.read_text()
+            profiles[profile.name] = profile.read_text()
+        rewritten = {}
+        for name, text in profiles.items():
             if kind == 'keymaps':
-                text = re.sub(r'\AANVIL_KEYMAP 1 (?:default|existing) ', 'ANVIL_KEYMAP 1 ' + identifier + ' ', text)
+                if name.startswith('.schemes-'):
+                    package = name[len('.schemes-'):]
+                    metadata = json.loads(text)
+                    source = metadata.get('runtime') if isinstance(metadata, dict) else None
+                    if source not in ('default', 'existing') or package not in profiles:
+                        raise RuntimeError('Invalid imported scheme scope')
+                    state = keymap._scheme_state(profiles[package], text, source, package)
+                    state['runtime'] = identifier
+                    for scheme in state['schemes']:
+                        header, separator, rows = scheme['profile'].partition('\n')
+                        parts = header.split(); parts[2] = identifier
+                        scheme['profile'] = keymap._scheme_profile(' '.join(parts) + separator + rows, identifier, package)
+                    text = json.dumps(state, ensure_ascii=True, separators=(',', ':'))
+                else:
+                    match = re.match(r'\AANVIL_KEYMAP[ \t]+[1-4][ \t]+(default|existing)[ \t]+', text)
+                    if not match: raise RuntimeError('Invalid imported keymap scope')
+                    keymap._scheme_profile(text, match[1], name)
+                    header, separator, rows = text.partition('\n')
+                    parts = header.split(); parts[2] = identifier
+                    text = keymap._scheme_profile(' '.join(parts) + separator + rows, identifier, name)
             else:
                 text = re.sub(r'\A\{"version":1,"runtime":"(?:default|existing)"',
                               '{"version":1,"runtime":"' + identifier + '"', text)
+            rewritten[name] = text
+        for name, text in rewritten.items():
+            profile = directory / name
             with profile.open('w') as stream:
                 stream.write(text); stream.flush(); os.fsync(stream.fileno())

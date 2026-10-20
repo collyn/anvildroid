@@ -50,7 +50,7 @@ spec.loader.exec_module(worker_module)
 spec = importlib.util.spec_from_file_location('runtime_adb', Path(__file__).with_name('runtime-adb.py'))
 adb_module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(adb_module)
-MAX_REQUEST = 16384
+MAX_REQUEST = 65536
 spec = importlib.util.spec_from_file_location('runtime_catalog', Path(__file__).with_name('runtime-catalog.py'))
 catalog_module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(catalog_module)
@@ -308,7 +308,7 @@ class Store:
             if reset.exists():
                 if platform.machine() == 'x86_64':
                     self.prepare_phases[identifier] = 'Checking ARM translation package…'
-                    worker_module.arm.ensure_archive()
+                    worker_module.arm.ensure_default_archive()
                 self.storage.ensure(identifier)
                 require(self.android.quiescent(identifier), 'BUSY', 'Android worker is still active')
                 storage_module.assert_no_child_mounts(instance)
@@ -357,9 +357,9 @@ class Store:
                 storage_module.atomic(instance / 'gpu.json', device or {'node':'auto'})
             if platform.machine() == 'x86_64' and (selection is None or selection.get('arm_default')) and worker_module.arm.read_config(instance) is None:
                 self.prepare_phases[identifier] = 'Installing ARM translation…'
-                worker_module.arm.ensure_archive()
+                archive = worker_module.arm.ensure_default_archive()
                 manifest = self.backend.inspect(identifier)
-                worker_module.arm.configure(instance, True, manifest['images'], storage_module.atomic)
+                worker_module.arm.configure(instance, True, manifest['images'], storage_module.atomic, archive=archive)
 
         except Exception as error:
             self.finish(identifier, job_id, str(error) or 'Preparation failed')
@@ -770,11 +770,14 @@ class Store:
                 metadata = dict(metadata, **known)
                 result.append(dict(metadata, id=digest, sha256=digest, bytes=info.st_size, installed=True))
             except OSError: continue
-        if worker_module.arm.ARCHIVE.is_file():
-            result = [item for item in result if item['sha256'] != worker_module.arm.SHA256]
-            result.insert(0, dict(worker_module.arm.CATALOG[0], **{'id': worker_module.arm.SHA256, 'provider': 'libndk_translation 0.2.3', 'installed':True,
-                              'sha256': worker_module.arm.SHA256, 'bytes': worker_module.arm.ARCHIVE.stat().st_size,
-                              'label': worker_module.arm.CATALOG[0]['label']}))
+        for digest in (worker_module.arm.SHA256, worker_module.arm.DEFAULT_SHA256):
+            archive = worker_module.arm.cached_archive(digest)
+            if archive.is_file():
+                source = next((item for item in worker_module.arm.CATALOG if item['sha256'] == digest), None)
+                if source is None: continue
+                result = [item for item in result if item['sha256'] != digest]
+                result.insert(0, dict(source, id=digest, provider=source['label'], installed=True,
+                                      bytes=archive.stat().st_size))
         for item in worker_module.arm.CATALOG:
             if not any(source['sha256'] == item['sha256'] for source in result):
                 result.append(dict(item, id=item['sha256'], installed=False, bytes=0))
@@ -924,6 +927,7 @@ class Store:
         fields['adb_info'] = {'op', 'id'}
         fields['adb_set'] = {'op', 'id', 'enabled'}
         fields['keymaps']={'op','id'}
+        fields['keymap_scheme']={'op','id','package','action','scheme_id','name','revision','content'}
         fields['app_states']={'op','id'}
         fields['existing_claim'] = {'op', 'id'}
         fields['system_integration'] = {'op', 'id'}
@@ -1094,7 +1098,8 @@ class Store:
                 digest = request['archive_sha256']
                 require(isinstance(digest, str) and re.fullmatch(r'[a-f0-9]{64}', digest), 'INVALID_REQUEST', 'Invalid ARM source checksum')
                 archive = self.arm_sources_root / str(uid) / (digest + '.zip')
-                if digest == worker_module.arm.SHA256 and worker_module.arm.ARCHIVE.is_file(): archive = worker_module.arm.ARCHIVE
+                cached = worker_module.arm.cached_archive(digest)
+                if cached is not None and cached.is_file(): archive = cached
                 require(archive.is_file(), 'NOT_FOUND', 'Import this ARM translation source before selecting it')
                 require(hashlib.sha256(archive.read_bytes()).hexdigest() == digest, 'CONFIG', 'ARM source checksum changed; import again')
             worker_module.arm.configure(instance, request['enabled'], images, storage_module.atomic, archive, provider)
@@ -1163,6 +1168,12 @@ class Store:
             require(record['state'] in ('Running', 'Frozen'), 'INVALID_STATE', 'Start this runtime before checking Google services')
             self.storage.ensure(record['id'])
             return self.android.google_services(record['id'])
+        if operation == 'keymap_scheme':
+            require(record['id'] not in self.active_jobs, 'BUSY', 'Wait for the runtime operation to finish')
+            require(record['state'] in ('Running', 'Frozen'), 'INVALID_STATE', 'Start this runtime before managing schemes')
+            self.storage.ensure(record['id'])
+            try: return self.android.keymap_scheme(record['id'], request)
+            except (OSError, RuntimeError, ValueError) as error: raise RequestError('KEYMAP_SCHEME', str(error))
         if operation == 'keymaps':
             require(record['id'] not in self.active_jobs, 'BUSY', 'Wait for the runtime operation to finish')
             self.storage.ensure(record['id'])

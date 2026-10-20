@@ -16,7 +16,10 @@ extern void *dlsym(void *, const char *);
 extern void *calloc(size_t, size_t);
 extern void free(void *);
 extern int strcmp(const char *, const char *);
+extern int strncmp(const char *, const char *,size_t);
+extern int memcmp(const void *,const void *,size_t);
 extern int __android_log_print(int, const char *, const char *, ...);
+extern int __system_property_get(const char *, char *) __attribute__((weak));
 extern void abort(void);
 extern int pthread_mutex_lock(void *);
 extern int pthread_mutex_unlock(void *);
@@ -112,6 +115,8 @@ struct object {
   int fit_delivered_w, fit_delivered_h;
   struct game_fit_state *fit;
   int fit_applied, fit_last_x, fit_last_y, fit_last_w, fit_last_h;
+  int buffer_transform;
+  int buffer_width,buffer_height;
   int buffer_transport, transport_reported, transport_seen;
   struct object *next, *parent, *surface, *xdg, *viewport, *region;
   int region_x, region_y, region_width, region_height, region_valid;
@@ -121,7 +126,8 @@ struct object {
   struct proxy *edit_cursor;
   uint32_t cursor_serial;
   struct proxy *cursor_surface;
-  int cursor_hotspot_x,cursor_hotspot_y,cursor_requested;
+  int cursor_hotspot_x,cursor_hotspot_y,cursor_requested,cursor_fallback;
+  int committed_attached; /* Buffer state after the last forwarded surface commit. */
   struct proxy *attached_buffer;
   int attach_x, attach_y, clip_hidden, clip_x, clip_y;
   int bx, by, bw, bh, has_bounds, attached;
@@ -145,9 +151,11 @@ struct object {
   unsigned long hints_probe;
   int hints_task;
   int keymap_disabled, keymap_hidden;
+  int keymap_auto_paused; /* Escape/compositor unlock requires an explicit resume. */
   struct object *overlay_focus;
   int overlay_dismissed, overlay_pressed;
   struct object *keyboard_focus;
+  int keymap_panel_focus, keymap_panel_pointer;
   int keymap_pointer_leave_pending;
   struct proxy *keymap_pointer_leave_surface;
   int keyboard_leave_pending;
@@ -170,6 +178,10 @@ static int window_layout_width(struct object *,int);
 static int game_fit_bar(struct proxy *);
 static struct object *game_fit_owner(struct object *);
 static int32_t game_fit_input(struct proxy *,int32_t,int);
+static struct object *keymap_panel_owner(struct proxy *);
+static int keymap_panel_button(struct object *,uint32_t,uint32_t,uint32_t);
+static void app_rotation_origin(struct object *,int *,int *);
+static void app_rotation_input(struct proxy *,int32_t *,int32_t *);
 static int game_fit_geometry(struct object *,int,int,int,int);
 static void game_fit_destroy(struct object *);
 static struct proxy *decoration_manager;
@@ -211,6 +223,7 @@ static int scrcpy_mapping_escape(void);
 static void scrcpy_mapping_relative(struct object *,int32_t,int32_t);
 static int keymap_capture_start(struct object *);
 static int keymap_capture_active(struct object *);
+static int keymap_capture_hides_cursor(struct object *);
 static int keymap_capture_supported(struct object *);
 static int __attribute__((unused)) keymap_capture_status(struct object *);
 static void keymap_capture_stop(void);
@@ -220,6 +233,7 @@ static int keymap_capture_remove(struct object *,uint32_t);
 static void keymap_capture_disconnect(struct wl_display *);
 static void keymap_capture_forget(struct object *);
 static void keymap_capture_cursor_request(struct object *,union argument *);
+static struct object *keymap_owner(struct proxy *);
 static struct task tasks[128];
 static int task_count;
 #include "media-layer.inc"
@@ -373,6 +387,7 @@ static void decoration_destroy(struct object *top) {
 #include "display-probe.inc"
 #include "display-size.inc"
 #include "full-ui.inc"
+#include "app-rotation.inc"
 #include "game-fit.inc"
 #include "content-clip.inc"
 #include "csd-menu.inc"
@@ -1017,6 +1032,7 @@ static struct proxy *bridge_marshal(
     }
   }
   if (!strcmp(cls, "wl_surface") && o) {
+    if (!strcmp(method,"set_buffer_transform")) o->buffer_transform=a[0].i;
     if (!strcmp(method, "attach")) {
       struct proxy *previous_buffer=o->attached_buffer;
       o->attached = a[0].o != 0;
@@ -1026,6 +1042,7 @@ static struct proxy *bridge_marshal(
       struct object *buffer=find(a[0].o);
       o->buffer_transport=buffer?buffer->buffer_transport:0;
       o->buffer_stride=buffer?buffer->buffer_stride:0;
+      o->buffer_width=buffer?buffer->width:0;o->buffer_height=buffer?buffer->height:0;
       o->nv_pending=buffer?buffer->nv_ring:0;
       if(o->nv_pending) {
         /* Keep a real copied destination for geometry-only restores and for
@@ -1145,6 +1162,7 @@ static struct proxy *bridge_marshal(
   struct proxy *result = nv_constructor ? nv_result : skip ? 0 : modern
       ? real_array_flags(p, op, interface, version, flags, a)
       : real_marshal(p, op, a, interface, version);
+  if(!skip&&o&&!strcmp(cls,"wl_surface")&&!strcmp(method,"commit"))csd_cursor_commit(o);
   if (!skip) window_feedback_event(o,cls,method);
   if (!skip && o && o->app && o->attached && !strcmp(cls,"wl_surface") &&
       !strcmp(method,"commit")) o->initial_presented=1;
@@ -1179,6 +1197,13 @@ static struct proxy *bridge_marshal(
       else if(!strcmp(cls,"zwp_linux_buffer_params_v1"))n->buffer_transport=2;
       else if(!strcmp(cls,"wl_drm")||!strcmp(cls,"android_wlegl"))n->buffer_transport=3;
       if (o) n->buffer_stride = n->nv_ring?n->nv_ring->stride:o->buffer_stride;
+      if(!strcmp(cls,"wl_shm_pool")&&!strcmp(method,"create_buffer")) {
+        n->width=a[2].i;n->height=a[3].i;
+      } else if(!strcmp(cls,"zwp_linux_buffer_params_v1")&&!strcmp(method,"create_immed")) {
+        n->width=a[1].i;n->height=a[2].i;
+      } else if(!strcmp(cls,"android_wlegl")&&!strcmp(method,"create_buffer")) {
+        n->width=a[1].i;n->height=a[2].i;
+      }
     }
     if(!strcmp(interface->name,"zwp_linux_buffer_params_v1"))n->parent=o;
     csd_track_global(result, interface);
@@ -1267,6 +1292,7 @@ static void forget_proxy(struct proxy *p) {
     if (p == csd_compositor) csd_compositor = 0;
     if (p == csd_subcompositor) csd_subcompositor = 0;
     if (p == csd_shm) csd_shm = 0;
+    if (p == csd_xdg_wm) csd_xdg_wm = 0;
     decoration_destroy(old);
     if (old->p == decoration_manager)
       decoration_manager = 0;
@@ -1409,14 +1435,20 @@ static void *task_worker(void *unused) {
   (void)unused;
   int logged_scale = 0, count = 0;
   struct task snapshot[128];
+  struct app_viewport viewport_snapshot={0};
   struct task_watch watch = {.fd = -1};
   for (;;) {
     if (task_watch_changed(&watch, "/data/waydroid_tmp/anvildroid")) {
       count = 0;
+      viewport_snapshot=(struct app_viewport){0};
       char line[4096];
       void *f = fopen("/data/waydroid_tmp/anvildroid/tasks", "r");
       if (f) {
         while (fgets(line, sizeof(line), f)) {
+          if(!strncmp(line,"# anvil-viewport ",17)) {
+            app_viewport_parse(line+17,&viewport_snapshot);
+            continue;
+          }
           char *t = strstr(line, "taskId="), *b = strstr(line, "bounds=[");
           if (!t || !b || !strstr(line, "visible=true") || count == 128)
             continue;
@@ -1448,6 +1480,10 @@ static void *task_worker(void *unused) {
     for(struct object *s=objects;s;s=s->next)
       if(s->app&&!s->initial_presented&&s->initial_wait_ticks<20)++s->initial_wait_ticks;
     int snapshot_changed=count!=task_count;
+    int viewport_changed=memcmp(&app_viewport,&viewport_snapshot,sizeof(app_viewport))!=0;
+    if(viewport_changed) {
+      app_viewport=viewport_snapshot;snapshot_changed=1;
+    }
     for (int i = 0; i < count; i++) {
       int changed = logged_scale != hwc_scale_120 || i >= task_count ||
           tasks[i].id != snapshot[i].id || tasks[i].x != snapshot[i].x ||
@@ -1464,6 +1500,10 @@ static void *task_worker(void *unused) {
                             task_to_logical(tasks[i].height, 1), hwc_scale_120);
     }
     task_count = count;
+    if(viewport_changed)for(struct object *s=objects;s;s=s->next)if(s->app&&!s->full_ui) {
+      geometry(s);if(s->attached)wayland_send(s->p,6,0);
+      if(real_display_flush&&s->display)real_display_flush(s->display);
+    }
     logged_scale = hwc_scale_120;
     for(struct object *s=objects;s;s=s->next)if(s->full_ui&&s->custom_size.enabled) {
       int w,h,pw=display_projection.pw?display_projection.pw:logical_to_task(s->full_canvas_w);

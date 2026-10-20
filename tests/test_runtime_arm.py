@@ -228,7 +228,7 @@ class ArmPayloadTests(unittest.TestCase):
             with self.assertRaises(controller.RequestError): store.dispatch(dict(request, enabled='true'), 1000)
 
     @unittest.skipUnless(os.geteuid() == 0, 'Root controller fixtures required')
-    def test_default_arm_preparation_and_explicit_off_retry(self):
+    def test_default_arm_preparation_retry_and_reinstall(self):
         spec = importlib.util.spec_from_file_location('default_arm_controller', Path(__file__).resolve().parents[1] / 'services/runtime-controller.py')
         controller = importlib.util.module_from_spec(spec); spec.loader.exec_module(controller)
         store = controller.Store(self.root, self.root, allow_temporary_storage=True)
@@ -241,22 +241,61 @@ class ArmPayloadTests(unittest.TestCase):
         (instance / 'support').mkdir(); (instance / 'support/images.json').write_text('{}')
         store.selections[identifier] = {'flavor': 'GAPPS', 'images': {}, 'arm_default': True}
         self.archive.write_bytes(b'available')
-        with patch.object(store.backend, 'inspect', return_value={'images': {}}), patch.object(controller.subprocess, 'run') as provision, patch.object(controller.worker_module.arm, 'ARCHIVE', self.archive), patch.object(controller.worker_module.arm, 'configure') as configure, patch.object(controller.worker_module.arm, 'ensure_archive') as download:
+        with patch.object(store.backend, 'inspect', return_value={'images': {}}), patch.object(controller.subprocess, 'run') as provision, patch.object(controller.worker_module.arm, 'ARCHIVE', self.archive), patch.object(controller.worker_module.arm, 'configure') as configure, patch.object(controller.worker_module.arm, 'ensure_default_archive', return_value=self.archive) as download:
             provision.return_value.returncode = 0
             store.prepare_job(identifier, job['id'])
             configure.assert_called_once()
             self.assertTrue(configure.call_args.args[1])
+            self.assertEqual(configure.call_args.kwargs['archive'], self.archive)
             self.assertEqual(store.data['runtimes'][0]['state'], 'Prepared')
-            controller.storage_module.atomic(instance / 'arm.json', {'enabled': False, 'archive_sha256': controller.worker_module.arm.SHA256, 'images': {}})
             configure.reset_mock()
+            for enabled in (False, True):
+                controller.storage_module.atomic(instance / 'arm.json', {'enabled': enabled, 'archive_sha256': controller.worker_module.arm.SHA256, 'images': {}})
+                store.prepare_job(identifier, job['id'])
+                configure.assert_not_called()
+                self.assertEqual(controller.worker_module.arm.read_config(instance)['enabled'], enabled)
+            marker = instance / 'app-data'; marker.write_bytes(b'preserve until preflight passes')
+            controller.storage_module.atomic(instance / 'reinstall.json', {'selection': store.selections[identifier]})
+            download.side_effect = RuntimeError('ARM package download failed')
             store.prepare_job(identifier, job['id'])
+            self.assertEqual(marker.read_bytes(), b'preserve until preflight passes')
             configure.assert_not_called()
-            self.assertFalse(controller.worker_module.arm.read_config(instance)['enabled'])
-            (instance / 'arm.json').unlink(); self.archive.unlink()
+            download.side_effect = None
+            with patch.object(store.android, 'quiescent', return_value=True):
+                store.prepare_job(identifier, job['id'])
+            self.assertFalse(marker.exists())
+            configure.assert_called_once()
+            self.assertEqual(configure.call_args.kwargs['archive'], self.archive)
+            self.assertEqual(store.data['runtimes'][0]['state'], 'Prepared')
+            self.archive.unlink()
             download.side_effect = RuntimeError('ARM package download failed')
             store.prepare_job(identifier, job['id'])
             self.assertEqual(store.data['runtimes'][0]['state'], 'Error')
             self.assertIn('ARM package download failed', store.data['runtimes'][0]['job']['error'])
+
+    @unittest.skipUnless(os.geteuid() == 0, 'Root controller fixtures required')
+    def test_default_houdini_cache_is_listed_and_selectable_without_user_import(self):
+        spec=importlib.util.spec_from_file_location('houdini_default_controller',Path(__file__).resolve().parents[1]/'services/runtime-controller.py')
+        controller=importlib.util.module_from_spec(spec);spec.loader.exec_module(controller)
+        store=controller.Store(self.root,self.root,allow_temporary_storage=True);self.addCleanup(store.close)
+        cache=self.root/'libhoudini-hpe-com1.3.zip'
+        with zipfile.ZipFile(cache,'w') as package:
+            for lib in ('lib','lib64'):package.writestr(f'system/{lib}/libhoudini.so',b'Houdini fixture')
+        digest=hashlib.sha256(cache.read_bytes()).hexdigest()
+        source=dict(controller.worker_module.arm.DEFAULT_SOURCE,sha256=digest)
+        record=store.dispatch({'op':'create','name':'Houdini cache'},1000)
+        job={'id':'c'*32,'operation':'prepare','status':'Succeeded','error':None}
+        store.replace(dict(record,state='Prepared',job=job))
+        instance=store.backend.location(record['id']);(instance/'support').mkdir(parents=True)
+        (instance/'support/images.json').write_text('{}')
+        with patch.object(controller.worker_module.arm,'ARCHIVE',self.root/'libndk.zip'),patch.object(controller.worker_module.arm,'DEFAULT_SHA256',digest),patch.object(controller.worker_module.arm,'CATALOG',[source]),patch.object(store.android,'quiescent',return_value=True):
+            cached=next(item for item in store.arm_sources(1000) if item['sha256']==digest)
+            self.assertEqual(cached['engine'],'libhoudini');self.assertTrue(cached['installed'])
+            report=store.dispatch({'op':'arm_set','id':record['id'],'enabled':True,'archive_sha256':digest},1000)
+            self.assertTrue(report['enabled']);self.assertEqual(report['archive_sha256'],digest)
+            props=controller.worker_module.arm.runtime_properties(instance)
+            self.assertEqual(props['ro.dalvik.vm.native.bridge'],'libhoudini.so')
+            self.assertNotIn('ro.ndk_translation.version',props)
 
     @unittest.skipUnless(os.geteuid() == 0, 'Root-owned payload verification required')
     def test_switch_source_preserves_previous_payload_and_failed_switch(self):
@@ -338,6 +377,38 @@ class ArmPayloadTests(unittest.TestCase):
 
 class AutomaticArchiveTests(unittest.TestCase):
     @unittest.skipUnless(os.geteuid()==0,'Pinned system archive requires root ownership')
+    def test_houdini_default_has_separate_verified_cache_and_preserves_ndk(self):
+        with tempfile.TemporaryDirectory(dir='/tmp') as folder:
+            ndk=Path(folder)/'libndk.zip';ndk.write_bytes(b'keep explicit libndk')
+            blob=b'verified Houdini fixture';digest=hashlib.sha256(blob).hexdigest()
+            def download(url,output,expected):
+                self.assertEqual(url,arm.DEFAULT_SOURCE['url'])
+                self.assertEqual(expected,digest)
+                output.write(blob)
+            self.assertEqual(arm.DEFAULT_SOURCE['engine'],'libhoudini')
+            self.assertEqual(arm.DEFAULT_SOURCE['sha256'],arm.DEFAULT_SHA256)
+            self.assertNotIn('variant',arm.DEFAULT_SOURCE)
+            with patch.object(arm,'ARCHIVE',ndk),patch.object(arm,'DEFAULT_SHA256',digest),patch.object(arm._source,'download',side_effect=download) as fetch:
+                archive=arm.ensure_default_archive()
+                self.assertNotEqual(archive,ndk)
+                self.assertEqual(archive.read_bytes(),blob)
+                self.assertEqual(arm.ensure_default_archive(),archive)
+                self.assertEqual(arm.cached_archive(digest),archive)
+                fetch.assert_called_once()
+            self.assertEqual(ndk.read_bytes(),b'keep explicit libndk')
+
+    def test_failed_houdini_download_keeps_previous_cache(self):
+        with tempfile.TemporaryDirectory(dir='/tmp') as folder:
+            with patch.object(arm,'ARCHIVE',Path(folder)/'libndk.zip'):
+                archive=arm.default_archive();archive.write_bytes(b'previous')
+                def fail(url,output,digest):
+                    output.write(b'unverified');raise ValueError('SHA mismatch')
+                with patch.object(arm._source,'download',side_effect=fail):
+                    with self.assertRaisesRegex(ValueError,'SHA mismatch'):arm.ensure_default_archive()
+                self.assertEqual(archive.read_bytes(),b'previous')
+                self.assertFalse(list(Path(folder).glob('.arm-download-*')))
+
+    @unittest.skipUnless(os.geteuid()==0,'Pinned system archive requires root ownership')
     def test_existing_verified_package_is_reused_without_download(self):
         with tempfile.TemporaryDirectory(dir='/tmp') as folder:
             archive=Path(folder)/'libndk.zip';archive.write_bytes(b'cached');archive.chmod(0o644)
@@ -352,7 +423,7 @@ class AutomaticArchiveTests(unittest.TestCase):
             with patch.object(arm,'ARCHIVE',archive),patch.object(arm._source,'download',side_effect=fail):
                 with self.assertRaises(ValueError):arm.ensure_archive()
             self.assertEqual(archive.read_bytes(),b'previous')
-            self.assertFalse(list(Path(folder).glob('.libndk-*')))
+            self.assertFalse(list(Path(folder).glob('.arm-download-*')))
     @unittest.skipUnless(os.geteuid()==0,'ARM configuration is root-owned')
     def test_prepared_image_pin_works_before_support_snapshot(self):
         with tempfile.TemporaryDirectory(dir='/tmp') as folder:

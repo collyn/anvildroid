@@ -10,6 +10,39 @@ FUNCTIONS = SOURCE.split('# Only this shell-UID service')[1].split('# Fresh capa
 FUNCTIONS = '# Only this shell-UID service' + FUNCTIONS
 
 class DisplaySizeTests(unittest.TestCase):
+    def test_task_snapshot_viewport_is_exact_active_default_and_drops_stale_state(self):
+        functions = SOURCE[SOURCE.index('publish_task_snapshot()'):SOURCE.index('# Fresh capability token')]
+        viewport = ("DisplayViewport{type=INTERNAL, valid=true, isActive=true, displayId=0, "
+                    "uniqueId='local:0', physicalPort=0, orientation=1, "
+                    "logicalFrame=Rect(0, 0 - 2064, 3264), physicalFrame=Rect(0, 0 - 2064, 3264), "
+                    "deviceWidth=2064, deviceHeight=3264}")
+        external = viewport.replace('type=INTERNAL', 'type=EXTERNAL').replace('displayId=0', 'displayId=2').replace('orientation=1', 'orientation=3')
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            (root / 'fixture').write_text('taskId=26 bounds=[0,32][448,736]\n')
+            script = '''
+cmd() { cat fixture; }
+dumpsys() { [ ! -f fail ] || return 1; cat display; }
+snapshot_published=0 last_snapshot=
+''' + functions + '\npublish_task_snapshot\n'
+            for dump, expected in [
+                ('mViewports=[' + viewport + ', ' + external + ']', '# anvil-viewport 1 2064 3264 2064 3264\n'),
+                ('mViewports=[' + external + ', ' + viewport + ']', '# anvil-viewport 1 2064 3264 2064 3264\n'),
+                (viewport.replace('valid=true', 'valid=false'), ''),
+                (viewport.replace('isActive=true', 'isActive=false'), ''),
+                ('mViewports=[' + viewport + ', ' + viewport + ']', ''),
+            ]:
+                (root / 'display').write_text(dump + '\n')
+                result = subprocess.run(['sh', '-c', script], cwd=root, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual((root / 'tasks').read_text(), expected + 'taskId=26 bounds=[0,32][448,736]\n')
+            (root / 'display').write_text('mViewports=[' + viewport + ']\n')
+            # Same helper lifetime: failed read clears the previous header.
+            result = subprocess.run(['sh', '-c', script + 'touch fail\npublish_task_snapshot\n'], cwd=root,
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual((root / 'tasks').read_text(), 'taskId=26 bounds=[0,32][448,736]\n')
+
     def test_task_snapshot_publishes_changes_atomically_and_retries_failure(self):
         functions = SOURCE[SOURCE.index('publish_task_snapshot()'):SOURCE.index('# Fresh capability token')]
         script = '''

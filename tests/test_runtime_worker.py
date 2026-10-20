@@ -3,9 +3,10 @@ import importlib.util
 import os
 import sys
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from types import SimpleNamespace
 import tempfile
+import threading
 import unittest
 
 spec = importlib.util.spec_from_file_location('runtime_worker', Path(__file__).resolve().parents[1] / 'services/runtime-worker.py')
@@ -14,6 +15,63 @@ spec.loader.exec_module(worker)
 
 
 class WorkerPermissions(unittest.TestCase):
+    def test_control_receiver_reconnects_one_child_with_bounded_backoff(self):
+        now = [0.0]; stopping = threading.Event()
+        children = [Mock(), Mock(), Mock()]
+        for child in children: child.poll.return_value = None
+        start = Mock(side_effect=children)
+        receiver = worker.ControlReceiver(start, stopping, lambda: now[0])
+        receiver.check(True); receiver.check(True)
+        self.assertEqual(start.call_count, 1)
+        children[0].poll.return_value = 1
+        receiver.check(True)
+        self.assertIn('disconnected', receiver.error)
+        children[0].wait.assert_called_once_with()
+        now[0] = .9; receiver.check(True)
+        self.assertEqual(start.call_count, 1)
+        now[0] = 1; receiver.check(True)
+        self.assertEqual(start.call_count, 2)
+        self.assertIsNone(receiver.error)
+        children[1].poll.return_value = 1
+        receiver.check(True)
+        now[0] = 2.9; receiver.check(True)
+        self.assertEqual(start.call_count, 2)
+        now[0] = 3; receiver.check(True)
+        self.assertEqual(start.call_count, 3)
+        now[0] = 13; receiver.check(True)
+        self.assertEqual(receiver.delay, 1)
+        receiver.close()
+        children[2].terminate.assert_called_once_with()
+        children[2].wait.assert_called_once_with(timeout=3)
+
+    def test_control_receiver_preserves_frozen_and_stopping_guests(self):
+        stopping = threading.Event(); start = Mock()
+        receiver = worker.ControlReceiver(start, stopping, lambda: 0)
+        receiver.check(False); start.assert_not_called()
+        stopping.set(); receiver.check(True); start.assert_not_called()
+        receiver.close()
+
+    def test_control_receiver_retries_launch_failure_without_busy_loop(self):
+        now = [0]; stopping = threading.Event(); start = Mock(side_effect=RuntimeError('framework restarting'))
+        receiver = worker.ControlReceiver(start, stopping, lambda: now[0])
+        for _ in range(50): receiver.check(True)
+        self.assertEqual(start.call_count, 1)
+        self.assertIn('framework restarting', receiver.error)
+        for stamp in (1, 3, 7, 15, 23):
+            now[0] = stamp; receiver.check(True)
+        self.assertEqual(start.call_count, 6)
+        self.assertEqual(receiver.delay, 8)
+        stopping.set(); now[0] = 100; receiver.check(True)
+        self.assertEqual(start.call_count, 6)
+
+    def test_control_receiver_reaps_exited_child_and_kills_only_unresponsive_child(self):
+        child = Mock(); child.poll.return_value = None
+        receiver = worker.ControlReceiver(lambda: child, threading.Event(), lambda: 0)
+        receiver.check(True)
+        child.wait.side_effect = [worker.subprocess.TimeoutExpired('receiver', 3), None]
+        receiver.close(); child.kill.assert_called_once_with()
+        self.assertIsNone(receiver.process)
+
     def test_desktop_watchdog_uses_private_alias_and_keeps_disconnect_failure(self):
         import socket
         # Long managed storage paths cannot be passed to AF_UNIX.connect.

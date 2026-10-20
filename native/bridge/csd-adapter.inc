@@ -20,6 +20,7 @@ static int keymap_overlay_enter(struct object *,struct proxy *);
 static void keymap_overlay_button(struct object *,uint32_t,uint32_t);
 static void keymap_overlay_motion(struct object *);
 static void keymap_overlay_pointer_cancel(struct object *);
+static int keymap_overlay_axis(struct object *,uint32_t,int32_t);
 static void keymap_overlay_paint(uint32_t *,int,int);
 static int close_request_app(struct object *);
 static void full_ui_box(struct object *,int *,int *,int *,int *);
@@ -70,6 +71,8 @@ static int csd_frame_hit(struct csd_frame *f,int part,int x,int y,int w,int h) {
 struct csd_buffer { struct proxy *proxy; struct csd_buffer *next; };
 static struct csd_buffer *csd_buffers;
 static struct proxy *csd_compositor, *csd_subcompositor, *csd_shm;
+static struct proxy *csd_xdg_wm;
+static const struct interface *csd_xdg_surface_i,*csd_xdg_top_i;
 static const struct interface *csd_surface_i, *csd_subsurface_i, *csd_pool_i, *csd_buffer_i;
 static const struct interface *csd_region_i;
 static void csd_track_global(struct proxy *p, const struct interface *iface) {
@@ -87,6 +90,10 @@ static void csd_track_global(struct proxy *p, const struct interface *iface) {
   if (!strcmp(iface->name,"wl_shm")) {
     csd_shm=p; csd_pool_i=iface->methods[0].types[0];
     csd_buffer_i=csd_pool_i->methods[0].types[0];
+  }
+  if (!strcmp(iface->name,"xdg_wm_base")) {
+    csd_xdg_wm=p;csd_xdg_surface_i=iface->methods[2].types[0];
+    csd_xdg_top_i=csd_xdg_surface_i->methods[1].types[0];
   }
 }
 static void csd_release(void *data, struct proxy *p) {
@@ -433,6 +440,14 @@ static void csd_pointer_enter(void *data, struct proxy *p, uint32_t serial,
   o->menu_focus=0;
   map_pointer_enter(o,surface);
   o->pointer_surface=surface;
+  struct object *panel_owner=keymap_panel_owner(surface);
+  o->keymap_panel_pointer=panel_owner!=0;
+  if(panel_owner) {
+    o->overlay_focus=panel_owner;o->csd_suppress=1;
+    o->csd_x=x/256;o->csd_y=y/256;
+    csd_cursor_show(o);
+    pthread_mutex_unlock(mutex);return;
+  }
   o->fit_bar_focus=game_fit_bar(surface);
   if(o->fit_bar_focus){o->csd_suppress=1;pthread_mutex_unlock(mutex);return;}
   for (struct object *at=objects; at; at=at->next) if (at->csd) {
@@ -448,6 +463,7 @@ static void csd_pointer_enter(void *data, struct proxy *p, uint32_t serial,
   x=full_ui_input(surface,x,0);y=full_ui_input(surface,y,1);
   x=game_fit_input(surface,x,0);y=game_fit_input(surface,y,1);
   absolute_pointer_update(o,x,y,0);
+  app_rotation_input(surface,&x,&y);
   pthread_mutex_unlock(mutex);
   /* Upstream enter only updates focus/cursor, never injects Android input. */
   ((void (*)(void *,struct proxy *,uint32_t,struct proxy *,int32_t,int32_t))o->listener[0])(
@@ -460,6 +476,8 @@ static void csd_pointer_leave(void *data, struct proxy *p, uint32_t serial, stru
   struct object *o=data;
   pthread_mutex_lock(mutex);
   int was_bar=o->fit_bar_focus;o->fit_bar_focus=0;
+  int was_panel=o->keymap_panel_pointer||keymap_panel_owner(surface)!=0;
+  o->keymap_panel_pointer=0;
   absolute_pointer_leave(o);
   keymap_overlay_pointer_cancel(o);
   csd_feedback(o->csd_focus,0,0);
@@ -469,7 +487,7 @@ static void csd_pointer_leave(void *data, struct proxy *p, uint32_t serial, stru
   o->menu_focus=0;
   /* Keep suppress through trailing frame/axis events, until next enter. */
   pthread_mutex_unlock(mutex);
-  if(was_bar)return;
+  if(was_bar||was_panel)return;
   ((void (*)(void *,struct proxy *,uint32_t,struct proxy *))o->listener[1])(o->listener_data,p,serial,surface);
 }
 static void csd_pointer_motion(void *data, struct proxy *p, uint32_t time, int32_t x, int32_t y) {
@@ -484,6 +502,7 @@ static void csd_pointer_motion(void *data, struct proxy *p, uint32_t time, int32
   x=full_ui_input(o->pointer_surface,x,0);y=full_ui_input(o->pointer_surface,y,1);
   x=game_fit_input(o->pointer_surface,x,0);y=game_fit_input(o->pointer_surface,y,1);
   int absolute=!suppress&&absolute_pointer_update(o,x,y,1);
+  app_rotation_input(o->pointer_surface,&x,&y);
   pthread_mutex_unlock(mutex);
   if (!suppress&&!absolute) ((void (*)(void *,struct proxy *,uint32_t,int32_t,int32_t))o->listener[2])(o->listener_data,p,time,x,y);
 }
@@ -524,7 +543,8 @@ static void csd_pointer_button(void *data, struct proxy *p, uint32_t serial, uin
   int suppress=o->csd_suppress||mapped_release||blocked_release;
   struct csd_frame *f=o->csd_focus;
   if (button==0x110 && state==0) csd_resize_finished(o);
-  if(o->overlay_focus)keymap_overlay_button(o,button,state);
+  if(keymap_panel_button(o,serial,button,state))suppress=1;
+  else if(o->overlay_focus)keymap_overlay_button(o,button,state);
   if(o->menu_focus)csd_menu_button(o,button,state);
   if (f && button==0x110) {
     struct csd_piece *piece=&f->pieces[o->csd_part];
@@ -574,9 +594,10 @@ static void csd_pointer_button(void *data, struct proxy *p, uint32_t serial, uin
 static void csd_pointer_axis(void *d,struct proxy *p,uint32_t t,uint32_t axis,int32_t value) {
   struct object *o=d;
   pthread_mutex_lock(mutex);
-  int absolute=!o->csd_suppress&&absolute_pointer_axis(o,axis,value);
+  int editing=keymap_overlay_axis(o,axis,value);
+  int absolute=!editing&&!o->csd_suppress&&absolute_pointer_axis(o,axis,value);
   pthread_mutex_unlock(mutex);
-  if(absolute)return;
+  if(editing||absolute)return;
   if(o->menu_focus&&axis==0&&value) {
     pthread_mutex_lock(mutex);
     csd_menu_scroll(o,value>0?1:-1);

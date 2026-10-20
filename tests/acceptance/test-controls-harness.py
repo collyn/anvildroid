@@ -2,8 +2,12 @@
 """Inert checks: reject unsafe input routing and ambiguous surface coordinates."""
 import copy
 import importlib.util
+import io
 import os
 from pathlib import Path
+import subprocess
+import tarfile
+import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -14,8 +18,192 @@ def load(name):
 
 probe=load('probe-android-controls')
 live=load('live-android')
+isolation=load('probe-editor-isolation')
+game=load('probe-luanti-game')
+gpu_desktop=load('gpu-desktop')
+recovery=load('probe-controls-recovery')
+default_controls=load('default-controls')
 
 class Safety(unittest.TestCase):
+    def test_gpu_renderer_requires_explicit_hardware_witness_and_refuses_cpu_fallback(self):
+        hardware='direct rendering: Yes\nAccelerated: yes\nOpenGL renderer string: AMD Radeon RX 6600\n'
+        self.assertEqual(gpu_desktop.hardware_renderer(hardware),'AMD Radeon RX 6600')
+        for text in (hardware.replace('Accelerated: yes','Accelerated: no'),
+                     hardware.replace('direct rendering: Yes','direct rendering: No'),
+                     hardware.replace('AMD Radeon RX 6600','llvmpipe (LLVM 20)'),
+                     hardware.replace('AMD Radeon RX 6600','SwiftShader'),
+                     'OpenGL renderer string: AMD Radeon RX 6600\n'):
+            with self.subTest(text=text),self.assertRaises(RuntimeError):gpu_desktop.hardware_renderer(text)
+
+    def test_recovery_oracle_rejects_rotated_logs_and_stale_contacts(self):
+        with self.assertRaisesRegex(RuntimeError,'buffer changed'):recovery.tail(['original'],['replaced'])
+        self.assertEqual(recovery.tail(['original'],['original','new']),['new'])
+        with self.assertRaises(RuntimeError):recovery.active([])
+        with self.assertRaises(RuntimeError):recovery.active(['WARNING stale','AnvilTouchProbe: ACTION_MOVE activeAfter=3'])
+        self.assertEqual(recovery.active(['AnvilTouchProbe: ACTION_POINTER_DOWN(2) activeAfter=3']),3)
+
+    def test_default_controls_refuse_host_context_before_running_commands(self):
+        with patch.object(default_controls.os,'getpid',return_value=200),\
+             patch.object(default_controls.subprocess,'run') as run,\
+             self.assertRaisesRegex(RuntimeError,'private disposable'):
+            default_controls.Session(Path('/tmp/anvil-default-fixture'),{},None,None)
+        run.assert_not_called()
+        with patch.object(default_controls.os,'getpid',return_value=200),\
+             patch.object(default_controls.subprocess,'run') as run,\
+             self.assertRaisesRegex(RuntimeError,'isolated PID1'):
+            default_controls.start_display(Path('/tmp/anvil-default-fixture'),{},[])
+        run.assert_not_called()
+
+    def test_default_disconnect_refuses_replaced_guest_process_before_kill(self):
+        executable='/vendor/bin/hw/android.hardware.graphics.composer@2.1-service'
+        calls=[]
+        def command(args):
+            calls.append(args)
+            if 'pidof' in args[-2]:return '123\n'
+            if args[-2:]==['/system/bin/getprop','init.svc.vendor.hwcomposer-2-1']:return 'stopping\n'
+            if args[-2:]==['/system/bin/cat','/proc/123/cmdline']:
+                return executable+'\0' if sum('/proc/123/cmdline' in row for row in calls)==1 else '/system/bin/unrelated\0'
+            return ''
+        session=SimpleNamespace(guest=['private-guest','--'],run=command)
+        with patch.object(default_controls.time,'monotonic',side_effect=[0,4]),\
+             self.assertRaisesRegex(RuntimeError,'changed before crash'):
+            default_controls.disconnect_hwc(session)
+        self.assertFalse(any('/system/bin/kill' in row for row in calls))
+        self.assertTrue(all(row[:2]==['private-guest','--'] for row in calls))
+
+    def test_default_attach_rediscovers_window_replaced_after_geometry_settles(self):
+        from itertools import count
+        session=object.__new__(default_controls.Session)
+        session.nested=False;session.x=['private-xdotool'];session.guest=['private-guest','--']
+        session.offset=(0,0);session.m={'id':'default'}
+        session.logs=lambda:['AnvilTouchProbe: SIZE contentPx=448x704',
+                             'AnvilTouchProbe: FOCUS=true active=0']
+        windows=iter(['old-window','new-window']);focused=[]
+        def discover():session.window=next(windows)
+        def command(args,**kwargs):
+            if 'windowfocus' in args:
+                focused.append(session.window)
+                if session.window=='old-window':
+                    raise subprocess.CalledProcessError(1,args,stderr=b'BadWindow')
+            return ''
+        session.run=command
+        with tempfile.TemporaryDirectory() as directory:
+            session.output=Path(directory)
+            with patch.object(default_controls.recovery.Session,'attach',side_effect=discover) as base,\
+                 patch.object(default_controls.probe,'editor_attachment',return_value=(0,0,448,704)),\
+                 patch.object(default_controls.time,'monotonic',side_effect=count(0,.25)),\
+                 patch.object(default_controls.time,'sleep'):
+                session.attach()
+            self.assertEqual(base.call_count,2)
+        self.assertEqual(focused,['old-window','new-window'])
+
+    def test_recovery_profile_uses_valid_production_model_and_system_owned_save(self):
+        session=object.__new__(recovery.Session);session.m={'id':'r-'+'b'*32};session.guest=['guest','--']
+        authored=[]
+        def command(args,**kwargs):
+            if 'input' in kwargs:authored.append((args,kwargs['input'].decode()))
+            return ''
+        with patch.object(session,'run',side_effect=command),patch.object(session,'request'),\
+             patch.object(session,'attach'),patch.object(session,'profile',side_effect=lambda:authored[-1][1]):
+            session.prepare()
+        args,text=authored[-1];self.assertIn('--uid',args);self.assertEqual(args[args.index('--uid')+1],'1000')
+        rows=[list(map(int,row.split())) for row in text.splitlines()[1:]]
+        self.assertEqual([row[4] for row in rows],[0,1,7]);self.assertEqual(rows[-1][9],2)
+        with tempfile.TemporaryDirectory() as directory:
+            header=(Path(__file__).resolve().parents[2]/'native/bridge/keymap-model.h').as_posix()
+            source=Path(directory)/'profile.c';exe=Path(directory)/'profile'
+            source.write_text('#include "'+header+'"\nint main(void){struct keymap_model m={.count=3,.points={'+
+                ','.join('{'+','.join(map(str,row))+'}' for row in rows)+'}};return !keymap_valid(&m,1);}\n')
+            subprocess.run(['cc',str(source),'-o',str(exe)],check=True,capture_output=True,timeout=20)
+            subprocess.run([str(exe)],check=True,capture_output=True,timeout=5)
+
+    def test_game_rejects_changed_official_bytes_before_guest_mutation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'changed.apk';path.write_bytes(b'changed official archive')
+            session=object.__new__(game.Session)
+            with patch.object(session,'raw',create=True) as raw,patch.object(session,'request',create=True) as request,\
+                 self.assertRaises(RuntimeError):session.prepare(path,path)
+            raw.assert_not_called();request.assert_not_called()
+
+    def test_game_normalization_makes_small_editor_reachable_and_refuses_missing_app(self):
+        session=object.__new__(game.Session);session.nested=True;session.m={'id':'r-fixture'}
+        session.transport={'x11_window':'42'};session.x=['xdotool']
+        def scene(x,y,r,b):
+            return (f'\n\tView 1 role xdg_toplevel of waydroid.anvildroid.r-fixture.{game.PACKAGE},'
+                    f'\nposition: ({x}, {y}) -> ({r}, {b})\n')
+        with patch.object(session,'scene',side_effect=[scene(0,32,448,315),scene(0,172,448,455),scene(0,32,1600,1000)]),\
+             patch.object(session,'run') as run,patch.object(game.time,'sleep'):
+            session.normalize()
+        commands=[call.args[0] for call in run.call_args_list]
+        self.assertEqual(len(commands),2)
+        self.assertIn('Super_L',commands[0]);self.assertIn('--repeat',commands[1])
+        with patch.object(session,'scene',return_value='unrelated app'),patch.object(session,'run') as run,\
+             self.assertRaisesRegex(RuntimeError,'Ambiguous mapped game'):
+            session.normalize()
+        run.assert_not_called()
+
+    def test_game_archive_rejects_traversal_and_links(self):
+        for name,kind in [('minetest_game-5.8.0/../escape',tarfile.REGTYPE),
+                          ('/minetest_game-5.8.0/escape',tarfile.REGTYPE),
+                          ('minetest_game-5.8.0/link',tarfile.SYMTYPE)]:
+            data=io.BytesIO()
+            with tarfile.open(fileobj=data,mode='w') as archive:
+                entry=tarfile.TarInfo(name);entry.type=kind;entry.linkname='/outside'
+                archive.addfile(entry,io.BytesIO())
+            with self.subTest(name=name),self.assertRaises(RuntimeError):game.assets(data.getvalue())
+
+    def test_game_oracle_refuses_stale_sequence_and_replaced_server(self):
+        session=object.__new__(game.Session);session.epoch='current'
+        with patch.object(session,'game_state',return_value={'epoch':'current','seq':12}),\
+             patch.object(game.time,'monotonic',side_effect=[0,1]),self.assertRaises(RuntimeError):
+            session.wait(lambda v:True,'stale',after=12,timeout=.1)
+        with patch.object(session,'game_state',return_value={'epoch':'replaced','seq':999}),\
+             self.assertRaisesRegex(RuntimeError,'epoch changed'):
+            session.wait(lambda v:True,'replaced',after=12)
+
+    def test_game_profiles_pass_production_validator_and_editor_can_own_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            session=object.__new__(game.Session);session.m={'id':'r-'+'a'*32}
+            session.output=Path(directory);session.guest=['lxc-attach','--']
+            with patch.object(session,'run',return_value='') as run:session.write_profile()
+            commands=[c.args[0] for c in run.call_args_list]
+            self.assertIn(['lxc-attach','--','/system/bin/chown','1000:1000',
+                           '/data/waydroid_tmp/anvildroid/keymaps',
+                           '/data/waydroid_tmp/anvildroid/keymaps/'+game.PACKAGE],commands)
+            self.assertIn('--uid',commands[-1]);self.assertEqual(commands[-1][2],'1000')
+            text=(session.output/'game-profile.txt').read_text();lines=text.splitlines()
+            rows=[list(map(int,row.split())) for row in lines[1:]]
+            self.assertEqual(lines[0].split()[2:4],[session.m['id'],game.PACKAGE])
+            header=(Path(__file__).resolve().parents[2]/'native/bridge/keymap-model.h').as_posix()
+            def model(values):return '{.count='+str(len(values))+',.points={'+','.join('{'+','.join(map(str,row))+'}' for row in values)+'}}'
+            captured=copy.deepcopy(rows);look=next(row for row in captured if row[4]==8)
+            look[0],look[9],look[18]=38,0,1
+            invalid=captured+[copy.deepcopy(rows[3])]
+            source=Path(directory)/'game-profile.c'
+            source.write_text('#include "'+header+'"\nint main(void) {\n'+
+                '\n'.join('struct keymap_model m'+str(i)+'='+model(values)+';' for i,values in enumerate([rows,captured,invalid]))+
+                '\nreturn !(keymap_valid(&m0,1) && keymap_valid(&m1,1) && !keymap_valid(&m2,1));\n}\n')
+            executable=Path(directory)/'validate'
+            subprocess.run(['cc',str(source),'-o',str(executable)],check=True,capture_output=True,timeout=20)
+            subprocess.run([str(executable)],check=True,capture_output=True,timeout=5)
+
+    def test_editor_isolation_refuses_personal_or_non_fixture_endpoints(self):
+        for path in ('/var/lib/waydroid/acceptance.json','/tmp/personal/acceptance.json','/home/user/acceptance.json'):
+            with self.subTest(path=path),patch.object(isolation.subprocess,'run') as run,self.assertRaises(RuntimeError):
+                isolation.Endpoint(Path(path),1,Path('/tmp/evidence'))
+            run.assert_not_called()
+
+    def test_editor_isolation_rechecks_worker_and_compositor_identity(self):
+        endpoint=object.__new__(isolation.Endpoint)
+        endpoint.identity=('123','mnt:private',b'worker');endpoint.nested=True
+        endpoint.compositor_identity=('456','mnt:compositor','pid:private',b'weston')
+        with patch.object(endpoint,'state',return_value=endpoint.identity),\
+             patch.object(endpoint,'compositor_state',return_value=endpoint.compositor_identity):endpoint.guard()
+        with patch.object(endpoint,'state',return_value=('124','mnt:private',b'worker')),self.assertRaises(RuntimeError):endpoint.guard()
+        with patch.object(endpoint,'state',return_value=endpoint.identity),\
+             patch.object(endpoint,'compositor_state',return_value=('457','mnt:compositor','pid:private',b'weston')),\
+             self.assertRaises(RuntimeError):endpoint.guard()
+
     def test_session_masks_host_endpoints_and_discards_inherited_environment(self):
         identity=SimpleNamespace(st_dev=9,st_ino=12)
         account=SimpleNamespace(pw_dir='/home/fixture',pw_gid=1000)
@@ -66,10 +254,36 @@ class Safety(unittest.TestCase):
 
     def test_geometry_requires_exact_scoped_mapped_app(self):
         self.assertEqual(probe.scene_rectangle(self.scene(),'r-test'),(200,100))
+        self.assertEqual(probe.scene_rectangle(self.scene('(216, 89) -> (920, 537)'),'r-test'),(216,89))
         for scene in [self.scene()+self.scene(),self.scene(suffix='.evil'),
                       self.scene(extra='[view is not mapped!]'),self.scene('(-1, 0) -> (448, 703)'),
-                      self.scene('(0, 0) -> (1700, 1000)'),self.scene('(0, 0) -> (200, 300)')]:
+                      self.scene('(0, 0) -> (1700, 1000)'),self.scene('(0, 0) -> (200, 300)'),
+                      self.scene('(216, 89) -> (920, 508)')]:
             with self.subTest(scene=scene),self.assertRaises(RuntimeError):probe.scene_rectangle(scene,'r-test')
+
+    def test_placement_setup_keeps_strict_bounds_and_refuses_unreachable_headers(self):
+        self.assertIsNone(probe.scene_header_move(self.scene(),'r-test'))
+        shifted=self.scene('(421, 485) -> (869, 1189)')
+        self.assertEqual(probe.scene_header_move(shifted,'r-test'),(645,469,229,49))
+        with self.assertRaisesRegex(RuntimeError,'outside'):probe.scene_rectangle(shifted,'r-test')
+        for invalid in [self.scene('(0, 0) -> (1700, 1000)'),
+                        self.scene('(200, 1200) -> (648, 1904)'),shifted+shifted]:
+            with self.subTest(scene=invalid),self.assertRaises(RuntimeError):probe.scene_header_move(invalid,'r-test')
+
+    def test_visible_content_oracle_rejects_background_markers_and_missing_app_frame(self):
+        dark=bytes((18,24,30));white=bytes((255,255,255))
+        valid=dark*(64*64-8)+white*8
+        self.assertGreater(probe.require_probe_content(valid),.99)
+        for invalid in [b'',dark*(64*64),bytes((0,0,0))*(64*64),
+                        bytes((120,120,120))*(64*64-8)+white*8]:
+            with self.subTest(size=len(invalid)),self.assertRaises(RuntimeError):probe.require_probe_content(invalid)
+
+    def test_default_geometry_requires_exact_stock_app_and_never_managed_peer(self):
+        scene=self.scene().replace('waydroid.anvildroid.r-test.','waydroid.')
+        self.assertEqual(probe.scene_rectangle(scene,'default'),(200,100))
+        for invalid in (self.scene(),scene+scene,scene.replace('touchprobe,','touchprobe.other,'),
+                        scene+'[view is not mapped!]'):
+            with self.subTest(scene=invalid),self.assertRaises(RuntimeError):probe.scene_rectangle(invalid,'default')
 
     def event(self,action,count,source='0x1002',tool='FINGER(1)'):
         return f'AnvilTouchProbe: 7 ACTION_{action} source={source} id=0(1,2) tool={tool} activeAfter={count}'
@@ -93,6 +307,16 @@ class Safety(unittest.TestCase):
                ['AnvilTouchProbe: ACTION_UNKNOWN activeAfter=0']]
         for events in cases:
             with self.subTest(events=events),self.assertRaises(RuntimeError):probe.touch_events(events)
+
+    def test_framework_recreation_cancel_is_explicit_and_terminal_only(self):
+        cancel='AnvilTouchProbe: 2 ACTION_CANCEL source=0x1002 device=0 raw=(0.0,0.0) id=0(0.0,0.0) tool=UNKNOWN(0) activeAfter=0'
+        down=self.event('DOWN',1)
+        with self.assertRaises(RuntimeError):probe.touch_events([down,cancel])
+        self.assertEqual(probe.touch_events([down,cancel],True),[down,cancel])
+        for bad in (cancel.replace('CANCEL','UP'),cancel.replace('device=0','device=-1'),
+                    cancel.replace('source=0x1002','source=0x2002'),cancel.replace('raw=(0.0,0.0)','raw=(2.0,0.0)')):
+            with self.subTest(bad=bad),self.assertRaises(RuntimeError):probe.touch_events([down,bad],True)
+        with self.assertRaises(RuntimeError):probe.touch_events([cancel],True)
 
     def test_v3_profile_preserves_contract_order_and_explicit_hold_mode(self):
         row=probe.v3_point(key=19,kind=2,source=0,end_mode=2,duration=200)
@@ -122,22 +346,34 @@ class Safety(unittest.TestCase):
                      [row('UP',80),row('DOWN',60)]):
             with self.subTest(rows=rows),self.assertRaises(RuntimeError):probe.assert_look_rebase(rows,50,90)
 
+    def test_v4_profile_preserves_contract_and_scope(self):
+        row=probe.v4_point(key=23,kind=1,up_key=23,left_key=36,down_key=37,right_key=38,
+                           walk_key=42,walk_radius=40)
+        self.assertEqual(len(row),31)
+        self.assertEqual(row[19:25],(23,36,37,38,42,40))
+        profile=probe.v4_profile('r-fixture',[row])
+        self.assertTrue(profile.startswith('ANVIL_KEYMAP 4 r-fixture org.anvildroid.touchprobe 1\n'))
+        self.assertEqual(tuple(map(int,profile.splitlines()[1].split())),row)
+        for rows in ([],[(1,)*30],[(1,)*30+('2',)]):
+            with self.subTest(rows=rows),self.assertRaises(RuntimeError):probe.v4_profile('r-fixture',rows)
+        with self.assertRaises(RuntimeError):probe.v4_point(unrecognized=1)
+
     def test_editor_click_targets_follow_compact_and_full_layout(self):
         compact=probe.editor_targets(448,670)
-        self.assertEqual(compact['add'],(54,640))
-        self.assertEqual(compact['save'],(306,640))
-        self.assertEqual(compact['cancel'],(390,640))
-        self.assertEqual(compact['bind_key'],(56,47))
+        self.assertEqual(compact['add'],(201,27))
+        self.assertEqual(compact['save'],(333,57))
+        self.assertEqual(compact['cancel'],(399,57))
+        self.assertEqual(compact['bind_key'],(302,111))
         portrait=probe.editor_targets(464,824)
-        self.assertEqual(portrait['add'],(55,794))
-        self.assertEqual(portrait['save'],(316,794))
-        self.assertEqual(portrait['cancel'],(403,794))
-        self.assertEqual(portrait['bind_key'],(58,47))
+        self.assertEqual(portrait['add'],(217,27))
+        self.assertEqual(portrait['save'],(349,57))
+        self.assertEqual(portrait['cancel'],(415,57))
+        self.assertEqual(portrait['bind_key'],(318,111))
         full=probe.editor_targets(900,700)
-        self.assertEqual(full['add'],(768,148))
-        self.assertEqual(full['bind_key'],(715,383))
-        self.assertEqual(full['save'],(768,652))
-        self.assertEqual(full['cancel'],(870,30))
+        self.assertEqual(full['add'],(653,27))
+        self.assertEqual(full['bind_key'],(754,111))
+        self.assertEqual(full['save'],(785,57))
+        self.assertEqual(full['cancel'],(851,57))
         for dimensions in [(200,700),(448,300)]:
             with self.assertRaises(RuntimeError):probe.editor_targets(*dimensions)
 
@@ -149,6 +385,16 @@ class Safety(unittest.TestCase):
         for bad in [bare.replace('touchprobe origin','touchprobe.evil origin'),
                     bare.replace('touchprobe origin','other origin'),row.replace('r-fixture','r-other'),row.replace('origin=0,0','origin=-1,0'),row.replace('448x670','200x300')]:
             with self.assertRaises(RuntimeError):probe.editor_attachment([bad],'r-fixture')
+
+    def test_passive_content_uses_actual_narrow_fit_without_relaxing_editor(self):
+        row='AnvilKeymapOverlay: attached org.anvildroid.touchprobe origin=209,0 size=285x448'
+        with self.assertRaises(RuntimeError):probe.editor_attachment([row],'r-fixture')
+        geometry=probe.editor_attachment([row],'r-fixture',interactive=False)
+        self.assertEqual(geometry,(209,0,285,448))
+        self.assertEqual(probe.editor_frame(geometry,713,486,False),(5,33))
+        for bad in (row.replace('touchprobe origin','other origin'),
+                    row.replace('285x448','0x448'),row.replace('285x448','8193x448')):
+            with self.assertRaises(RuntimeError):probe.editor_attachment([bad],'r-fixture',interactive=False)
 
     def test_capture_requires_both_actual_protocol_capabilities(self):
         protocols={'zwp_relative_pointer_manager_v1':1,'zwp_pointer_constraints_v1':1}
