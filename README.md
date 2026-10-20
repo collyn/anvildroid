@@ -47,7 +47,8 @@ compatibility across custom images, desktops and games is still being developed.
   still soften smaller presets when fitting their physical display.
   **Resize app layout** updates Android task bounds; **Keep resolution** changes
   the host window while preserving the Android rendering resolution.
-- ARM translation selection: libndk_translation and libhoudini catalogs.
+- ARM translation selection: libndk_translation and libhoudini catalogs;
+  new/reinstalled x86_64 runtimes default to libhoudini HPE com1.3.
   These third-party binaries have [separate licensing terms](#optional-arm-translation-binaries).
 - Per-app Fake Wi-Fi and mouse-as-touch settings, with runtime-scoped readback,
   reset and rollback. Image support and app behavior still need live validation.

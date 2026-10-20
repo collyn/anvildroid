@@ -8,7 +8,6 @@ FUSE mount or its short-lived privilege-escalation staging directory remains.
 import argparse
 import configparser
 import fcntl
-import hashlib
 import importlib.util
 import json
 import os
@@ -52,29 +51,9 @@ spec_arm.loader.exec_module(arm)
 
 
 def ensure_arm_archive():
-    """Supply the pinned payload required by newly downloaded Android 13 images."""
-    if arm.ARCHIVE.is_file() and arm.ARCHIVE.stat().st_size <= 64 * 1024**2:
-        if hashlib.sha256(arm.ARCHIVE.read_bytes()).hexdigest() == arm.SHA256:
-            return
+    """Use the same verified default ARM package as runtime preparation."""
     write_status(STATUS_FILE, 'installing', detail='Downloading verified ARM app support…', pid=os.getpid())
-    arm.ARCHIVE.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
-    fd, temporary = tempfile.mkstemp(prefix='.arm-download-', dir=arm.ARCHIVE.parent)
-    os.close(fd)
-    try:
-        url = ('https://codeload.github.com/supremegamers/'
-               'vendor_google_proprietary_ndk_translation-prebuilt/zip/' + arm.COMMIT)
-        result = subprocess.run(['curl', '-fsSL', '--proto', '=https', '--proto-redir', '=https',
-                                 '--connect-timeout', '15', '--max-time', '180',
-                                 '--max-filesize', str(64 * 1024**2), '-o', temporary, url],
-                                capture_output=True, env=ENV, timeout=190)
-        if result.returncode or Path(temporary).stat().st_size > 64 * 1024**2:
-            raise RuntimeError('ARM support download failed; retry setup when the connection is available.')
-        if hashlib.sha256(Path(temporary).read_bytes()).hexdigest() != arm.SHA256:
-            raise RuntimeError('ARM support checksum mismatch; nothing was installed.')
-        os.chmod(temporary, 0o644)
-        os.replace(temporary, arm.ARCHIVE)
-    finally:
-        Path(temporary).unlink(missing_ok=True)
+    return arm.ensure_default_archive()
 
 
 

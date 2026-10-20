@@ -33,11 +33,12 @@ def catalog(runtime_id, *, architecture, sdk, arm_report, google_report=None, se
                              'label': str(source.get('label', label))[:240],
                              'android_sdks': targets, 'compatible': sdk is None or sdk in targets,
                              'verification': 'verify_on_install' if cached else 'verify_on_download', 'cached': cached})
-        if engine == 'libndk' and arm_report.get('available') is True and not packages:
+        fallback_engine = _engine(arm_report.get('provider')) if runtime_id == 'default' else 'libndk'
+        if engine == fallback_engine and arm_report.get('available') is True and not packages:
             # Default pinned package is verified by arm_set, not by catalog reads.
             packages.append({'sha256': None,
                              'version': 'Unknown (existing provider)' if runtime_id == 'default' else '0.2.3',
-                             'label': 'Existing system libndk libraries' if runtime_id == 'default' else 'Pinned default libndk_translation',
+                             'label': 'Existing system ' + label + ' libraries' if runtime_id == 'default' else 'Pinned libndk_translation',
                              'android_sdks': [33], 'compatible': sdk in (None, 33),
                              'verification': 'existing_libraries' if runtime_id == 'default' else 'verify_on_install',
                              'cached': True})
@@ -49,9 +50,9 @@ def catalog(runtime_id, *, architecture, sdk, arm_report, google_report=None, se
         cached = any(item['cached'] for item in packages)
         can_enable = compatible and any(item['cached'] and item['compatible'] for item in packages)
         if runtime_id == 'default':
-            can_enable = can_enable and engine == 'libndk' and arm_report.get('restore_available') is True
+            can_enable = can_enable and engine == fallback_engine and arm_report.get('restore_available') is True
             if compatible and cached and not can_enable:
-                reason = 'Default can only restore an installed libndk provider previously disabled through AnvilDroid'
+                reason = 'Default can only restore its installed ARM provider previously disabled through AnvilDroid'
         components.append({'id': engine, 'name': label, 'kind': 'arm_translation',
                            'architectures': ['x86_64'], 'android_sdks': targets,
                            'conflicts': ['libhoudini' if engine == 'libndk' else 'libndk'],

@@ -45,6 +45,7 @@ test_*.py
 !/tests/test_runtime_worker.py
 !/tests/test_runtime_default_desktop.py
 !/tests/test_runtime_arm.py
+!/tests/test_runtime_arm_defaults.py
 !/tests/test_runtime_arm_source.py
 !/tests/test_*.cjs
 !/tests/keymap-x11-sink.c

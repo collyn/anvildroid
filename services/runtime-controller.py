@@ -308,7 +308,7 @@ class Store:
             if reset.exists():
                 if platform.machine() == 'x86_64':
                     self.prepare_phases[identifier] = 'Checking ARM translation package…'
-                    worker_module.arm.ensure_archive()
+                    worker_module.arm.ensure_default_archive()
                 self.storage.ensure(identifier)
                 require(self.android.quiescent(identifier), 'BUSY', 'Android worker is still active')
                 storage_module.assert_no_child_mounts(instance)
@@ -357,9 +357,9 @@ class Store:
                 storage_module.atomic(instance / 'gpu.json', device or {'node':'auto'})
             if platform.machine() == 'x86_64' and (selection is None or selection.get('arm_default')) and worker_module.arm.read_config(instance) is None:
                 self.prepare_phases[identifier] = 'Installing ARM translation…'
-                worker_module.arm.ensure_archive()
+                archive = worker_module.arm.ensure_default_archive()
                 manifest = self.backend.inspect(identifier)
-                worker_module.arm.configure(instance, True, manifest['images'], storage_module.atomic)
+                worker_module.arm.configure(instance, True, manifest['images'], storage_module.atomic, archive=archive)
 
         except Exception as error:
             self.finish(identifier, job_id, str(error) or 'Preparation failed')
@@ -770,11 +770,14 @@ class Store:
                 metadata = dict(metadata, **known)
                 result.append(dict(metadata, id=digest, sha256=digest, bytes=info.st_size, installed=True))
             except OSError: continue
-        if worker_module.arm.ARCHIVE.is_file():
-            result = [item for item in result if item['sha256'] != worker_module.arm.SHA256]
-            result.insert(0, dict(worker_module.arm.CATALOG[0], **{'id': worker_module.arm.SHA256, 'provider': 'libndk_translation 0.2.3', 'installed':True,
-                              'sha256': worker_module.arm.SHA256, 'bytes': worker_module.arm.ARCHIVE.stat().st_size,
-                              'label': worker_module.arm.CATALOG[0]['label']}))
+        for digest in (worker_module.arm.SHA256, worker_module.arm.DEFAULT_SHA256):
+            archive = worker_module.arm.cached_archive(digest)
+            if archive.is_file():
+                source = next((item for item in worker_module.arm.CATALOG if item['sha256'] == digest), None)
+                if source is None: continue
+                result = [item for item in result if item['sha256'] != digest]
+                result.insert(0, dict(source, id=digest, provider=source['label'], installed=True,
+                                      bytes=archive.stat().st_size))
         for item in worker_module.arm.CATALOG:
             if not any(source['sha256'] == item['sha256'] for source in result):
                 result.append(dict(item, id=item['sha256'], installed=False, bytes=0))
@@ -1095,7 +1098,8 @@ class Store:
                 digest = request['archive_sha256']
                 require(isinstance(digest, str) and re.fullmatch(r'[a-f0-9]{64}', digest), 'INVALID_REQUEST', 'Invalid ARM source checksum')
                 archive = self.arm_sources_root / str(uid) / (digest + '.zip')
-                if digest == worker_module.arm.SHA256 and worker_module.arm.ARCHIVE.is_file(): archive = worker_module.arm.ARCHIVE
+                cached = worker_module.arm.cached_archive(digest)
+                if cached is not None and cached.is_file(): archive = cached
                 require(archive.is_file(), 'NOT_FOUND', 'Import this ARM translation source before selecting it')
                 require(hashlib.sha256(archive.read_bytes()).hexdigest() == digest, 'CONFIG', 'ARM source checksum changed; import again')
             worker_module.arm.configure(instance, request['enabled'], images, storage_module.atomic, archive, provider)

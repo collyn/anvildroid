@@ -3662,7 +3662,7 @@ function renderRuntimeArm(record, busy) {
       <p class="hint">${!arm.supported ? escapeHtml(arm.detail || 'This provider cannot be changed here.') : !arm.enabled && !arm.restore_available ? 'No saved ARM configuration to restore. Import a managed copy for verified package installation.' : ['Running','Frozen'].includes(record.state) ? 'Applying restarts Android; apps will close.' : 'Applies on next start.'}</p>`;
   }
   if (arm.inherited && !arm.supported) return '<p class="hint">ARM translation is provided by this image. Imported system copies retain their installed bridge.</p>';
-  if (arm.default_enabled && !arm.supported && ['Allocated', 'Provisioning', 'Error'].includes(record.state)) return '<p class="hint">ARM32 / ARM64 translation will be enabled automatically during Prepare. Choose another engine or version after preparation.</p>';
+  if (arm.default_enabled && !arm.supported && ['Allocated', 'Provisioning', 'Error'].includes(record.state)) return '<p class="hint">libhoudini ARM32 / ARM64 translation will be enabled automatically during Prepare. Choose another engine or version after preparation.</p>';
   const sources = runtimeArmSources(arm);
   const current = sources.find(source => source.sha256 === arm.archive_sha256);
   const draft = runtimeArmDraft.get(record.id) || {engine:arm.enabled ? current?.engine || 'libndk' : 'none', sha256:arm.archive_sha256 || ARM_BUILTIN_SHA};

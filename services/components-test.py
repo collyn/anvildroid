@@ -78,17 +78,20 @@ class ComponentsTests(unittest.TestCase):
         for name in ['../other','r-invalid','',None]:
             with self.assertRaises(ValueError):components.catalog(name,architecture='x86_64',sdk=33,arm_report={})
     def test_default_requires_saved_provider_before_restore(self):
-        for saved in [False, True]:
-            report=components.catalog('default',architecture='x86_64',sdk=33,
-                arm_report={'supported':True,'available':True,'restore_available':saved})
-            row=self.row(report,'libndk')
-            self.assertEqual(row['can_enable'],saved)
-            self.assertEqual(row['packages'][0]['verification'],'existing_libraries')
-            self.assertEqual(row['packages'][0]['version'],'Unknown (existing provider)')
-            if saved:
-                self.assertEqual(components.arm_action(report,'libndk',True),{'op':'arm_set','id':'default','enabled':True})
-            else:
-                with self.assertRaises(ValueError):components.arm_action(report,'libndk',True)
+        for engine,library in [('libndk','libndk_translation.so'),('libhoudini','libhoudini.so')]:
+            for saved in [False, True]:
+                report=components.catalog('default',architecture='x86_64',sdk=33,
+                    arm_report={'provider':library,'supported':True,'available':True,'restore_available':saved})
+                row=self.row(report,engine)
+                self.assertEqual(row['can_enable'],saved)
+                self.assertEqual(row['packages'][0]['verification'],'existing_libraries')
+                self.assertEqual(row['packages'][0]['version'],'Unknown (existing provider)')
+                other='libndk' if engine=='libhoudini' else 'libhoudini'
+                self.assertFalse(self.row(report,other)['can_enable'])
+                if saved:
+                    self.assertEqual(components.arm_action(report,engine,True),{'op':'arm_set','id':'default','enabled':True})
+                else:
+                    with self.assertRaises(ValueError):components.arm_action(report,engine,True)
     def test_default_arm_info_reports_real_saved_restore_configuration(self):
         spec = importlib.util.spec_from_file_location('default_arm_fixture', Path(__file__).with_name('runtime-existing.py'))
         existing = importlib.util.module_from_spec(spec)
