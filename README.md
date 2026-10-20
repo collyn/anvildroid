@@ -14,7 +14,7 @@ GPU settings and desktop windows.
 
 ## Current status
 
-As of **2026-10-20**, source version **0.1.4** has a Tauri 2 desktop GUI, a Python runtime
+As of **2026-10-20**, source version **0.1.5** has a Tauri 2 desktop GUI, a Python runtime
 controller and isolated Android workers, plus native Wayland window and input
 integration. Managed runtimes can run concurrently with separate app data,
 namespaces, Binder devices and resource limits. Existing Waydroid installations

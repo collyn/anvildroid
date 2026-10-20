@@ -34,7 +34,9 @@ class HostBinderTests(unittest.TestCase):
         original = Path.stat
         def fake_stat(path, *args, **kwargs):
             value = original(path, *args, **kwargs)
-            if str(path.resolve()) in self.characters:
+            # resolve() calls Path.stat() on Python 3.12. Identify the fixture
+            # inode directly so symlink stat/lstat also retain their semantics.
+            if (value.st_dev, value.st_ino) in self.characters:
                 values = list(value); values[0] = stat.S_IFCHR | 0o666
                 return os.stat_result(values)
             return value
@@ -43,7 +45,8 @@ class HostBinderTests(unittest.TestCase):
         p = patch('builtins.open', side_effect=lambda *a, **k: io.StringIO(f'1 2 0:1 / {self.fs} rw - binder binder rw\n'))
         p.start(); self.addCleanup(p.stop)
     def node(self, path):
-        path.touch(); self.characters.add(str(path.resolve()))
+        path.touch(); info = os.stat(path)
+        self.characters.add((info.st_dev, info.st_ino))
     def allocate(self, args, names):
         for name in names: self.node(self.fs / name)
     def prepare(self): system.prepare_host_binder(self.tools, SimpleNamespace(), self.dev)
