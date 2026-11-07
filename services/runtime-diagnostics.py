@@ -153,14 +153,14 @@ def log_tail(directory, name):
 
 def process_start(pid):
     if not isinstance(pid, str) or not pid.isdecimal() or int(pid) <= 0:
-        raise ValueError('Default runtime process identity is unavailable')
+        raise ValueError('System Waydroid process identity is unavailable')
     # comm can contain spaces and parentheses; starttime is field 22.
     try:
         value = Path('/proc', pid, 'stat').read_text().rsplit(')', 1)[1].split()[19]
     except (OSError, IndexError) as error:
-        raise ValueError('Default runtime process start time is unavailable') from error
+        raise ValueError('System Waydroid process start time is unavailable') from error
     if not value.isdecimal():
-        raise ValueError('Default runtime process start time is invalid')
+        raise ValueError('System Waydroid process start time is invalid')
     return value
 
 

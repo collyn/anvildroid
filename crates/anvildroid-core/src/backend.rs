@@ -335,7 +335,7 @@ fn inventory_available(record: &serde_json::Value) -> Option<bool> {
     }
     match record.get("state")?.as_str()? {
         "Running" | "Frozen" => Some(true),
-        "Stopped" | "Starting" | "Stopping" | "Error" => Some(false),
+        "Stopped" | "Starting" | "Stopping" | "Error" | "Uninitialized" => Some(false),
         _ => None,
     }
 }
@@ -464,7 +464,7 @@ mod tests {
                 Some(true)
             );
         }
-        for state in ["Stopped", "Starting", "Stopping", "Error"] {
+        for state in ["Stopped", "Starting", "Stopping", "Error", "Uninitialized"] {
             assert_eq!(
                 inventory_available(&serde_json::json!({"id":"default","state":state})),
                 Some(false)

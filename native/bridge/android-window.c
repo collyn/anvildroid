@@ -257,14 +257,33 @@ static void surface_configure(void *data,struct wl_proxy *p,uint32_t serial) {
 }
 static void keyboard_enter(void *d,struct wl_proxy *p,uint32_t serial,struct wl_proxy *s,struct wl_array *keys) {
   focused=owned(s);
+  pthread_mutex_lock(mutex);ime_key_surface=s;pthread_mutex_unlock(mutex);
   ((void(*)(void*,struct wl_proxy*,uint32_t,struct wl_proxy*,struct wl_array*))key_original[1])(d,p,serial,s,keys);
 }
 static void keyboard_leave(void *d,struct wl_proxy *p,uint32_t serial,struct wl_proxy *s) {
   focused=0;
+  /* Leave implies release; stop BridgeIme's BackSpace repeat. */
+  pthread_mutex_lock(mutex);ime_key_surface=NULL;ime_key_mods=0;ime_backspace_release();pthread_mutex_unlock(mutex);
   ((void(*)(void*,struct wl_proxy*,uint32_t,struct wl_proxy*))key_original[2])(d,p,serial,s);
 }
+static void keyboard_modifiers(void *d,struct wl_proxy *p,uint32_t serial,uint32_t depressed,uint32_t latched,uint32_t locked,uint32_t group) {
+  pthread_mutex_lock(mutex);ime_key_mods=depressed|latched;pthread_mutex_unlock(mutex);
+  ((void(*)(void*,struct wl_proxy*,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t))key_original[4])(d,p,serial,depressed,latched,locked,group);
+}
 static void keyboard_key(void *d,struct wl_proxy *p,uint32_t serial,uint32_t time,uint32_t key,uint32_t state) {
+  /* A routed BackSpace press must release through the IME on every path, and
+   * plain BackSpace for the focused editor joins the ordered commit queue. */
+  if(key==14) {
+    pthread_mutex_lock(mutex);
+    int routed=(!state&&ime_backspace_routed)?ime_key_route(key,state):0;
+    pthread_mutex_unlock(mutex);
+    if(routed)return;
+  }
   if(canvas_menu_key(key,state))return;
+  if(key==14 && focused) {
+    pthread_mutex_lock(mutex);int routed=ime_key_route(key,state);pthread_mutex_unlock(mutex);
+    if(routed)return;
+  }
   if(focused && top && key==87) { /* Linux KEY_F11, not an XKB keycode. */
     if(state==1) {
       fullscreen_requested=!(fullscreen_requested<0?fullscreen:fullscreen_requested);
@@ -427,7 +446,7 @@ int wl_proxy_add_listener(struct wl_proxy *proxy, void (**implementation)(void),
     }
     if(!strcmp(cls,"wl_keyboard")) {
       copy_events(key_events,key_original,implementation,get_version(proxy)>=4?6:5);
-      key_events[1]=(void(*)(void))keyboard_enter;key_events[2]=(void(*)(void))keyboard_leave;key_events[3]=(void(*)(void))keyboard_key;
+      key_events[1]=(void(*)(void))keyboard_enter;key_events[2]=(void(*)(void))keyboard_leave;key_events[3]=(void(*)(void))keyboard_key;key_events[4]=(void(*)(void))keyboard_modifiers;
       return listen(proxy,key_events,data);
     }
     if(!strcmp(cls,"wl_pointer") && get_version(proxy)<=9) {

@@ -5,7 +5,7 @@
   const filter=document.getElementById('keymap-runtime-filter'),refreshButton=document.getElementById('keymap-list-refresh');
   const inventory=new Map();
   const schemeCache=new Map();
-  let epoch=0,records=new Map([['default',{id:'default',name:'Default runtime',state:'Unavailable'}]]),drafts=[],failures=[];
+  let epoch=0,records=new Map([['default',{id:'default',name:'System Waydroid',state:'Unavailable'}]]),drafts=[],failures=[];
   function node(tag,text,className){
     const item=document.createElement(tag);
     if(text!==undefined)item.textContent=text;
@@ -258,14 +258,14 @@
           invoke('runtime_controller',{request:{op:'refresh',id:'default'}})
         ]);
         if(managed.status==='fulfilled'&&Array.isArray(managed.value)){
-          nextRecords=new Map([['default',records.get('default')]]);
+          nextRecords=new Map(records.has('default')?[['default',records.get('default')]]:[]);
           for(const r of managed.value)if(r&&typeof r.id==='string'&&r.id!=='default')nextRecords.set(r.id,{...r,name:r.name||r.id});
         }else{
           for(const [id,r] of nextRecords)if(id!=='default')nextRecords.set(id,{...r,state:'Unavailable'});
           nextFailures.push(`Runtimes: ${managed.reason?.message||managed.reason||'Invalid runtime list'}`);
         }
-        if(existing.status==='fulfilled'&&existing.value?.id==='default')nextRecords.set('default',{...existing.value,name:'Default runtime'});
-        else{nextRecords.set('default',{id:'default',name:'Default runtime',state:'Unavailable'});nextFailures.push(`Default runtime: ${existing.reason?.message||existing.reason||'Unavailable'}`);}
+        if(existing.status==='fulfilled'&&existing.value?.id==='default'){if(existing.value.state==='Uninitialized')nextRecords.delete('default');else nextRecords.set('default',{...existing.value,name:'System Waydroid'});}
+        else{nextRecords.set('default',{id:'default',name:'System Waydroid',state:'Unavailable'});nextFailures.push(`System Waydroid: ${existing.reason?.message||existing.reason||'Unavailable'}`);}
         updates=await Promise.all([...nextRecords.values()].filter(r=>available(r)).map(async r=>{
           try{
             const result=await invoke('runtime_controller',{request:{op:'keymaps',id:r.id}}),profiles=validateInventory(result,r.id);

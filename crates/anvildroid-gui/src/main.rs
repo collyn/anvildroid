@@ -1115,7 +1115,7 @@ async fn open_waydroid(activation_token: Option<String>, guard: State<'_, OpGuar
         let Ok(_operation)=guard.try_lock() else {return busy_result();};
         if let Err(e)=scope::ensure_legacy("default") {return op_result_err(e);}
         match launch::open_full_ui(activation_token.as_deref()) {
-            Ok(())=>op_result_ok("Waydroid full-window launch requested for Default runtime."),
+            Ok(())=>op_result_ok("Waydroid full-window launch requested for System Waydroid."),
             Err(e)=>op_result_err(e),
         }
     }).await)
@@ -1297,6 +1297,7 @@ fn main() {
             startup_ready,
             preferences::get_application_preferences,
             preferences::set_application_preference,
+            preferences::set_default_runtime,
             get_health_report,
             get_apps,
             get_app_details,

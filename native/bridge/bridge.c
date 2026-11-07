@@ -6,6 +6,7 @@
 #include "custom-size.h"
 #include "resize-request.h"
 #include "open-size-policy.h"
+#include "configure-echo.h"
 #include <stddef.h>
 #include <stdint.h>
 #include <stdarg.h>
@@ -134,6 +135,7 @@ struct object {
   uint32_t buffer_stride;
   int content_width, content_height, preview_width, preview_height;
   struct resize_policy resize;
+  struct configure_echo host_echo; /* Frame superseded by a bridge-chosen size. */
   unsigned long profile_token;
   int profile_loaded, profile_dirty, profile_restoring, profile_ticks, profile_recreated;
   int initial_presented, initial_wait_ticks;
@@ -155,6 +157,7 @@ struct object {
   struct object *overlay_focus;
   int overlay_dismissed, overlay_pressed;
   struct object *keyboard_focus;
+  uint32_t keyboard_mods; /* depressed|latched wl_keyboard modifiers */
   int keymap_panel_focus, keymap_panel_pointer;
   int keymap_pointer_leave_pending;
   struct proxy *keymap_pointer_leave_surface;
@@ -213,6 +216,9 @@ static const struct interface decoration_interface = {
 struct task {
   int id, x, y, width, height;
   char package[256];
+  /* A task's top activity may belong to another package (Settings search is
+   * com.android.settings.intelligence); its editor still belongs here. */
+  char top_package[256];
 };
 struct keymap_overlay;
 static int scrcpy_mapping_key(struct object *, struct keymap_overlay *, int, int);
@@ -368,6 +374,25 @@ static void decoration_destroy(struct object *top) {
   top->decoration = 0;
   top->decoration_pending = top->decoration_mode = 0;
 }
+/* The bridge chose a new host frame itself; remember the published one so a
+ * configure the compositor queued for it cannot be replayed as a resize. */
+static void host_echo_supersede(struct object *s, int width, int height) {
+  if (s->has_bounds)
+    configure_echo_supersede(&s->host_echo, s->bw, s->bh, width, height);
+}
+static int host_echo_ignored(struct object *s, int w, int h, int resizing,
+                             int maximized, int fullscreen) {
+  if (!configure_echo_stale(&s->host_echo, w, h, resizing || maximized || fullscreen))
+    return 0;
+  __android_log_print(4, "AnvilDroid",
+                      "ignore stale configure %s %dx%d; published %dx%d",
+                      s->app_id ? s->app_id : "?", w, h, s->bw, s->bh);
+  return 1;
+}
+static void host_echo_tick(void) {
+  for (struct object *s = objects; s; s = s->next) configure_echo_tick(&s->host_echo);
+}
+
 #include "csd-adapter.inc"
 #include "csd-cursor.inc"
 #include "nvidia-present.inc"
@@ -751,6 +776,10 @@ static void configure(void *data, struct proxy *p, int32_t w, int32_t h,
         if (w > 0) w -= 2 * CSD_BORDER;
         if (h > 0) h -= CSD_HEADER + CSD_BORDER;
       }
+      if (host_echo_ignored(s, w, h, resizing, maximized, fullscreen)) {
+        pthread_mutex_unlock(mutex);
+        return;
+      }
       /* Zero is unspecified, not a request for a zero-sized window. Keep
        * explicit compositor dimensions authoritative (e.g. new workarea).
        * Also handle repeated unspecified configures after leaving maximize. */
@@ -762,6 +791,9 @@ static void configure(void *data, struct proxy *p, int32_t w, int32_t h,
           s->csd->restore_height = h;
         }
       }
+    } else if (host_echo_ignored(s, w, h, resizing, maximized, fullscreen)) {
+      pthread_mutex_unlock(mutex);
+      return;
     }
     if (s->has_bounds || (s->csd && s->content_width)) {
       __android_log_print(4, "AnvilDroid",
@@ -1408,6 +1440,7 @@ static int submit_resize_request(int task, int width, int height) {
  * directly here let the next stale snapshot's pitch correction overwrite the
  * requested height before Android had consumed it. */
 static void queue_open_size(struct object *s) {
+  host_echo_supersede(s, task_to_logical(448, 1), task_to_logical(704, 1));
   s->resize.ready = 1;
   s->resize.width = task_to_logical(448, 1);
   s->resize.height = task_to_logical(704, 1);
@@ -1464,6 +1497,9 @@ static void *task_worker(void *unused) {
             continue;
           *slash = 0;
           snprintf(task.package, sizeof(task.package), "%.255s", component);
+          char *top = strstr(line, "topActivity=ComponentInfo{");
+          if (top && sscanf(top + 26, "%255[^/}]", task.top_package) != 1)
+            task.top_package[0] = 0;
           task.width = right - task.x;
           task.height = bottom - task.y;
           if (task.width > 0 && task.height > 0)
@@ -1479,6 +1515,7 @@ static void *task_worker(void *unused) {
     pthread_mutex_lock(mutex);
     for(struct object *s=objects;s;s=s->next)
       if(s->app&&!s->initial_presented&&s->initial_wait_ticks<20)++s->initial_wait_ticks;
+    host_echo_tick();
     int snapshot_changed=count!=task_count;
     int viewport_changed=memcmp(&app_viewport,&viewport_snapshot,sizeof(app_viewport))!=0;
     if(viewport_changed) {
@@ -1491,6 +1528,8 @@ static void *task_worker(void *unused) {
           tasks[i].height != snapshot[i].height ||
           strcmp(tasks[i].package, snapshot[i].package);
       snapshot_changed|=changed;
+      if (i >= task_count || strcmp(tasks[i].top_package, snapshot[i].top_package))
+        ime_dirty = 1;
       tasks[i] = snapshot[i];
       if (changed)
         __android_log_print(4, "AnvilDroid",

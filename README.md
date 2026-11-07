@@ -55,7 +55,7 @@ compatibility across custom images, desktops and games is still being developed.
   the host window while preserving the Android rendering resolution.
 - ARM translation selection: libndk_translation and libhoudini catalogs;
   new/reinstalled x86_64 runtimes default to unpatched libhoudini HPE com1.3
-  targeting Android 13, including Default runtime reinstall. Prepare retries
+  targeting Android 13, including System Waydroid reinstall. Prepare retries
   preserve saved ARM choices; reinstall verifies the package before clearing data.
   These third-party binaries have [separate licensing terms](#optional-arm-translation-binaries).
 - Per-app Fake Wi-Fi and mouse-as-touch settings, with runtime-scoped readback,
@@ -140,47 +140,108 @@ The optional panel icon also needs an AppIndicator runtime library, such as
 
 ## Build packages
 
-Install the build dependencies and Android SDK APIs 23 and 35, plus build-tools
-35.0.0, first. The GUI/helper build expects API 23's `android.jar` at
-`/usr/lib/android-sdk/platforms/android-23/android.jar`. Set `ANDROID_HOME` to
-the SDK containing API 35 and build-tools 35.0.0 for both the scrcpy server build
-and package staging. The distro's `aapt`/`apksigner` packages alone do not provide
-the private AOSP tools bundled in release packages. If these tools are missing:
+The following source-build instructions target **Ubuntu 24.04 x86_64**, matching
+the release CI. Run build commands as your normal user from the repository root.
+Use `sudo` for system dependencies and package installation. The initial build
+downloads Rust dependencies, Android tools, a Waydroid system image and pinned
+payloads; allow several GB of free space. Building does not require a running
+Android runtime or a Binder-enabled kernel.
+
+### 1. Install host dependencies and clone the source
 
 ```bash
-sdkmanager --sdk_root="/path/to/android-sdk" "build-tools;35.0.0"
-ANDROID_HOME="/path/to/android-sdk" ./scripts/build-deb.sh
+sudo apt-get update
+sudo apt-get install -y --no-install-recommends \
+  git curl ca-certificates unzip patch e2fsprogs build-essential pkg-config \
+  clang lld openjdk-17-jdk-headless aapt apksigner patchelf \
+  libgtk-3-dev libwebkit2gtk-4.1-dev librsvg2-dev libssl-dev \
+  libwayland-dev wayland-protocols libegl1-mesa-dev libgles2-mesa-dev \
+  libx11-dev libxcursor-dev libxkbcommon-dev libxi-dev libxfixes-dev \
+  libxext-dev libxtst-dev libgl1-mesa-dri libgbm1 libvulkan1 \
+  libayatana-appindicator3-1 dpkg-dev rpm zstd cpio gh
+
+git clone https://github.com/collyn/anvildroid.git
+cd anvildroid
 ```
 
-Use your actual SDK path. Package staging also detects the standard
-`~/Android/Sdk` location and the project-local `target/tools/android-sdk` cache
-when neither `ANDROID_HOME` nor `ANDROID_SDK_ROOT` is set.
-Prepare the pinned R8 jar, Android framework inputs and patched scrcpy server,
-then download the pinned NVIDIA archives (requires authenticated GitHub CLI access):
+Install Rust through [rustup](https://rustup.rs/) if it is not already available,
+then select the current stable toolchain:
+
+```bash
+rustup toolchain install stable --profile minimal
+rustup default stable
+rustup component add clippy rustfmt
+```
+
+The GUI embeds its HTML/CSS/JavaScript directly; no `npm install` or frontend
+bundler is required. Node.js 22 is used by CI for the optional frontend tests.
+
+### 2. Set up the Android SDK
+
+Install Google's [Android SDK Command-line Tools for Linux](https://developer.android.com/studio#command-tools),
+or reuse the SDK installed by Android Studio. For a manual installation, extract
+the tools so that `cmdline-tools/latest/bin/sdkmanager` exists inside your SDK
+directory. Adjust `ANDROID_HOME` below to that directory, and keep these
+environment variables set in the shell used for subsequent steps:
+
+```bash
+export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+export ANDROID_HOME="$HOME/Android/Sdk"
+export PATH="$JAVA_HOME/bin:$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH"
+
+sdkmanager --sdk_root="$ANDROID_HOME" --licenses
+sdkmanager --sdk_root="$ANDROID_HOME" \
+  "platform-tools" "platforms;android-23" "platforms;android-35" "build-tools;35.0.0"
+
+sudo mkdir -p /usr/lib/android-sdk/platforms/android-23
+sudo ln -sf "$ANDROID_HOME/platforms/android-23/android.jar" \
+  /usr/lib/android-sdk/platforms/android-23/android.jar
+
+sh scripts/stage-image-tools.sh --check
+```
+
+The API 23 path is currently fixed in the Android helper build scripts. API 35
+and build-tools 35.0.0 are required for the patched scrcpy server and packaged
+image tools. Ubuntu's `aapt`/`apksigner` packages alone are insufficient for
+package staging. The standard package build uses prebuilt NVIDIA components;
+it does not require building AOSP or installing an Android NDK.
+
+### 3. Prepare pinned build inputs
 
 ```bash
 sh scripts/prepare-ci-inputs.sh
 sh scripts/prepare-scrcpy.sh
+gh auth login
 python3 scripts/prepare-nvidia-fork.py --download
 ```
 
-Native X11 source builds additionally need Wayland server/protocols, EGL/GLES2,
-X11/Xcursor and xkbcommon development packages. The adapter uses the existing
-Android composer and bridge; no extra guest HAL, Android link libraries or NDK
-build is needed for X11. The shared build bundles both display backends.
-Release CI builds X11 once and passes the verified payload to package jobs using
-`ANVILDROID_X11_PAYLOAD=/absolute/path/to/payload`; local builds compile it by default.
+`prepare-ci-inputs.sh` downloads and checks the pinned R8 jar and extracts
+`init.waydroid.rc` and `framework-res.apk` from a pinned Android 13 image using
+`debugfs`. `prepare-scrcpy.sh` fetches the pinned upstream source and builds the
+patched control server. These inputs are written under `target/tools/`,
+`target/native/` and `target/input-diagnostic/`.
 
-These inputs are cached under `target/tools/`, `target/native/` and
-`target/input-diagnostic/`. Verified
-NVIDIA archives can be reused without downloading again. Then build the desired
-package:
+All three package formats bundle the NVIDIA payload, including builds made on
+Intel/AMD machines. Downloading its pinned GitHub Actions artifacts requires
+authenticated GitHub CLI access to `collyn/waydroid-nvidia`; skip `gh auth login`
+if already authenticated. Retain the verified archives in `target/tools/nvidia/`
+for reuse: upstream Actions artifacts can expire. See the
+[NVIDIA payload notes](native/nvidia/README.md) for provenance and source recipes.
+
+### 4. Build and verify a package
+
+Choose the format you need; each command builds the shared runtime payload and
+its selected package:
 
 ```bash
-./scripts/build-deb.sh
-./scripts/build-rpm.sh
-./scripts/build-pkg.sh
+./scripts/build-deb.sh   # Debian/Ubuntu
+./scripts/build-rpm.sh   # Fedora/RPM
+./scripts/build-pkg.sh   # Arch Linux
 ```
+
+Both Wayland and native X11 are bundled. Local builds compile the X11 adapter
+with the development libraries installed above. CI can instead supply a
+verified matching payload with `ANVILDROID_X11_PAYLOAD=/absolute/path/to/payload`.
 
 Output naming (`DEBIAN_VERSION`, `RPM_VERSION` and `VERSION` are read from
 `scripts/release-version.py --debian`, `--rpm` and without flags, respectively):
@@ -197,6 +258,33 @@ package. Each command builds only its selected package and required shared
 payload; no command installs or restarts anything. `scripts/build-runtime.sh`
 contains the shared GUI/CLI/native/Android build steps. All three packages
 install both `anvildroid-gui` and the `anvildroid` CLI in `/usr/bin`.
+
+For example, verify the Debian package after building it:
+
+```bash
+deb_version=$(python3 scripts/release-version.py --debian)
+python3 scripts/verify-package.py \
+  "target/releases/anvildroid-controller_${deb_version}_amd64.deb"
+```
+
+The verifier also accepts an RPM or Arch package path. It extracts the package
+and checks payloads, dependencies, CLI behavior and Android image tools. To
+install the Debian package on a host meeting the runtime requirements above:
+
+```bash
+sudo apt install "./target/releases/anvildroid-controller_${deb_version}_amd64.deb"
+anvildroid-gui
+```
+
+### Common build problems
+
+| Error | Resolution |
+| --- | --- |
+| Missing `target/tools/r8-8.3.37.jar` or `Touch Probe build failed` | Run `sh scripts/prepare-ci-inputs.sh` before Cargo builds/tests, and check the earlier error output. |
+| Missing API 23 `android.jar` | Install `platforms;android-23` and create the fixed-path symlink in step 2. |
+| Missing scrcpy or image-tool inputs | Install API 35 and build-tools 35.0.0, export the correct `ANDROID_HOME`, then rerun the preparation/check command. |
+| `pkg-config` cannot find GTK, WebKitGTK, Wayland or X11 libraries | Install the development packages in step 1. |
+| NVIDIA artifact download returns 403/404/410 | Check GitHub authentication and artifact access; expired artifacts require the exact verified cached inputs or restored upstream artifacts. |
 
 ## Run
 
@@ -261,10 +349,35 @@ retain verified archives for reproducible local builds.
 
 ## Development
 
+Complete host/SDK setup and `prepare-ci-inputs.sh` from
+[Build packages](#build-packages) before building or testing the GUI. Its Cargo
+build script also compiles the native desktop bridge and Android Touch Probe.
+
 ```bash
 cargo check --workspace --locked
 cargo test --workspace --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
+
+To build the complete runtime payload without creating a package, complete the
+SDK and scrcpy preparation above, then run `sh scripts/build-runtime.sh`.
+GUI/CLI binaries are written to `target/release/`; runtime/controller installation
+is provided by the packages. For CLI/core-only work, Android build inputs and
+GUI development libraries are not required:
+
+```bash
+cargo build --release --locked -p anvildroid-cli
+cargo test --locked -p anvildroid-core -p anvildroid-cli
+```
+
+With Node.js 22 available, run the backend/frontend/native feature checks:
+
+```bash
+sh scripts/test-runtime-features.sh
+```
+
+These checks use temporary fixtures. Restricted sandboxes may block Unix sockets
+or fail trusted-directory ownership checks; run them in a normal user shell.
 
 Main directories: `crates/` (Rust GUI, core and CLI), `services/` (controller
 and workers), `native/` (Android/Wayland integration), `scripts/` (build and

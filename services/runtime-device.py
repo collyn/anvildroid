@@ -202,7 +202,7 @@ def default_info(existing, uid):
 def default_set(existing, uid, profile, custom, expected_revision):
     config = selection(profile, custom)
     _, saved = existing.authorize(uid)
-    require(bool(saved), 'Enable management for Default runtime before changing device identity')
+    require(bool(saved), 'Enable management for System Waydroid before changing device identity')
     existing.stopped()
     require(default_info(existing, uid)['revision'] == expected_revision,
             'Device configuration changed; refresh before applying')

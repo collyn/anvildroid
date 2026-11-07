@@ -466,6 +466,16 @@ class AndroidBackend:
                         stream.write(authority)
                         stream.flush()
                         os.fsync(stream.fileno())
+                # Locale/XMODIFIERS select the user's XIM server (Fcitx/IBus);
+                # without them the adapter falls back to raw keys.
+                environment = desktop_module.x11_input_environment(desktop[1], desktop[0][len(desktop_module.X11_TOKEN_PREFIX):])
+                pinned = instance / 'x11-input-environment.json'
+                pinned.unlink(missing_ok=True)
+                fd = os.open(pinned, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+                with os.fdopen(fd, 'w') as stream:
+                    json.dump(environment, stream)
+                    stream.flush()
+                    os.fsync(stream.fileno())
         worker = Path(__file__).with_name('runtime-worker.py')
         self.children = [child for child in self.children if child.poll() is None]
         host_net_fd = os.open('/proc/self/ns/net', os.O_RDONLY) if internet else None

@@ -3,6 +3,8 @@
  * windows. No nested desktop, Weston, guest HAL replacement, or host input
  * injection.
  */
+#include "fractional-scale-server.h"
+#include "idle-inhibit-server.h"
 #include "linux-dmabuf-server.h"
 #include "pointer-constraints-server.h"
 #include "popup-position.hpp"
@@ -17,6 +19,7 @@
 #include <csignal>
 #include <deque>
 #include <fcntl.h>
+#include <list>
 #include <linux/input-event-codes.h>
 #include <locale.h>
 #include <map>
@@ -38,16 +41,30 @@ struct Node : Surface {
   wl_resource *sub = nullptr;
   Top *top = nullptr;
   std::vector<uint32_t> cursor_pixels;
-  bool viewport = false, cursor_role = false;
+  bool viewport = false, cursor_role = false, fractional = false;
+};
+// One wl_output global per X11 monitor (see Platform::monitors). A removed
+// monitor's global is withdrawn first and destroyed later, as compositors do,
+// so a client's in-flight bind cannot fail; bound resources keep the object.
+struct Output {
+  Server *server;
+  wl_global *global = nullptr;
+  Monitor monitor;
+  std::set<wl_resource *> resources;
+  bool retired = false;
 };
 struct DmaBuffer {
   wl_resource *resource = nullptr;
-  int fd = -1, width = 0, height = 0, stride = 0, offset = 0;
-  uint32_t format = 0;
-  uint64_t modifier = 0;
+  // Guest-supplied plane fds, owned until the allocation is released.
+  std::array<DmaPlane, dma_max_planes> planes;
+  DmaLayout layout;
+  int width = 0, height = 0;
+  // Accepted but not importable: shown as an opaque black placeholder.
+  bool placeholder = false;
   ~DmaBuffer() {
-    if (fd >= 0)
-      close(fd);
+    for (auto &p : planes)
+      if (p.fd >= 0)
+        close(p.fd);
   }
 };
 struct Top {
@@ -60,6 +77,16 @@ struct Top {
   WindowFrame frame;
   bool frame_constrained = false;
   int normal_padding_w = 0, normal_padding_h = 0;
+  // xdg min/max sizes measure geometry; WM_NORMAL_HINTS measure the drawable.
+  int min_w = 0, min_h = 0, max_w = 0, max_h = 0;
+  int hinted[4] = {-1, -1, -1, -1};
+  // A WM pointer grab (move/resize) owns the native size. Muffin/Mutter X11
+  // derive an in-grab ConfigureRequest from the frame rect minus
+  // _GTK_FRAME_EXTENTS again, shrinking the window by the input margin on
+  // every request. Defer accepted-frame resizes until the grab ends. Only
+  // the X server's crossing events mark it, so a WM that ignores
+  // _NET_WM_MOVERESIZE cannot leave the window unable to resize.
+  bool wm_grab = false;
   bool geometry_pending = false, configured = false, configure_acked = false,
        initial = false, dirty = false, maximized = false, fullscreen = false,
        active = false, resize_window = false;
@@ -71,10 +98,17 @@ struct Top {
   Preedit preedit;
   XIMCallback ime_callbacks[4]{};
   bool identity_dirty = true;
+  // WM iconify unmaps the native window or marks it _NET_WM_STATE_HIDDEN.
+  bool native_unmapped = false, wm_hidden = false;
   bool popup = false, dismissed = false;
   Top *parent = nullptr;
   Positioner positioner;
   Rect popup_geometry;
+  // Root position of the native window (physical pixels), once the X server
+  // reported it, and the outputs the surface has entered.
+  int root_x = 0, root_y = 0;
+  bool placed = false;
+  std::set<Output *> entered;
 };
 struct Text {
   bool enabled = false, pending = false;
@@ -150,7 +184,35 @@ struct Server {
   std::map<wl_resource *, std::unique_ptr<Constraint>> constraints;
   Constraint *active_constraint = nullptr;
   Window confine_window = 0;
+  std::map<wl_resource *, Node *> inhibitors;
+  wl_event_source *idle_timer = nullptr;
+  int idle_interval = 30000;
+  bool idle_inhibited = false;
   double pointer_x = 0, pointer_y = 0;
+  std::list<std::unique_ptr<Output>> outputs;
+  wl_event_source *retire_timer = nullptr;
+  wl_global *fractional_global = nullptr;
+  // Clients that received a fractional preferred scale; see send_output.
+  std::set<wl_client *> fractional_clients;
+  bool outputs_dirty = false, scale_dirty = false, scale_latched = false;
+  int desktop_scale = scale_unit;
+  void output_globals();
+  void sync_outputs(bool initial = false);
+  void send_output(Output *o, wl_resource *r, bool bind);
+  void retire_outputs();
+  void sync_scale();
+  void latch_scale(const char *by);
+  void ensure_fractional();
+  void fractional_client(wl_client *c);
+  void track_position(Top *t, const XConfigureEvent *event);
+  void sync_entered(Top *t);
+  Monitor monitor_for(Top *t);
+  // X11 pixel from a logical extent; 1x keeps the historical truncation.
+  int px(double logical) const {
+    return platform.scale120 == scale_unit
+               ? int(logical)
+               : int(std::lround(platform.physical(logical)));
+  }
   void input_globals();
   bool xi_event(XEvent &e);
   void touch_event(int type, uint64_t contact, Top *t, double x, double y,
@@ -225,6 +287,32 @@ struct Server {
     term_source = wl_event_loop_add_signal(loop, SIGTERM, stop, nullptr);
     int_source = wl_event_loop_add_signal(loop, SIGINT, stop, nullptr);
     ensure(term_source && int_source, "Cannot watch adapter stop signals");
+    // Armed only while inhibited, so an idle endpoint still sleeps without a
+    // timeout. The interval override exists for private host checks.
+    if (const char *value = getenv("ANVIL_TEST_IDLE_RESET_MS"))
+      idle_interval = std::clamp(atoi(value), 100, 30000);
+    idle_timer = wl_event_loop_add_timer(
+        loop,
+        [](void *data) {
+          auto *s = static_cast<Server *>(data);
+          s->platform.idle_reset();
+          wl_event_source_timer_update(s->idle_timer, s->idle_interval);
+          return 0;
+        },
+        this);
+    ensure(idle_timer, "Cannot create idle inhibit timer");
+    retire_timer = wl_event_loop_add_timer(
+        loop,
+        [](void *data) {
+          static_cast<Server *>(data)->retire_outputs();
+          return 0;
+        },
+        this);
+    ensure(retire_timer, "Cannot create output retirement timer");
+    // Desktop scale (Xft.dpi). It is latched once a client can observe it.
+    desktop_scale = platform.scale120 = platform.desktop_scale120();
+    printf("x11_output_scale=%d/120 xft_dpi=%g\n", platform.scale120,
+           platform.resource_dpi());
     if (!platform.testing()) {
       // X11 input must wake the same wait as guest commits. A periodic check
       // adds up to a full timeout to every click and wakes an idle host too.
@@ -289,6 +377,11 @@ struct Server {
                ssize_t(keymap.size() + 1),
            "Cannot write keymap");
     wl_display_init_shm(display);
+    // The composer's SHM path (gralloc "default") maps any HAL format other
+    // than RGBA/RGBX to -EINVAL and still creates the buffer with that value.
+    // libwayland would kill it with invalid_format; accept it and show the
+    // surface as a black placeholder instead (never uploaded).
+    wl_display_add_shm_format(display, uint32_t(-EINVAL));
     clipboard = std::make_unique<Clipboard>(
         display, platform.display,
         [this]() -> wl_client * {
@@ -296,14 +389,19 @@ struct Server {
                                 : nullptr;
         },
         [this](wl_client *c, uint32_t value) { return valid_input(c, value); });
+    platform.im_changed = [this](bool open) { open ? ime_open() : ime_lost(); };
     globals();
   }
   ~Server() {
+    platform.im_changed = nullptr;
     wl_event_source_remove(term_source);
     wl_event_source_remove(int_source);
     if (x11_source)
       wl_event_source_remove(x11_source);
     wl_display_destroy_clients(display);
+    sync_idle();
+    wl_event_source_remove(idle_timer);
+    wl_event_source_remove(retire_timer);
     nodes.clear();
     clipboard.reset();
     if (keymap_fd >= 0)
@@ -346,10 +444,14 @@ struct Server {
     // The composer calibrates Android's canvas from the first maximized
     // configure. An unspecified size defers that calibration until Full UI,
     // after the bridge has already assigned the window's role.
+    // That size is the logical size of the monitor the window will appear
+    // on, not the whole multi-monitor X screen.
     if (!t->initial && t->maximized && w == 0 && h == 0) {
-      auto size = platform.output_size();
-      w = size.first;
-      h = size.second;
+      auto monitor = monitor_for(t);
+      w = platform.logical_size(monitor.width);
+      h = platform.logical_size(monitor.height);
+      printf("x11_toplevel_output=0x%lx name=%s size=%dx%d scale=%d/120\n",
+             t->window.window, monitor.name.c_str(), w, h, platform.scale120);
     }
     wl_array states;
     wl_array_init(&states);
@@ -418,6 +520,8 @@ struct Server {
       t->ic = nullptr;
     }
     platform.destroy(t->window);
+    t->entered.clear();
+    t->placed = false;
     t->configured = false;
     t->configure_acked = false;
     t->initial = false;
@@ -448,6 +552,29 @@ struct Server {
     XUngrabPointer(platform.display, CurrentTime);
     platform.message(t->window, "_NET_WM_MOVERESIZE", x, y, direction, 1, 1);
   }
+  void end_wm_grab(Top *t) {
+    if (!t->wm_grab)
+      return;
+    t->wm_grab = false;
+    // Apply the frame the guest accepted while the WM owned the size.
+    if (t->resize_window)
+      t->dirty = true;
+  }
+  void sync_idle() {
+    // Inhibitors count only while their surface belongs to a visible window.
+    bool active = false;
+    for (const auto &entry : inhibitors) {
+      auto *t = root(entry.second);
+      active |= t && t->resource && t->window.window && t->window.mapped &&
+                !t->native_unmapped && !t->wm_hidden;
+    }
+    if (active == idle_inhibited)
+      return;
+    idle_inhibited = active;
+    platform.idle_inhibit(active);
+    wl_event_source_timer_update(idle_timer, active ? idle_interval : 0);
+    printf("x11_idle_inhibit=%d\n", int(active));
+  }
   void cursor() {
     auto *t = root(pointer_focus);
     if (!t)
@@ -458,10 +585,27 @@ struct Server {
       return;
     }
     auto *n = cursor_node;
-    if (n->current.image && !n->cursor_pixels.empty())
-      platform.cursor(t->window, n->cursor_pixels.data(),
-                      n->current.image->width, n->current.image->height,
-                      cursor_x, cursor_y);
+    if (n->current.image && !n->cursor_pixels.empty()) {
+      int width = n->current.image->width, height = n->current.image->height;
+      int hot_x = cursor_x, hot_y = cursor_y, target_w = 0, target_h = 0;
+      if (platform.scale120 != scale_unit) {
+        // Logical cursor size and hotspot at physical X11 pixels. Android's
+        // viewported cursor already has that size; SHM chrome is enlarged.
+        auto [w, h] = n->size();
+        target_w = std::max(1, int(std::lround(platform.physical(w))));
+        target_h = std::max(1, int(std::lround(platform.physical(h))));
+        if (std::abs(target_w - width) <= 1 && std::abs(target_h - height) <= 1)
+          target_w = target_h = 0;
+        double sx = target_w ? target_w / std::max(w, 1.0) : width / std::max(w, 1.0),
+               sy = target_h ? target_h / std::max(h, 1.0) : height / std::max(h, 1.0);
+        hot_x = int(std::lround(cursor_x * sx));
+        hot_y = int(std::lround(cursor_y * sy));
+        hot_x = std::clamp(hot_x, 0, (target_w ? std::min(target_w, 256) : width) - 1);
+        hot_y = std::clamp(hot_y, 0, (target_h ? std::min(target_h, 256) : height) - 1);
+      }
+      platform.cursor(t->window, n->cursor_pixels.data(), width, height, hot_x,
+                      hot_y, target_w, target_h);
+    }
   }
   void redraw() {
     for (auto *t : tops)
@@ -481,6 +625,7 @@ struct Server {
               release_constraint();
           }
           platform.map(t->window, false);
+          sync_entered(t);
           continue;
         }
         auto frame = WindowFrame::from(*n, t->geometry, t->frame_constrained);
@@ -493,11 +638,24 @@ struct Server {
           platform.frame_extents(t->window, frame);
           t->resize_window = true;
         }
-        if (t->resize_window && t->geometry.w > 0) {
+        if (!t->popup) {
+          int hints[4] = {
+              t->min_w ? t->min_w + t->normal_padding_w : 0,
+              t->min_h ? t->min_h + t->normal_padding_h : 0,
+              t->max_w ? t->max_w + t->normal_padding_w : 0,
+              t->max_h ? t->max_h + t->normal_padding_h : 0};
+          if (!std::equal(hints, hints + 4, t->hinted)) {
+            std::copy(hints, hints + 4, t->hinted);
+            platform.size_hints(t->window, hints[0], hints[1], hints[2],
+                                hints[3]);
+          }
+        }
+        if (t->resize_window && t->geometry.w > 0 && !t->wm_grab) {
           platform.resize(t->window, int(frame.bounds.w), int(frame.bounds.h));
           t->resize_window = false;
         }
         platform.map(t->window, true);
+        sync_entered(t);
         sync_constraints();
         if (t->popup) {
           popup_place(t);
@@ -575,12 +733,32 @@ struct Server {
                                       wl_resource_get_client(t->xdg)) {
         auto r = entry.second.cursor;
         XPoint point{
-            short(std::clamp(r.x - t->frame.bounds.x, -32768., 32767.)),
-            short(std::clamp(r.y + r.h - t->frame.bounds.y, -32768., 32767.))};
+            short(std::clamp(platform.physical(r.x - t->frame.bounds.x),
+                             -32768., 32767.)),
+            short(std::clamp(platform.physical(r.y + r.h - t->frame.bounds.y),
+                             -32768., 32767.))};
         auto list = XVaCreateNestedList(0, XNSpotLocation, &point, nullptr);
         XSetICValues(t->ic, XNPreeditAttributes, list, nullptr);
         XFree(list);
       }
+  }
+  void ime_lost() {
+    // Xlib already freed these XICs with their server. Clear guest preedit;
+    // enabled text input falls back to physical keys until a server returns.
+    for (auto *t : tops) {
+      t->ic = nullptr;
+      t->ic_focused = false;
+      if (t->preedit.text.empty())
+        continue;
+      t->preedit = {};
+      ime_preedit(t);
+    }
+  }
+  void ime_open() {
+    for (auto *t : tops)
+      if (!t->popup && t->window.window && !t->ic)
+        create_ime(t);
+    sync_ime();
   }
   void sync_ime() {
     for (auto *t : tops) {
@@ -698,6 +876,26 @@ struct Server {
       }
       return;
     }
+    if (!platform.testing()) {
+      // Monitor hotplug/layout and desktop scale (Xft.dpi) changes are
+      // applied once per event turn, after the queue is drained.
+      if (platform.randr_event &&
+          (e.type == platform.randr_event + RRScreenChangeNotify ||
+           e.type == platform.randr_event + RRNotify)) {
+        XRRUpdateConfiguration(&e);
+        outputs_dirty = true;
+        return;
+      }
+      if (e.xany.window == DefaultRootWindow(platform.display)) {
+        if (e.type == ConfigureNotify) {
+          XRRUpdateConfiguration(&e);
+          outputs_dirty = true;
+        } else if (e.type == PropertyNotify &&
+                   e.xproperty.atom == platform.atom("RESOURCE_MANAGER"))
+          scale_dirty = true;
+        return;
+      }
+    }
     Top *t = nullptr;
     for (auto *item : tops)
       if (item->window.window == e.xany.window) {
@@ -718,7 +916,12 @@ struct Server {
     if(e.type==UnmapNotify) {
       // Do not rely on a later FocusOut: guest unmap and WM minimization must
       // revoke contacts/timers even when no further native event arrives.
+      t->native_unmapped = true;
       cancel_window_input(t);return;
+    }
+    if (e.type == MapNotify) {
+      t->native_unmapped = false;
+      track_position(t, nullptr);
     }
     if (e.type == Expose)
       t->dirty = true;
@@ -731,7 +934,7 @@ struct Server {
       if (XGetWindowProperty(platform.display, t->window.window,
                              e.xproperty.atom, 0, 32, False, XA_ATOM, &type,
                              &format, &count, &left, &bytes) == Success) {
-        bool maxh = false, maxv = false, full = false;
+        bool maxh = false, maxv = false, full = false, hidden = false;
         auto *values = reinterpret_cast<Atom *>(bytes);
         if (bytes && type == XA_ATOM && format == 32)
           for (unsigned long i = 0; i < count; ++i) {
@@ -740,7 +943,9 @@ struct Server {
             maxv |=
                 values[i] == platform.atom("_NET_WM_STATE_MAXIMIZED_VERT");
             full |= values[i] == platform.atom("_NET_WM_STATE_FULLSCREEN");
+            hidden |= values[i] == platform.atom("_NET_WM_STATE_HIDDEN");
           }
+        t->wm_hidden = hidden;
         bool changed =
             t->maximized != (maxh && maxv) || t->fullscreen != full;
         t->maximized = maxh && maxv;
@@ -760,16 +965,22 @@ struct Server {
           else
             popup_place(p);
         }
-      if (t->window.width != e.xconfigure.width ||
-          t->window.height != e.xconfigure.height) {
-        t->window.width = e.xconfigure.width;
-        t->window.height = e.xconfigure.height;
+      if (t->window.pw != e.xconfigure.width ||
+          t->window.ph != e.xconfigure.height) {
+        t->window.pw = e.xconfigure.width;
+        t->window.ph = e.xconfigure.height;
+        t->window.width = platform.logical_size(t->window.pw);
+        t->window.height = platform.logical_size(t->window.ph);
         if (!t->popup)
           configure_native(t);
         t->dirty = true;
       }
+      track_position(t, &e.xconfigure);
       return;
     }
+    if ((e.type == FocusIn || e.type == FocusOut) &&
+        e.xfocus.mode == NotifyUngrab)
+      end_wm_grab(t);
     if (e.type == FocusIn) {
       focus(t);
       return;
@@ -781,6 +992,14 @@ struct Server {
         focus(nullptr);
       return;
     }
+    // Another client's pointer grab sends crossing events with grab modes:
+    // the WM's move/resize grab starts with LeaveNotify(NotifyGrab).
+    if (e.type == LeaveNotify && e.xcrossing.mode == NotifyGrab)
+      t->wm_grab = true;
+    if ((e.type == EnterNotify || e.type == LeaveNotify) &&
+        (e.xcrossing.mode == NotifyUngrab ||
+         (e.type == EnterNotify && e.xcrossing.mode == NotifyNormal)))
+      end_wm_grab(t);
     if (e.type == LeaveNotify && !grab) {
       if (active_constraint)
         return;
@@ -827,8 +1046,8 @@ struct Server {
       }
       if (e.type == ButtonPress && popup_button(t, local_x, local_y))
         return;
-      double x = local_x + target->frame.bounds.x,
-             y = local_y + target->frame.bounds.y;
+      double x = platform.logical(local_x) + target->frame.bounds.x,
+             y = platform.logical(local_y) + target->frame.bounds.y;
       Node *hit = nullptr;
       if (active_constraint || grab) {
         hit = active_constraint ? active_constraint->node : grab;
@@ -958,6 +1177,8 @@ struct Server {
   void events() {
     if (platform.testing())
       return;
+    if (platform.im_retry)
+      platform.open_im();
     XEvent motion{};
     bool pending_motion = false;
     auto flush_motion = [&]() {
@@ -999,11 +1220,16 @@ struct Server {
       }
     }
     flush_motion();
+    if (scale_dirty)
+      sync_scale();
+    if (outputs_dirty)
+      sync_outputs();
   }
   void globals();
 };
 
 #include "input.hpp"
+#include "outputs.hpp"
 #include "popup.hpp"
 #include "xim-input.hpp"
 
@@ -1011,6 +1237,10 @@ static void node_destroy(wl_resource *r) {
   auto *n = get<Node>(r);
   auto *s = n->server;
   s->input_destroy(n);
+  // A destroyed surface leaves its inhibitor inert until the client destroys it.
+  for (auto &entry : s->inhibitors)
+    if (entry.second == n)
+      entry.second = nullptr;
   if (s->cursor_node == n)
     s->cursor_node = nullptr;
   if (s->pointer_focus == n)
@@ -1063,9 +1293,10 @@ static void surface_create(wl_client *c, wl_resource *r, uint32_t id) {
           if (found != s->buffers.end()) {
             auto buffer = found->second;
             n->capture = [s, buffer]() {
-              return s->platform.dmabuf(
-                  buffer->fd, buffer->width, buffer->height, buffer->stride,
-                  buffer->offset, buffer->format, buffer->modifier);
+              if (buffer->placeholder)
+                return s->platform.placeholder(buffer->width, buffer->height);
+              return s->platform.dmabuf(buffer->layout, buffer->width,
+                                        buffer->height);
             };
             n->release = [buffer]() {
               if (buffer->resource)
@@ -1093,12 +1324,18 @@ static void surface_create(wl_client *c, wl_resource *r, uint32_t id) {
               if (!ref->resource)
                 return std::shared_ptr<Image>{};
               auto *shm = wl_shm_buffer_get(ref->resource);
+              auto format = wl_shm_buffer_get_format(shm);
+              bool known = format == WL_SHM_FORMAT_ARGB8888 ||
+                           format == WL_SHM_FORMAT_XRGB8888;
               wl_shm_buffer_begin_access(shm);
               {
                 int w = wl_shm_buffer_get_width(shm),
                     h = wl_shm_buffer_get_height(shm);
                 n->cursor_pixels.clear();
-                if (w > 0 && h > 0 && w <= 256 && h <= 256) {
+                // libwayland only checks stride >= width; rows are 4 bytes
+                // per pixel here.
+                if (known && w > 0 && h > 0 && w <= 256 && h <= 256 &&
+                    wl_shm_buffer_get_stride(shm) >= w * 4) {
                   n->cursor_pixels.resize(size_t(w) * h);
                   for (int y = 0; y < h; ++y)
                     memcpy(n->cursor_pixels.data() + size_t(y) * w,
@@ -1114,7 +1351,7 @@ static void surface_create(wl_client *c, wl_resource *r, uint32_t id) {
                     wl_shm_buffer_get_width(shm), wl_shm_buffer_get_height(shm),
                     wl_shm_buffer_get_stride(shm),
                     static_cast<unsigned char *>(wl_shm_buffer_get_data(shm)),
-                    wl_shm_buffer_get_format(shm) == WL_SHM_FORMAT_ARGB8888);
+                    format == WL_SHM_FORMAT_ARGB8888, known);
               } catch (...) {
                 wl_shm_buffer_end_access(shm);
                 throw;
@@ -1333,8 +1570,16 @@ static void toplevel_create(wl_client *c, wl_resource *r, uint32_t id) {
           return;
         t->node->server->move_resize(t, seat, serial, found->second);
       },
-      [](wl_client *, wl_resource *, int32_t, int32_t) {},
-      [](wl_client *, wl_resource *, int32_t, int32_t) {},
+      [](wl_client *, wl_resource *r, int32_t w, int32_t h) {
+        auto *t = get<Top>(r);
+        t->max_w = std::max(0, w);
+        t->max_h = std::max(0, h);
+      },
+      [](wl_client *, wl_resource *r, int32_t w, int32_t h) {
+        auto *t = get<Top>(r);
+        t->min_w = std::max(0, w);
+        t->min_h = std::max(0, h);
+      },
       [](wl_client *, wl_resource *r) {
         auto *t = get<Top>(r);
         auto &s = t->node->server->platform;
@@ -1383,6 +1628,7 @@ static void toplevel_create(wl_client *c, wl_resource *r, uint32_t id) {
         if (!p.testing())
           XIconifyWindow(p.display, t->window.window, DefaultScreen(p.display));
       }};
+  s->latch_scale("toplevel");
   t->window = s->platform.create();
   t->resource = resource(c, &xdg_toplevel_interface, wl_resource_get_version(r),
                          id, &ops, t, [](wl_resource *r) {
@@ -1532,34 +1778,64 @@ struct Params {
   std::shared_ptr<DmaBuffer> buffer = std::make_shared<DmaBuffer>();
   bool used = false;
 };
+/* Waydroid's composer aborts on both a protocol error and a `failed` event
+ * (create_immed's listener calls abort()), so any rejection kills Android's
+ * display. Only structurally invalid requests (reuse, plane index/duplicate,
+ * missing planes, dimensions) are fatal. A well-formed buffer that cannot be
+ * imported here — unknown or unadvertised format, non-LINEAR modifier, flags,
+ * short stride or out-of-bounds planes — gets `failed` for `create` and is
+ * accepted as an opaque black placeholder for `create_immed`, which the
+ * protocol leaves implementation-defined. The fds of such a buffer are never
+ * imported. The advertised format list equals the importable list. */
 static void params_create_buffer(wl_client *c, wl_resource *r, uint32_t id,
                                  int32_t w, int32_t h, uint32_t format,
                                  uint32_t flags) {
   auto *p = get<Params>(r);
-  auto &b = p->buffer;
-  bool supported = format == 0x34325241 || format == 0x34325258 ||
-                   format == 0x34324241 || format == 0x34324258;
-  if (p->used || b->fd < 0 || w < 1 || h < 1 || w > 8192 || h > 8192 ||
-      uint64_t(w) * h > 16777216 || b->stride < w * 4 || b->stride > 131072 ||
-      flags || !supported || b->modifier) {
-    wl_resource_post_error(r, ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_INVALID_FORMAT,
-                           "unsupported/bad LINEAR RGB buffer");
+  if (p->used) {
+    wl_resource_post_error(r, ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_ALREADY_USED,
+                           "params already used");
     return;
   }
-  auto size = lseek(b->fd, 0, SEEK_END);
-  if (size < 0 ||
-      uint64_t(b->offset) + uint64_t(h - 1) * b->stride + uint64_t(w) * 4 >
-          uint64_t(size)) {
-    wl_resource_post_error(r, ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_OUT_OF_BOUNDS,
-                           "DMA-BUF layout exceeds allocation");
+  auto &b = p->buffer;
+  auto *s = p->server;
+  auto check = dma_check(
+      format, w, h, flags, b->planes,
+      [s](uint32_t f) { return s->platform.dmabuf_importable(f); },
+      [](int fd) -> int64_t {
+        auto size = lseek(fd, 0, SEEK_END);
+        return size < 0 ? -1 : int64_t(size);
+      });
+  if (check.status == DmaStatus::incomplete ||
+      check.status == DmaStatus::bad_dimensions) {
+    wl_resource_post_error(r,
+                           check.status == DmaStatus::incomplete
+                               ? ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_INCOMPLETE
+                               : ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_INVALID_DIMENSIONS,
+                           "%s", check.reason.c_str());
     return;
   }
   p->used = true;
+  if (check.status == DmaStatus::unsupported) {
+    char line[200];
+    snprintf(line, sizeof(line),
+             "x11_dmabuf_unsupported format=%s(0x%08x) size=%dx%d reason=%s "
+             "result=%s",
+             fourcc_name(format).c_str(), format, w, h, check.reason.c_str(),
+             id ? "placeholder" : "failed");
+    s->platform.report_once(fourcc_name(format) + check.reason, line);
+    if (!id) {
+      zwp_linux_buffer_params_v1_send_failed(r);
+      p->buffer.reset();
+      return;
+    }
+    b->placeholder = true;
+  } else {
+    b->layout = check.layout;
+  }
   b->width = w;
   b->height = h;
-  b->format = format;
   static const struct wl_buffer_interface ops = {destroy_request};
-  b->resource = resource(c, &wl_buffer_interface, 1, id, &ops, p->server,
+  b->resource = resource(c, &wl_buffer_interface, 1, id, &ops, s,
                          [](wl_resource *r) {
                            auto *s = get<Server>(r);
                            auto it = s->buffers.find(r);
@@ -1568,7 +1844,11 @@ static void params_create_buffer(wl_client *c, wl_resource *r, uint32_t id,
                              s->buffers.erase(it);
                            }
                          });
-  p->server->buffers[b->resource] = b;
+  if (!b->resource) {
+    p->buffer.reset();
+    return;
+  }
+  s->buffers[b->resource] = b;
   if (!id)
     zwp_linux_buffer_params_v1_send_created(r, b->resource);
   // The single-use params object no longer owns the imported allocation.
@@ -1582,17 +1862,31 @@ static void params_create(wl_client *c, wl_resource *r, uint32_t id) {
       [](wl_client *, wl_resource *r, int32_t fd, uint32_t plane,
          uint32_t offset, uint32_t stride, uint32_t hi, uint32_t lo) {
         auto *p = get<Params>(r);
-        if (p->used || plane || p->buffer->fd >= 0 || offset > INT32_MAX ||
-            stride > INT32_MAX || hi || lo) {
+        if (p->used) {
           close(fd);
-          wl_resource_post_error(r, ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_PLANE_IDX,
-                                 "invalid LINEAR plane");
+          wl_resource_post_error(r,
+                                 ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_ALREADY_USED,
+                                 "params already used");
           return;
         }
-        p->buffer->fd = fd;
-        p->buffer->offset = offset;
-        p->buffer->stride = stride;
-        p->buffer->modifier = (uint64_t(hi) << 32) | lo;
+        if (plane >= uint32_t(dma_max_planes)) {
+          close(fd);
+          wl_resource_post_error(r, ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_PLANE_IDX,
+                                 "plane index out of range");
+          return;
+        }
+        auto &slot = p->buffer->planes[plane];
+        if (slot.set) {
+          close(fd);
+          wl_resource_post_error(r, ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_PLANE_SET,
+                                 "plane already set");
+          return;
+        }
+        slot.fd = fd;
+        slot.offset = offset;
+        slot.stride = stride;
+        slot.modifier = (uint64_t(hi) << 32) | lo;
+        slot.set = true;
       },
       [](wl_client *c, wl_resource *r, int32_t w, int32_t h, uint32_t format,
          uint32_t flags) {
@@ -1747,32 +2041,19 @@ void Server::globals() {
                          destroy_request, params_create, nullptr, nullptr};
                      auto *r = resource(c, &zwp_linux_dmabuf_v1_interface,
                                         std::min(v, 3u), id, &ops, data);
-                     for (uint32_t f : {0x34325241u, 0x34325258u, 0x34324241u,
-                                        0x34324258u}) {
+                     if (!r)
+                       return;
+                     // Exactly the formats the host EGL imports as LINEAR;
+                     // the composer picks its HAL fallbacks from this list.
+                     for (uint32_t f : static_cast<Server *>(data)
+                                           ->platform.dmabuf_formats()) {
                        zwp_linux_dmabuf_v1_send_format(r, f);
                        if (v >= 3)
                          zwp_linux_dmabuf_v1_send_modifier(r, f, 0, 0);
                      }
                    });
-  wl_global_create(
-      display, &wl_output_interface, 3, this,
-      [](wl_client *c, void *data, uint32_t v, uint32_t id) {
-        static const struct wl_output_interface ops = {destroy_request};
-        auto *r = resource(c, &wl_output_interface, std::min(v, 3u), id, &ops,
-                           nullptr);
-        wl_output_send_geometry(r, 0, 0, 508, 285, WL_OUTPUT_SUBPIXEL_UNKNOWN,
-                                "AnvilDroid", "X11",
-                                WL_OUTPUT_TRANSFORM_NORMAL);
-        auto [width, height] =
-            static_cast<Server *>(data)->platform.output_size();
-        wl_output_send_mode(r,
-                            WL_OUTPUT_MODE_CURRENT | WL_OUTPUT_MODE_PREFERRED,
-                            width, height, 60000);
-        if (v >= 2) {
-          wl_output_send_scale(r, 1);
-          wl_output_send_done(r);
-        }
-      });
+  output_globals();
+  ensure_fractional();
   wl_global_create(
       display, &wl_seat_interface, 5, this,
       [](wl_client *c, void *data, uint32_t v, uint32_t id) {
@@ -1795,6 +2076,27 @@ void Server::globals() {
         static const struct zwp_text_input_manager_v3_interface ops = {
             destroy_request, text_create};
         resource(c, &zwp_text_input_manager_v3_interface, 1, id, &ops, data);
+      });
+  wl_global_create(
+      display, &zwp_idle_inhibit_manager_v1_interface, 1, this,
+      [](wl_client *c, void *data, uint32_t, uint32_t id) {
+        static const struct zwp_idle_inhibit_manager_v1_interface ops = {
+            destroy_request,
+            [](wl_client *c, wl_resource *r, uint32_t id,
+               wl_resource *surface) {
+              static const struct zwp_idle_inhibitor_v1_interface
+                  inhibitor_ops = {destroy_request};
+              auto *s = get<Server>(r);
+              auto *inhibitor = resource(
+                  c, &zwp_idle_inhibitor_v1_interface, 1, id, &inhibitor_ops,
+                  s, [](wl_resource *r) {
+                    get<Server>(r)->inhibitors.erase(r);
+                  });
+              if (inhibitor)
+                s->inhibitors[inhibitor] = Server::node(surface);
+            }};
+        resource(c, &zwp_idle_inhibit_manager_v1_interface, 1, id, &ops,
+                 data);
       });
   wl_global_create(
       display, &xdg_activation_v1_interface, 1, this,
@@ -1869,6 +2171,7 @@ int main(int argc, char **argv) {
           t->identity_dirty = false;
         }
       server.redraw();
+      server.sync_idle();
       wl_display_flush_clients(server.display);
       // EGL/Xlib round trips can read events into Xlib's queue, leaving its
       // socket empty. Drain those before entering an indefinite fd wait.

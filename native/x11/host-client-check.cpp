@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MIT — real client protocol against the isolated
  * adapter. */
 #include "../bridge/csd-style.h"
+#include "idle-inhibit-client.h"
 #include "linux-dmabuf-client.h"
 #include "text-input-client.h"
 #include "viewporter-client.h"
@@ -9,6 +10,8 @@
 #include <X11/Xatom.h>
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
+#include <X11/extensions/scrnsaver.h>
+#include <algorithm>
 #include <cassert>
 #include <cstdio>
 #include <cstdlib>
@@ -33,7 +36,9 @@ struct Client {
   wl_output *output = nullptr;
   zwp_linux_dmabuf_v1 *dmabuf = nullptr;
   zwp_text_input_manager_v3 *text_manager = nullptr;
-  int width = 0, height = 0;
+  zwp_idle_inhibit_manager_v1 *idle = nullptr;
+  int width = 0, height = 0, refresh = 0;
+  std::vector<uint32_t> dmabuf_formats, dmabuf_modifiers;
 };
 static void registry(void *data, wl_registry *r, uint32_t name,
                      const char *iface, uint32_t version) {
@@ -59,11 +64,12 @@ static void registry(void *data, wl_registry *r, uint32_t name,
         [](void *, wl_output *, int32_t, int32_t, int32_t, int32_t, int32_t,
            const char *, const char *, int32_t) {},
         [](void *data, wl_output *, uint32_t flags, int32_t w, int32_t h,
-           int32_t) {
+           int32_t refresh) {
           if (flags & WL_OUTPUT_MODE_CURRENT) {
             auto *c = static_cast<Client *>(data);
             c->width = w;
             c->height = h;
+            c->refresh = refresh;
           }
         },
         [](void *, wl_output *) {},
@@ -75,13 +81,23 @@ static void registry(void *data, wl_registry *r, uint32_t name,
   if (!strcmp(iface, "zwp_text_input_manager_v3"))
     c.text_manager = (zwp_text_input_manager_v3 *)wl_registry_bind(
         r, name, &zwp_text_input_manager_v3_interface, 1);
+  if (!strcmp(iface, "zwp_idle_inhibit_manager_v1"))
+    c.idle = (zwp_idle_inhibit_manager_v1 *)wl_registry_bind(
+        r, name, &zwp_idle_inhibit_manager_v1_interface, 1);
   if (!strcmp(iface, "zwp_linux_dmabuf_v1")) {
     c.dmabuf = (zwp_linux_dmabuf_v1 *)wl_registry_bind(
         r, name, &zwp_linux_dmabuf_v1_interface, 3);
     static const zwp_linux_dmabuf_v1_listener events = {
-        [](void *, zwp_linux_dmabuf_v1 *, uint32_t) {},
-        [](void *, zwp_linux_dmabuf_v1 *, uint32_t, uint32_t, uint32_t) {}};
-    zwp_linux_dmabuf_v1_add_listener(c.dmabuf, &events, nullptr);
+        [](void *data, zwp_linux_dmabuf_v1 *, uint32_t format) {
+          static_cast<Client *>(data)->dmabuf_formats.push_back(format);
+        },
+        [](void *data, zwp_linux_dmabuf_v1 *, uint32_t format, uint32_t hi,
+           uint32_t lo) {
+          // Only LINEAR is offered.
+          assert(!hi && !lo);
+          static_cast<Client *>(data)->dmabuf_modifiers.push_back(format);
+        }};
+    zwp_linux_dmabuf_v1_add_listener(c.dmabuf, &events, &c);
   }
 }
 static std::string committed_text;
@@ -257,6 +273,259 @@ static void dmabuf_lifetime_check(Client &c) {
   assert(server_fds() == baseline);
   puts("PASS DMA-BUF allocation lifetime is independent of consumed params");
 }
+static uint32_t code(const char *s) {
+  return uint32_t(uint8_t(s[0])) | uint32_t(uint8_t(s[1])) << 8 |
+         uint32_t(uint8_t(s[2])) << 16 | uint32_t(uint8_t(s[3])) << 24;
+}
+struct Yuv {
+  uint8_t y, u, v;
+};
+// Limited-range colours: top half red, bottom half blue.
+static Yuv yuv_at(int y, int h, bool bt709) {
+  if (bt709)
+    return y < h / 2 ? Yuv{63, 102, 240} : Yuv{32, 240, 118};
+  return y < h / 2 ? Yuv{81, 90, 240} : Yuv{41, 240, 110};
+}
+static int memfd(size_t size) {
+  int fd = memfd_create("test-yuv", MFD_CLOEXEC);
+  assert(fd >= 0 && !ftruncate(fd, off_t(size)));
+  return fd;
+}
+static uint8_t *map(int fd, size_t size) {
+  auto *p = static_cast<uint8_t *>(
+      mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0));
+  assert(p != MAP_FAILED);
+  return p;
+}
+// Planar 4:2:0 writer. Planes may share one fd (offsets) or use separate fds.
+struct PlaneOut {
+  uint8_t *base;
+  size_t offset, stride;
+};
+static void fill_420(int w, int h, bool bt709, PlaneOut y, PlaneOut u,
+                     PlaneOut v, int step) {
+  for (int row = 0; row < h; ++row)
+    for (int x = 0; x < w; ++x)
+      y.base[y.offset + row * y.stride + x] = yuv_at(row, h, bt709).y;
+  for (int row = 0; row < (h + 1) / 2; ++row)
+    for (int x = 0; x < (w + 1) / 2; ++x) {
+      auto c = yuv_at(row * 2, h, bt709);
+      u.base[u.offset + row * u.stride + x * step] = c.u;
+      v.base[v.offset + row * v.stride + x * step] = c.v;
+    }
+}
+static zwp_linux_buffer_params_v1 *params_failed = nullptr;
+static unsigned failed_events = 0, created_events = 0;
+static const zwp_linux_buffer_params_v1_listener params_events = {
+    [](void *, zwp_linux_buffer_params_v1 *, wl_buffer *b) {
+      ++created_events;
+      wl_buffer_destroy(b);
+    },
+    [](void *, zwp_linux_buffer_params_v1 *p) {
+      ++failed_events;
+      params_failed = p;
+    }};
+// What hwcomposer.waydroid sends: one plane-0 add, then create_immed.
+static wl_buffer *single(Client &c, int fd, uint32_t stride, int w, int h,
+                         uint32_t format, uint64_t modifier = 0) {
+  auto *params = zwp_linux_dmabuf_v1_create_params(c.dmabuf);
+  zwp_linux_buffer_params_v1_add(params, fd, 0, 0, stride, modifier >> 32,
+                                 modifier & 0xffffffff);
+  auto *b = zwp_linux_buffer_params_v1_create_immed(params, w, h, format, 0);
+  zwp_linux_buffer_params_v1_destroy(params);
+  wl_buffer_add_listener(b, &released, nullptr);
+  return b;
+}
+static void near(Display *d, Window w, int x, int y, int r, int g, int b,
+                 const char *what) {
+  auto *image = XGetImage(d, w, x, y, 1, 1, AllPlanes, ZPixmap);
+  assert(image);
+  auto p = XGetPixel(image, 0, 0);
+  XDestroyImage(image);
+  int ar = (p >> 16) & 255, ag = (p >> 8) & 255, ab = p & 255;
+  if (abs(ar - r) > 12 || abs(ag - g) > 12 || abs(ab - b) > 12) {
+    fprintf(stderr, "%s pixel %d,%d=%02x%02x%02x expected~%02x%02x%02x\n",
+            what, x, y, ar, ag, ab, r, g, b);
+    assert(false);
+  }
+}
+static Window find_window(Display *d, const char *name);
+static void dmabuf_formats_check(Client &c) {
+  assert(c.dmabuf);
+  auto &f = c.dmabuf_formats;
+  auto has = [&](uint32_t x) {
+    return std::find(f.begin(), f.end(), x) != f.end();
+  };
+  // The legacy 8888 set stays, video formats are offered, the private
+  // minigbm alias never is, and each format has exactly one LINEAR modifier.
+  for (const char *name : {"AR24", "XR24", "AB24", "XB24", "NV12", "NV21",
+                           "YV12", "YU12"})
+    assert(has(code(name)));
+  assert(!has(code("9997")));
+  assert(c.dmabuf_modifiers == f);
+  const bool x11 = getenv("ANVIL_TEST_X11");
+  auto a = app(c, "waydroid.anvildroid.test.dmabuf");
+  roundtrip(c);
+  roundtrip(c);
+  Display *d = x11 ? XOpenDisplay(nullptr) : nullptr;
+  Window window = 0;
+  auto show = [&](wl_buffer *b, int w, int h, const char *what,
+                  bool bt709 = false, bool black = false) {
+    unsigned before = releases;
+    xdg_surface_set_window_geometry(a.xdg, 0, 0, w, h);
+    wl_surface_attach(a.surface, b, 0, 0);
+    wl_surface_commit(a.surface);
+    roundtrip(c);
+    usleep(30000);
+    roundtrip(c);
+    // Snapshot precedes release; the guest may reuse the buffer at once.
+    assert(releases == before + 1);
+    if (!d)
+      return;
+    if (!window) {
+      window = find_window(d, "waydroid.anvildroid.test.dmabuf");
+      XMoveWindow(d, window, 10, 10);
+      XSync(d, False);
+      usleep(100000);
+      roundtrip(c);
+    }
+    if (black) {
+      near(d, window, w / 2, h / 4, 0, 0, 0, what);
+      return;
+    }
+    // BT.601 decoding of the BT.709 samples would give red ~e90002.
+    (void)bt709;
+    near(d, window, w / 2, h / 4, 255, 0, 0, what);
+    near(d, window, w / 2, h * 3 / 4, 0, 0, 255, what);
+  };
+  const int w = 90, h = 60;
+  // minigbm YV12 ('9997'): stride = width (not 32-aligned), ceil chroma.
+  {
+    const size_t cs = (w + 1) / 2, ch = (h + 1) / 2,
+                 size = size_t(w) * h + 2 * cs * ch;
+    int fd = memfd(size);
+    auto *m = map(fd, size);
+    fill_420(w, h, false, {m, 0, size_t(w)}, {m, w * h + cs * ch, cs},
+             {m, size_t(w) * h, cs}, 1);
+    munmap(m, size);
+    auto *b = single(c, fd, w, w, h, code("9997"));
+    close(fd);
+    show(b, w, h, "minigbm YV12");
+    wl_buffer_destroy(b);
+  }
+  // gbm_gralloc/Android YV12: padded stride, ALIGN(stride / 2, 16) chroma.
+  {
+    const size_t s = 128, cs = 64, size = s * h + cs * h;
+    int fd = memfd(size);
+    auto *m = map(fd, size);
+    fill_420(w, h, false, {m, 0, s}, {m, s * h + cs * (h / 2), cs},
+             {m, s * h, cs}, 1);
+    munmap(m, size);
+    auto *b = single(c, fd, s, w, h, code("YV12"));
+    close(fd);
+    show(b, w, h, "Android YV12");
+    wl_buffer_destroy(b);
+  }
+  // minigbm NV12/NV21 (YCbCr_420_888): interleaved chroma at stride * h.
+  for (bool nv21 : {false, true}) {
+    const size_t s = 96, size = s * h + s * (h / 2);
+    int fd = memfd(size);
+    auto *m = map(fd, size);
+    size_t uv = s * h;
+    fill_420(w, h, false, {m, 0, s}, {m, uv + (nv21 ? 1 : 0), s},
+             {m, uv + (nv21 ? 0 : 1), s}, 2);
+    munmap(m, size);
+    auto *b = single(c, fd, s, w, h, code(nv21 ? "NV21" : "NV12"));
+    close(fd);
+    show(b, w, h, nv21 ? "NV21" : "NV12");
+    wl_buffer_destroy(b);
+  }
+  // Explicit three-plane YUV420 in three allocations.
+  {
+    int fds[3] = {memfd(size_t(w) * h), memfd(48 * 30), memfd(48 * 30)};
+    auto *y = map(fds[0], size_t(w) * h), *u = map(fds[1], 48 * 30),
+         *v = map(fds[2], 48 * 30);
+    fill_420(w, h, false, {y, 0, size_t(w)}, {u, 0, 48}, {v, 0, 48}, 1);
+    munmap(y, size_t(w) * h);
+    munmap(u, 48 * 30);
+    munmap(v, 48 * 30);
+    auto *params = zwp_linux_dmabuf_v1_create_params(c.dmabuf);
+    zwp_linux_buffer_params_v1_add(params, fds[0], 0, 0, w, 0, 0);
+    zwp_linux_buffer_params_v1_add(params, fds[1], 1, 0, 48, 0, 0);
+    zwp_linux_buffer_params_v1_add(params, fds[2], 2, 0, 48, 0, 0);
+    for (int fd : fds)
+      close(fd);
+    auto *b = zwp_linux_buffer_params_v1_create_immed(params, w, h,
+                                                      code("YU12"), 0);
+    zwp_linux_buffer_params_v1_destroy(params);
+    wl_buffer_add_listener(b, &released, nullptr);
+    show(b, w, h, "explicit YU12");
+    wl_buffer_destroy(b);
+  }
+  // HD content is converted as BT.709.
+  {
+    const int W = 1280, H = 720;
+    const size_t size = size_t(W) * H * 3 / 2;
+    int fd = memfd(size);
+    auto *m = map(fd, size);
+    fill_420(W, H, true, {m, 0, size_t(W)}, {m, size_t(W) * H, size_t(W)},
+             {m, size_t(W) * H + 1, size_t(W)}, 2);
+    munmap(m, size);
+    auto *b = single(c, fd, W, W, H, code("NV12"));
+    close(fd);
+    show(b, W, H, "BT.709 NV12", true);
+    wl_buffer_destroy(b);
+  }
+  // Well-formed but unimportable buffers never kill the composer:
+  // create_immed shows a black placeholder; create reports `failed`.
+  {
+    int fd = memfd(size_t(w) * h * 4);
+    auto *b = single(c, fd, w * 2, w, h, code("GR88"));
+    show(b, w, h, "unknown format placeholder", false, true);
+    wl_buffer_destroy(b);
+    b = single(c, fd, w * 4, w, h, code("XR24"), 0x0100000000000001ull);
+    show(b, w, h, "tiled placeholder", false, true);
+    wl_buffer_destroy(b);
+    // A short stride for an advertised format is still non-fatal.
+    b = single(c, fd, w * 2, w, h, code("XR24"));
+    show(b, w, h, "short stride placeholder", false, true);
+    wl_buffer_destroy(b);
+    auto *params = zwp_linux_dmabuf_v1_create_params(c.dmabuf);
+    zwp_linux_buffer_params_v1_add_listener(params, &params_events, nullptr);
+    zwp_linux_buffer_params_v1_add(params, fd, 0, 0, w * 2, 0, 0);
+    zwp_linux_buffer_params_v1_create(params, w, h, code("GR88"), 0);
+    roundtrip(c);
+    assert(failed_events == 1 && params_failed == params && !created_events);
+    zwp_linux_buffer_params_v1_destroy(params);
+    params = zwp_linux_dmabuf_v1_create_params(c.dmabuf);
+    zwp_linux_buffer_params_v1_add_listener(params, &params_events, nullptr);
+    zwp_linux_buffer_params_v1_add(params, fd, 0, 0, w * 4, 0, 0);
+    zwp_linux_buffer_params_v1_create(params, w, h, code("XR24"), 0);
+    roundtrip(c);
+    assert(failed_events == 1 && created_events == 1);
+    zwp_linux_buffer_params_v1_destroy(params);
+    // The composer's SHM path labels non-RGBA HAL formats -EINVAL.
+    auto *pool = wl_shm_create_pool(c.shm, fd, w * h * 4);
+    b = wl_shm_pool_create_buffer(pool, 0, w, h, w * 4, uint32_t(-22));
+    wl_shm_pool_destroy(pool);
+    wl_buffer_add_listener(b, &released, nullptr);
+    show(b, w, h, "SHM -EINVAL placeholder", false, true);
+    wl_buffer_destroy(b);
+    close(fd);
+  }
+  wl_surface_attach(a.surface, nullptr, 0, 0);
+  wl_surface_commit(a.surface);
+  xdg_toplevel_destroy(a.top);
+  xdg_surface_destroy(a.xdg);
+  wl_surface_destroy(a.surface);
+  roundtrip(c);
+  if (d)
+    XCloseDisplay(d);
+  puts(x11 ? "PASS minigbm/gbm_gralloc YUV DMA-BUFs import with correct planes "
+             "and BT.601/709; unimportable buffers become placeholders"
+           : "PASS DMA-BUF format advertisement and non-fatal unimportable "
+             "buffers");
+}
 static Window find_window(Display *d, const char *name) {
   Window root, parent, *children = nullptr;
   unsigned count = 0;
@@ -289,6 +558,8 @@ static void pixel(Display *d, Window w, int x, int y, unsigned long color) {
   XDestroyImage(image);
 }
 static void globals_destroy(Client &c, wl_registry *r) {
+  if (c.idle)
+    zwp_idle_inhibit_manager_v1_destroy(c.idle);
   zwp_linux_dmabuf_v1_destroy(c.dmabuf);
   zwp_text_input_manager_v3_destroy(c.text_manager);
   wl_output_release(c.output);
@@ -299,6 +570,166 @@ static void globals_destroy(Client &c, wl_registry *r) {
   wl_subcompositor_destroy(c.sub);
   wl_compositor_destroy(c.compositor);
   wl_registry_destroy(r);
+}
+static char idle_state() {
+  // The endpoint logs each transition; its newest line is the current state.
+  const char *path = getenv("ANVIL_TEST_HOST_LOG");
+  assert(path);
+  FILE *log = fopen(path, "r");
+  assert(log);
+  char line[512], state = '0';
+  while (fgets(line, sizeof(line), log))
+    if (!strncmp(line, "x11_idle_inhibit=", 17))
+      state = line[17];
+  fclose(log);
+  return state;
+}
+static void expect_idle(Client &c, char state) {
+  for (int i = 0; i < 300 && idle_state() != state; ++i) {
+    roundtrip(c);
+    usleep(10000);
+  }
+  if (idle_state() != state)
+    fprintf(stderr, "idle inhibit actual=%c expected=%c\n", idle_state(),
+            state);
+  assert(idle_state() == state);
+}
+static long host_cpu_ticks() {
+  const char *pid = getenv("ANVIL_TEST_HOST_PID");
+  assert(pid);
+  FILE *stat = fopen((std::string("/proc/") + pid + "/stat").c_str(), "r");
+  assert(stat);
+  char text[1024]{};
+  assert(fgets(text, sizeof(text), stat));
+  fclose(stat);
+  auto *field = strrchr(text, ')');
+  assert(field);
+  long user = 0, system = 0;
+  // Fields 14/15 follow the state and 10 counters after the command name.
+  assert(sscanf(field + 2, "%*c %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %ld %ld",
+                &user, &system) == 2);
+  return user + system;
+}
+static int saver_state(Display *d, unsigned long *idle = nullptr) {
+  auto *info = XScreenSaverAllocInfo();
+  assert(info && XScreenSaverQueryInfo(d, DefaultRootWindow(d), info));
+  int state = info->state;
+  if (idle)
+    *idle = info->idle;
+  XFree(info);
+  return state;
+}
+static void idle_check(Client &c, wl_registry *r) {
+  assert(c.idle);
+  auto a = app(c, "waydroid.anvildroid.test.idle");
+  roundtrip(c);
+  roundtrip(c);
+  auto *content = buffer(c, 320, 200, 0xff406080);
+  wl_surface_attach(a.surface, content, 0, 0);
+  wl_surface_commit(a.surface);
+  roundtrip(c);
+  roundtrip(c);
+  expect_idle(c, '0');
+  auto *first = zwp_idle_inhibit_manager_v1_create_inhibitor(c.idle, a.surface);
+  expect_idle(c, '1');
+  // Inhibition arms one coarse timer; the endpoint must keep sleeping.
+  auto ticks = host_cpu_ticks();
+  usleep(1000000);
+  ticks = host_cpu_ticks() - ticks;
+  if (ticks > 10)
+    fprintf(stderr, "inhibited endpoint used %ld CPU ticks in 1 s\n", ticks);
+  assert(ticks <= 10);
+  // Guest unmap and remap.
+  wl_surface_attach(a.surface, nullptr, 0, 0);
+  wl_surface_commit(a.surface);
+  expect_idle(c, '0');
+  wl_surface_attach(a.surface, content, 0, 0);
+  wl_surface_commit(a.surface);
+  expect_idle(c, '1');
+  if (getenv("ANVIL_TEST_X11")) {
+    auto *d = XOpenDisplay(nullptr);
+    assert(d);
+    int event, error;
+    assert(XScreenSaverQueryExtension(d, &event, &error));
+    auto w = find_window(d, "waydroid.anvildroid.test.idle");
+    // A 1 s private Xvfb saver must stay off while suspended and reset.
+    XSetScreenSaver(d, 1, 0, DontPreferBlanking, AllowExposures);
+    XSync(d, False);
+    usleep(1600000);
+    roundtrip(c);
+    // The check shortens the 30 s reset period; desktop idle monitors read
+    // this server idle time rather than the suspended saver timer.
+    unsigned long idle = 0;
+    assert(saver_state(d, &idle) == ScreenSaverOff);
+    if (idle >= 1000)
+      fprintf(stderr, "server idle time was not reset: %lu ms\n", idle);
+    assert(idle < 1000);
+    // Model WM minimization: an unmapped client window, then the EWMH state.
+    XUnmapWindow(d, w);
+    XSync(d, False);
+    expect_idle(c, '0');
+    usleep(1600000);
+    assert(saver_state(d) == ScreenSaverOn);
+    XMapWindow(d, w);
+    XSync(d, False);
+    expect_idle(c, '1');
+    usleep(50000);
+    assert(saver_state(d) == ScreenSaverOff);
+    auto hidden = XInternAtom(d, "_NET_WM_STATE_HIDDEN", False);
+    auto state_atom = XInternAtom(d, "_NET_WM_STATE", False);
+    XChangeProperty(d, w, state_atom, XA_ATOM, 32, PropModeReplace,
+                    reinterpret_cast<unsigned char *>(&hidden), 1);
+    XSync(d, False);
+    expect_idle(c, '0');
+    XDeleteProperty(d, w, state_atom);
+    XSync(d, False);
+    expect_idle(c, '1');
+    XSetScreenSaver(d, -1, -1, DefaultBlanking, DefaultExposures);
+    XResetScreenSaver(d);
+    XCloseDisplay(d);
+  }
+  // A visible subsurface keeps inhibition after the first inhibitor is gone.
+  auto *child = wl_compositor_create_surface(c.compositor);
+  auto *sub = wl_subcompositor_get_subsurface(c.sub, child, a.surface);
+  auto *child_content = buffer(c, 20, 20, 0xffffffff);
+  wl_surface_attach(child, child_content, 0, 0);
+  wl_surface_commit(child);
+  wl_surface_commit(a.surface);
+  auto *second = zwp_idle_inhibit_manager_v1_create_inhibitor(c.idle, child);
+  roundtrip(c);
+  zwp_idle_inhibitor_v1_destroy(first);
+  roundtrip(c);
+  roundtrip(c);
+  expect_idle(c, '1');
+  zwp_idle_inhibitor_v1_destroy(second);
+  expect_idle(c, '0');
+  // Destroying the surface leaves an inert inhibitor that is safe to destroy.
+  auto *third = zwp_idle_inhibit_manager_v1_create_inhibitor(c.idle, a.surface);
+  expect_idle(c, '1');
+  wl_subsurface_destroy(sub);
+  wl_surface_destroy(child);
+  xdg_toplevel_destroy(a.top);
+  xdg_surface_destroy(a.xdg);
+  wl_surface_destroy(a.surface);
+  expect_idle(c, '0');
+  zwp_idle_inhibitor_v1_destroy(third);
+  roundtrip(c);
+  // Leave one active inhibitor for client teardown to release.
+  auto b = app(c, "waydroid.anvildroid.test.idle-teardown");
+  roundtrip(c);
+  roundtrip(c);
+  wl_surface_attach(b.surface, content, 0, 0);
+  wl_surface_commit(b.surface);
+  auto *last = zwp_idle_inhibit_manager_v1_create_inhibitor(c.idle, b.surface);
+  expect_idle(c, '1');
+  wl_buffer_destroy(child_content);
+  // Free client proxies without requests; disconnect performs the teardown.
+  for (auto *proxy : {(wl_proxy *)last, (wl_proxy *)b.top, (wl_proxy *)b.xdg,
+                      (wl_proxy *)b.surface, (wl_proxy *)content})
+    wl_proxy_destroy(proxy);
+  globals_destroy(c, r);
+  roundtrip(c);
+  puts("PASS idle inhibitor follows visible toplevels and keeps the loop idle");
 }
 static void chrome_check(Client &c) {
   auto *pointer = wl_seat_get_pointer(c.seat);
@@ -439,6 +870,55 @@ static void chrome_check(Client &c) {
     wl_surface_commit(a.surface); // The bridge reaccepts its old aligned frame.
     settle();
     dimensions(330, 238);
+    // The bridge's minimum describes xdg geometry; the WM must see the
+    // drawable minimum including the transparent resize margins.
+    xdg_toplevel_set_min_size(a.top, 162, 98);
+    wl_surface_commit(a.surface);
+    settle();
+    XSizeHints hints{};
+    long supplied = 0;
+    assert(XGetWMNormalHints(d, w, &hints, &supplied));
+    if (!(hints.flags & PMinSize) || hints.min_width != 170 ||
+        hints.min_height != 102 || (hints.flags & PMaxSize))
+      fprintf(stderr, "chrome normal hints flags=%lx min=%dx%d\n",
+              hints.flags, hints.min_width, hints.min_height);
+    assert((hints.flags & PMinSize) && hints.min_width == 170 &&
+           hints.min_height == 102 && !(hints.flags & PMaxSize));
+    // Muffin computes an in-grab ConfigureRequest from its frame rect, which
+    // already excludes _GTK_FRAME_EXTENTS, and subtracts them again. Each
+    // accepted-frame request during a move/resize grab therefore shrank the
+    // window by the 8x4 input margin until it reached 1px. The WM owns the
+    // size until its grab ends; only then may the accepted frame be applied.
+    XEvent crossing{};
+    crossing.xcrossing.type = LeaveNotify;
+    crossing.xcrossing.window = w;
+    crossing.xcrossing.mode = NotifyGrab;
+    crossing.xcrossing.x = 100;
+    crossing.xcrossing.y = 100;
+    XSendEvent(d, w, False, LeaveWindowMask, &crossing);
+    XSync(d, False);
+    settle();
+    XResizeWindow(d, w, 370, 258); // The WM's interactive size.
+    XSync(d, False);
+    settle();
+    assert(sizes[a.top].width == 362 && sizes[a.top].height == 254);
+    wl_surface_commit(a.surface); // The bridge reaccepts its old frame again.
+    settle();
+    dimensions(370, 258); // No ConfigureRequest while the WM grab is active.
+    crossing.xcrossing.type = EnterNotify;
+    crossing.xcrossing.mode = NotifyUngrab;
+    XSendEvent(d, w, False, EnterWindowMask, &crossing);
+    XSync(d, False);
+    settle();
+    wl_surface_commit(a.surface);
+    settle();
+    dimensions(330, 238);
+    assert(sizes[a.top].width == 322 && sizes[a.top].height == 234);
+    crossing.xcrossing.type = LeaveNotify;
+    crossing.xcrossing.mode = NotifyNormal;
+    XSendEvent(d, w, False, LeaveWindowMask, &crossing);
+    XSync(d, False);
+    settle();
     auto state_atom = XInternAtom(d, "_NET_WM_STATE", False);
     Atom states[] = {XInternAtom(d, "_NET_WM_STATE_MAXIMIZED_VERT", False),
                      XInternAtom(d, "_NET_WM_STATE_MAXIMIZED_HORZ", False)};
@@ -520,8 +1000,17 @@ int main(int argc, char **argv) {
   assert(c.compositor && c.sub && c.shm && c.wm && c.viewporter && c.seat);
   roundtrip(c);
   assert(c.width > 0 && c.height > 0);
+  // Headless and Xvfb (zero RandR timing) keep the 60 Hz fallback.
+  assert(c.refresh == 60000);
   if (argc == 3 && !strcmp(argv[2], "dmabuf-lifetime")) {
     dmabuf_lifetime_check(c);
+    globals_destroy(c, r);
+    roundtrip(c);
+    wl_display_disconnect(c.display);
+    return 0;
+  }
+  if (argc == 3 && !strcmp(argv[2], "dmabuf-formats")) {
+    dmabuf_formats_check(c);
     globals_destroy(c, r);
     roundtrip(c);
     wl_display_disconnect(c.display);
@@ -543,6 +1032,11 @@ int main(int argc, char **argv) {
          "canvas calibration");
     return 0;
   }
+  if (argc == 3 && !strcmp(argv[2], "idle-inhibit")) {
+    idle_check(c, r);
+    wl_display_disconnect(c.display);
+    return 0;
+  }
   if (argc == 3 && !strcmp(argv[2], "chrome")) {
     chrome_check(c);
     globals_destroy(c, r);
@@ -555,9 +1049,30 @@ int main(int argc, char **argv) {
     wl_surface *second = nullptr;
     wp_viewport *v1 = nullptr, *v2 = nullptr;
     wl_subsurface *s1 = nullptr, *s2 = nullptr;
+    zwp_linux_buffer_params_v1 *params = nullptr;
+    wl_buffer *dmabuf = nullptr;
     if (!strcmp(argv[2], "scale"))
       wl_surface_set_buffer_scale(first, 0);
-    else if (!strcmp(argv[2], "viewport")) {
+    else if (!strcmp(argv[2], "dmabuf-planes")) {
+      // Structural misuse stays fatal: planes 0 and 2 without plane 1.
+      int fd = memfd_create("test-dmabuf-planes", MFD_CLOEXEC);
+      assert(fd >= 0 && !ftruncate(fd, 4096));
+      params = zwp_linux_dmabuf_v1_create_params(c.dmabuf);
+      zwp_linux_buffer_params_v1_add(params, fd, 0, 0, 64, 0, 0);
+      zwp_linux_buffer_params_v1_add(params, fd, 2, 0, 32, 0, 0);
+      close(fd);
+      dmabuf = zwp_linux_buffer_params_v1_create_immed(params, 32, 32,
+                                                       code("YV12"), 0);
+    } else if (!strcmp(argv[2], "dmabuf-reuse")) {
+      int fd = memfd_create("test-dmabuf-reuse", MFD_CLOEXEC);
+      assert(fd >= 0 && !ftruncate(fd, 4096));
+      params = zwp_linux_dmabuf_v1_create_params(c.dmabuf);
+      zwp_linux_buffer_params_v1_add(params, fd, 0, 0, 64, 0, 0);
+      dmabuf = zwp_linux_buffer_params_v1_create_immed(params, 16, 16,
+                                                       code("XR24"), 0);
+      zwp_linux_buffer_params_v1_add(params, fd, 0, 0, 64, 0, 0);
+      close(fd);
+    } else if (!strcmp(argv[2], "viewport")) {
       v1 = wp_viewporter_get_viewport(c.viewporter, first);
       v2 = wp_viewporter_get_viewport(c.viewporter, first);
     } else {
@@ -567,6 +1082,10 @@ int main(int argc, char **argv) {
       s2 = wl_subcompositor_get_subsurface(c.sub, second, first);
     }
     assert(wl_display_roundtrip(c.display) == -1);
+    if (dmabuf)
+      wl_buffer_destroy(dmabuf);
+    if (params)
+      zwp_linux_buffer_params_v1_destroy(params);
     if (v1)
       wp_viewport_destroy(v1);
     if (v2)

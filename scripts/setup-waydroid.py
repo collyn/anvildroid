@@ -284,7 +284,7 @@ def run_init(flavor, image_id=None, owner_uid=None):
         return
     images = install_library_images(image_id, owner_uid)
     write_status(STATUS_FILE, 'initializing', flavor=flavor,
-                 detail='Initializing Default runtime from local images…', pid=os.getpid())
+                 detail='Initializing System Waydroid from local images…', pid=os.getpid())
     waydroid = shutil.which('waydroid')
     if waydroid is None:
         write_status(STATUS_FILE, 'failed', flavor=flavor,

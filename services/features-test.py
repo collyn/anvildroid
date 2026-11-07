@@ -232,19 +232,19 @@ class FeatureDispatchTest(unittest.TestCase):
         def replace_session(args):
             if args[0] == 'getprop': self.store.existing.session['pid'] = '93'
         self.store.existing.adapter.hook = replace_session
-        with self.assertRaisesRegex(RuntimeError,'Default runtime changed'):
+        with self.assertRaisesRegex(RuntimeError,'System Waydroid changed'):
             self.read('default')
         self.assertFalse(any(args[0]=='setprop' for args in self.store.existing.adapter.calls))
 
     def test_stopped_default_refuses_android_queries(self):
         self.store.existing.running = False
-        with self.assertRaisesRegex(RuntimeError,'Start Default'):
+        with self.assertRaisesRegex(RuntimeError,'Start System Waydroid'):
             self.read('default')
         self.assertEqual(self.store.existing.adapter.calls,[])
 
     def test_missing_default_session_fails_closed(self):
         self.store.existing.session = None
-        with self.assertRaisesRegex(RuntimeError,'generation|session|Start Default'):
+        with self.assertRaisesRegex(RuntimeError,'generation|session|Start System Waydroid'):
             self.read('default')
         self.assertEqual(self.store.existing.adapter.calls,[])
 
@@ -254,7 +254,7 @@ class FeatureDispatchTest(unittest.TestCase):
                 self.store.existing.session = None
                 self.store.existing.running = False
         self.store.existing.adapter.hook = disappear
-        with self.assertRaisesRegex(RuntimeError,'Default runtime changed'):
+        with self.assertRaisesRegex(RuntimeError,'System Waydroid changed'):
             self.read('default')
 
     def test_invalid_default_generation_refuses_android_access(self):

@@ -23,6 +23,7 @@ function fixture() {
     imageDownloadBusy:false, imageDownloadActive:()=>false, controllerRequirements:{can_start:true},
     RuntimeBatch:require('./src-frontend/runtime-batch.js'),
     runtimeSettingsOpen:new Set(), escapeHtml:String,
+    systemRuntimeVisible:()=>true, defaultRuntimeId:()=>'default', defaultRuntimeBadge:()=>'', setDefaultRuntimeButton:()=>'',
     renderRuntimeUsage:()=>'', updateDefaultRuntimeBadge(){},
     renderGpuControls:()=>'', renderRuntimeGraphics:()=>'', renderRuntimeArm:()=>'',
     renderRuntimeGoogle:()=>'', renderResourceControls:()=>'', renderRuntimeHealth:()=>'', renderRuntimeDevice:()=>'',

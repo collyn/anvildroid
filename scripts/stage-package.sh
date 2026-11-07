@@ -45,6 +45,7 @@ install -m 0644 "$ROOT/target/native/libanvildroid-hwc-shim.so" "$DEST/usr/local
 install -m 0644 "$ROOT/target/native/libanvildroid-android-window.so" "$DEST/usr/local/lib/anvildroid-controller/libanvildroid-android-window.so"
 install -m 0644 "$ROOT/services/runtime-path-guard.py" "$DEST/usr/local/lib/anvildroid-controller/runtime-path-guard.py"
 install -m 0644 "$ROOT/target/native/libanvildroid-path-guard.so" "$DEST/usr/local/lib/anvildroid-controller/libanvildroid-path-guard.so"
+python3 -I "$ROOT/scripts/apk-align.py" check "$ROOT/target/ime/AnvilDroidIme.apk"
 install -m 0644 "$ROOT/target/ime/AnvilDroidIme.apk" "$DEST/usr/local/lib/anvildroid-controller/AnvilDroidIme.apk"
 install -m 0644 "$ROOT/target/shutdown/anvildroid-shutdown.jar" "$DEST/usr/local/lib/anvildroid-controller/anvildroid-shutdown.jar"
 install -m 0644 "$ROOT/target/input-diagnostic/scrcpy-server-cancel.jar" "$DEST/usr/local/lib/anvildroid-controller/scrcpy-server-cancel.jar"

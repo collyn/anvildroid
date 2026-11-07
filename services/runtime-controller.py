@@ -415,7 +415,7 @@ class Store:
             os.close(source_fd)
 
     def reinstall_existing(self, request, uid):
-        require(request.get('confirmed_name') == self.existing.saved().get('name', 'Default runtime'),
+        require(request.get('confirmed_name') == self.existing.saved().get('name', 'System Waydroid'),
                 'INVALID_REQUEST', 'Runtime name changed; review reinstall again')
         flavor = request.get('flavor')
         require(flavor in ('installed', 'VANILLA', 'GAPPS', 'CUSTOM'), 'INVALID_REQUEST', 'Invalid image flavor')
@@ -590,11 +590,11 @@ class Store:
                 if self.existing.state() == 'FROZEN':
                     worker_module.linux.run_bounded('gdbus', 'call', '--system', '--dest', 'id.waydro.Container',
                         '--object-path', '/ContainerManager', '--method', 'id.waydro.ContainerManager.Unfreeze',
-                        timeout=3, operation='Resume Default runtime for ADB')
+                        timeout=3, operation='Resume System Waydroid for ADB')
                 if self.existing.state() == 'RUNNING':
                     adb_module.configure(self.existing.android, enabled)
                 elif enabled:
-                    raise RuntimeError('Start Default runtime before enabling ADB')
+                    raise RuntimeError('Start System Waydroid before enabling ADB')
                 lease = self.root / 'adb-default.lease'
                 if not enabled: lease.unlink(missing_ok=True)
                 if enabled:
@@ -670,7 +670,8 @@ class Store:
             {'id': 'desktop', 'label': 'Desktop session', 'available': desktop_info['desktop'], 'detail': desktop_info['detail']}]
         return {'checks': checks, 'can_prepare': waydroid and images['available'],
                 'can_start': waydroid and not missing and support,
-                'image_bytes': images['bytes'], 'installed_images': installed_images, 'desktop': desktop_info}
+                'image_bytes': images['bytes'], 'installed_images': installed_images, 'desktop': desktop_info,
+                'system_runtime': self.existing.initialized()}
 
     def resource_report(self, record):
         resource = worker_module.resources
@@ -855,13 +856,13 @@ class Store:
         selection = None
         if operation == 'existing_import':
             require(set(request) == {'op', 'id', 'name'} and request['id'] == 'default' and apk_fd is None,
-                    'INVALID_REQUEST', 'Expected Default runtime and a new runtime name')
+                    'INVALID_REQUEST', 'Expected System Waydroid and a new runtime name')
             validate_name(request['name'])
             source = self.existing.import_source(uid)
             os.close(source)
             require(self.backend.source == Path('/var/lib/waydroid/images'), 'CONFIG', 'Import requires installed Waydroid images')
             require(self.existing.config().get('waydroid', 'images_path', fallback='') == str(self.backend.source),
-                    'CONFIG', 'Default runtime uses a different image directory; import cannot verify that image pair')
+                    'CONFIG', 'System Waydroid uses a different image directory; import cannot verify that image pair')
             require(len(self.active_jobs) < 4 and self.storage.busy is None and
                     not any(self.imports.get(identifier) == 'pending' for identifier in self.active_jobs),
                     'BUSY', 'Wait for current operations to finish')
@@ -947,15 +948,19 @@ class Store:
             require(apk_fd is None, 'INVALID_REQUEST', 'Use the existing APK installation command for system Waydroid')
             require(operation not in ('resources_set', 'gpu_set', 'arm_set', 'existing_claim', 'system_integration') or
                     not any(self.imports.get(identifier) == 'pending' for identifier in self.active_jobs),
-                    'BUSY', 'Wait for Default runtime import to finish')
+                    'BUSY', 'Wait for System Waydroid import to finish')
+            if operation == 'refresh' and not self.existing.initialized():
+                # `waydroid init` never ran: there is no System Waydroid to
+                # manage. Report it without session checks so the GUI hides it.
+                return {'id': 'default', 'name': 'System Waydroid', 'state': 'Uninitialized', 'managed': False}
             if operation == 'reinstall':
                 return self.reinstall_existing(request, uid)
             if operation in ('adb_info', 'adb_set'):
                 self.existing.authorize(uid)
                 return self.adb_request(request, uid)
             return self.existing.dispatch(request, uid)
-        require(operation != 'existing_claim', 'INVALID_REQUEST', 'Only Default runtime can be registered for system management')
-        require(operation != 'system_integration', 'INVALID_REQUEST', 'System integration applies only to Default runtime')
+        require(operation != 'existing_claim', 'INVALID_REQUEST', 'Only System Waydroid can be registered for system management')
+        require(operation != 'system_integration', 'INVALID_REQUEST', 'System integration applies only to System Waydroid')
         if operation == 'requirements':
             return self.requirements(uid)
         if operation == 'list':
@@ -1244,7 +1249,7 @@ class Store:
             require(not (self.backend.location(record['id']) / 'reinstall.json').exists(), 'INVALID_STATE', 'Reinstall interrupted; retry preparation first')
         if operation in ('start', 'stop'):
             require(operation != 'start' or self.imports.get(record['id']) != 'pending',
-                    'INVALID_STATE', 'Finish importing Default runtime before starting this copy')
+                    'INVALID_STATE', 'Finish importing System Waydroid before starting this copy')
             desktop = None
             if operation == 'start' and self.displays.get(record['id']) == 'desktop' and record['state'] not in ('Running', 'Frozen'):
                 display = request.get('display')

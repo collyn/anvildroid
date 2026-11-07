@@ -15,6 +15,28 @@ composer/renderer makes presentation copies when needed. The adapter snapshots
 each committed surface into an owned GPU texture before sending buffer.release,
 then draws the committed surface tree into that app window. Android pixels are
 never read back to the CPU. Only SHM chrome is uploaded from guest memory.
+The adapter advertises exactly the LINEAR formats the host EGL reports through
+`eglQueryDmaBufFormatsEXT` (logged as `x11_adapter_dmabuf_formats=`), including
+planar video: YV12/YU12, NV12/NV21 and P010, plus RGB565, 10-bit and FP16 RGB
+when listed. Waydroid's composer sends one plane-0 `add` even for planar
+buffers, so the chroma planes of a single linear allocation are reconstructed
+from the allocator layout: NV12/NV21/P010 at stride × height with the luma
+stride; YV12 with `ALIGN(stride / 2, 16)` chroma (gbm_gralloc and
+`<system/graphics.h>`); minigbm's private `9997` YV12 fourcc with
+`ceil(stride / 2)` and `ceil(height / 2)`. Every explicit or implied plane is
+bounds-checked against its fd before import. YUV is sampled through
+`samplerExternalOES` with limited-range BT.709 for content at least 1280 wide
+or taller than 576 lines, and BT.601 otherwise; the composer conveys no
+dataspace. That composer aborts on any dmabuf failure, including the
+non-fatal `failed` event, so only structural misuse (params reuse, plane index
+or duplicate, missing planes, dimensions) is a protocol error. A well-formed
+buffer that cannot be imported (unknown or unadvertised format, non-LINEAR
+modifier, flags, short stride, out-of-bounds plane, or an EGL import failure)
+receives `failed` for `create` and is shown as an opaque black placeholder for
+`create_immed`; its fds are never imported. The composer's SHM path labels
+non-RGBA HAL formats `-EINVAL`; that wl_shm format is accepted and also shown
+as a placeholder. Each case is logged once (`x11_dmabuf_unsupported`,
+`x11_dmabuf_import_failed`).
 Synchronized subsurface commits, position and stacking are applied with the
 parent transaction; input hit testing uses the same tree and input regions.
 
@@ -24,6 +46,59 @@ waiting, flushes input before rendering, and uses EGL swap interval zero: Androi
 paces the producer and the desktop compositor schedules scanout. Stop signals
 also wake this wait, including when no clients remain. DMA-BUF snapshot completion
 still precedes buffer release; this scheduling change does not bypass GPU fences.
+Outputs follow X11 monitors: one wl_output (v4, with name/description) per
+RandR 1.5 monitor, so `xrandr --setmonitor` virtual monitors count; without
+RandR 1.5, one per active CRTC; without RandR, the whole screen. Each carries
+its root position (logical), physical size (EDID mm, else a 96 DPI estimate)
+and the current mode in pixels with that monitor's refresh. RandR screen/
+CRTC/output notifications and root ConfigureNotify (also raised by
+`--setmonitor`) re-enumerate monitors: changed outputs resend geometry/mode/
+done, new monitors add a global, removed monitors withdraw theirs (destroyed
+3 s later) after `wl_surface.leave`. Toplevels and popups receive
+`wl_surface.enter`/`leave` for every monitor their native window intersects,
+tracked from (synthetic) ConfigureNotify root positions. The first maximized
+configure, used by the composer to calibrate Android's canvas, carries the
+logical size of the monitor the window will appear on: the one under the
+pointer, where X11 WMs place new windows, else the primary, else the first.
+Popups are constrained to the parent's monitor intersected with
+`_NET_WORKAREA`. The worker's canvas capacity (`persist.anvildroid.canvas`,
+largest connected xrandr output in pixels) is unchanged and covers every
+monitor. A monitor's refresh is computed in mHz from its CRTC's dot clock and
+total timings (interlace/doublescan, clamped to 23-500 Hz); monitors without a
+CRTC (virtual) and Xvfb use the primary-or-fastest CRTC rate, else 60 Hz. The
+startup line `x11_output_refresh_mhz=` keeps that whole-screen rate, and
+`x11_output_added/changed/removed` lines describe each output. Waydroid's
+composer keeps the fastest advertised mode and reads it only at startup, so a
+mode change takes effect after the Android runtime restarts. It truncates mHz
+to whole Hz before computing its vsync period, so each output advertises its
+rate rounded to the nearest whole Hz (59.997 Hz → 60 Hz, 143.98 Hz → 144 Hz).
+
+Desktop scaling: X11 has no compositor scaling, so the adapter takes the
+desktop scale from `Xft.dpi` in the root `RESOURCE_MANAGER` (dpi/96, in 1/120
+steps, 1x-4x; GNOME, Cinnamon, MATE and KDE write 96 × scale there, and the
+accessibility text scaling factor multiplies it). It is exposed as a
+fractional Wayland compositor does: `wl_output.scale` = ceil(scale) and, only
+when the scale is not 1, `wp_fractional_scale_manager_v1` with
+`preferred_scale` = scale × 120. The composer and the shared bridge then
+calibrate exactly as on KWin/Mutter: Android's display is the physical pixel
+size and its default density 180 × scale. Every Wayland coordinate stays
+logical and X11 pixels are logical × scale: native window and size-hint
+sizes (logical → pixels rounds up, pixels → logical down, so sizes round-trip
+without resize loops), `_GTK_FRAME_EXTENTS`, rendering (Android's viewported
+physical buffers are sampled 1:1, so Android is crisp; 1x guest SHM chrome
+and SHM cursors are enlarged), pointer, touch and relative motion,
+confinement/lock regions and release warps, popup placement, XIM spot and the
+cursor hotspot. At 1x every path is unchanged. Xft.dpi is screen-wide, so
+all monitors share one scale; per-monitor scale is unavailable on X11. XFCE's
+integer window scaling (XSETTINGS only, Xft.dpi left at 96) is not detected.
+The scale is latched once a client can observe it (first wl_output,
+fractional-scale or window); Waydroid's composer never recalibrates, so a
+later `Xft.dpi` change is logged as `x11_desktop_scale=… restart_required=1`
+and applies after the runtime restarts; earlier changes apply immediately.
+A client that already received a fractional `preferred_scale` is not sent an
+integer `wl_output.scale` for hotplugged outputs at fractional scales,
+because the composer would replace its fractional scale with it.
+
 Native input runs in bounded turns so continuous motion cannot starve guest
 requests. Consecutive absolute motion samples are coalesced within each turn,
 without reordering buttons, keys, focus or touch events. Duplicate coordinates
@@ -46,7 +121,11 @@ are bounded to 4,000 UTF-8 bytes per message; surrounding context above that
 protocol limit is omitted. Fcitx must enable
 `UseOnTheSpot=True` in `~/.config/fcitx5/conf/xim.conf` to expose preedit callbacks;
 with off-the-spot XIM, the host input method owns its composition UI. The adapter
-does not change or restart the user's input method.
+does not change or restart the user's input method. When the XIM server exits,
+its destroy callback drops every XIC and clears guest preedit; enabled text
+input falls back to physical keys. An instantiate callback reopens the IM under
+the same pinned `XMODIFIERS` when a server appears, including one started after
+the adapter, and restores XIC focus and spot for the enabled text input.
 
 `wl_data_device_manager` bridges X11 CLIPBOARD asynchronously, including TARGETS,
 UTF8_STRING/TEXT and INCR transfers. Native MIME transfers are bounded to 32 MiB
@@ -64,6 +143,16 @@ Relative-pointer and pointer-constraints globals require XI2, XFixes and Shape.
 Locked/confined pointers support one-shot/persistent lifetime, committed regions,
 release hints and focus/surface teardown. Confinement shape is refreshed only
 when its geometry or input region changes, rather than on each rendered frame.
+
+`zwp_idle_inhibit_manager_v1` inhibitors take effect only while their surface
+belongs to a mapped toplevel/popup that the WM has not unmapped (iconified) or
+marked `_NET_WM_STATE_HIDDEN`. While one is effective the adapter calls
+XScreenSaverSuspend (MIT-SCREEN-SAVER 1.1, also suspending DPMS) and resets
+the server idle time every 30 s from an event-loop timer, as `xdg-screensaver`
+does on generic X11; desktop idle monitors read that idle time. The timer is
+disarmed again when the last inhibitor stops applying, and the X server drops
+the suspension if the adapter exits. No D-Bus session inhibit is used: the
+adapter does not receive the desktop session bus.
 
 xdg popups use native override-redirect/transient windows, positioner
 flip/slide/resize constraints, desktop workarea, reactive placement, reposition
@@ -130,7 +219,9 @@ CSD hit testing, move/resize serial ownership and a WM consuming button releases
 before the next app is clicked, unchanged accepted geometry after a WM resize,
 deferred resize requests without stale drawable dimensions, CSD/content edge
 pixels after the grab ends, cursor reuse, canvas
-calibration and WM close delivery. Dedicated feature checks cover Unicode
+calibration, WM close delivery and idle inhibit (saver suspension/idle reset,
+guest unmap, WM unmap/hidden state, surface destruction, client teardown and
+an idle loop while inhibited). Dedicated feature checks cover Unicode
 preedit/caret replacement, deterministic multitouch/cancellation, native pointer
 lock/confinement/relative motion, nested popup grabs/reposition, and bidirectional
 1 MiB clipboard INCR. The private Fcitx test composes Pinyin into a CJK commit. A separate chrome fixture checks raw ARGB
@@ -203,7 +294,8 @@ Live feature checks on 2026-10-16 passed on the Default Android 13 runtime:
 Unicode host clipboard paste/copy-back and new text entry/copy passed before and
 after 4,000 targeted X11 motion events. HWC/SurfaceFlinger PIDs stayed unchanged,
 with no Wayland marshal errors. The private Fcitx test covers inline Pinyin
-preedit/caret/commit and ordered physical Control shortcuts; Android's receiver
+preedit/caret/commit, ordered physical Control shortcuts and a Fcitx
+kill/restart under the same adapter; Android's receiver
 covers composing replacement, emoji deletion and stale editor generations.
 Live keyboard probes used explicit events targeted at the disposable editor;
 XTest delivery on this desktop did not reach the target, while private Xvfb

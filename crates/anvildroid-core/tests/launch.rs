@@ -169,7 +169,7 @@ fn scenario_worker() {
                     let message=error.to_string();
                     if scenario == "full_ui_binder" {
                         assert!(message.contains("/dev/anbox-binder"));
-                        assert!(message.contains("Check Default runtime Binder preparation and device permissions"));
+                        assert!(message.contains("Check System Waydroid Binder preparation and device permissions"));
                     }
                     if scenario == "full_ui_iplatform" { assert!(message.contains("Failed to access IPlatform service")); }
                     if scenario == "full_ui_nonzero" { assert!(message.contains("full-window refused")); }

@@ -46,7 +46,7 @@ test('Default Frozen profiles load alongside managed profiles, with scoped editi
   states.profiles.set('default',report('default'));states.profiles.set('r-one',report('r-one'));
   await api.refresh();
   assert.ok(calls.some(r=>r.op==='keymaps'&&r.id==='default'));
-  assert.match(el('keymap-saved-list').textContent,/Default runtime/);assert.match(el('keymap-saved-list').textContent,/Gaming/);
+  assert.match(el('keymap-saved-list').textContent,/System Waydroid/);assert.match(el('keymap-saved-list').textContent,/Gaming/);
   assert.doesNotMatch(el('keymap-saved-list').textContent,/not active|Legacy/);
   assert.ok(el('probe-runtime').children.some(o=>o.value==='default'));
   el('probe-runtime').value='default';el('probe-runtime').events.change();assert.equal(el('install-touch-probe').disabled,false);

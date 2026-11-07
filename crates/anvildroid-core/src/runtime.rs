@@ -60,7 +60,7 @@ pub fn launch_error(output: &str) -> Option<String> {
         ))
     } else if ["Can't open /dev/anbox-binder", "Failed to open /dev/anbox-binder"]
         .iter().any(|message| output.contains(message)) {
-        Some("Waydroid cannot access its Binder device from this desktop session. Check Default runtime Binder preparation and device permissions.".into())
+        Some("Waydroid cannot access its Binder device from this desktop session. Check System Waydroid Binder preparation and device permissions.".into())
     } else if [
         "Waydroid is not initialized",
         "WayDroid is not initialized",

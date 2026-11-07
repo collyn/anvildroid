@@ -1,5 +1,6 @@
 """Socket hints and bounded protocol prerequisites; no per-window SSD guarantee."""
 from pathlib import Path
+import json
 import os
 import pwd
 import re
@@ -209,6 +210,18 @@ def x11_input_environment(uid, display):
             name, value = max(candidates, key=candidates.get)
             result[name] = value
     return result
+
+
+def pinned_x11_input_environment(data):
+    """Validate the controller-pinned x11_input_environment() JSON for the worker."""
+    value = json.loads(data)
+    if not isinstance(value, dict) or len(value) > 4:
+        raise ValueError('Invalid pinned X11 input environment')
+    for key, text in value.items():
+        if (key not in ('LANG', 'LC_ALL', 'LC_CTYPE', 'XMODIFIERS') or not isinstance(text, str)
+                or not text or len(text) > 256 or not all(32 <= ord(c) < 127 for c in text)):
+            raise ValueError('Invalid pinned X11 input environment')
+    return dict(value, LANG=value.get('LANG', 'C.UTF-8'))
 
 
 def session_x11_display(uid):

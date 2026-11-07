@@ -392,12 +392,86 @@ static void game_input_lifecycle() {
   s.pointers.clear();s.keyboards.clear();s.touches.clear();s.tops.clear();close(fds[1]);
   puts("PASS game keys deduplicate XKB repeat, focus cancels key/button/touch, held inputs require release, stale-window input is rejected");
 }
+static void xim_reconnect() {
+  // XMODIFIERS=@im=none opens Xlib's local IM, so the adapter's server-death
+  // handling can be driven without an external input method.
+  Server s(false);
+  assert(s.platform.xim);
+  int fds[2];
+  assert(!socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, fds));
+  auto *client = wl_client_create(s.display, fds[0]);
+  assert(client);
+  Node n;
+  Top t{};
+  n.server = &s;
+  n.top = &t;
+  t.server = &s;
+  t.node = &n;
+  n.resource = wl_resource_create(client, &wl_surface_interface, 4, 2);
+  t.xdg = wl_resource_create(client, &xdg_surface_interface, 3, 3);
+  auto *keyboard = wl_resource_create(client, &wl_keyboard_interface, 5, 4);
+  s.keyboards.insert(keyboard);
+  auto *text = wl_resource_create(client, &zwp_text_input_v3_interface, 1, 5);
+  s.texts[text].enabled = true;
+  t.window = s.platform.create();
+  s.tops.insert(&t);
+  s.create_ime(&t);
+  assert(t.ic);
+  s.keyboard_focus = &t;
+  s.sync_ime();
+  assert(t.ic_focused);
+  t.preedit.replace(0, 0, U"ni", 2);
+  // Xlib closes a dead server's IM and XICs around the destroy callback.
+  XCloseIM(s.platform.xim);
+  s.platform.im_destroyed();
+  assert(!s.platform.xim && s.platform.im_retry && !t.ic && !t.ic_focused &&
+         t.preedit.text.empty());
+  auto messages = wire(s, fds[1]);
+  bool cleared = false;
+  for (size_t i = 0; i < messages.size(); i += (messages[i + 1] >> 16) / 4)
+    if (messages[i] == 5 && (messages[i + 1] & 65535) == 2)
+      cleared = messages[i + 2] == 1; // only the string's NUL terminator
+  assert(cleared);
+  auto key = [&](int type) {
+    XEvent e{};
+    e.type = type;
+    e.xkey.display = s.platform.display;
+    e.xkey.window = t.window.window;
+    e.xkey.keycode = 38;
+    e.xkey.time = 1;
+    s.native_event(e);
+  };
+  key(KeyPress);
+  assert(s.pressed.count(30));
+  key(KeyRelease);
+  messages = wire(s, fds[1]);
+  unsigned keys = 0;
+  for (size_t i = 0; i < messages.size(); i += (messages[i + 1] >> 16) / 4)
+    if (messages[i] == 4 && (messages[i + 1] & 65535) == WL_KEYBOARD_KEY &&
+        messages[i + 4] == 30)
+      ++keys;
+  assert(keys == 2 && s.pressed.empty());
+  // The next native turn reopens the IM and restores the enabled XIC focus.
+  s.events();
+  assert(s.platform.xim && !s.platform.im_retry && t.ic && t.ic_focused);
+  XDestroyIC(t.ic);
+  t.ic = nullptr;
+  s.platform.destroy(t.window);
+  s.keyboard_focus = nullptr;
+  s.tops.clear();
+  s.keyboards.clear();
+  s.texts.clear();
+  close(fds[1]);
+  puts("PASS XIM server loss clears XICs/preedit, keeps physical keys and "
+       "reattaches focused text input");
+}
 int main(int argc, char **argv) {
   if (argc == 2 && !strcmp(argv[1], "--x11-input-burst")) {
     native_event_budget();
     motion_order();
     scroll_events();
     game_input_lifecycle();
+    xim_reconnect();
     return 0;
   }
   assert(argc == 1);

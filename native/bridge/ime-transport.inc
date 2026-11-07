@@ -81,13 +81,17 @@ static void *ime_worker(void *unused) {
       pthread_mutex_unlock(mutex);
       if(clipboard_queued&&!ime_write(fd,value))break;
 #endif
-      if (++ticks >= 40) {
+      pthread_mutex_lock(mutex);
+      int more = ime_head != ime_tail;
+      pthread_mutex_unlock(mutex);
+      if (!more && ++ticks >= 40) {
         ticks = 0;
         char query[] = "{\"v\":1,\"op\":\"state\"}";
         if (!ime_write(fd, query)) break;
       }
       struct ime_pollfd event = {fd, 1, 0};
-      int ready = poll(&event, 1, 50);
+      /* Drain queued keys and commits back to back; idle polls stay bounded. */
+      int ready = poll(&event, 1, more ? 0 : 50);
       if (ready < 0 || (event.revents & (8 | 16 | 32))) break;
       if (!(event.revents & 1)) continue;
       unsigned char header[4];

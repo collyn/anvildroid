@@ -29,7 +29,7 @@ No per-app policy is duplicated in the worker or a second CSD implementation.
 The old framebuffer-only guest HAL and input companion have been removed.
 
 The endpoint supports xdg toplevel lifecycle/configure acknowledgement,
-subsurface commits/stacking, SHM, LINEAR RGB DMA-BUF imports, viewporter, output,
+subsurface commits/stacking, SHM, LINEAR RGB/YUV DMA-BUF imports, viewporter, output,
 pointer/keyboard/touch focus, guest cursors, text-input-v3 with XIM preedit/caret,
 relative pointers and pointer confinement/lock, clipboard and activation. xdg
 positioners/popups support constrained placement, reposition and nested grabs;

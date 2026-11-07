@@ -6,12 +6,13 @@ import json
 from pathlib import Path
 import re
 import subprocess
+import importlib.util
 import zipfile
 
 REQUIRED = (
     'AppRun', 'AppRun.wrapped', 'usr/bin/anvildroid-gui', 'usr/bin/anvildroid',
     'scripts/bootstrap-appimage.py', 'scripts/start-runtime-controller.py', 'scripts/setup-waydroid.py',
-    'scripts/install-runtime-controller.py', 'services/runtime-host.py',
+    'scripts/install-runtime-controller.py', 'scripts/apk-align.py', 'services/runtime-host.py',
     'services/runtime-features.py', 'services/runtime-compatibility.py', 'services/runtime-shares.py', 'services/runtime-default-shares.py', 'services/runtime-device.py', 'services/runtime-components.py', 'services/runtime-diagnostics.py',
     'target/native/libanvildroid-path-guard.so', 'target/native/libanvildroid-runtime-window.so', 'target/native/libanvildroid-window.so',
     'target/native/overlay-key.p12', 'target/ime/AnvilDroidIme.apk',
@@ -57,6 +58,11 @@ def validate(root, glibc_max=None):
         with zipfile.ZipFile(root / name) as archive:
             if archive.testzip() is not None or archive.read('classes.dex')[:4] != b'dex\n':
                 raise RuntimeError('Invalid Android helper: ' + name)
+    align_spec = importlib.util.spec_from_file_location('apk_align', root / 'scripts/apk-align.py')
+    apk_align = importlib.util.module_from_spec(align_spec)
+    align_spec.loader.exec_module(apk_align)
+    if apk_align.misaligned(root / 'target/ime/AnvilDroidIme.apk'):
+        raise RuntimeError('Desktop IME APK is not 4-byte aligned')
     observed = (0, 0)
     seen = set()
     bundled_names = {p.name for p in (root / 'usr/lib').rglob('*') if p.is_file()}

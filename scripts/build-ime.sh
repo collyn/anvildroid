@@ -18,12 +18,16 @@ java -cp "$r8" com.android.tools.r8.D8 --min-api 23 --lib "$android_jar" \
 aapt package -f -M native/ime/android/AndroidManifest.xml \
     -S native/ime/android/res -I "$android_jar" -F "$work/unsigned.apk"
 (cd "$work" && aapt add unsigned.apk classes.dex)
+# Android 11+ rejects an unaligned resources.arsc; apksigner versions differ in
+# whether they align, so align first and verify the signed output below.
+python3 -I scripts/apk-align.py align "$work/unsigned.apk" "$work/aligned.apk"
 if [ ! -f "$out/development.p12" ]; then
     keytool -genkeypair -keystore "$out/development.p12" -storepass anvildroid \
         -keypass anvildroid -alias ime -keyalg RSA -keysize 2048 -validity 3650 \
         -dname CN=AnvilDroid-IME-development
 fi
 apksigner sign --ks "$out/development.p12" --ks-pass pass:anvildroid \
-    --out "$out/AnvilDroidIme.apk" "$work/unsigned.apk"
+    --out "$out/AnvilDroidIme.apk" "$work/aligned.apk"
 apksigner verify "$out/AnvilDroidIme.apk"
+python3 -I scripts/apk-align.py check "$out/AnvilDroidIme.apk"
 echo "$out/AnvilDroidIme.apk"

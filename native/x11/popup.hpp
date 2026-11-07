@@ -9,17 +9,19 @@ void Server::popup_place(Top *t) {
   XTranslateCoordinates(platform.display, p->window.window,
                         DefaultRootWindow(platform.display), 0, 0, &x, &y,
                         &child);
-  x += int(p->geometry.x - p->frame.bounds.x + t->popup_geometry.x -
-           t->geometry.x + t->frame.bounds.x);
-  y += int(p->geometry.y - p->frame.bounds.y + t->popup_geometry.y -
-           t->geometry.y + t->frame.bounds.y);
+  x += px(p->geometry.x - p->frame.bounds.x + t->popup_geometry.x -
+          t->geometry.x + t->frame.bounds.x);
+  y += px(p->geometry.y - p->frame.bounds.y + t->popup_geometry.y -
+          t->geometry.y + t->frame.bounds.y);
   XMoveWindow(platform.display, t->window.window, x, y);
 }
 void Server::popup_configure(Top *t, uint32_t token, bool reposition) {
   if (!t->resource || !t->parent || t->dismissed)
     return;
   auto *p = t->parent;
-  auto [w, h] = platform.output_size();
+  // Constrain to the parent's monitor (and the desktop workarea on it),
+  // in logical coordinates relative to the parent's geometry origin.
+  auto monitor = monitor_for(p);
   double ox = p->geometry.x - p->frame.bounds.x,
          oy = p->geometry.y - p->frame.bounds.y;
   if (!platform.testing()) {
@@ -28,10 +30,13 @@ void Server::popup_configure(Top *t, uint32_t token, bool reposition) {
     XTranslateCoordinates(platform.display, p->window.window,
                           DefaultRootWindow(platform.display), 0, 0, &x, &y,
                           &child);
-    ox += x;
-    oy += y;
+    ox += platform.logical(x);
+    oy += platform.logical(y);
   }
-  Rect available{-ox, -oy, double(w), double(h)};
+  Rect available{platform.logical(monitor.x) - ox,
+                 platform.logical(monitor.y) - oy,
+                 platform.logical(monitor.width),
+                 platform.logical(monitor.height)};
   if (!platform.testing()) {
     Atom type;
     int format;
@@ -57,9 +62,17 @@ void Server::popup_configure(Top *t, uint32_t token, bool reposition) {
         bytes) {
       if (type == XA_CARDINAL && format == 32 && count == 4) {
         auto *v = reinterpret_cast<unsigned long *>(bytes);
-        if (v[2] && v[3] && v[2] <= 65535 && v[3] <= 65535)
-          available = {double(v[0]) - ox, double(v[1]) - oy, double(v[2]),
-                       double(v[3])};
+        // _NET_WORKAREA spans every monitor; keep its part on this one.
+        long x0 = std::max<long>(long(v[0]), monitor.x),
+             y0 = std::max<long>(long(v[1]), monitor.y),
+             x1 = std::min<long>(long(v[0] + v[2]), long(monitor.x) + monitor.width),
+             y1 = std::min<long>(long(v[1] + v[3]), long(monitor.y) + monitor.height);
+        if (v[2] && v[3] && v[2] <= 65535 && v[3] <= 65535 && x1 > x0 &&
+            y1 > y0)
+          available = {platform.logical(double(x0)) - ox,
+                       platform.logical(double(y0)) - oy,
+                       platform.logical(double(x1 - x0)),
+                       platform.logical(double(y1 - y0))};
       }
       XFree(bytes);
     }
@@ -112,7 +125,7 @@ bool Server::popup_button(Top *target, int x, int y) {
       XTranslateCoordinates(platform.display, target->window.window,
                             p->window.window, x, y, &px, &py, &child);
     }
-    if (px >= 0 && py >= 0 && px < p->window.width && py < p->window.height)
+    if (px >= 0 && py >= 0 && px < p->window.pw && py < p->window.ph)
       return false;
   }
   popup_dismiss(popup_grabs.front());
@@ -210,6 +223,7 @@ static void popup_create(wl_client *c, wl_resource *r, uint32_t id,
   t->positioner = *p;
   t->geometry = {0, 0, double(p->width), double(p->height)};
   t->resize_window = true;
+  s->latch_scale("popup");
   t->window = s->platform.create();
   if (!s->platform.testing()) {
     XSetWindowAttributes a{};

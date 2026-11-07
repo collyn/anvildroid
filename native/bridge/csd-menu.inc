@@ -211,6 +211,7 @@ static void csd_menu_size(struct csd_frame *f,int width,int height) {
     wayland_send(f->top->p,10,0); /* unset_maximized; configure uses this size */
   }
   f->maximized=0;s->resize.maximized=0;
+  host_echo_supersede(s,width,height);
   s->fit_w=width;s->fit_h=height;
   s->preview_width=s->preview_height=0;
   if(!game_fit_enabled(s)) {

@@ -92,9 +92,49 @@ static void ime_batch(const struct anvil_ime_batch *batch) {
   if ((size_t)(end - json) > 32768) { ime_broken = 1; return; }
   ime_enqueue(json);
 }
+/* Host IMEs replace text as BackSpace keys followed by a commit (Telex/VNI).
+ * wl_keyboard reaches the app through Android input dispatch while commits
+ * take the IME socket, so a key could overtake queued commits and delete the
+ * wrong character. Plain BackSpace for the enabled editor therefore joins the
+ * commit queue and BridgeIme sends it through the same InputConnection.
+ * Modified BackSpace (word delete, shortcuts) keeps the physical key path. */
+static int ime_backspace_routed;
+static int ime_key_route(struct object *keyboard, uint32_t key, uint32_t state) {
+  if (key != 14) return 0;
+  char json[160];
+  if (!state) {
+    if (!ime_backspace_routed) return 0;
+    ime_backspace_routed = 0;
+    /* Release even after focus/generation changes so Android stops repeat. */
+    ime_enqueue("{\"v\":1,\"op\":\"key\",\"code\":67,\"down\":false}");
+    return 1;
+  }
+  struct object *s = keyboard->keyboard_focus;
+  if (ime_backspace_routed) return 1;
+  if (!ime_enabled || !ime_connected || ime_broken || keyboard->keyboard_mods ||
+      !s || s->p != ime_surface || s->overlay ||
+      ime_generation != ime_enabled_generation)
+    return 0;
+  snprintf(json, sizeof(json),
+           "{\"v\":1,\"op\":\"key\",\"generation\":%llu,\"code\":67,\"down\":true}",
+           (unsigned long long)ime_enabled_generation);
+  ime_enqueue(json);
+  ime_backspace_routed = 1;
+  return 1;
+}
 static void ime_commit_state(void) {
   wayland_send(ime_text, 7, 0);
   ++ime_serial;
+}
+/* The editor belongs to this window's task: its root app or top activity. */
+static int ime_owner(const struct object *s) {
+  if (!s->app || !s->app_id) return 0;
+  if (!strcmp(s->app_id, ime_package)) return 1;
+  for (int i = 0; i < task_count; i++)
+    if (!strcmp(tasks[i].package, s->app_id) && tasks[i].top_package[0] &&
+        !strcmp(tasks[i].top_package, ime_package))
+      return 1;
+  return 0;
 }
 static void ime_sync(void) {
   clipboard_sync();
@@ -106,7 +146,7 @@ static void ime_sync(void) {
                                  variation == 0xe0)) ||
                  (klass == 2 && variation == 0x10);
   int want = ime_connected && !ime_broken && ime_active && !password &&
-             s && !s->overlay && (s->full_ui || (s->app && s->app_id && !strcmp(s->app_id, ime_package)));
+             s && !s->overlay && (s->full_ui || ime_owner(s));
   if (!want) ime_metadata_applied = ime_metadata_revision;
   if (ime_enabled && (!want || ime_enabled_generation != ime_generation)) {
     wayland_send(ime_text, 2, 0);

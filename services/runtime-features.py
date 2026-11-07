@@ -91,11 +91,11 @@ def diagnostic_session(store, identifier, uid):
         state = store.existing.state()
         if not session:
             if state != 'STOPPED':
-                raise RuntimeError('Default runtime has no authenticated session')
+                raise RuntimeError('System Waydroid has no authenticated session')
             return ('default', state, None)
         pid = session.get('pid')
         if session.get('user_id') != str(uid):
-            raise RuntimeError('Default runtime session owner changed')
+            raise RuntimeError('System Waydroid session owner changed')
         identity = ('default', state, pid, session['user_id'], diagnostics.process_start(pid))
         if state in ('RUNNING', 'FROZEN'):
             container_pid = linux.run_bounded('lxc-info', '-P', store.existing.work / 'lxc',
@@ -133,7 +133,7 @@ def dispatch(store, request, uid, descriptor=None):
         if identifier == 'default':
             if op == 'device_info': return device.default_info(store.existing, uid)
             if any(getattr(store, 'imports', {}).get(job) == 'pending' for job in store.active_jobs):
-                raise RuntimeError('Wait for Default runtime import to finish')
+                raise RuntimeError('Wait for System Waydroid import to finish')
             return device.default_set(store.existing, uid, request['profile'], request['custom'], request['revision'])
         instance = store.backend.location(identifier)
         if op == 'device_info': return device.managed_info(instance, identifier)
@@ -145,17 +145,17 @@ def dispatch(store, request, uid, descriptor=None):
         if identifier == 'default':
             session, _ = store.existing.authorize(uid)
             if store.existing.state() != 'RUNNING':
-                raise RuntimeError('Start Default runtime before configuring app compatibility')
+                raise RuntimeError('Start System Waydroid before configuring app compatibility')
             generation = str(session.get('pid', '')) if isinstance(session, dict) else ''
             if not generation.isdecimal() or int(generation) <= 0:
-                raise RuntimeError('Default runtime generation is unavailable')
+                raise RuntimeError('System Waydroid generation is unavailable')
             payload = {'op': 'compatibility', 'action': action, 'generation': generation,
                        'package': request['package']}
             payload.update({key: request[key] for key in ('settings', 'revision') if key in request})
             result = compatibility.dispatch(store.existing.android, payload, identifier, generation)
             after, _ = store.existing.authorize(uid)
             if not isinstance(after, dict) or after.get('pid') != session.get('pid') or after.get('user_id') != session.get('user_id'):
-                raise RuntimeError('Default runtime changed during compatibility action; refresh before retrying')
+                raise RuntimeError('System Waydroid changed during compatibility action; refresh before retrying')
             return result
         return compatibility.worker_request(store.android, identifier, action, request['package'],
                                             request.get('settings'), request.get('revision'))

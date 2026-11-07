@@ -325,6 +325,7 @@ static void profile_poll(void) {
       }
       /* Restoring a new window is not an interactive drag. Submit on the
        * next worker turn rather than showing the old layout for 300ms. */
+      host_echo_supersede(s,saved_w,saved_h);
       s->resize.width=saved_w; s->resize.height=saved_h;
       s->resize.dirty=0; s->resize.quiet_ticks=RESIZE_QUIET_TICKS;
       if (s->csd) {s->csd->restore_width=saved_w;s->csd->restore_height=saved_h;}

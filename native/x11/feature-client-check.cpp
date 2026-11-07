@@ -11,6 +11,8 @@
 #include <functional>
 using x11host::Rect;
 #include <signal.h>
+#include <sstream>
+#include <sys/prctl.h>
 #include <sys/wait.h>
 
 static wl_data_device_manager *data_manager;
@@ -391,8 +393,11 @@ int main(int argc, char **argv) {
     wait_for(c, [&] { return composition.draws > 0; });
     assert(!composition.preedit.empty() && composition.commit.empty());
     key(XK_space);
-    wait_for(c, [&] { return !composition.commit.empty(); });
-    assert(composition.commit == u8"你" && composition.preedit.empty());
+    // XIM delivers the commit and the preedit-done callback separately.
+    wait_for(c, [&] {
+      return !composition.commit.empty() && composition.preedit.empty();
+    });
+    assert(composition.commit == u8"你");
     physical_keys.clear();
     auto control = XKeysymToKeycode(x, XK_Control_L);
     auto a_key = XKeysymToKeycode(x, XK_a);
@@ -401,21 +406,119 @@ int main(int argc, char **argv) {
     XTestFakeKeyEvent(x, a_key, False, CurrentTime);
     XTestFakeKeyEvent(x, control, False, CurrentTime);
     XSync(x, False);
-    wait_for(c, [&] {
-      return std::find(physical_keys.begin(), physical_keys.end(),
-                       std::make_pair(uint32_t(a_key - 8), 0u)) !=
-             physical_keys.end();
-    });
     const std::vector<std::pair<uint32_t, uint32_t>> shortcut = {
         {uint32_t(control - 8), 1}, {uint32_t(a_key - 8), 1},
         {uint32_t(a_key - 8), 0}, {uint32_t(control - 8), 0}};
+    // Each key makes its own Fcitx round trip, so Control's release can be
+    // processed after the a release. Wait for all four, then require order.
+    wait_for(c, [&] { return physical_keys.size() >= shortcut.size(); });
     assert(physical_keys == shortcut && composition.commit == u8"你");
     puts("PASS Control shortcut remains physical while XIM composition is enabled");
+    pid_t restarted = 0;
+    if (const char *server = getenv("ANVIL_TEST_FCITX_PID")) {
+      // The host input method can crash or be replaced while Android keeps
+      // the same adapter. Kill it during composition and start it again.
+      auto owner = XInternAtom(x, "@server=fcitx", False);
+      auto remote = [](std::vector<const char *> args,
+                       std::string *output = nullptr) {
+        int pipe_fds[2];
+        assert(!pipe2(pipe_fds, O_CLOEXEC));
+        args.insert(args.begin(), "fcitx5-remote");
+        args.push_back(nullptr);
+        auto pid = fork();
+        assert(pid >= 0);
+        if (!pid) {
+          dup2(pipe_fds[1], STDOUT_FILENO);
+          execvp(args[0], const_cast<char **>(args.data()));
+          _exit(127);
+        }
+        close(pipe_fds[1]);
+        std::string text;
+        char bytes[256];
+        ssize_t n;
+        while ((n = read(pipe_fds[0], bytes, sizeof(bytes))) > 0)
+          text.append(bytes, size_t(n));
+        close(pipe_fds[0]);
+        int status;
+        assert(waitpid(pid, &status, 0) == pid);
+        if (output)
+          *output = text;
+        return WIFEXITED(status) && !WEXITSTATUS(status);
+      };
+      key(XK_n);
+      wait_for(c, [&] { return !composition.preedit.empty(); });
+      assert(!kill(atoi(server), SIGKILL));
+      wait_for(c, [&] {
+        return XGetSelectionOwner(x, owner) == None &&
+               composition.preedit.empty();
+      });
+      physical_keys.clear();
+      key(XK_n);
+      wait_for(c, [&] { return physical_keys.size() == 2; });
+      const std::vector<std::pair<uint32_t, uint32_t>> raw = {
+          {uint32_t(XKeysymToKeycode(x, XK_n) - 8), 1},
+          {uint32_t(XKeysymToKeycode(x, XK_n) - 8), 0}};
+      assert(physical_keys == raw && composition.preedit.empty() &&
+             composition.commit == u8"你");
+      puts("PASS killed Fcitx clears guest preedit and enabled text input "
+           "receives physical keys");
+      std::vector<std::string> words;
+      std::istringstream command(getenv("ANVIL_TEST_FCITX_COMMAND"));
+      for (std::string word; command >> word;)
+        words.push_back(word);
+      restarted = fork();
+      assert(restarted >= 0);
+      if (!restarted) {
+        prctl(PR_SET_PDEATHSIG, SIGKILL);
+        int log = open(getenv("ANVIL_TEST_FCITX_LOG"),
+                       O_WRONLY | O_APPEND | O_CLOEXEC);
+        if (log >= 0) {
+          dup2(log, STDOUT_FILENO);
+          dup2(log, STDERR_FILENO);
+        }
+        std::vector<char *> argv;
+        for (auto &word : words)
+          argv.push_back(word.data());
+        argv.push_back(nullptr);
+        execvp(argv[0], argv.data());
+        _exit(127);
+      }
+      wait_for(c, [&] { return XGetSelectionOwner(x, owner) != None; });
+      // The adapter must reattach and focus its XIC before Pinyin can be
+      // activated for it; fcitx5-remote reports 2 for an active focused IC.
+      std::string state;
+      wait_for(c, [&] {
+        if (!remote({"-s", "pinyin"}))
+          return false;
+        remote({"-o"});
+        return remote({"-n"}, &state) && state.find("pinyin") == 0 &&
+               remote({}, &state) && state == "2\n";
+      });
+      pump(c, 30);
+      composition.draws = 0;
+      key(XK_n);
+      key(XK_i);
+      wait_for(c, [&] { return composition.draws > 0; });
+      key(XK_space);
+      wait_for(c, [&] {
+        return composition.commit.size() >= sizeof(u8"你你") - 1 &&
+               composition.preedit.empty();
+      });
+      assert(composition.commit == u8"你你");
+      puts("PASS restarted Fcitx reattaches XIM and commits through the same "
+           "adapter");
+    }
     zwp_text_input_v3_disable(text);
     zwp_text_input_v3_commit(text);
     pump(c, 5);
     zwp_text_input_v3_destroy(text);
     run_method("-s", "keyboard-us");
+    if (restarted) {
+      kill(restarted, SIGTERM);
+      int status;
+      assert(waitpid(restarted, &status, 0) == restarted);
+      pump(c, 10);
+    }
     puts("PASS real Fcitx Pinyin XIM preedit/caret to CJK commit through "
          "text-input-v3");
   }

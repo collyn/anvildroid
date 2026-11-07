@@ -73,8 +73,8 @@ void Server::touch_event(int type, uint64_t contact, Top *t, double x, double y,
     int ox, oy;
     XTranslateCoordinates(platform.display, t->window.window,
                           owner->window.window, 0, 0, &ox, &oy, &child);
-    x += ox;
-    y += oy;
+    x += platform.logical(ox);
+    y += platform.logical(oy);
   }
   auto [ox, oy] = node_origin(point.node);
   x += owner->frame.bounds.x - ox;
@@ -112,8 +112,8 @@ void Server::release_constraint(bool notify) {
       auto *t = root(c->node);
       if (c->node->accepts(c->hint_x, c->hint_y))
         XWarpPointer(platform.display, None, t->window.window, 0, 0, 0, 0,
-                     int(ox + c->hint_x - t->frame.bounds.x),
-                     int(oy + c->hint_y - t->frame.bounds.y));
+                     px(ox + c->hint_x - t->frame.bounds.x),
+                     px(oy + c->hint_y - t->frame.bounds.y));
     }
     XFlush(platform.display);
   }
@@ -150,19 +150,21 @@ bool Server::constrain_native(Constraint *c) {
   c->native_y = oy - t->frame.bounds.y;
   if (platform.testing())
     return true;
+  // Surface-local logical regions become confine-window-local pixels.
+  auto k = [&](double v) { return platform.physical(v); };
   auto region_for = [&](bool full,
                         const std::vector<std::pair<bool, Rect>> &ops) {
     XserverRegion region = XFixesCreateRegion(platform.display, nullptr, 0);
     if (full) {
-      XRectangle rect{0, 0, (unsigned short)w, (unsigned short)h};
+      XRectangle rect{0, 0, (unsigned short)k(w), (unsigned short)k(h)};
       XFixesSetRegion(platform.display, region, &rect, 1);
     }
     for (auto &op : ops) {
       auto r = op.second;
-      XRectangle rect{short(std::clamp(r.x, -32768., 32767.)),
-                      short(std::clamp(r.y, -32768., 32767.)),
-                      (unsigned short)std::clamp(r.w, 0., 65535.),
-                      (unsigned short)std::clamp(r.h, 0., 65535.)};
+      XRectangle rect{short(std::clamp(k(r.x), -32768., 32767.)),
+                      short(std::clamp(k(r.y), -32768., 32767.)),
+                      (unsigned short)std::clamp(k(r.w), 0., 65535.),
+                      (unsigned short)std::clamp(k(r.h), 0., 65535.)};
       auto part = XFixesCreateRegion(platform.display, &rect, 1);
       if (op.first)
         XFixesUnionRegion(platform.display, region, region, part);
@@ -176,12 +178,12 @@ bool Server::constrain_native(Constraint *c) {
   auto requested = region_for(c->default_region, c->region);
   XFixesIntersectRegion(platform.display, input, input, requested);
   XFixesDestroyRegion(platform.display, requested);
-  XRectangle extent{0, 0, (unsigned short)w, (unsigned short)h};
+  XRectangle extent{0, 0, (unsigned short)k(w), (unsigned short)k(h)};
   auto bounds = XFixesCreateRegion(platform.display, &extent, 1);
   XFixesIntersectRegion(platform.display, input, input, bounds);
   XFixesDestroyRegion(platform.display, bounds);
   if (c->locked) {
-    XRectangle at{short(pointer_x), short(pointer_y), 1, 1};
+    XRectangle at{short(k(pointer_x)), short(k(pointer_y)), 1, 1};
     auto dot = XFixesCreateRegion(platform.display, &at, 1);
     XFixesIntersectRegion(platform.display, input, input, dot);
     XFixesDestroyRegion(platform.display, dot);
@@ -196,8 +198,9 @@ bool Server::constrain_native(Constraint *c) {
   }
   auto previous = confine_window;
   confine_window = XCreateWindow(
-      platform.display, t->window.window, int(ox - t->frame.bounds.x),
-      int(oy - t->frame.bounds.y), unsigned(w), unsigned(h), 0, 0, InputOnly,
+      platform.display, t->window.window, px(ox - t->frame.bounds.x),
+      px(oy - t->frame.bounds.y), unsigned(k(w)),
+      unsigned(k(h)), 0, 0, InputOnly,
       CopyFromParent, 0, nullptr);
   XFixesSetWindowShapeRegion(platform.display, confine_window, ShapeBounding, 0,
                              0, input);
@@ -372,8 +375,9 @@ bool Server::xi_event(XEvent &e) {
                                 wl_resource_get_client(pointer_focus->resource))
           zwp_relative_pointer_v1_send_relative_motion(
               entry.first, uint32_t(us >> 32), uint32_t(us),
-              wl_fixed_from_double(accelerated[0]),
-              wl_fixed_from_double(accelerated[1]),
+              // X11 accelerated deltas are pixels; Wayland's are logical.
+              wl_fixed_from_double(platform.logical(accelerated[0])),
+              wl_fixed_from_double(platform.logical(accelerated[1])),
               wl_fixed_from_double(unaccelerated[0]),
               wl_fixed_from_double(unaccelerated[1]));
     XFreeEventData(platform.display, &cookie);
@@ -395,7 +399,8 @@ bool Server::xi_event(XEvent &e) {
       touch_event(cookie.evtype,
                   (uint64_t(uint32_t(event->sourceid)) << 32) |
                       uint32_t(event->detail),
-                  t, event->event_x, event->event_y, event->time);
+                  t, platform.logical(event->event_x),
+                  platform.logical(event->event_y), event->time);
     XFreeEventData(platform.display, &cookie);
     return true;
   }

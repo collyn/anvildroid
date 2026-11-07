@@ -18,7 +18,7 @@ function harness(records = [record('one'), record('two')]) {
   const checks = records.map(r => ({dataset:{runtimeCheck:r.id}}));
   const buttons = Batch.operations.map(op => ({dataset:{runtimeBatch:op}}));
   const context = {lazyFeatures:{ensure:async()=>{}}, controllerBusy:e=>e.code==='BUSY', RuntimeUsage:require('../crates/anvildroid-gui/src-frontend/runtime-usage.js'), RuntimeBatch:Batch, RuntimeSettings:Settings, RuntimeWindow:Window, window:{}, console:{debug(){}}, controllerRecords:records,
-    existingRuntime:null, runtimeBatchSelection:new Set(), runtimeBatchBusy:false, runtimeBatchPlan:null,
+    existingRuntime:null, systemRuntimeVisible:()=>true, runtimeBatchSelection:new Set(), runtimeBatchBusy:false, runtimeBatchPlan:null,
     runtimeBadgeKind:state=>['Error','SessionLost','NotInstalled','Unavailable'].includes(state)?'error':['Running','Prepared'].includes(state)?'success':'info', controllerRestartBlocked:()=>false, controllerRestarting:false, apkInstallBusy:false, controllerMutation:false, controllerLoading:false, imageDownloadBusy:false, imageDownloadActive:()=>false, defaultRuntimeOperation:null, runtimeTransition:false, pendingLaunch:false, pendingAppAction:false, probeInstallBusy:false,
     controllerRequirements:ready, controllerTimer:null, controllerRefreshDone:Promise.resolve(),
     imageDownloadState:{available_images:[]}, escapeHtml:String, clearTimeout(){}, setTimeout,
@@ -165,6 +165,7 @@ function harness(records = [record('one'), record('two')]) {
   const rc=render.context;
   Object.assign(rc,{selectedRuntimeId:'one',runtimeSettingsId:'one',controllerPending:null,runtimeSettingsOpen:new Set(),runtimeGraphics:new Map(),runtimeHealth:new Map(),
     renderExistingRuntime(){},syncRuntimeSettingsFeatures(){},document:{...rc.document,activeElement:null},
+    defaultRuntimeFirst:records=>records,defaultRuntimeBadge:()=>'',setDefaultRuntimeButton:()=>'',
     escapeHtml:value=>String(value).replaceAll('<','&lt;').replaceAll('>','&gt;')});
   for(const name of ['renderGpuControls','renderRuntimeGraphics','renderRuntimeArm','renderRuntimeGoogle','renderResourceControls','renderRuntimeHealth','renderRuntimeDevice'])rc[name]=()=>'';
   const from=source.indexOf('function renderRuntimeUsage('),to=source.indexOf('\nfunction beginReinstall',from);

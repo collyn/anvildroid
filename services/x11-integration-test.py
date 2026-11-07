@@ -100,6 +100,12 @@ class Authority(unittest.TestCase):
                                  {'LANG': 'vi_VN.UTF-8', 'XMODIFIERS': '@im=fcitx'})
                 self.assertEqual(desktop.x11_input_environment(os.getuid() + 1, ':0'),
                                  {'LANG': 'C.UTF-8'})
+        # The worker cannot scan the desktop's /proc; it reads the controller's pin.
+        self.assertEqual(desktop.pinned_x11_input_environment('{"XMODIFIERS": "@im=fcitx"}'),
+                         {'LANG': 'C.UTF-8', 'XMODIFIERS': '@im=fcitx'})
+        for data in ('[]', '{"LD_PRELOAD": "/unsafe.so"}', '{"LANG": "bad\\nlocale"}', '{"XMODIFIERS": ""}'):
+            with self.assertRaises(ValueError):
+                desktop.pinned_x11_input_environment(data)
 
     def test_cookie_read_rejects_links_and_nonregular_files(self):
         spec = importlib.util.spec_from_file_location('desktop', Path(__file__).with_name('runtime-desktop.py'))

@@ -32,10 +32,20 @@ def private_xim(environment, root, enabled):
     (profile.parent / 'conf').mkdir(exist_ok=True)
     (profile.parent / 'conf/xim.conf').write_text('UseOnTheSpot=True\n')
     environment['ANVIL_TEST_COMPOSITION'] = '1'
+    # libX11's XIM_SERVERS filter closes, but never frees, the probe XIM it
+    # opens before an instantiate callback (432 bytes per server start).
+    suppressions = root / 'lsan.supp'
+    suppressions.write_text('leak:_XimOpenIM\n')
+    environment['LSAN_OPTIONS'] = ':'.join(filter(None, (
+        environment.get('LSAN_OPTIONS'), 'suppressions=' + str(suppressions))))
+    command = ['fcitx5', '-D', '--disable=all', '--enable=xcb,xim,keyboard,dbus,pinyin,punctuation']
     with (root / 'xim.log').open('w+') as log:
-        method = subprocess.Popen(
-            ['fcitx5', '-D', '--disable=all', '--enable=xcb,xim,keyboard,dbus,pinyin,punctuation'],
-            env=environment, stdout=log, stderr=log)
+        method = subprocess.Popen(command, env=environment, stdout=log, stderr=log)
+        # The client kills this server and starts a replacement it owns, so a
+        # restart is tested against the same adapter process.
+        environment.update(ANVIL_TEST_FCITX_PID=str(method.pid),
+                           ANVIL_TEST_FCITX_COMMAND=' '.join(command),
+                           ANVIL_TEST_FCITX_LOG=str(root / 'xim.log'))
         try:
             deadline = time.monotonic() + 5
             while True:
@@ -62,6 +72,60 @@ def private_xim(environment, root, enabled):
                 method.wait(timeout=3)
 
 
+def output_checks(environment, root):
+    """Two RandR 1.5 monitors and Xft.dpi scales on the private Xvfb."""
+    check = str(OUT / 'output-client-check')
+    try:
+        for dpi, scale in ((192, 240), (144, 180)):
+            subprocess.run([check, 'setup', '96'], env=environment, check=True, timeout=10)
+            socket = root / f'wayland-output-{scale}'
+            log_path = root / f'output-{scale}.log'
+            with log_path.open('w+') as log:
+                host = subprocess.Popen([str(OUT / 'anvildroid-x11-host'), '--socket', str(socket)],
+                                        env=environment, stdout=log, stderr=log)
+                try:
+                    deadline = time.monotonic() + 5
+                    while not socket.exists():
+                        if host.poll() is not None or time.monotonic() >= deadline:
+                            raise RuntimeError('Output endpoint did not start')
+                        time.sleep(.02)
+                    # A desktop scale change before any client observed the
+                    # scale is applied as if the adapter had started with it.
+                    subprocess.run([check, 'setup', str(dpi)], env=environment, check=True, timeout=10)
+                    applied = f'x11_desktop_scale={scale}/120 '
+                    while True:
+                        log.seek(0)
+                        text = log.read()
+                        if applied in text or time.monotonic() >= deadline + 5:
+                            break
+                        time.sleep(.02)
+                    assert applied in text and 'restart_required=0' in text, text
+                    subprocess.run([check, str(socket), str(scale)],
+                                   env=dict(environment, ANVIL_TEST_HOST_LOG=str(log_path)),
+                                   check=True, timeout=60)
+                    assert host.poll() is None
+                except BaseException:
+                    log.seek(0)
+                    print(log.read())
+                    raise
+                finally:
+                    host.terminate()
+                    try:
+                        code = host.wait(timeout=3)
+                    except subprocess.TimeoutExpired:
+                        host.kill()
+                        code = host.wait(timeout=3)
+                log.seek(0)
+                text = log.read()
+                assert code == 0, text
+                for line in ('x11_output_added name=L', 'x11_output_added name=R',
+                             'x11_output_removed name=R', f'x11_output_scale_latched={scale}/120'):
+                    assert line in text, line
+    finally:
+        subprocess.run([check, 'reset'], env=environment, check=True, timeout=10)
+    print('PASS per-monitor wl_outputs, hotplug, enter/leave and Xft.dpi scales 2 and 1.5')
+
+
 def main(software_x11=False, xim=False):
     assert not xim or software_x11, 'XIM tests require a private Xvfb'
     if software_x11:
@@ -69,6 +133,8 @@ def main(software_x11=False, xim=False):
         if missing:
             raise RuntimeError('Software X11 test dependencies missing from PATH: ' + ', '.join(missing))
     subprocess.run([str(OUT / 'surface-tree-check')], check=True)
+    subprocess.run([str(OUT / 'output-mode-check')], check=True)
+    subprocess.run([str(OUT / 'dmabuf-format-check')], check=True)
     subprocess.run([str(OUT / 'feature-state-check')], check=True)
     with tempfile.TemporaryDirectory(prefix='anvil-x11-host-', dir='/tmp') as directory, ExitStack() as cleanup:
         root = Path(directory)
@@ -93,9 +159,18 @@ def main(software_x11=False, xim=False):
             finally:
                 os.close(write)
             try:
-                if not select.select([read], [], [], 5)[0]:
-                    raise RuntimeError('Isolated Xvfb did not start')
-                number = os.read(read, 64).decode().strip()
+                # Xvfb writes the number and its newline separately, and dies
+                # if the second write hits a closed pipe: read through newline.
+                data = b''
+                deadline = time.monotonic() + 5
+                while not data.endswith(b'\n'):
+                    if not select.select([read], [], [], max(0, deadline - time.monotonic()))[0]:
+                        raise RuntimeError('Isolated Xvfb did not start')
+                    chunk = os.read(read, 64)
+                    if not chunk:
+                        break
+                    data += chunk
+                number = data.decode().strip()
                 assert number.isdecimal()
                 environment.update(DISPLAY=':' + number, LIBGL_ALWAYS_SOFTWARE='1',
                                    GALLIUM_DRIVER='llvmpipe', ANVIL_TEST_X11='1',
@@ -107,6 +182,8 @@ def main(software_x11=False, xim=False):
         if software_x11:
             subprocess.run([str(OUT / 'feature-state-check'), '--x11-input-burst'],
                            env=environment, check=True, timeout=10)
+        # Shorten only the inhibited reset period, so the check can observe it.
+        environment['ANVIL_TEST_IDLE_RESET_MS'] = '300'
         with private_xim(environment, root, xim), (root / 'host.log').open('w+') as log:
             host = subprocess.Popen([str(OUT / 'anvildroid-x11-host'),
                                      *([] if software_x11 else ['--test-headless']), '--socket', str(socket)],
@@ -134,7 +211,7 @@ def main(software_x11=False, xim=False):
                         assert count <= baseline, 'Endpoint file descriptors grew across client teardown'
                 subprocess.run([str(OUT / 'host-client-check'), str(socket), 'dmabuf-lifetime'],
                                env=environment, check=True, timeout=10)
-                for invalid in ('scale', 'viewport', 'cycle'):
+                for invalid in ('scale', 'viewport', 'cycle', 'dmabuf-planes', 'dmabuf-reuse'):
                     subprocess.run([str(OUT / 'host-client-check'), str(socket), invalid], env=environment, check=True, timeout=10)
                     assert host.poll() is None
                 subprocess.run([str(OUT / 'host-client-check'), str(socket), 'calibration'],
@@ -146,10 +223,37 @@ def main(software_x11=False, xim=False):
                 assert output.count('x11_toplevel_created=') == 12
                 assert output.count('x11_toplevel_mapped=') == 11
                 assert output.count('x11_toplevel_unmapped=') == 5
+                assert 'x11_idle_inhibit=' not in output, 'Idle inhibited without an inhibitor'
+                subprocess.run([str(OUT / 'host-client-check'), str(socket), 'idle-inhibit'],
+                               env=dict(environment, ANVIL_TEST_HOST_LOG=str(root / 'host.log')),
+                               check=True, timeout=30)
+                deadline = time.monotonic() + 5
+                while True:
+                    log.seek(0)
+                    states = [line for line in log.read().splitlines() if line.startswith('x11_idle_inhibit=')]
+                    if states[-1] == 'x11_idle_inhibit=0' or time.monotonic() >= deadline:
+                        break
+                    time.sleep(.02)
+                assert states[-1] == 'x11_idle_inhibit=0', 'Client teardown kept idle inhibited'
+                assert len(states) == (12 if software_x11 else 8), states
+                # Planar video buffers and non-fatal placeholders, with real
+                # llvmpipe imports and pixel checks on the private Xvfb.
+                subprocess.run([str(OUT / 'host-client-check'), str(socket), 'dmabuf-formats'],
+                               env=environment, check=True, timeout=30)
+                assert host.poll() is None
+                log.seek(0)
+                output = log.read()
+                assert 'x11_dmabuf_import_failed' not in output, 'Advertised DMA-BUF format failed to import'
+                for reason in ('unknown format', 'non-LINEAR modifier', 'plane stride below row size'):
+                    assert 'reason=' + reason in output, reason
+                if software_x11:
+                    formats = [line for line in output.splitlines() if line.startswith('x11_adapter_dmabuf_formats=')]
+                    assert formats and 'NV12' in formats[-1] and 'YV12' in formats[-1], formats
                 if software_x11:
                     subprocess.run([str(OUT / 'keymap-client-check'), str(socket)], env=environment, check=True, timeout=30)
                     subprocess.run([str(OUT / 'feature-client-check'), str(socket)], env=environment, check=True, timeout=30)
                     assert host.poll() is None
+                    output_checks(environment, root)
                 print('PASS repeated client teardown and independent app windows; Start creates no window')
             except BaseException:
                 log.seek(0)

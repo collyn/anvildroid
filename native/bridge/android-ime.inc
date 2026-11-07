@@ -56,13 +56,55 @@ static const struct wl_message ime_events[]={
 static const struct wl_interface ime_text_interface={"zwp_text_input_v3",1,8,ime_requests,6,ime_events};
 static void ime_send(uint32_t op,union wl_argument *args){marshal(ime_text,op,NULL,1,0,args);}
 static void ime_commit_state(void){ime_send(7,NULL);++ime_serial;}
+static int ime_password(void){
+ int klass=ime_type&15,variation=ime_type&0xff0;
+ return (klass==1&&(variation==0x80||variation==0x90||variation==0xe0))||(klass==2&&variation==0x10);
+}
+static void ime_enqueue(const char *json,size_t len){
+ unsigned next=(ime_tail+1)%ANVIL_IME_QUEUE_CAP;
+ if(len>=sizeof(ime_queue[0])||next==ime_head)ime_broken=1;
+ else if(ime_connected&&!ime_broken){memcpy(ime_queue[ime_tail],json,len+1);ime_tail=next;}
+}
+/* Host IMEs (Telex/VNI) replace text as BackSpace keys followed by commits.
+ * wl_keyboard reaches the app through Android input dispatch while commits
+ * take the IME socket, so a key could overtake queued commits. Plain BackSpace
+ * for the enabled editor joins the commit queue (same protocol as bridge.c's
+ * ime_key_route) and BridgeIme applies it through the same InputConnection.
+ * ime_backspace_routed: 1 while held and routed, 2 once the IME release was
+ * already sent (editor disabled) and only the physical release must be eaten. */
+static struct wl_proxy *ime_key_surface;
+static uint32_t ime_key_mods;
+static int ime_backspace_routed;
+static const char ime_backspace_up[]="{\"v\":1,\"op\":\"key\",\"code\":67,\"down\":false}";
+static void ime_backspace_release(void){
+ if(ime_backspace_routed==1)ime_enqueue(ime_backspace_up,sizeof(ime_backspace_up)-1);
+ ime_backspace_routed=0;
+}
+/* Caller holds mutex. Returns 1 when the physical key must be suppressed. */
+static int ime_key_route(uint32_t key,uint32_t state){
+ if(key!=14)return 0;
+ if(!state){
+  if(!ime_backspace_routed)return 0;
+  ime_backspace_release();return 1;
+ }
+ if(ime_backspace_routed)return 1;
+ if(!ime_enabled||!ime_connected||ime_broken||ime_key_mods||ime_password()||
+    !ime_key_surface||ime_key_surface!=ime_surface||!owned(ime_surface)||
+    ime_generation!=ime_enabled_generation)return 0;
+ char json[160];
+ int n=snprintf(json,sizeof(json),"{\"v\":1,\"op\":\"key\",\"generation\":%llu,\"code\":67,\"down\":true}",(unsigned long long)ime_enabled_generation);
+ ime_enqueue(json,(size_t)n);
+ ime_backspace_routed=1;
+ return 1;
+}
 static void ime_sync(void){
  if(!ime_text)return;
- int klass=ime_type&15,variation=ime_type&0xff0;
- int password=(klass==1&&(variation==0x80||variation==0x90||variation==0xe0))||(klass==2&&variation==0x10);
- int want=ime_connected&&!ime_broken&&ime_active&&!password&&owned(ime_surface);
+ int klass=ime_type&15;
+ int want=ime_connected&&!ime_broken&&ime_active&&!ime_password()&&owned(ime_surface);
  if(ime_enabled&&(!want||ime_enabled_generation!=ime_generation)){
   ime_send(2,NULL);ime_commit_state();ime_enabled=0;anvil_ime_focus(&ime_state,0);ime_head=ime_tail=0;
+  /* Stop BridgeIme's repeat now; the physical release stays suppressed. */
+  if(ime_backspace_routed==1){ime_enqueue(ime_backspace_up,sizeof(ime_backspace_up)-1);ime_backspace_routed=2;}
  }
  if(want&&!ime_enabled){
   ime_enabled=1;ime_enabled_generation=ime_generation;anvil_ime_focus(&ime_state,1);
@@ -91,10 +133,7 @@ static void ime_done(void *d,struct wl_proxy *p,uint32_t serial){
  if(anvil_ime_done(&ime_state,serial,ime_serial,&b)&&ime_enabled&&owned(ime_surface)&&ime_generation==ime_enabled_generation&&(int32_t)(serial-ime_first_serial)>=0){
   char json[50000];int n=snprintf(json,sizeof(json),"{\"v\":1,\"op\":\"batch\",\"generation\":%llu,\"deleteBefore\":%u,\"deleteAfter\":%u,\"cursorBegin\":%d,\"cursorEnd\":%d,\"commit\":",(unsigned long long)ime_enabled_generation,b.delete_before_bytes,b.delete_after_bytes,b.cursor_begin,b.cursor_end);
   char *end=ime_quote(json+n,b.commit);memcpy(end,",\"preedit\":",11);end=ime_quote(end+11,b.preedit);*end++='}';*end=0;
-  unsigned next=(ime_tail+1)%ANVIL_IME_QUEUE_CAP;
-  size_t len=(size_t)(end-json);
-  if(len>=sizeof(ime_queue[0])||next==ime_head)ime_broken=1;
-  else if(ime_connected&&!ime_broken){memcpy(ime_queue[ime_tail],json,len+1);ime_tail=next;}
+  ime_enqueue(json,(size_t)(end-json));
  }
  pthread_mutex_unlock(mutex);
 }

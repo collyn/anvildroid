@@ -1364,7 +1364,16 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
                     x11['authority'] = pinned
                 x11['display'] = x11_display
                 if native:
-                    x11['environment'] = desktop_module.x11_input_environment(desktop[1], x11_display)
+                    # The controller resolves this in the host PID namespace;
+                    # this worker's /proc cannot see the desktop session.
+                    pinned = instance / 'x11-input-environment.json'
+                    if pinned.exists():
+                        info = pinned.lstat()
+                        require(stat.S_ISREG(info.st_mode) and info.st_uid == 0 and not info.st_mode & 0o077
+                                and 0 < info.st_size <= 4096, 'Unsafe pinned X11 input environment')
+                        x11['environment'] = desktop_module.pinned_x11_input_environment(pinned.read_text())
+                    else:
+                        x11['environment'] = desktop_module.x11_input_environment(desktop[1], x11_display)
             else:
                 fd = pin_desktop_socket(Path('/run/user') / str(desktop[1]) / desktop[0], desktop[1])
                 try:

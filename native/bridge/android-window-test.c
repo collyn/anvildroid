@@ -30,6 +30,10 @@ static struct wl_proxy *send_request(struct wl_proxy *p,uint32_t op,const struct
 }
 static void config(void *d,struct wl_proxy *p,int32_t w,int32_t h,struct wl_array *s) {(void)d;(void)p;(void)s;forwarded_w=w;forwarded_h=h;}
 static void key(void *d,struct wl_proxy *p,uint32_t a,uint32_t b,uint32_t c,uint32_t e) {(void)d;(void)p;(void)a;(void)b;(void)c;(void)e;keys++;}
+static int modifiers;
+static void enter(void *d,struct wl_proxy *p,uint32_t a,struct wl_proxy *s,struct wl_array *k) {(void)d;(void)p;(void)a;(void)s;(void)k;}
+static void leave(void *d,struct wl_proxy *p,uint32_t a,struct wl_proxy *s) {(void)d;(void)p;(void)a;(void)s;}
+static void mods(void *d,struct wl_proxy *p,uint32_t a,uint32_t b,uint32_t c,uint32_t e,uint32_t g) {(void)d;(void)p;(void)a;(void)b;(void)c;(void)e;(void)g;modifiers++;}
 int main(void) {
  assert(mkdtemp(display_test_dir));
  struct wl_proxy root={"wl_surface"}, child={"wl_surface"}, sub={"wl_subsurface"}, t={"xdg_toplevel"}, keyboard={"wl_keyboard"};
@@ -52,6 +56,55 @@ int main(void) {
  unsigned count=calls;keyboard_key(NULL,&keyboard,1,2,87,0);assert(calls==count && keys==0);
  keyboard_key(NULL,&keyboard,1,2,87,1);assert(fullscreen_requested==0 && last_opcode==12);
  focused=0;keyboard_key(NULL,&keyboard,1,2,87,1);assert(keys==1);
+ /* Plain BackSpace joins the IME commit queue in order (Telex/VNI replace
+  * text as BackSpace + commit); other keys, modified BackSpace and unfocused
+  * editors keep the physical wl_keyboard path. */
+ {
+  struct wl_proxy text={"zwp_text_input_v3"};struct wl_array none={0,0,NULL};
+  key_original[1]=(void(*)(void))enter;key_original[2]=(void(*)(void))leave;key_original[4]=(void(*)(void))mods;
+  ime_text=&text;ime_connected=ime_active=1;ime_type=1;ime_generation=5;
+  keyboard_enter(NULL,&keyboard,1,&root,&none);ime_enter(NULL,&text,&root);
+  assert(focused&&ime_enabled&&ime_head==ime_tail);
+  unsigned start=ime_tail;keys=0;
+  ime_insert(NULL,&text,"a");ime_done(NULL,&text,ime_serial);
+  keyboard_key(NULL,&keyboard,1,2,14,1);assert(keys==0&&ime_backspace_routed);
+  ime_insert(NULL,&text,"b");ime_done(NULL,&text,ime_serial);
+  keyboard_key(NULL,&keyboard,1,2,14,0);assert(keys==0&&!ime_backspace_routed);
+  assert(ime_tail==start+4);
+  assert(strstr(ime_queue[start],"\"commit\":\"a\""));
+  assert(strstr(ime_queue[start+1],"\"op\":\"key\"")&&strstr(ime_queue[start+1],"\"generation\":5")&&strstr(ime_queue[start+1],"\"code\":67")&&strstr(ime_queue[start+1],"\"down\":true"));
+  assert(strstr(ime_queue[start+2],"\"commit\":\"b\""));
+  assert(strstr(ime_queue[start+3],"\"down\":false")&&!strstr(ime_queue[start+3],"generation"));
+  keyboard_key(NULL,&keyboard,1,2,30,1);keyboard_key(NULL,&keyboard,1,2,30,0);assert(keys==2&&ime_tail==start+4);
+  keyboard_modifiers(NULL,&keyboard,1,4,0,0,0);assert(modifiers==1);
+  keyboard_key(NULL,&keyboard,1,2,14,1);keyboard_key(NULL,&keyboard,1,2,14,0);assert(keys==4&&ime_tail==start+4);
+  keyboard_modifiers(NULL,&keyboard,1,0,0,0,0);
+  ime_type=0x81;keyboard_key(NULL,&keyboard,1,2,14,1);keyboard_key(NULL,&keyboard,1,2,14,0);assert(keys==6&&ime_tail==start+4);
+  ime_type=1;ime_generation=6;keyboard_key(NULL,&keyboard,1,2,14,1);keyboard_key(NULL,&keyboard,1,2,14,0);assert(keys==8);
+  ime_sync();assert(ime_enabled&&ime_enabled_generation==6);
+  /* Keyboard focus elsewhere (CSD/popup surface) keeps the physical key. */
+  keyboard_enter(NULL,&keyboard,1,&child,&none);
+  keyboard_key(NULL,&keyboard,1,2,14,1);keyboard_key(NULL,&keyboard,1,2,14,0);assert(keys==10&&ime_head==ime_tail);
+  keyboard_enter(NULL,&keyboard,1,&root,&none);
+  /* Leave while held releases through the IME (no physical release follows). */
+  start=ime_tail;keyboard_key(NULL,&keyboard,1,2,14,1);keyboard_leave(NULL,&keyboard,1,&root);
+  assert(!ime_backspace_routed&&ime_tail==start+2&&strstr(ime_queue[start+1],"\"down\":false"));
+  /* Disabling while held releases immediately and still eats the physical release. */
+  keyboard_enter(NULL,&keyboard,1,&root,&none);
+  keyboard_key(NULL,&keyboard,1,2,14,1);assert(ime_backspace_routed==1);
+  ime_generation=7;ime_sync();assert(ime_enabled&&ime_backspace_routed==2);
+  assert(ime_tail-ime_head==1&&strstr(ime_queue[ime_head],"\"down\":false"));
+  keyboard_key(NULL,&keyboard,1,2,14,0);assert(keys==10&&!ime_backspace_routed&&ime_tail-ime_head==1);
+  /* Disconnect while held: the receiver drops repeat; physical release is eaten. */
+  keyboard_key(NULL,&keyboard,1,2,14,1);ime_connected=0;ime_head=ime_tail=0;ime_sync();assert(!ime_enabled);
+  keyboard_key(NULL,&keyboard,1,2,14,0);assert(keys==10&&!ime_backspace_routed&&ime_head==ime_tail);
+  /* Menu-owned BackSpace never reaches the IME queue. */
+  ime_connected=1;ime_sync();assert(ime_enabled);
+  canvas_menu_open=1;keyboard_key(NULL,&keyboard,1,2,14,1);canvas_menu_open=0;keyboard_key(NULL,&keyboard,1,2,14,0);
+  assert(keys==10&&!ime_backspace_routed&&ime_head==ime_tail);
+  keyboard_leave(NULL,&keyboard,1,&root);ime_leave(NULL,&text,&root);
+  ime_text=NULL;ime_enabled=ime_connected=ime_active=0;ime_head=ime_tail=0;keys=0;
+ }
  /* No decoration manager (GNOME), compositor refusal, and accepted SSD. */
  fullscreen=0;fullscreen_requested=-1;
  struct wl_array empty={0,0,NULL};

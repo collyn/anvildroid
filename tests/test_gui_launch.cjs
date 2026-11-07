@@ -69,6 +69,53 @@ test('Existing management refresh uses default without adding it to managed inve
   assert.ok(calls.every(request=>!['start','prepare','existing_claim'].includes(request.op)));
 });
 
+test('uninitialized System Waydroid is hidden and any runtime can become default',async()=>{
+  const saved=[];let prefs={minimize_to_panel:false,auto_startup:false,default_runtime:null};
+  const one='r-'+'1'.repeat(32),two='r-'+'2'.repeat(32);
+  const {context,element}=gui(async(command,args)=>{
+    if(command==='get_application_preferences')return prefs;
+    if(command==='set_default_runtime'){saved.push(args.id);prefs={...prefs,default_runtime:args.id};return prefs;}
+    if(command!=='runtime_controller')return;
+    const request=args.request;
+    if(request.op==='refresh'&&request.id==='default')return {id:'default',name:'System Waydroid',state:'Uninitialized',managed:false};
+    return [];
+  },undefined,'?view=controls');
+  await vm.runInContext('refreshExistingRuntime()',context);
+  await new Promise(resolve=>setImmediate(resolve));
+  vm.runInContext(`controllerRecords=[{id:'${one}',name:'First',state:'Stopped'},{id:'${two}',name:'Second',state:'Stopped'}];managedLibrary=controllerRecords;renderController()`,context);
+  assert.equal(vm.runInContext('systemRuntimeVisible()',context),false);
+  assert.equal(element('legacy-runtime-row').hidden,true);
+  assert.equal(vm.runInContext('defaultRuntimeId()',context),one);
+  assert.equal(vm.runInContext('runtimeBatchRecords().some(record=>record.id===\'default\')',context),false);
+  assert.doesNotMatch(element('runtime-startup-list').innerHTML,/Waydroid service/);
+  let html=element('controller-runtimes').innerHTML;
+  assert.ok(html.indexOf('First')<html.indexOf('Second'));
+  assert.match(html,/First <span class="runtime-default-badge"/);
+  await vm.runInContext(`setDefaultRuntime('${two}')`,context);
+  assert.deepEqual(saved,[two]);
+  assert.equal(vm.runInContext('defaultRuntimeId()',context),two);
+  vm.runInContext('renderController()',context);
+  html=element('controller-runtimes').innerHTML;
+  assert.ok(html.indexOf('Second')<html.indexOf('First'),'default runtime is listed first');
+  assert.match(html,/Second <span class="runtime-default-badge"/);
+  assert.doesNotMatch(html,/First <span class="runtime-default-badge"/);
+});
+
+test('initialized System Waydroid stays the automatic default until another runtime is chosen',async()=>{
+  const {context,element}=gui(async(command,args)=>{
+    if(command!=='runtime_controller')return;
+    if(args.request.op==='refresh')return {id:'default',name:'System Waydroid',state:'Stopped',managed:true,display:{mode:'desktop'}};
+    return [];
+  },undefined,'?view=controls');
+  await vm.runInContext('refreshExistingRuntime()',context);
+  await new Promise(resolve=>setImmediate(resolve));
+  vm.runInContext(`controllerRecords=[{id:'r-${'3'.repeat(32)}',name:'Managed',state:'Stopped'}];renderController()`,context);
+  assert.equal(element('legacy-runtime-row').hidden,false);
+  assert.equal(vm.runInContext('defaultRuntimeId()',context),'default');
+  assert.match(element('existing-runtime-default').innerHTML,/Default/);
+  assert.match(element('controller-runtimes').innerHTML,/data-set-default-runtime|Managed/);
+});
+
 test('Existing Play Store action uses legacy launcher with explicit default target',async()=>{
   const calls=[];
   const {context}=gui(async(command,args)=>{calls.push({command,args});return {success:true,message:'Opened'};},undefined,'?view=controls');
@@ -199,7 +246,7 @@ test('Settings distinguishes configured values from unmeasured limits and escape
   const html = element('settings-runtime').innerHTML;
   assert.match(html, /&lt;runtime&gt;/);
   assert.match(html, /Renderer \(configured\)/);
-  assert.match(html, /inspect active limits under Runtime &gt; Default runtime/);
+  assert.match(html, /inspect active limits under Runtime &gt; System Waydroid/);
   assert.match(html, /Not available yet/);
   assert.equal(element('btn-refresh-settings').disabled, false);
 });
@@ -327,7 +374,7 @@ test('frontend runtime calls carry an explicit target and catalog/version calls 
   const { context } = gui(async (name, args) => { calls.push([name, args]); });
   await vm.runInContext("invoke('stop_runtime'); invoke('set_favorite', { package: 'com.example.game', enabled: true }); invoke('get_runtime_catalog')", context);
   for (const [name, args] of calls) {
-    if (['get_runtime_catalog', 'get_app_version', 'runtime_controller'].includes(name)) assert.equal(args?.runtimeId, undefined);
+    if (['get_runtime_catalog', 'get_app_version', 'runtime_controller', 'get_application_preferences'].includes(name)) assert.equal(args?.runtimeId, undefined);
     else assert.equal(args.runtimeId, 'default', name);
   }
   assert.equal(calls.find(([name]) => name === 'set_favorite')[1].package, 'com.example.game');
@@ -1996,7 +2043,7 @@ test('missing waydroid binary: confirm dialog gates the bundled installer, then 
   }, async () => { confirmations++; return true; }, '?view=runtime',
      { can_prepare: false, can_start: false, checks: [{ id: 'waydroid', label: 'Waydroid', available: false, detail: 'Install Waydroid for your Linux distribution first.' }] });
   await vm.runInContext('refreshController()', context);
-  assert.equal(element('btn-init-waydroid').textContent, 'Set up Default runtime');
+  assert.equal(element('btn-init-waydroid').textContent, 'Set up Waydroid');
   assert.equal(element('waydroid-setup-actions').hidden, false);
   await vm.runInContext('initializeWaydroid()', context);
   assert.equal(confirmations, 1);
@@ -2068,7 +2115,7 @@ test('missing runtime tools expose in-app repair even when Waydroid is initializ
   {can_prepare:true, can_start:false, checks:[{id:'waydroid', available:true}, {id:'support', available:true}, {id:'tools', available:false, detail:'Missing: weston'}]});
   await vm.runInContext('refreshController()', context);
   assert.equal(element('waydroid-setup-actions').hidden, false);
-  assert.equal(element('btn-init-waydroid').textContent, 'Set up Default runtime');
+  assert.equal(element('btn-init-waydroid').textContent, 'Set up Waydroid');
   await vm.runInContext('initializeWaydroid()', context);
   assert.equal(confirmations, 1);
   assert.ok(calls.some(([c]) => c === 'setup_waydroid'));
@@ -2636,7 +2683,7 @@ test('Default status uses the same badges as managed and keeps transient operati
   assert.equal(element('runtime-state').textContent,'Unavailable');assert.equal(element('runtime-state').title,'transport failed');
 });
 
-test('Default runtime buttons tolerate missing state and retain stale-session recovery',async()=>{
+test('System Waydroid buttons tolerate missing state and retain stale-session recovery',async()=>{
   const {context,element}=gui(async()=>undefined,undefined,'?view=settings');
   await tick();
   for (const state of [null,undefined]) {
@@ -2724,7 +2771,7 @@ test('library runtime multi-select separates duplicate app names and preserves p
     renderApps(allApps);`,context);
   let html=element('apps-grid').innerHTML;
   assert.equal((html.match(/data-package="com.test.same"/g)||[]).length,3);
-  assert.match(html,/class="app-runtime-name" title="Default runtime">Default runtime/);
+  assert.match(html,/class="app-runtime-name" title="System Waydroid">System Waydroid/);
   assert.match(html,/class="app-runtime-name" title="One &lt;Android&gt;">One &lt;Android&gt;/);
   assert.match(html,/class="app-runtime-name" title="Two">Two/);
   vm.runInContext("setLibraryRuntimeFilter(['default','r-two'])",context);
@@ -2836,11 +2883,11 @@ test('application preference save disables both controls and prevents overlappin
     if(command==='get_application_preferences'){reads++;return {minimize_to_panel:false,auto_startup:false};}
     if(command==='set_application_preference')return pending.promise;
   });
-  await context.refreshApplicationPreferences();
+  await context.refreshApplicationPreferences();reads=0;
   const panel=element('minimize-to-panel');panel.checked=true;
   const save=panel.listeners.change({target:panel});
   assert.equal(panel.disabled,true);assert.equal(element('auto-startup').disabled,true);
-  await context.refreshApplicationPreferences();assert.equal(reads,1);
+  await context.refreshApplicationPreferences();assert.equal(reads,0);
   pending.resolve({minimize_to_panel:true,auto_startup:false});await save;
   assert.equal(panel.checked,true);assert.equal(panel.disabled,false);
 });
@@ -2918,7 +2965,7 @@ test('global boot table includes Default even with no managed inventory or unava
   return [];
  });
  await context.refreshRuntimeStartupPreferences();
- assert.match(element('runtime-startup-list').innerHTML,/Default runtime/);
+ assert.match(element('runtime-startup-list').innerHTML,/System Waydroid/);
  assert.match(element('runtime-startup-list').innerHTML,/Waydroid service/);
  assert.match(element('runtime-startup-list').innerHTML,/runtime-table-scroll/);
  assert.doesNotMatch(element('runtime-startup-list').innerHTML,/data-runtime-startup="default"/);
@@ -2926,7 +2973,7 @@ test('global boot table includes Default even with no managed inventory or unava
  await context.changeRuntimeStartupPreference({target:{dataset:{runtimeStartup:'default'},checked:true}});
  assert.equal(calls.length,before);
  fail=true;await context.refreshRuntimeStartupPreferences();
- assert.match(element('runtime-startup-list').innerHTML,/Default runtime/);
+ assert.match(element('runtime-startup-list').innerHTML,/System Waydroid/);
  assert.match(element('runtime-startup-list').innerHTML,/Offline/);
 });
 

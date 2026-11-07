@@ -3,6 +3,7 @@
 #pragma once
 #include <cwctype>
 void Server::create_ime(Top *t) {
+  t->preedit_callbacks = false;
   if (!platform.xim)
     return;
   XIMStyles *styles = nullptr;

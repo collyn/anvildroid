@@ -811,6 +811,8 @@ static void keymap_kleave(void *data, struct proxy *p, uint32_t serial,
   pthread_mutex_lock(mutex);
   o->keyboard_leave_pending=1;
   o->keyboard_leave_surface=surface;
+  /* Leave implies release; stop BridgeIme's BackSpace repeat. */
+  if(ime_backspace_routed)ime_key_route(o,14,0);
   int panel=o->keymap_panel_focus||keymap_panel_owner(surface)!=0;
   pthread_mutex_unlock(mutex);
   if(panel)return;
@@ -823,6 +825,10 @@ static void keymap_key(void *data, struct proxy *p, uint32_t serial,
   pthread_mutex_lock(mutex);
   clipboard_input(serial);
   keymap_finish_keyboard_leave(o);
+  /* A routed BackSpace press must release through the IME on every path. */
+  if (!state && ime_backspace_routed && ime_key_route(o, key, state)) {
+    pthread_mutex_unlock(mutex); return;
+  }
   if(!state)scrcpy_mapping_release_key((int)key);
   if(key==1 && scrcpy_mapping_escape()) {
     /* Releasing a camera must leave Try in gameplay mode so unlocked M1
@@ -979,6 +985,7 @@ static void keymap_key(void *data, struct proxy *p, uint32_t serial,
       hints->dirty=1;keymap_wake();break;
     }
   }
+  if (!suppress && ime_key_route(o, key, state)) suppress = 1;
   pthread_mutex_unlock(mutex);
   if (!suppress)
     ((void (*)(void *, struct proxy *, uint32_t, uint32_t, uint32_t,
@@ -990,6 +997,7 @@ static void keymap_mods(void *data, struct proxy *p, uint32_t serial,
                         uint32_t group) {
   struct object *o = data;
   pthread_mutex_lock(mutex);
+  o->keyboard_mods = depressed | latched;
   int blocked = o->keymap_panel_focus || (o->keyboard_focus && o->keyboard_focus->overlay && !o->keyboard_focus->overlay->testing);
   pthread_mutex_unlock(mutex);
   if (!blocked)

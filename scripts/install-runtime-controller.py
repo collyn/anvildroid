@@ -97,6 +97,11 @@ def install_controller_files(source_root, destination=DESTINATION, arm_archive=N
         raise RuntimeError('Build the Android pathname compatibility helper first')
     ime = (source_root / 'target/ime/AnvilDroidIme.apk').read_bytes()
     if ime[:4] != b'PK\x03\x04': raise RuntimeError('Build the desktop IME APK first')
+    align_spec = importlib.util.spec_from_file_location('apk_align', source_root / 'scripts/apk-align.py')
+    apk_align = importlib.util.module_from_spec(align_spec)
+    align_spec.loader.exec_module(apk_align)
+    if apk_align.misaligned(source_root / 'target/ime/AnvilDroidIme.apk'):
+        raise RuntimeError('Desktop IME APK is not 4-byte aligned; rebuild it with scripts/build-ime.sh')
     shutdown = (source_root / 'target/shutdown/anvildroid-shutdown.jar').read_bytes()
     with zipfile.ZipFile(io.BytesIO(shutdown)) as archive:
         if archive.read('classes.dex')[:4] != b'dex\n': raise RuntimeError('Build the Android shutdown helper first')

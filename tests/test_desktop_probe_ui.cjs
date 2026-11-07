@@ -44,8 +44,8 @@ test('stopped runtime does not launch or install',async()=>{
  const {ctx,calls,el,id}=setup();ctx.managedLibrary[0].state='Stopped';await ctx.openWaydroid(id);await el('install-touch-probe').click();assert.equal(calls.length,0);
 });
 
-test('Touch Probe supports Default runtime and keeps the target pinned during confirmation',async()=>{
- const {ctx,calls,el}=setup();ctx.defaultRecord={id:'default',name:'Default runtime',state:'Frozen'};
+test('Touch Probe supports System Waydroid and keeps the target pinned during confirmation',async()=>{
+ const {ctx,calls,el}=setup();ctx.defaultRecord={id:'default',name:'System Waydroid',state:'Frozen'};
  ctx.window.AnvilKeymapLibrary={record:()=>ctx.defaultRecord,updateDiagnostics(){}};
  el('probe-runtime').value='default';
  ctx.AppDialog.confirm=async()=>{el('probe-runtime').value='r-other';return true;};

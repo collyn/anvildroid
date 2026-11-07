@@ -126,9 +126,10 @@ class ExistingRuntime:
         except FileNotFoundError:
             return {}
         if not isinstance(value, dict) or type(value.get('owner_uid')) is not int:
-            raise RuntimeError('Invalid Default runtime ownership record')
-        if value.get('name') == 'Existing runtime':
-            value['name'] = 'Default runtime'
+            raise RuntimeError('Invalid System Waydroid ownership record')
+        # Earlier releases saved these automatic names; a user's own name stays.
+        if value.get('name') in ('Existing runtime', 'Default runtime'):
+            value['name'] = 'System Waydroid'
         return value
 
     def authorize(self, uid):
@@ -136,14 +137,24 @@ class ExistingRuntime:
         saved = self.saved()
         if session:
             if session.get('user_id') != str(uid):
-                raise RuntimeError('Default runtime belongs to another desktop user')
+                raise RuntimeError('System Waydroid belongs to another desktop user')
             if saved and saved['owner_uid'] != uid:
-                raise RuntimeError('Default runtime management belongs to another user')
+                raise RuntimeError('System Waydroid management belongs to another user')
         elif not saved or saved['owner_uid'] != uid:
-            raise RuntimeError('Start Default runtime, then choose Enable management once before stopping it.')
+            raise RuntimeError('Start System Waydroid, then choose Enable management once before stopping it.')
         elif self.state() != 'STOPPED':
             raise RuntimeError('Waydroid container is active without an authenticated session; recover it before managing it')
         return session, saved
+
+    def initialized(self):
+        """True once `waydroid init` created the system runtime.
+
+        Installing the Waydroid package alone leaves no configuration; the GUI
+        hides System Waydroid until this exists instead of offering setup."""
+        try:
+            return (self.work / 'waydroid.cfg').is_file() and (self.work / 'lxc/waydroid/config').is_file()
+        except OSError:
+            return False
 
     def state(self):
         value = linux.run_bounded('lxc-info', '-P', self.work / 'lxc', '-n', 'waydroid', '-sH',
@@ -158,7 +169,7 @@ class ExistingRuntime:
 
     def android(self, *args):
         if self.state() != 'RUNNING':
-            raise RuntimeError('Start Default runtime before querying Android')
+            raise RuntimeError('Start System Waydroid before querying Android')
         return linux.run_bounded('lxc-attach', '-P', self.work / 'lxc', '-n', 'waydroid', '--', *args,
                                  timeout=2, full_output=True, output_limit=2 * 1024**2,
                                  operation='Default Android query')
@@ -295,7 +306,7 @@ class ExistingRuntime:
         deadline = time.monotonic()+3
         while time.monotonic() < deadline:
             if self.keymap_process.poll() is not None:
-                raise RuntimeError('Keymap receiver could not start; restart Default runtime after updating')
+                raise RuntimeError('Keymap receiver could not start; restart System Waydroid after updating')
             sockets = self.android('/system/bin/cat', '/proc/net/unix')
             if any(line.split()[-1:] == ['@scrcpy_00000000'] for line in sockets.splitlines()): return
             time.sleep(.05)
@@ -306,14 +317,14 @@ class ExistingRuntime:
         text = self.read(self.work / 'overlay/system/etc/init/init.waydroid.rc')
         match = re.search(r'^    setenv ANVILDROID_RUNTIME_GENERATION ([0-9a-f]{32})$', text, re.M)
         if not match or '    setenv ANVILDROID_RUNTIME_ID default\n' not in text:
-            raise RuntimeError('Restart Default runtime once to enable keymap editing')
+            raise RuntimeError('Restart System Waydroid once to enable keymap editing')
         state = self.state()
         if state == 'FROZEN':
             linux.run_bounded('gdbus', 'call', '--system', '--dest', 'id.waydro.Container',
                               '--object-path', '/ContainerManager', '--method',
-                              'id.waydro.ContainerManager.Unfreeze', timeout=3, operation='Resume Default runtime')
+                              'id.waydro.ContainerManager.Unfreeze', timeout=3, operation='Resume System Waydroid')
         elif state != 'RUNNING':
-            raise RuntimeError('Start Default runtime and open the app before editing keymap')
+            raise RuntimeError('Start System Waydroid and open the app before editing keymap')
         self.ensure_keymap_receiver()
         return keymap.open_keymap(self.work/'lxc', 'waydroid', match[1], package, self.android)
 
@@ -422,7 +433,7 @@ class ExistingRuntime:
             try:
                 if self.android('/system/bin/getprop', 'sys.boot_completed') != '1': display_state = 'Starting'
             except (OSError, RuntimeError): display_state = 'Starting'
-        return {'id': 'default', 'name': saved.get('name', 'Default runtime'),
+        return {'id': 'default', 'name': saved.get('name', 'System Waydroid'),
                 'state': display_state,
                 'managed': bool(saved), 'job': None, 'backend': 'waydroid-system',
                 'display': self.desktop_info()}
@@ -545,7 +556,7 @@ class ExistingRuntime:
         """Replace system images and clear Android data after a stopped session."""
         session, saved = self.authorize(uid)
         if not saved:
-            raise RuntimeError('Enable management while Default runtime is running once before reinstalling')
+            raise RuntimeError('Enable management while System Waydroid is running once before reinstalling')
         self.stopped()
         if platform.machine() == 'x86_64': arm.ensure_default_archive()
         data_path = Path(saved.get('data_path', ''))
@@ -637,7 +648,7 @@ class ExistingRuntime:
             return self.gpu_info()
         if op == 'existing_claim':
             if not session or session.get('user_id') != str(uid):
-                raise RuntimeError('Start Default runtime under your desktop account before enabling management')
+                raise RuntimeError('Start System Waydroid under your desktop account before enabling management')
             source = session.get('waydroid_data')
             if not isinstance(source, str) or not source:
                 raise RuntimeError('Waydroid session did not report its Android data directory')
@@ -652,7 +663,7 @@ class ExistingRuntime:
             current = session_info()
             if any(current.get(key) != session.get(key) for key in ('user_id', 'pid', 'waydroid_data')):
                 raise RuntimeError('Waydroid session changed; retry Enable management')
-            storage.atomic(self.metadata, {**saved, 'owner_uid': uid, 'name': saved.get('name', 'Default runtime'),
+            storage.atomic(self.metadata, {**saved, 'owner_uid': uid, 'name': saved.get('name', 'System Waydroid'),
                                            'data_path': source, 'data_identity': identity, 'data_owner_uid': info.st_uid})
             return self.record(session, self.saved())
         if op in ('refresh', 'inspect'):
@@ -670,19 +681,19 @@ class ExistingRuntime:
             if self.state() == 'FROZEN':
                 linux.run_bounded('gdbus', 'call', '--system', '--dest', 'id.waydro.Container',
                     '--object-path', '/ContainerManager', '--method', 'id.waydro.ContainerManager.Unfreeze',
-                    timeout=3, operation='Resume Default runtime')
-            if self.state() != 'RUNNING': raise RuntimeError('Start Default runtime before managing schemes')
+                    timeout=3, operation='Resume System Waydroid')
+            if self.state() != 'RUNNING': raise RuntimeError('Start System Waydroid before managing schemes')
             text = self.read(self.work / 'overlay/system/etc/init/init.waydroid.rc')
             match = re.search(r'^    setenv ANVILDROID_RUNTIME_GENERATION ([0-9a-f]{32})$', text, re.M)
             if not match:
-                raise RuntimeError('Restart Default runtime once to enable scheme management')
+                raise RuntimeError('Restart System Waydroid once to enable scheme management')
             return keymap.keymap_schemes(self.work / 'lxc', 'waydroid', 'default', request,
                 lambda *args: self.android('/system/bin/' + args[0], *args[1:]), match[1])
         if op == 'keymaps':
             state = self.state()
             if state == 'FROZEN':
                 path = session.get('waydroid_data')
-                if not path: raise RuntimeError('Frozen Default runtime data is unavailable')
+                if not path: raise RuntimeError('Frozen System Waydroid data is unavailable')
                 fd = storage.open_directory(path)
                 try:
                     self.verify_live_data(os.fstat(fd))
@@ -698,7 +709,7 @@ class ExistingRuntime:
         if op == 'display_info': return self.record(session, saved)['display']
         if op == 'display_set':
             if request.get('mode') != 'desktop':
-                raise RuntimeError('Default runtime supports Desktop mode only after installing the AnvilDroid bridge')
+                raise RuntimeError('System Waydroid supports Desktop mode only after installing the AnvilDroid bridge')
             return self.enable_desktop()
         if op == 'google_services':
             output = self.android('/system/bin/pm', 'list', 'packages', '--user', '0')
@@ -749,7 +760,7 @@ class ExistingRuntime:
                     report['checks'].append({'name': 'Graphics', 'status': 'warning', 'detail': str(error)})
             return report
         if not saved:
-            raise RuntimeError('Choose Enable management while Default runtime is running first')
+            raise RuntimeError('Choose Enable management while System Waydroid is running first')
         if op == 'rename':
             name = request['name']
             if not isinstance(name, str) or not 0 < len(name.strip()) <= 128 or any(ord(c) < 32 or ord(c) == 127 for c in name):
@@ -777,7 +788,7 @@ class ExistingRuntime:
                 integrated = gpu.nvidia.system_integration_available()
                 selected = (gpu.automatic_device(include_nvidia=integrated) if request['node'] == 'auto'
                             else gpu.choose(request['node']))
-                if not selected: raise RuntimeError('No supported Mesa GPU is available for Default runtime')
+                if not selected: raise RuntimeError('No supported Mesa GPU is available for System Waydroid')
                 if not integrated and (selected.get('driver') == 'nvidia' or selected.get('vendor_id') == '0x10de'):
                     raise RuntimeError('Restart waydroid-container.service to activate AnvilDroid NVIDIA integration')
                 node = selected['node']
@@ -813,7 +824,7 @@ class ExistingRuntime:
                 changes[path] = replace_properties(self.read(path), values)
             self.write_transaction(changes)
             return self.gpu_info() if op == 'gpu_set' else self.arm_info()
-        raise RuntimeError('This operation requires an isolated runtime; Default runtime remains owned by system Waydroid')
+        raise RuntimeError('This operation requires an isolated runtime; System Waydroid remains owned by system Waydroid')
 
     def import_source(self, uid):
         _, saved = self.authorize(uid)

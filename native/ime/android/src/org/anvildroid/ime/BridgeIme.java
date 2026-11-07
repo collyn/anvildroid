@@ -4,6 +4,9 @@ import android.inputmethodservice.InputMethodService;
 import android.net.*;
 import android.os.*;
 import android.text.InputType;
+import android.view.KeyCharacterMap;
+import android.view.KeyEvent;
+import android.view.ViewConfiguration;
 import android.view.inputmethod.*;
 import java.io.*;
 import java.util.concurrent.ArrayBlockingQueue;
@@ -20,6 +23,41 @@ public final class BridgeIme extends InputMethodService {
     private EditorInfo editor;
     private ClipboardSync clipboard;
     private CursorAnchorInfo cursorInfo;
+    // Host BackSpace shares the batch channel so it cannot overtake commits.
+    // A key event would re-enter the app's input queue asynchronously, so text
+    // is deleted with InputConnection edits, which apply in order with commits.
+    private boolean heldKey; // main thread only
+    private final Runnable repeatKey = new Runnable() {
+        @Override public void run() {
+            InputConnection ic = getCurrentInputConnection();
+            if (!heldKey || !active || ic == null) { heldKey = false; return; }
+            backspace(ic);
+            main.postDelayed(this, ViewConfiguration.getKeyRepeatDelay());
+        }
+    };
+    private void releaseKey() {
+        main.removeCallbacks(repeatKey);
+        heldKey = false;
+    }
+    private void backspace(InputConnection ic) {
+        CharSequence selected = ic.getSelectedText(0);
+        if (selected != null && selected.length() > 0) { ic.commitText("", 1); return; }
+        CharSequence before = ic.getTextBeforeCursor(2, 0);
+        int n = before == null ? 0 : before.length();
+        if (n > 0) {
+            // One code point; minSdk 23 lacks deleteSurroundingTextInCodePoints.
+            boolean pair = n == 2 && Character.isHighSurrogate(before.charAt(0)) && Character.isLowSurrogate(before.charAt(1));
+            ic.deleteSurroundingText(pair ? 2 : 1, 0);
+            return;
+        }
+        // Nothing to delete: keep the app's own BackSpace behaviour (chips, navigation).
+        long now = SystemClock.uptimeMillis();
+        int flags = KeyEvent.FLAG_SOFT_KEYBOARD | KeyEvent.FLAG_KEEP_TOUCH_MODE;
+        ic.sendKeyEvent(new KeyEvent(now, now, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DEL, 0, 0,
+            KeyCharacterMap.VIRTUAL_KEYBOARD, 0, flags));
+        ic.sendKeyEvent(new KeyEvent(now, now, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_DEL, 0, 0,
+            KeyCharacterMap.VIRTUAL_KEYBOARD, 0, flags));
+    }
 
     @Override public boolean onEvaluateInputViewShown() { return false; }
     @Override public boolean onEvaluateFullscreenMode() { return false; }
@@ -63,6 +101,7 @@ public final class BridgeIme extends InputMethodService {
     }
     @Override public void onStartInput(EditorInfo info, boolean restarting) {
         super.onStartInput(info, restarting);
+        releaseKey();
         ++generation;
         editor = info;
         active = info != null && info.inputType != InputType.TYPE_NULL;
@@ -73,6 +112,7 @@ public final class BridgeIme extends InputMethodService {
         publish();
     }
     @Override public void onFinishInput() {
+        releaseKey();
         ++generation;
         active = composing = false;
         editor = null;
@@ -139,6 +179,7 @@ public final class BridgeIme extends InputMethodService {
             String op = msg.getString("op");
             if (op.equals("state")) { publish(); return; }
             if (clipboard.receive(msg)) return;
+            if (op.equals("key")) { key(source, msg); return; }
             if (!op.equals("batch")) throw new JSONException("Operation");
             long requested = msg.getLong("generation");
             if (!active || requested != generation || getCurrentInputConnection() == null) {
@@ -186,6 +227,20 @@ public final class BridgeIme extends InputMethodService {
             reply(source, "invalid", msg.optLong("id"));
         }
     }
+    private void key(Peer source, JSONObject msg) throws JSONException {
+        if (msg.getInt("code") != KeyEvent.KEYCODE_DEL) throw new JSONException("Key");
+        releaseKey();
+        if (!msg.getBoolean("down")) return;
+        InputConnection ic = getCurrentInputConnection();
+        if (!active || msg.getLong("generation") != generation || ic == null) {
+            reply(source, "stale", 0);
+            return;
+        }
+        if (composing) { ic.finishComposingText(); composing = false; }
+        backspace(ic);
+        heldKey = true;
+        main.postDelayed(repeatKey, ViewConfiguration.getKeyRepeatTimeout());
+    }
     private void reply(Peer source, String status, long id) {
         try {
             source.send(new JSONObject().put("v", 1).put("op", "result")
@@ -227,6 +282,7 @@ public final class BridgeIme extends InputMethodService {
                     close();
                     main.post(() -> {
                         if (peer == this) {
+                            releaseKey();
                             peer = null;
                             ++generation;
                             InputConnection ic = getCurrentInputConnection();

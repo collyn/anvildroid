@@ -30,7 +30,7 @@ class PortablePackagingTest(unittest.TestCase):
             self.write('services/' + name, (ROOT / 'services' / name).read_bytes())
         for name in ('package-portable.sh', 'build-x11-payload.py', 'release-version.py',
                      'install-portable.sh', 'install-runtime-controller.py',
-                     'start-runtime-controller.py', 'setup-waydroid.py'):
+                     'start-runtime-controller.py', 'setup-waydroid.py', 'apk-align.py'):
             self.write('scripts/' + name, (ROOT / 'scripts' / name).read_bytes())
         # Pure fixture policy: the file-copy installer must never inspect host AppArmor.
         self.write('scripts/install-runtime-apparmor.py', b'def install(): return "Fixture AppArmor: no host changes"\n')

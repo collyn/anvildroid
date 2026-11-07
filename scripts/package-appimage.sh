@@ -124,7 +124,7 @@ chmod 755 "$appdir/AppRun.wrapped"
 mkdir -p "$appdir/scripts" "$appdir/services" "$appdir/target/native" \
   "$appdir/target/ime" "$appdir/target/shutdown" "$appdir/native" \
   "$appdir/packaging/systemd"
-cp scripts/bootstrap-appimage.py scripts/install-runtime-controller.py scripts/install-runtime-apparmor.py scripts/start-runtime-controller.py scripts/setup-waydroid.py "$appdir/scripts/"
+cp scripts/bootstrap-appimage.py scripts/install-runtime-controller.py scripts/install-runtime-apparmor.py scripts/apk-align.py scripts/start-runtime-controller.py scripts/setup-waydroid.py "$appdir/scripts/"
 cp services/*.py "$appdir/services/"
 cp native/anvildroid-*.rc native/anvildroid-*.sh "$appdir/native/"
 cp -a native/overlay "$appdir/native/"
@@ -176,7 +176,7 @@ for helper in WebKitWebProcess WebKitNetworkProcess WebKitGPUProcess injected-bu
   }
 done
 squash="$stage/inspect/squashfs-root"
-for bundled in scripts/bootstrap-appimage.py scripts/start-runtime-controller.py scripts/setup-waydroid.py scripts/install-runtime-controller.py scripts/install-runtime-apparmor.py \
+for bundled in scripts/bootstrap-appimage.py scripts/start-runtime-controller.py scripts/setup-waydroid.py scripts/install-runtime-controller.py scripts/install-runtime-apparmor.py scripts/apk-align.py \
     target/native/libanvildroid-runtime-window.so target/native/overlay-key.p12 \
     target/ime/AnvilDroidIme.apk target/shutdown/anvildroid-shutdown.jar \
     native/anvildroid-apps.sh native/overlay/AndroidManifest.xml \

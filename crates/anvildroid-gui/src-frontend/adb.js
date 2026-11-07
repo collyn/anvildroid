@@ -36,8 +36,9 @@
         host = results[2].status === 'fulfilled' ? results[2].value : {available:false, message:String(results[2].reason)};
         const previous = new Map(rows.map(row => [row.id, row.adb]));
         const managed = results[0].status === 'fulfilled' ? results[0].value : [];
-        const defaultRow = results[1].status === 'fulfilled' ? results[1].value : {id:'default', name:'Default runtime', state:'Unavailable', error:String(results[1].reason)};
-        rows = [defaultRow, ...managed].map(row => ({...row, adb:previous.get(row.id)}));
+        const defaultRow = results[1].status === 'fulfilled' ? results[1].value : {id:'default', name:'System Waydroid', state:'Unavailable', error:String(results[1].reason)};
+        // Waydroid never initialized: there is no System Waydroid to expose.
+        rows = [...(defaultRow.state === 'Uninitialized' ? [] : [defaultRow]), ...managed].map(row => ({...row, adb:previous.get(row.id)}));
         await Promise.all(rows.map(async row => {
           if (row.error) return;
           try { row.adb = await request({op:'adb_info', id:row.id}); }

@@ -65,8 +65,8 @@ def binaries(root, version):
         dependencies = run(['ldd', str(binary)])
         assert 'not found' not in dependencies.stdout, dependencies.stdout
         embedded = binary.read_bytes()
-        assert b'Starting native X11 app-window adapter for Default runtime' in embedded, 'Default X11 launcher is stale'
-        assert b'Starting nested Weston for Default runtime' not in embedded, 'Default X11 still launches Weston'
+        assert b'Starting native X11 app-window adapter for System Waydroid' in embedded, 'Default X11 launcher is stale'
+        assert b'Starting nested Weston for System Waydroid' not in embedded, 'Default X11 still launches Weston'
     with tempfile.TemporaryDirectory(prefix='anvil-cli-smoke-') as directory:
         fixture = Path(directory)
         environment = dict(os.environ, HOME=directory, XDG_CONFIG_HOME=str(fixture / 'config'),

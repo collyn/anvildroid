@@ -24,6 +24,20 @@ pub struct Preferences {
     minimize_to_panel: bool,
     startup_minimize: bool,
     auto_startup: bool,
+    /// Runtime preselected for installs and listed first. None follows the
+    /// automatic choice (System Waydroid when initialized, else the first).
+    default_runtime: Option<String>,
+}
+
+/// System Waydroid ("default") or a controller-managed runtime ID.
+fn valid_runtime_id(id: &str) -> bool {
+    id == "default"
+        || id.strip_prefix("r-").is_some_and(|hex| {
+            hex.len() == 32
+                && hex
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        })
 }
 
 pub struct ApplicationPreferences {
@@ -289,9 +303,48 @@ pub fn set_application_preference(
     Ok(result)
 }
 
+#[tauri::command]
+pub fn set_default_runtime(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, ApplicationPreferences>,
+    id: Option<String>,
+) -> Result<Preferences, String> {
+    if id.as_deref().is_some_and(|id| !valid_runtime_id(id)) {
+        return Err("Invalid runtime ID".into());
+    }
+    let mut prefs = state.preferences.lock().map_err(|e| e.to_string())?;
+    let mut next = prefs.clone();
+    next.default_runtime = id;
+    write_atomic(
+        &config_root().join("anvildroid/application.json"),
+        &serde_json::to_vec(&next).map_err(|e| e.to_string())?,
+    )?;
+    *prefs = next;
+    let mut result = prefs.clone();
+    result.minimize_to_panel = minimize_to_panel(&app);
+    Ok(result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn default_runtime_ids_are_validated() {
+        assert!(valid_runtime_id("default"));
+        assert!(valid_runtime_id("r-0121db36e2834ff7a7fa66da97e164a5"));
+        for bad in [
+            "",
+            "r-",
+            "r-0121DB36e2834ff7a7fa66da97e164a5",
+            "r-0121db36e2834ff7a7fa66da97e164a",
+            "../x",
+            "other",
+        ] {
+            assert!(!valid_runtime_id(bad), "{bad}");
+        }
+        let prefs: Preferences = serde_json::from_str(r#"{"minimize_to_panel":true}"#).unwrap();
+        assert!(prefs.default_runtime.is_none());
+    }
     #[test]
     fn startup_minimize_is_independent_and_explicit_views_remain_visible() {
         let mut prefs = Preferences::default();
@@ -446,6 +499,7 @@ mod tests {
             minimize_to_panel: true,
             auto_startup: false,
             startup_minimize: true,
+            default_runtime: None,
         };
         write_atomic(
             &root.join("anvildroid/application.json"),

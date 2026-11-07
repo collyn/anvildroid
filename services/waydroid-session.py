@@ -90,7 +90,7 @@ def acquire_session_lock(lock, env, timeout=10):
             return
         except BlockingIOError as error:
             if session_running(env):
-                raise RuntimeError('Default runtime is already starting or running on X11.') from error
+                raise RuntimeError('System Waydroid is already starting or running on X11.') from error
             if time.monotonic() >= deadline:
                 raise RuntimeError('Previous Default X11 session is still shutting down; no new session was started.') from error
             if not announced:
@@ -119,12 +119,12 @@ def run():
     with os.fdopen(fd, 'w') as lock:
         acquire_session_lock(lock, env)
         if connected(endpoint):
-            raise RuntimeError('The Default runtime Wayland socket is already in use.')
+            raise RuntimeError('The System Waydroid Wayland socket is already in use.')
         if session_running(env):
-            raise RuntimeError('Default runtime already has a running Waydroid session.')
+            raise RuntimeError('System Waydroid already has a running Waydroid session.')
         executable, graphics = native_adapter()
         try:
-            print('Starting native X11 app-window adapter for Default runtime…', flush=True)
+            print('Starting native X11 app-window adapter for System Waydroid…', flush=True)
             presenter_env = dict(os.environ)
             for name in ('WAYLAND_DISPLAY', 'WAYLAND_SOCKET', 'ANVILDROID_RUNTIME_ID',
                          'DRI_PRIME', '__NV_PRIME_RENDER_OFFLOAD', '__GLX_VENDOR_LIBRARY_NAME'):
@@ -162,13 +162,13 @@ def run():
                 except (OSError, subprocess.SubprocessError):
                     running = True
                 if running and not stop_session(env):
-                    raise RuntimeError('Could not confirm Default runtime stopped; its X11 adapter was retained.')
+                    raise RuntimeError('Could not confirm System Waydroid stopped; its X11 adapter was retained.')
             stop_process(session)
             stop_process(presenter)
 
 
 def interrupted(signum, frame):
-    raise InterruptedError('Default runtime session supervisor interrupted')
+    raise InterruptedError('System Waydroid session supervisor interrupted')
 
 
 if __name__ == '__main__':

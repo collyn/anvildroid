@@ -523,6 +523,8 @@ body {
 .runtime-table .runtime-summary:hover { background: rgba(136,174,255,.06); }
 .runtime-table .runtime-summary.selected { background: rgba(136,174,255,.12); }
 .runtime-select { background: none; border: 0; padding: 4px 0; color: var(--text-primary); font: inherit; font-weight: 600; text-align: left; cursor: pointer; overflow-wrap: anywhere; }
+.runtime-default-badge { display: inline-block; margin-left: 8px; padding: 1px 7px; border: 1px solid rgba(76,167,255,.35); border-radius: 4px; background: rgba(76,167,255,.12); color: #8cc8ff; font-size: 11px; font-weight: 600; vertical-align: middle; }
+.runtime-default-current { margin: 0 4px 0 0; align-self: center; }
 .runtime-select .hint { display: block; margin: 3px 0 0; font-weight: 400; font-size: 12px; }
 .runtime-select:focus-visible { outline: 2px solid #88aeff; outline-offset: 4px; border-radius: 3px; }
 .runtime-summary .runtime-actions { margin: 0; justify-content: flex-end; gap: 6px; }

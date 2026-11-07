@@ -130,6 +130,7 @@ class StandaloneSupportTests(unittest.TestCase):
             report = controller.Store.requirements(store)
         self.assertTrue(report['can_start'])
         self.assertTrue(next(item for item in report['checks'] if item['id'] == 'support')['available'])
+        self.assertIs(report['system_runtime'], store.existing.initialized.return_value)
         self.assertFalse(self.host.exists())
 
     def test_prepare_all_flavors_without_any_generated_host_files(self):

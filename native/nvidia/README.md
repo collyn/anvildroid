@@ -48,7 +48,7 @@ controller module/manifest under `target/nvidia-hwc-frame-sync/staged`.
 The candidate has its own version and records both the local patch and binary
 hashes; it never overwrites the active payload or changes the production pin.
 
-Managed and Default runtimes can also use Venus on X11. Startup uses a nested
+Managed runtimes and System Waydroid can also use Venus on X11. Startup uses a nested
 Weston X11 compositor for guest presentation; the private Venus server still uses the
 NVIDIA Vulkan ICD for Android rendering. Weston tries GL, then pixman if GL
 cannot start. HWC uses its wl_shm fallback when DMA-BUF import is unavailable;

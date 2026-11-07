@@ -135,7 +135,7 @@ impl Registry {
             }
         }
         if !ids.contains(&self.default_runtime_id) {
-            return Err(invalid("Default runtime does not exist"));
+            return Err(invalid("System Waydroid does not exist"));
         }
         Ok(())
     }
@@ -291,7 +291,7 @@ pub fn catalog() -> Result<Catalog, AnvilError> {
         return Err(invalid("Registered data path differs from the current user's Waydroid path; refusing ambiguous routing"));
     }
     Ok(Catalog { registry,configured,concurrent_supported:false,
-        management_note:"Default runtime uses system Waydroid. Its GPU, RAM/CPU and installed ARM settings are managed on the Runtime page through the runtime controller.".into(),
+        management_note:"System Waydroid is the runtime created by Waydroid itself. Its GPU, RAM/CPU and installed ARM settings are managed on the Runtime page through the runtime controller.".into(),
         container_name:"waydroid".into(),session_bus_name:"id.waydro.Session".into(),container_bus_name:"id.waydro.Container".into(),
     })
 }
