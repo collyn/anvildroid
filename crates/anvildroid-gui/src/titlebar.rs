@@ -1,5 +1,18 @@
 use gtk::{gdk, prelude::*};
 use std::{cell::Cell, rc::Rc};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Set by the webview's appearance setting; read when drawing button glyphs.
+static LIGHT: AtomicBool = AtomicBool::new(false);
+
+/// Follow the app theme in the native titlebar (outside the webview).
+pub fn set_light(window: &tauri::WebviewWindow, light: bool) {
+    LIGHT.store(light, Ordering::Relaxed);
+    let Ok(native) = window.gtk_window() else { return };
+    let context = native.style_context();
+    if light { context.add_class("light") } else { context.remove_class("light") }
+    native.queue_draw();
+}
 use tauri::Manager;
 
 /// App-owned chrome: independent of desktop titlebutton icons and drag settings.
@@ -7,7 +20,13 @@ pub fn install(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let Some(window) = app.get_webview_window("main") else {
         return Ok(());
     };
+    install_window(&window)
+}
+
+/// Also used when the main window is recreated after a panel release.
+pub fn install_window(window: &tauri::WebviewWindow) -> Result<(), Box<dyn std::error::Error>> {
     let native = window.gtk_window()?;
+    if LIGHT.load(Ordering::Relaxed) { native.style_context().add_class("light"); }
     native.connect_map_event(|_, _| {
         crate::startup_mark("window-mapped");
         gtk::glib::Propagation::Proceed
@@ -18,7 +37,7 @@ pub fn install(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         if event.new_window_state().contains(gdk::WindowState::ICONIFIED)
             && crate::preferences::minimize_to_panel(webview.app_handle())
         {
-            let _ = webview.hide();
+            crate::preferences::release_main_later(webview.app_handle());
         }
         let square = event
             .new_window_state()
@@ -28,7 +47,7 @@ pub fn install(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         ));
         gtk::glib::Propagation::Proceed
     });
-    install_native(&native, app.handle().clone());
+    install_native(&native, window.app_handle().clone());
     Ok(())
 }
 
@@ -107,7 +126,11 @@ fn install_native(native: &gtk::ApplicationWindow, app: tauri::AppHandle) {
         icon.connect_draw(move |area, cr| {
             let x = (area.allocated_width() as f64 - 10.0) / 2.0;
             let y = (area.allocated_height() as f64 - 10.0) / 2.0;
-            cr.set_source_rgb(0.84, 0.89, 0.95);
+            if LIGHT.load(Ordering::Relaxed) {
+                cr.set_source_rgb(0.27, 0.33, 0.42);
+            } else {
+                cr.set_source_rgb(0.84, 0.89, 0.95);
+            }
             cr.set_line_width(1.25);
             match action {
                 0 => {
@@ -154,7 +177,8 @@ fn install_native(native: &gtk::ApplicationWindow, app: tauri::AppHandle) {
                 return;
             };
             match action {
-                0 if crate::preferences::minimize_to_panel(&app) => window.hide(),
+                // To the panel: release the webview rather than keep it hidden.
+                0 if crate::preferences::minimize_to_panel(&app) => crate::preferences::release_main_later(&app),
                 0 => window.iconify(),
                 1 => {
                     if window.is_maximized() {

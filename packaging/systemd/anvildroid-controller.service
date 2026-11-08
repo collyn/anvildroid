@@ -1,10 +1,13 @@
 [Unit]
-Description=AnvilDroid runtime controller (headless preview)
+Description=AnvilDroid runtime controller
 After=local-fs.target
+# Socket activated: started by the first client, exits when idle.
+Requires=anvildroid-controller.socket
+After=anvildroid-controller.socket
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 -B /usr/local/lib/anvildroid-controller/runtime-controller.py --store /var/lib/anvildroid-controller --socket /run/anvildroid/control.sock
+ExecStart=/usr/bin/python3 -B /usr/local/lib/anvildroid-controller/runtime-controller.py --store /var/lib/anvildroid-controller --socket /run/anvildroid/control.sock --idle-exit 120
 User=root
 UMask=0077
 Delegate=yes
@@ -25,5 +28,4 @@ RestartSec=3
 KillMode=control-group
 TimeoutStopSec=240
 
-[Install]
-WantedBy=multi-user.target
+# No [Install] section: enable anvildroid-controller.socket instead.

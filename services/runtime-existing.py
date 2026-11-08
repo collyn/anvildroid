@@ -191,7 +191,7 @@ class ExistingRuntime:
 
     def desktop_info(self):
         enabled = self.desktop_overlay()
-        return {'mode': 'desktop' if enabled else 'headless',
+        return {'mode': 'desktop',
                 'effective_mode': 'desktop' if enabled and self.state() == 'RUNNING' else None,
                 'bridge_installed': enabled,
                 'detail': 'Native desktop bridge and caption overlay installed.' if enabled else

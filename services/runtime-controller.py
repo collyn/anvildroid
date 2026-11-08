@@ -1,9 +1,10 @@
 #!/usr/bin/python3
-"""P5.3 local runtime control service. Prepares isolated image copies asynchronously; supports experimental persistent headless Android workers.
+"""P5.3 local runtime control service. Prepares isolated image copies asynchronously; supports persistent desktop Android workers.
 Run as root with --store ROOT_OWNED_DIR --socket ROOT_OWNED_DIR/control.sock.
 Clients are authorized by kernel SO_PEERCRED, not by request-supplied user IDs.
 """
 import argparse
+import contextlib
 import platform
 import copy
 import errno
@@ -24,6 +25,7 @@ import tempfile
 import uuid
 import time
 import re
+import select
 import subprocess
 import sys
 
@@ -111,8 +113,14 @@ def read_file(path):
 class Store:
     def __init__(self, root, image_source=Path("/var/lib/waydroid/images"), allow_temporary_storage=False):
         self.mutex = threading.RLock()
+        # Signalled on every registry commit; `watch` clients wait on it.
+        self.changed = threading.Condition(threading.Lock())
         self.catalog = catalog_module.Catalog()
         self.active_jobs = set()
+        # Shared, non-runtime resources reserved while slow I/O runs unlocked.
+        self.reservations = set()
+        # One RPC at a time per worker, without blocking other runtimes.
+        self.rpc_locks = {}
         self.adb_relays = {}
         secure_directory(root, True)
         self.root = root
@@ -170,6 +178,10 @@ class Store:
         self.display_path = root / 'display.json'
         self.displays = read_file(self.display_path) if self.display_path.exists() else {}
         require(isinstance(self.displays, dict) and all(any(r['id'] == key for r in self.data['runtimes']) and value in ('headless', 'desktop') for key, value in self.displays.items()), 'CONFIG', 'Invalid display configuration')
+        # Upgrade saved background runtimes without changing their Android data.
+        if any(mode == 'headless' for mode in self.displays.values()):
+            self.displays = {key: 'desktop' for key in self.displays}
+            storage_module.atomic(self.display_path, self.displays)
         self.app_jobs_path = root / 'app-jobs.json'
         self.app_jobs = read_file(self.app_jobs_path) if self.app_jobs_path.exists() else {}
         require(isinstance(self.app_jobs, dict), 'CONFIG', 'Invalid app job metadata')
@@ -194,7 +206,6 @@ class Store:
                         and '..' not in Path(target['path']).parts and all(type(target.get(key)) is int for key in ('device', 'inode', 'fsid')), 'CONFIG', 'Invalid deletion location')
 
         self.pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix='runtime-prepare')
-        threading.Thread(target=self._start_on_boot, daemon=True).start()
         # Reconcile actual published images or an authenticated worker, never saved PIDs.
         for record in list(self.data['runtimes']):
             if record['id'] in self.deletions: continue
@@ -215,14 +226,38 @@ class Store:
             elif record['state'] in ('Starting', 'Running', 'Frozen', 'Stopping'):
                 self.reconcile(record)
 
-    def _start_on_boot(self):
-        time.sleep(2)
-        for record in list(self.data['runtimes']):
-            if record.get('start_on_boot') and record['state'] in ('Prepared', 'Stopped'):
-                try:
-                    self._dispatch({'op': 'start', 'id': record['id']}, record['owner_uid'])
-                except (RequestError, OSError, RuntimeError):
-                    pass
+    def login_start(self, uid):
+        """Start the caller's start-on-login runtimes in the caller's desktop.
+
+        Requested by the user's session at login. The controller is socket
+        activated, so it cannot do this when it happens to start: that would
+        also restart runtimes the user stopped earlier in the same session."""
+        started, failed = [], []
+        records = [r for r in self.data['runtimes'] if r['owner_uid'] == uid and r.get('start_on_boot')
+                   and r['state'] in ('Prepared', 'Stopped') and r['id'] not in self.active_jobs]
+        if not records:
+            return {'started': started, 'failed': failed}
+        session = desktop_module.capabilities(uid)
+        require(session['desktop'], 'NO_DESKTOP', 'No desktop session is available yet')
+        display = (desktop_module.X11_TOKEN_PREFIX + session['display']
+                   if session['session'] == 'x11' else session['socket'])
+        for record in records:
+            try:
+                self._dispatch({'op': 'start', 'id': record['id'], 'display': display}, uid)
+                started.append(record['id'])
+            except (RequestError, OSError, RuntimeError) as error:
+                failed.append({'id': record['id'], 'error': str(error)})
+        return {'started': started, 'failed': failed}
+
+    def idle(self):
+        """True when nothing in this process needs the controller to stay up."""
+        with self.mutex:
+            if self.active_jobs or self.reservations or self.adb_relays or self.storage.busy is not None:
+                return False
+            if any(r['state'] in ('Provisioning', 'Starting', 'Running', 'Frozen', 'Stopping') for r in self.data['runtimes']):
+                return False
+        thread = self.downloads.thread
+        return thread is None or not thread.is_alive()
 
     @staticmethod
     def validate(data):
@@ -270,6 +305,7 @@ class Store:
                 os.fsync(stream.fileno())
             os.replace(temp, self.path)
             self.data = data  # rename committed; retain coherence even if directory fsync fails
+            with self.changed: self.changed.notify_all()
             directory = os.open(self.root, os.O_DIRECTORY)
             try:
                 os.fsync(directory)
@@ -663,13 +699,15 @@ class Store:
             {'id': 'tools', 'label': 'Runtime tools', 'available': not missing,
              'detail': 'Available' if not missing else 'Missing: ' + ', '.join(missing)},
             {'id': 'arm_payload', 'label': 'ARM app support package',
-             'available': worker_module.arm.ARCHIVE.is_file(),
+             'available': worker_module.arm.ARCHIVE.is_file(), 'optional': True,
              'detail': 'Downloaded automatically during Prepare or setup.'},
             {'id': 'support', 'label': 'Waydroid runtime configuration', 'available': support,
              'detail': 'Configuration available' if support else 'Install or repair the Waydroid package to provide its LXC templates.'},
             {'id': 'desktop', 'label': 'Desktop session', 'available': desktop_info['desktop'], 'detail': desktop_info['detail']}]
+        watches = host_module.inotify_check()
+        checks.append(watches)
         return {'checks': checks, 'can_prepare': waydroid and images['available'],
-                'can_start': waydroid and not missing and support,
+                'can_start': waydroid and not missing and support and desktop_info['desktop'] and watches['available'],
                 'image_bytes': images['bytes'], 'installed_images': installed_images, 'desktop': desktop_info,
                 'system_runtime': self.existing.initialized()}
 
@@ -713,44 +751,45 @@ class Store:
         if not instance.exists():
             check('Android worker', 'warning', 'Not prepared or started yet.')
             return report
-        try:
-            worker = self.android.status(identifier)
-            report['worker_state'] = worker['state']
-            report['gpu_node'] = worker.get('gpu_node')
-            if worker['state'] == 'Running':
-                check('Android worker', 'ok', 'Authenticated worker reports Android boot completed.')
-                if 'graphics' in worker.get('capabilities', []):
-                    try:
-                        graphics = self.android.status(identifier, 'graphics')
-                        if graphics.get('generation') != worker.get('generation') or graphics.get('state') != 'Running':
-                            raise RuntimeError('Runtime changed during graphics inspection; retry.')
-                        if graphics.get('graphics_error'): raise RuntimeError(graphics['graphics_error'])
-                        report['graphics'] = graphics.get('graphics')
-                        if not isinstance(report['graphics'], dict): raise RuntimeError('Renderer report unavailable.')
-                        report['gpu_selection'] = worker_module.gpu.info(instance)['selection']
-                        report['gpu_verification'] = worker_module.gpu.verification(
-                            report['gpu_selection'], report.get('gpu_node'), report['graphics'])
-                    except (OSError, RuntimeError, ValueError) as error:
-                        check('Graphics', 'warning', str(error))
-                else:
-                    check('Graphics', 'warning', 'Stop and start this runtime to enable renderer inspection.')
+        with self.worker_rpc(identifier):
+            try:
+                worker = self.android.status(identifier)
+                report['worker_state'] = worker['state']
+                report['gpu_node'] = worker.get('gpu_node')
+                if worker['state'] == 'Running':
+                    check('Android worker', 'ok', 'Authenticated worker reports Android boot completed.')
+                    if 'graphics' in worker.get('capabilities', []):
+                        try:
+                            graphics = self.android.status(identifier, 'graphics')
+                            if graphics.get('generation') != worker.get('generation') or graphics.get('state') != 'Running':
+                                raise RuntimeError('Runtime changed during graphics inspection; retry.')
+                            if graphics.get('graphics_error'): raise RuntimeError(graphics['graphics_error'])
+                            report['graphics'] = graphics.get('graphics')
+                            if not isinstance(report['graphics'], dict): raise RuntimeError('Renderer report unavailable.')
+                            report['gpu_selection'] = worker_module.gpu.info(instance)['selection']
+                            report['gpu_verification'] = worker_module.gpu.verification(
+                                report['gpu_selection'], report.get('gpu_node'), report['graphics'])
+                        except (OSError, RuntimeError, ValueError) as error:
+                            check('Graphics', 'warning', str(error))
+                    else:
+                        check('Graphics', 'warning', 'Stop and start this runtime to enable renderer inspection.')
 
-                check('Network', 'ok' if worker.get('network') == 'private_uplink' else 'warning',
-                      'Private IPv4 uplink and DNS are configured. Internet availability depends on the host connection.'
-                      if worker.get('network') == 'private_uplink' else
-                      'This worker has no Internet uplink. Stop and start it to load the updated network support.')
-            elif worker['state'] == 'Frozen':
-                check('Android worker', 'ok', 'Android is suspended while idle; opening an app resumes it.')
-            elif worker['state'] == 'Stopped':
-                check('Android worker', 'ok', 'Worker status reports Android is stopped.')
-                if worker.get('shutdown_forced'):
-                    check('Last shutdown', 'warning', worker.get('shutdown_warning') or 'Android required forced cleanup.')
-            else:
-                check('Android worker', 'error' if worker['state'] == 'Error' else 'warning', worker.get('error') or worker['state'])
-            if record['state'] in ('Running', 'Frozen', 'Stopped', 'Starting', 'Stopping') and worker['state'] != record['state']:
-                check('State', 'warning', 'Worker state differs from the saved state. Refresh Settings to reconcile.')
-        except (OSError, RuntimeError, ValueError) as error:
-            check('Android worker', 'error', str(error))
+                    check('Network', 'ok' if worker.get('network') == 'private_uplink' else 'warning',
+                          'Private IPv4 uplink and DNS are configured. Internet availability depends on the host connection.'
+                          if worker.get('network') == 'private_uplink' else
+                          'This worker has no Internet uplink. Stop and start it to load the updated network support.')
+                elif worker['state'] == 'Frozen':
+                    check('Android worker', 'ok', 'Android is suspended while idle; opening an app resumes it.')
+                elif worker['state'] == 'Stopped':
+                    check('Android worker', 'ok', 'Worker status reports Android is stopped.')
+                    if worker.get('shutdown_forced'):
+                        check('Last shutdown', 'warning', worker.get('shutdown_warning') or 'Android required forced cleanup.')
+                else:
+                    check('Android worker', 'error' if worker['state'] == 'Error' else 'warning', worker.get('error') or worker['state'])
+                if record['state'] in ('Running', 'Frozen', 'Stopped', 'Starting', 'Stopping') and worker['state'] != record['state']:
+                    check('State', 'warning', 'Worker state differs from the saved state. Refresh Settings to reconcile.')
+            except (OSError, RuntimeError, ValueError) as error:
+                check('Android worker', 'error', str(error))
         if record['job'] and record['job']['status'] == 'Failed':
             check('Last operation', 'warning', record['job']['error'] or 'The last operation failed.')
         return report
@@ -822,7 +861,93 @@ class Store:
             temporary.unlink(missing_ok=True)
             if validation.exists(): shutil.rmtree(validation)
 
+    @contextlib.contextmanager
+    def unlocked(self):
+        """Run slow I/O without the global mutex.
+
+        The caller must first reserve every resource that I/O touches
+        (reserve_runtime/reserve), so conflicting requests are refused while
+        the lock is released. Inputs used during the I/O must be immutable
+        snapshots; results are published after the mutex is reacquired."""
+        if not self.mutex._is_owned():
+            yield
+            return
+        state = self.mutex._release_save()
+        try:
+            yield
+        finally:
+            self.mutex._acquire_restore(state)
+
+    @contextlib.contextmanager
+    def reserve_runtime(self, identifier, message='Wait for the runtime operation to finish'):
+        """Hold a runtime like a job (active_jobs) and release the mutex."""
+        require(identifier not in self.active_jobs, 'BUSY', message)
+        self.active_jobs.add(identifier)
+        try:
+            with self.unlocked():
+                yield
+        finally:
+            self.active_jobs.discard(identifier)
+
+    @contextlib.contextmanager
+    def reserve(self, key, message):
+        require(key not in self.reservations, 'BUSY', message)
+        self.reservations.add(key)
+        try:
+            with self.unlocked():
+                yield
+        finally:
+            self.reservations.discard(key)
+
+    @contextlib.contextmanager
+    def worker_rpc(self, identifier):
+        """Serialize RPCs to one worker while other runtimes stay responsive."""
+        lock = self.rpc_locks.setdefault(identifier, threading.Lock())
+        with self.unlocked():
+            with lock:
+                yield
+
+    def watch_token(self, uid):
+        """Fingerprint of everything a runtime list shows for this user.
+
+        Registry fields come from memory. Live runtimes also report their
+        worker state (Running/Frozen/Stopped can change without a registry
+        write, e.g. idle freeze), read outside the global lock."""
+        with self.mutex:
+            records = [r for r in self.data['runtimes'] if r['owner_uid'] == uid]
+            summary = [[r['id'], r['name'], r['state'], r.get('start_on_boot'), (r.get('job') or {}).get('id'),
+                        (r.get('job') or {}).get('status'), self.prepare_phases.get(r['id']), r['id'] in self.deletions,
+                        r['id'] in self.active_jobs] for r in records]
+            live = [r['id'] for r in records if r['state'] in ('Starting', 'Running', 'Frozen', 'Stopping') and r['id'] not in self.active_jobs]
+        workers = {}
+        for identifier in live:
+            try: workers[identifier] = self.android.status(identifier).get('state')
+            except Exception: workers[identifier] = 'unavailable'
+        download = self.downloads.status(uid)
+        summary.append(['download', download.get('status'), download.get('id')])
+        summary.append(['workers', sorted(workers.items())])
+        return hashlib.sha256(json.dumps(summary, sort_keys=True, default=str).encode()).hexdigest()[:32]
+
+    def watch(self, request, uid, apk_fd=None):
+        """Long-poll: answer when the caller's runtime view changes, or at the
+        timeout. The GUI refreshes on change instead of re-reading on a timer."""
+        require(set(request) == {'op', 'since', 'timeout'} and apk_fd is None, 'INVALID_REQUEST', 'Expected since and timeout')
+        since, timeout = request['since'], request['timeout']
+        require(since is None or (isinstance(since, str) and re.fullmatch(r'[0-9a-f]{32}', since)), 'INVALID_REQUEST', 'Invalid watch token')
+        require(type(timeout) is int and 1 <= timeout <= WATCH_LIMIT, 'INVALID_REQUEST', 'Invalid watch timeout')
+        deadline = time.monotonic() + timeout
+        while True:
+            token = self.watch_token(uid)
+            remaining = deadline - time.monotonic()
+            if token != since or remaining <= 0:
+                return {'token': token, 'changed': since is not None and token != since}
+            # Registry commits wake us at once; worker-only changes (freeze,
+            # crash) are picked up by re-reading worker state every few seconds.
+            with self.changed: self.changed.wait(min(WATCH_WORKER_INTERVAL, remaining))
+
     def dispatch(self, request, uid, apk_fd=None):
+        if isinstance(request, dict) and request.get('op') == 'watch':
+            return self.watch(request, uid, apk_fd)  # never holds the global lock while waiting
         with self.mutex:
             result = copy.deepcopy(self._dispatch(request, uid, apk_fd))
             for record in result if isinstance(result, list) else [result]:
@@ -890,7 +1015,8 @@ class Store:
         if operation == 'arm_import':
             require(set(request) == {'op'} and apk_fd is not None and not isinstance(apk_fd, tuple),
                     'INVALID_REQUEST', 'ARM translation import requires one archive descriptor')
-            return self.import_arm_source(uid, apk_fd)
+            with self.reserve(('arm-import', uid), 'Another ARM translation import is in progress'):
+                return self.import_arm_source(uid, apk_fd)
         if operation == 'arm_sources':
             require(set(request) == {'op'} and apk_fd is None, 'INVALID_REQUEST', 'Unexpected ARM source request')
             return self.arm_sources(uid)
@@ -918,6 +1044,9 @@ class Store:
             if operation == 'image_download_cancel': return self.downloads.cancel(uid, request['job_id'])
             variant = self.catalog.selection(request['flavor'], request['system_sha256'], request['vendor_sha256'])
             return self.downloads.start(uid, variant)
+        if operation == 'login_start':
+            require(set(request) == {'op'} and apk_fd is None, 'INVALID_REQUEST', 'Expected no fields')
+            return self.login_start(uid)
         if operation == 'image_catalog':
             require(set(request) == {'op', 'refresh'} and type(request['refresh']) is bool and apk_fd is None,
                     'INVALID_REQUEST', 'Expected only a boolean refresh field')
@@ -953,8 +1082,14 @@ class Store:
                 # `waydroid init` never ran: there is no System Waydroid to
                 # manage. Report it without session checks so the GUI hides it.
                 return {'id': 'default', 'name': 'System Waydroid', 'state': 'Uninitialized', 'managed': False}
+            require('default' not in self.active_jobs or operation == 'refresh',
+                    'BUSY', 'Wait for the System Waydroid operation to finish')
             if operation == 'reinstall':
-                return self.reinstall_existing(request, uid)
+                with self.reserve_runtime('default'):
+                    return self.reinstall_existing(request, uid)
+            if operation in ('health', 'system_integration'):
+                with self.reserve_runtime('default'):
+                    return self.existing.dispatch(request, uid)
             if operation in ('adb_info', 'adb_set'):
                 self.existing.authorize(uid)
                 return self.adb_request(request, uid)
@@ -1099,26 +1234,29 @@ class Store:
             images = json.loads(support_pin.read_text()) if support_pin.exists() else self.backend.inspect(record['id'])['images']
             archive = None
             provider = 'libndk_translation 0.2.3'
-            if request.get('archive_sha256'):
-                digest = request['archive_sha256']
+            digest = request.get('archive_sha256')
+            if digest:
                 require(isinstance(digest, str) and re.fullmatch(r'[a-f0-9]{64}', digest), 'INVALID_REQUEST', 'Invalid ARM source checksum')
                 archive = self.arm_sources_root / str(uid) / (digest + '.zip')
                 cached = worker_module.arm.cached_archive(digest)
                 if cached is not None and cached.is_file(): archive = cached
                 require(archive.is_file(), 'NOT_FOUND', 'Import this ARM translation source before selecting it')
-                require(hashlib.sha256(archive.read_bytes()).hexdigest() == digest, 'CONFIG', 'ARM source checksum changed; import again')
-            worker_module.arm.configure(instance, request['enabled'], images, storage_module.atomic, archive, provider)
+            # Hashing and unpacking take seconds to minutes: hold only this runtime.
+            with self.reserve_runtime(record['id'], 'Stop Android before changing ARM support'):
+                if archive is not None:
+                    require(hashlib.sha256(archive.read_bytes()).hexdigest() == digest, 'CONFIG', 'ARM source checksum changed; import again')
+                worker_module.arm.configure(instance, request['enabled'], images, storage_module.atomic, archive, provider)
             return dict(worker_module.arm.info(instance, supported, self.arm_sources(uid)), default_enabled=bool(selection and selection.get('arm_default')))
         if operation == 'display_info':
             effective = None
             if record['state'] in ('Running', 'Frozen') and record['id'] not in self.active_jobs:
-                try: effective = self.android.status(record['id']).get('display_mode', 'headless')
+                try: effective = self.android.status(record['id']).get('display_mode')
                 except (OSError, RuntimeError, ValueError): pass
             instance = self.backend.location(record['id'])
-            return dict(mode=self.displays.get(record['id'], 'headless'), effective_mode=effective,
+            return dict(mode=self.displays.get(record['id'], 'desktop'), effective_mode=effective,
                         **worker_module.native_x11.selection(instance))
         if operation == 'backend_set':
-            require(request['backend'] in ('auto', 'legacy', 'native-x11') and request['presenter'] in ('amd', 'intel', 'nvidia'),
+            require(request['backend'] in ('auto', 'native-x11') and request['presenter'] in ('amd', 'intel', 'nvidia'),
                     'INVALID_REQUEST', 'Invalid display backend or presenter GPU')
             self.storage.ensure(record['id'])
             instance = self.backend.location(record['id'])
@@ -1133,7 +1271,7 @@ class Store:
                 require(any(d['vendor_id'] == vendor and d['available'] for d in worker_module.gpu.inventory()),
                         'UNSUPPORTED', 'Selected presenter GPU is unavailable')
             storage_module.atomic(instance / 'display-backend.json', {key: request[key] for key in ('backend', 'presenter')})
-            return dict(mode=self.displays.get(record['id'], 'headless'), effective_mode=None,
+            return dict(mode=self.displays.get(record['id'], 'desktop'), effective_mode=None,
                         **worker_module.native_x11.selection(instance))
         if operation == 'start_on_boot':
             require(type(request['enabled']) is bool, 'INVALID_REQUEST', 'Expected boolean start-on-boot setting')
@@ -1142,7 +1280,7 @@ class Store:
             self.replace(updated)
             return updated
         if operation == 'display_set':
-            require(request['mode'] in ('headless', 'desktop'), 'INVALID_REQUEST', 'Invalid display mode')
+            require(request['mode'] == 'desktop', 'INVALID_REQUEST', 'Invalid display mode')
             require(record['id'] not in self.active_jobs and (record['state'] in ('Allocated', 'Prepared', 'Stopped') or (record['state'] == 'Error' and record['job']['operation'] == 'prepare')), 'BUSY', 'Stop Android before changing display mode')
             self.storage.ensure(record['id'])
             if self.backend.location(record['id']).exists():
@@ -1172,28 +1310,33 @@ class Store:
             require(record['id'] not in self.active_jobs, 'BUSY', 'Wait for the runtime operation to finish')
             require(record['state'] in ('Running', 'Frozen'), 'INVALID_STATE', 'Start this runtime before checking Google services')
             self.storage.ensure(record['id'])
-            return self.android.google_services(record['id'])
+            with self.worker_rpc(record['id']):
+                return self.android.google_services(record['id'])
         if operation == 'keymap_scheme':
             require(record['id'] not in self.active_jobs, 'BUSY', 'Wait for the runtime operation to finish')
             require(record['state'] in ('Running', 'Frozen'), 'INVALID_STATE', 'Start this runtime before managing schemes')
             self.storage.ensure(record['id'])
-            try: return self.android.keymap_scheme(record['id'], request)
+            try:
+                with self.worker_rpc(record['id']): return self.android.keymap_scheme(record['id'], request)
             except (OSError, RuntimeError, ValueError) as error: raise RequestError('KEYMAP_SCHEME', str(error))
         if operation == 'keymaps':
             require(record['id'] not in self.active_jobs, 'BUSY', 'Wait for the runtime operation to finish')
             self.storage.ensure(record['id'])
-            try: return self.android.keymaps(record['id'])
+            try:
+                with self.worker_rpc(record['id']): return self.android.keymaps(record['id'])
             except (OSError,RuntimeError,ValueError) as error: raise RequestError('KEYMAPS',str(error))
         if operation == 'app_states':
             require(record['id'] not in self.active_jobs, 'BUSY', 'Wait for the runtime operation to finish')
             self.storage.ensure(record['id'])
-            try: return self.android.app_states(record['id'])
+            try:
+                with self.worker_rpc(record['id']): return self.android.app_states(record['id'])
             except (OSError, RuntimeError, ValueError) as error: raise RequestError('APP_STATES', str(error))
         if operation == 'apps':
             require(record['id'] not in self.active_jobs, 'BUSY', 'Wait for the runtime operation to finish')
             self.storage.ensure(record['id'])
             try:
-                return self.android.apps(record['id'])
+                with self.worker_rpc(record['id']):
+                    return self.android.apps(record['id'])
             except (OSError, RuntimeError, ValueError) as error:
                 raise RequestError('APPS', str(error))
         if operation == 'health':
@@ -1251,7 +1394,7 @@ class Store:
             require(operation != 'start' or self.imports.get(record['id']) != 'pending',
                     'INVALID_STATE', 'Finish importing System Waydroid before starting this copy')
             desktop = None
-            if operation == 'start' and self.displays.get(record['id']) == 'desktop' and record['state'] not in ('Running', 'Frozen'):
+            if operation == 'start' and record['state'] not in ('Running', 'Frozen'):
                 display = request.get('display')
                 require(isinstance(display, str) and len(display) <= 64, 'DESKTOP_SESSION',
                         'Desktop mode requires a Wayland or X11 graphical session. Open AnvilDroid from your desktop and retry.')
@@ -1323,8 +1466,161 @@ def validate_name(name):
             all(ord(c) >= 32 and ord(c) != 127 for c in name), 'INVALID_REQUEST', 'Invalid runtime name')
 
 
-def serve(store_path, socket_path, image_source, allow_temporary_storage=False):
+# Requests that may hold a worker thread for seconds to minutes. They are capped
+# so status polling (list, refresh, download status) always finds a free thread.
+SLOW_OPERATIONS = frozenset({'arm_import', 'arm_set', 'components_set', 'diagnostics_collect', 'reinstall',
+                             'existing_import', 'image_import', 'image_import_folder', 'health',
+                             'system_integration', 'keymap_scheme', 'google_services',
+                             'compatibility_set', 'compatibility_reset'})
+IPC_WORKERS = 16
+SLOW_SLOTS = 8
+MAX_CONNECTIONS = 64
+RECEIVE_TIMEOUT = 2
+SEND_TIMEOUT = 10
+IDLE_POLL = 5
+WATCH_LIMIT = 25
+WATCH_WORKER_INTERVAL = 3
+
+
+def error_response(code, message):
+    return {'ok': False, 'error': {'code': code, 'message': message}}
+
+
+class IpcServer:
+    """Bounded concurrent request handling.
+
+    Each accepted connection is handled on a worker thread, so a slow client or
+    a long operation no longer blocks accept(). Admission is bounded: beyond
+    MAX_CONNECTIONS in flight, or SLOW_SLOTS concurrent slow operations, the
+    request is answered BUSY instead of growing threads or queues. Peer
+    credentials are read on the worker before any dispatch."""
+
+    def __init__(self, store, workers=IPC_WORKERS, slow_slots=SLOW_SLOTS, max_connections=MAX_CONNECTIONS):
+        self.store = store
+        self.inflight = 0
+        self.inflight_lock = threading.Lock()
+        self.pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix='ipc')
+        self.admission = threading.BoundedSemaphore(max_connections)
+        self.slow = threading.BoundedSemaphore(slow_slots)
+
+    def submit(self, connection):
+        if not self.admission.acquire(blocking=False):
+            self.reply(connection, error_response('BUSY', 'Controller is handling too many requests; retry shortly'))
+            connection.close()
+            return
+        with self.inflight_lock: self.inflight += 1
+        try:
+            self.pool.submit(self.handle, connection)
+        except BaseException:
+            with self.inflight_lock: self.inflight -= 1
+            self.admission.release()
+            connection.close()
+            raise
+
+    @staticmethod
+    def reply(connection, response):
+        try:
+            connection.settimeout(SEND_TIMEOUT)  # a client that never reads cannot pin a worker
+            connection.sendall(json.dumps(response).encode() + b'\n')
+        except OSError:
+            pass
+
+    def handle(self, connection):
+        try:
+            with connection:
+                self.reply(connection, self.process(connection))
+        finally:
+            with self.inflight_lock: self.inflight -= 1
+            self.admission.release()
+
+    def busy(self):
+        with self.inflight_lock: return self.inflight > 0
+
+    def process(self, connection):
+        apk_fd = None
+        try:
+            connection.settimeout(RECEIVE_TIMEOUT)
+            _, uid, _ = struct.unpack('3i', connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
+            request, apk_fd = transfer.receive(connection, MAX_REQUEST)
+            slow = isinstance(request, dict) and request.get('op') in SLOW_OPERATIONS
+            if slow and not self.slow.acquire(blocking=False):
+                return error_response('BUSY', 'Too many long-running operations; retry when one finishes')
+            try:
+                return {'ok': True, 'result': self.store.dispatch(request, uid, apk_fd)}
+            finally:
+                if slow: self.slow.release()
+        except RequestError as error:
+            return error_response(error.code, error.message)
+        except (ValueError, UnicodeError, socket.timeout):
+            return error_response('INVALID_REQUEST', 'Invalid or incomplete request')
+        except RuntimeError as error:
+            return error_response('STORAGE', str(error))
+        except OSError:
+            return error_response('IO_ERROR', 'Runtime metadata operation failed')
+        except Exception as error:  # never let one request take down a worker silently
+            print(f'Unhandled controller request error: {error!r}', file=sys.stderr, flush=True)
+            return error_response('INTERNAL', 'Unexpected controller error')
+        finally:
+            if apk_fd is not None:
+                for fd in apk_fd if isinstance(apk_fd, tuple) else (apk_fd,):
+                    os.close(fd)
+
+    def close(self):
+        self.pool.shutdown(wait=False, cancel_futures=True)
+
+
+def activation_socket(environ=os.environ, pid=None):
+    """The listening socket systemd passed (sd_listen_fds protocol), or None."""
+    if environ.get('LISTEN_PID') != str(os.getpid() if pid is None else pid) or environ.get('LISTEN_FDS') != '1':
+        return None
+    server = socket.socket(fileno=3)
+    for name in ('LISTEN_PID', 'LISTEN_FDS', 'LISTEN_FDNAMES'):
+        os.environ.pop(name, None)  # never leak activation to child processes
+    require(server.family == socket.AF_UNIX and server.type == socket.SOCK_STREAM, 'CONFIG', 'Unexpected activation socket')
+    os.set_inheritable(server.fileno(), False)
+    return server
+
+
+def service_processes(cgroup_root=Path('/sys/fs/cgroup'), proc=Path('/proc/self/cgroup')):
+    """Other processes in this service's cgroup tree, or None when unknown.
+
+    Workers, Android containers, downloads and helpers all live here
+    (KillMode=control-group), so the controller must not exit while any do."""
+    try:
+        relative = next(line[3:] for line in proc.read_text().splitlines() if line.startswith('0::')).strip('/')
+        if not relative:
+            return None
+        pids = set()
+        for procs in (cgroup_root / relative).rglob('cgroup.procs'):
+            pids.update(int(value) for value in procs.read_text().split())
+    except (OSError, StopIteration, ValueError):
+        return None
+    pids.discard(os.getpid())
+    return pids
+
+
+class IdleExit:
+    """Decides when a socket-activated controller may exit."""
+    def __init__(self, store, ipc, seconds, clock=time.monotonic, processes=service_processes):
+        self.store, self.ipc, self.seconds, self.clock, self.processes = store, ipc, seconds, clock, processes
+        self.since = None
+
+    def activity(self):
+        self.since = None
+
+    def due(self):
+        if self.ipc.busy() or not self.store.idle() or self.processes() != set():
+            self.since = None
+            return False
+        now = self.clock()
+        if self.since is None:
+            self.since = now
+        return now - self.since >= self.seconds
+
+
+def serve(store_path, socket_path, image_source, allow_temporary_storage=False, idle_exit=None):
     require(os.geteuid() == 0, 'CONFIG', 'Controller must run as root')
+    inherited = activation_socket()
     secure_directory(socket_path.parent, False)
     store = Store(store_path, image_source, allow_temporary_storage)
     endpoint_lock = os.open(str(socket_path) + '.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
@@ -1332,10 +1628,12 @@ def serve(store_path, socket_path, image_source, allow_temporary_storage=False):
     require(stat.S_ISREG(metadata.st_mode) and metadata.st_uid == 0 and not metadata.st_mode & 0o077 and metadata.st_nlink == 1,
             'CONFIG', 'Unsafe endpoint lock')
     fcntl.flock(endpoint_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server = inherited or socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     bound = False
     try:
-        if socket_path.exists() or socket_path.is_symlink():
+        if inherited:
+            pass  # systemd owns the endpoint; queued clients survive our exit
+        elif socket_path.exists() or socket_path.is_symlink():
             metadata = socket_path.lstat()
             require(stat.S_ISSOCK(metadata.st_mode) and metadata.st_uid == 0, 'CONFIG', 'Unsafe existing endpoint')
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
@@ -1346,35 +1644,28 @@ def serve(store_path, socket_path, image_source, allow_temporary_storage=False):
                     socket_path.unlink()
                 else:
                     raise RequestError('CONFIG', 'Endpoint already in use')
-        server.bind(str(socket_path))
-        bound = True
-        os.chmod(socket_path, 0o666)  # authorization is SO_PEERCRED + record ownership
-        server.listen(16)
+        if not inherited:
+            server.bind(str(socket_path))
+            bound = True
+            os.chmod(socket_path, 0o666)  # authorization is SO_PEERCRED + record ownership
+            server.listen(64)
         print('ready', flush=True)
-        while True:
-            connection, _ = server.accept()
-            with connection:
-                connection.settimeout(2)
-                try:
-                    _, uid, _ = struct.unpack('3i', connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
-                    request, apk_fd = transfer.receive(connection, MAX_REQUEST)
-                    try:
-                        response = {'ok': True, 'result': store.dispatch(request, uid, apk_fd)}
-                    finally:
-                        if apk_fd is not None:
-                            for fd in apk_fd if isinstance(apk_fd, tuple) else (apk_fd,): os.close(fd)
-                except RequestError as error:
-                    response = {'ok': False, 'error': {'code': error.code, 'message': error.message}}
-                except (ValueError, UnicodeError, socket.timeout):
-                    response = {'ok': False, 'error': {'code': 'INVALID_REQUEST', 'message': 'Invalid or incomplete request'}}
-                except RuntimeError as error:
-                    response = {'ok': False, 'error': {'code': 'STORAGE', 'message': str(error)}}
-                except OSError:
-                    response = {'ok': False, 'error': {'code': 'IO_ERROR', 'message': 'Runtime metadata operation failed'}}
-                try:
-                    connection.sendall(json.dumps(response).encode() + b'\n')
-                except OSError:
-                    pass
+        ipc = IpcServer(store)
+        # Only a socket-activated controller exits when idle: systemd keeps
+        # listening and starts it again on the next client connection.
+        idle = IdleExit(store, ipc, idle_exit) if inherited and idle_exit else None
+        try:
+            while True:
+                if idle and not select.select([server], [], [], IDLE_POLL)[0]:
+                    if idle.due():
+                        print('Idle; exiting until the next client connects', flush=True)
+                        break
+                    continue
+                connection, _ = server.accept()
+                if idle: idle.activity()
+                ipc.submit(connection)
+        finally:
+            ipc.close()
     finally:
         server.close()
         if bound:
@@ -1389,11 +1680,13 @@ if __name__ == '__main__':
     parser.add_argument('--socket', type=Path, required=True)
     parser.add_argument('--image-source', type=Path, default=Path('/var/lib/waydroid/images'), help='Administrator-only image source directory')
     parser.add_argument('--allow-temporary-storage', action='store_true', help=argparse.SUPPRESS)
+    parser.add_argument('--idle-exit', type=int, metavar='SECONDS',
+                        help='When socket activated, exit after this long with no runtime, job or client')
     args = parser.parse_args()
     def shutdown(*_):
         raise KeyboardInterrupt
     signal.signal(signal.SIGTERM, shutdown)
     try:
-        serve(args.store, args.socket, args.image_source, args.allow_temporary_storage)
+        serve(args.store, args.socket, args.image_source, args.allow_temporary_storage, args.idle_exit)
     except KeyboardInterrupt:
         pass

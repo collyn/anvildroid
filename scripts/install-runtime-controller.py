@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""Install the headless controller from this checkout, then enable its service.
+"""Install the runtime controller from this checkout, then enable its service.
 Does not create or start an Android runtime. Existing workers keep running.
 """
 import os
@@ -19,8 +19,9 @@ import importlib.util
 
 ROOT = Path(__file__).resolve().parent.parent
 MODULES = ('runtime-system.py', 'runtime-controller.py', 'runtime-existing.py', 'runtime-keymap.py', 'runtime-host.py', 'runtime-images.py', 'runtime-android.py',
-           'runtime-worker.py', 'runtime-x11.py', 'runtime-path-guard.py', 'runtime-linux.py', 'runtime-image-format.py', 'runtime-adb.py', 'runtime-network.py', 'runtime-storage.py', 'runtime-labels.py', 'runtime-transfer.py', 'runtime-catalog.py', 'runtime-download.py', 'runtime-extract.py', 'runtime-provision.py', 'runtime-arm.py', 'runtime-arm-source.py', 'runtime-gpu.py', 'runtime-nvidia.py', 'runtime-resources.py', 'runtime-desktop.py', 'runtime-workarea.py', 'runtime-features.py', 'runtime-compatibility.py', 'runtime-shares.py', 'runtime-default-shares.py', 'runtime-device.py', 'runtime-components.py', 'runtime-diagnostics.py')
+           'runtime-worker.py', 'runtime-x11.py', 'runtime-path-guard.py', 'runtime-linux.py', 'runtime-image-format.py', 'runtime-adb.py', 'runtime-network.py', 'runtime-storage.py', 'runtime-labels.py', 'runtime-transfer.py', 'runtime-catalog.py', 'runtime-download.py', 'runtime-extract.py', 'runtime-provision.py', 'runtime-arm.py', 'runtime-arm-source.py', 'runtime-gpu.py', 'runtime-nvidia.py', 'runtime-resources.py', 'runtime-desktop.py', 'runtime-workarea.py', 'runtime-features.py', 'runtime-compatibility.py', 'runtime-shares.py', 'runtime-default-shares.py', 'runtime-device.py', 'runtime-components.py', 'runtime-diagnostics.py', 'runtime-notifications.py', 'notification-relay.py')
 DESTINATION = Path('/usr/local/lib/anvildroid-controller')
+PAYLOAD_MANIFEST = 'scripts/controller-payload.txt'
 SOCKET_PATH = Path('/run/anvildroid/control.sock')
 
 
@@ -62,10 +63,47 @@ def replace(path, data, mode=0o644):
         Path(temporary).unlink(missing_ok=True)
 
 
+def payload_entries(source_root):
+    """Parse the shared payload contract: (relative, is_tree, optional)."""
+    entries = []
+    for line in (source_root / PAYLOAD_MANIFEST).read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith('#'):
+            continue
+        optional = line.startswith('?')
+        relative = line.lstrip('?')
+        if relative.startswith('/') or '..' in Path(relative).parts:
+            raise RuntimeError(f'Invalid controller payload entry: {line}')
+        entries.append((relative.rstrip('/'), relative.endswith('/'), optional))
+    return entries
+
+
+def check_payload(source_root):
+    """Name every missing required payload path before anything is installed."""
+    try:
+        entries = payload_entries(source_root)
+    except FileNotFoundError:
+        raise RuntimeError(f'Controller payload is missing: {PAYLOAD_MANIFEST}')
+    missing = [relative + ('/' if tree else '') for relative, tree, optional in entries
+               if not optional and not ((source_root / relative).is_dir() if tree else (source_root / relative).is_file())]
+    missing += [f'services/{name}' for name in MODULES if not (source_root / 'services' / name).is_file()]
+    if missing:
+        raise RuntimeError('Controller payload is missing: ' + ', '.join(missing))
+
+
+def load_apparmor_installer(source_root):
+    spec = importlib.util.spec_from_file_location(
+        'install_runtime_apparmor', source_root / 'scripts/install-runtime-apparmor.py')
+    policy = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(policy)
+    return policy
+
+
 def install_controller_files(source_root, destination=DESTINATION, arm_archive=None, x11_payload=None):
     """Validate the payload of source_root (a repo checkout or AppImage stage
     mirroring the portable release layout) and install it under destination.
     Purely file operations; does not touch systemd."""
+    check_payload(source_root)
     # Capture and compile all source before writing anything.
     sources = {name: (source_root / 'services' / name).read_bytes() for name in MODULES}
     for name, data in sources.items():
@@ -110,10 +148,8 @@ def install_controller_files(source_root, destination=DESTINATION, arm_archive=N
         assets[name] = (source_root / 'native' / name).read_bytes()
     assets['menu-font-OFL.txt'] = (source_root / 'native/menu-font-OFL.txt').read_bytes()
     assets['overlay-key.p12'] = (source_root / 'target/native/overlay-key.p12').read_bytes()
-    policy_spec = importlib.util.spec_from_file_location(
-        'install_runtime_apparmor', source_root / 'scripts/install-runtime-apparmor.py')
-    policy = importlib.util.module_from_spec(policy_spec)
-    policy_spec.loader.exec_module(policy)
+    scrcpy = (source_root / 'target/input-diagnostic/scrcpy-server-cancel.jar').read_bytes()
+    policy = load_apparmor_installer(source_root)
     print(policy.install())
     trusted_directory(destination.parent, strict=False)
     trusted_directory(destination)
@@ -127,7 +163,7 @@ def install_controller_files(source_root, destination=DESTINATION, arm_archive=N
             replace(native / name, data, 0o755 if name in ('anvildroid-x11-host',) else 0o644)
         replace(native / 'manifest.json', x11_sources['manifest.json'])
     if arm_archive is not None: replace(destination / 'libndk-0.2.3.zip', arm_archive)
-    replace(destination / 'scrcpy-server-cancel.jar', (source_root / 'target/input-diagnostic/scrcpy-server-cancel.jar').read_bytes())
+    replace(destination / 'scrcpy-server-cancel.jar', scrcpy)
     replace(destination / 'libanvildroid-window.so', bridge)
     replace(destination / 'libanvildroid-path-guard.so', path_guard)
     replace(destination / 'AnvilDroidIme.apk', ime)
@@ -144,6 +180,7 @@ def systemd_payload(source_root):
     return {relative: (source_root / 'packaging/systemd' / name).read_bytes()
             for relative, name in (
                 ('anvildroid-controller.service', 'anvildroid-controller.service'),
+                ('anvildroid-controller.socket', 'anvildroid-controller.socket'),
                 ('waydroid-container.service.d/50-anvildroid.conf', '50-anvildroid.conf'))}
 
 
@@ -203,12 +240,16 @@ def main():
     loaded = subprocess.run(['systemctl', 'show', '--property=LoadState', '--value',
                              'anvildroid-controller.service'], check=True, capture_output=True, text=True)
     if loaded.stdout.strip() != 'not-found':
+        # Stop the socket too, so no client re-activates a half-updated controller.
+        subprocess.run(['systemctl', 'stop', 'anvildroid-controller.socket'], check=False, capture_output=True)
         subprocess.run(['systemctl', 'stop', 'anvildroid-controller.service'], check=True)
     install_controller_files(ROOT, arm_archive=arm_archive, x11_payload=args.x11_payload)
     install_systemd_files(units)
     subprocess.run(['systemctl', 'daemon-reload'], check=True)
-    subprocess.run(['systemctl', 'enable', '--now', 'anvildroid-controller.service'], check=True)
-    subprocess.run(['systemctl', 'is-active', '--quiet', 'anvildroid-controller.service'], check=True)
+    # Older releases enabled the service at boot; it is socket activated now.
+    subprocess.run(['systemctl', 'disable', 'anvildroid-controller.service'], check=False, capture_output=True)
+    subprocess.run(['systemctl', 'enable', '--now', 'anvildroid-controller.socket'], check=True)
+    subprocess.run(['systemctl', 'is-active', '--quiet', 'anvildroid-controller.socket'], check=True)
     wait_for_ready_socket()
     print('Controller installed and socket ready. No Android runtime was created or started.')
     print('Default integration takes effect on the next Waydroid container service restart.')

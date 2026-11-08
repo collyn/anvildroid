@@ -25,7 +25,7 @@ Summary: AnvilDroid GUI, CLI and Android runtime controller
 License: MIT AND BSD-3-Clause AND Apache-2.0
 URL: https://github.com/collyn/anvildroid
 BuildArch: x86_64
-Requires: python3, weston, iproute, nftables, slirp4netns, lxc, kmod, curl, systemd, patchelf >= 0.18
+Requires: python3, iproute, nftables, slirp4netns, lxc, kmod, curl, systemd, patchelf >= 0.18
 Requires: java-headless >= 1:17
 Requires: glibc >= 2.39, libepoxy, libdrm, mesa-libgbm, libX11, libXcursor, libXi, libXfixes, libXext, libXrandr, libXScrnSaver, libxcb, mesa-libEGL, mesa-libGLES, libxkbcommon, libstdc++, libgcc, expat, vulkan-loader, util-linux
 # Fedora splits Wayland libraries; require their ABI instead of an umbrella package.
@@ -53,12 +53,18 @@ if [ -f "\$net" ] && command -v iptables-nft >/dev/null 2>&1 && command -v iptab
 fi
 if [ -d /run/systemd/system ]; then
 systemctl daemon-reload >/dev/null 2>&1 || :
-systemctl enable anvildroid-controller.service >/dev/null 2>&1 || :
-systemctl restart anvildroid-controller.service >/dev/null 2>&1 || :
+systemctl disable anvildroid-controller.service >/dev/null 2>&1 || :
+systemctl enable anvildroid-controller.socket >/dev/null 2>&1 || :
+if systemctl is-active --quiet anvildroid-controller.socket; then
+  systemctl try-restart anvildroid-controller.service >/dev/null 2>&1 || :
+else
+  systemctl stop anvildroid-controller.service >/dev/null 2>&1 || :
+  systemctl start anvildroid-controller.socket >/dev/null 2>&1 || :
+fi
 fi
 
 %preun
-if [ "\$1" -eq 0 ] && [ -d /run/systemd/system ]; then systemctl disable --now anvildroid-controller.service >/dev/null 2>&1 || :; fi
+if [ "\$1" -eq 0 ] && [ -d /run/systemd/system ]; then systemctl disable --now anvildroid-controller.socket anvildroid-controller.service >/dev/null 2>&1 || :; fi
 
 %files
 %license %{_datadir}/licenses/anvildroid-controller/LICENSE-MIT
@@ -69,6 +75,7 @@ if [ "\$1" -eq 0 ] && [ -d /run/systemd/system ]; then systemctl disable --now a
 %{_datadir}/icons/hicolor/*/apps/org.anvildroid.gui.png
 %{_prefix}/local/lib/anvildroid-controller
 /usr/lib/systemd/system/anvildroid-controller.service
+/usr/lib/systemd/system/anvildroid-controller.socket
 /usr/lib/systemd/system/waydroid-container.service.d/50-anvildroid.conf
 %dir /var/lib/anvildroid-controller
 %dir /run/anvildroid

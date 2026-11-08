@@ -139,6 +139,27 @@ class FeatureDispatchTest(unittest.TestCase):
     def read(self, identifier=FIRST):
         return self.dispatch(identifier=identifier,package=PACKAGE)
 
+    def test_notification_policy_is_owner_scoped_persistent_and_validated(self):
+        report = self.dispatch('notifications_get')
+        self.assertEqual((report['enabled'], report['blocked']), (True, []))  # ChromeOS default
+        report = self.dispatch('notifications_app_set', package='com.chat', allowed=False)
+        self.assertEqual(report['blocked'], ['com.chat'])
+        self.assertEqual(self.dispatch('notifications_get', identifier=SECOND)['blocked'], [])  # per runtime
+        self.assertEqual(self.dispatch('notifications_set', enabled=False)['enabled'], False)
+        self.assertEqual(self.dispatch('notifications_get')['blocked'], ['com.chat'])  # master keeps app choices
+        self.assertEqual(self.dispatch('notifications_app_set', package='com.chat', allowed=True)['blocked'], [])
+        path = self.store.backend.root / FIRST / 'notifications.json'
+        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+        with self.assertRaises(RuntimeError):
+            self.dispatch('notifications_get', identifier=OTHER)   # another user's runtime
+        for bad in ({'package': '../x', 'allowed': False}, {'package': 'com.chat', 'allowed': 'no'}):
+            with self.assertRaises(RuntimeError):
+                self.dispatch('notifications_app_set', **bad)
+        with self.assertRaises(RuntimeError):
+            self.dispatch('notifications_set', enabled=1)
+        with self.assertRaises(RuntimeError):
+            self.dispatch('notifications_get', identifier='default')
+
     def test_owner_rejected_before_any_backend_path_or_android_call_for_all_operations(self):
         for op, fields in features.FIELDS.items():
             request = dict.fromkeys(fields, 'untrusted')

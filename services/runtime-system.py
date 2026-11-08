@@ -215,7 +215,9 @@ class Integration:
         hardware = self.tools.services.hardware_manager.IHardware
         original = hardware.add_service
 
-        def add_service(args, enableNFC, enableBluetooth, suspend, reboot, upgrade):
+        # Waydroid adds callbacks over time (1.6.3: shutdownRequest). Gate every
+        # one of them instead of pinning a positional signature.
+        def add_service(args, *callbacks):
             token = self.session_token
 
             def gate(callback):
@@ -229,8 +231,8 @@ class Integration:
                     return callback(*values, **keywords)
                 return invoke
 
-            return original(args, *(gate(callback) for callback in
-                                   (enableNFC, enableBluetooth, suspend, reboot, upgrade)))
+            return original(args, *(gate(callback) if callable(callback) else callback
+                                    for callback in callbacks))
 
         hardware.add_service = add_service
 

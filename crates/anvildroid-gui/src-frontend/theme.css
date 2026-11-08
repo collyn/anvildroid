@@ -1,0 +1,202 @@
+/* Design tokens. Every colour in the other stylesheets resolves to one of these,
+   so dark and light themes differ only here. theme.js sets data-theme. */
+:root {
+  --radius: 12px;
+  --sidebar-width: 260px;
+  --font-xs: 11px; --font-sm: 12px; --font-md: 13px; --font-lg: 15px; --font-xl: 22px;
+  --focus-ring: 0 0 0 2px var(--bg-app), 0 0 0 4px var(--accent);
+
+  --bg-app: #091321;
+  --bg-sidebar: #0c1827;
+  --bg-panel: #111f30;
+  --bg-surface: #142436;
+  --bg-raised: #182a3d;
+  --bg-hover: #1d3046;
+  --bg-selected: #23415f;
+  --border-subtle: #263b53;
+  --border: #304862;
+  --border-strong: #496b85;
+  --text-primary: #edf4fd;
+  --text-soft: #b9cce6;
+  --text-secondary: #a3b6cd;
+  --text-muted: #8a9db4;
+  --accent: #4ca7ff;
+  --accent-text: #acd2ff;
+  --accent-deep: #2b8df0;
+  --accent-strong: #1f63c4;
+  --accent-bg: #1c4a7d;
+  --accent-ink: #0b1726;
+  --on-accent: #ffffff;
+  --success: #35d07f;
+  --success-text: #6ee5a0;
+  --success-bg: #103f2e;
+  --success-border: #477859;
+  --warning: #f6c86a;
+  --warning-bg: #3b3329;
+  --warning-border: #897044;
+  --danger: #f590ad;
+  --danger-bg: #421f2a;
+  --danger-border: #8e4b60;
+  --purple: #c079fc;
+  --purple-bg: #322044;
+  --shadow: #000000;
+  --highlight: #ffffff;
+  color-scheme: dark;
+}
+
+:root[data-theme="light"] {
+  --bg-app: #f2f5f9;
+  --bg-sidebar: #ffffff;
+  --bg-panel: #ffffff;
+  --bg-surface: #f7f9fc;
+  --bg-raised: #eef3f8;
+  --bg-hover: #e4ecf5;
+  --bg-selected: #d6e6fa;
+  --border-subtle: #e1e7ef;
+  --border: #ccd6e2;
+  --border-strong: #9fb0c4;
+  --text-primary: #0f1b2d;
+  --text-soft: #24344a;
+  --text-secondary: #44556c;
+  --text-muted: #5f6f85;
+  --accent: #1a73d9;
+  --accent-text: #1559b0;
+  --accent-deep: #1a73d9;
+  --accent-strong: #155fb8;
+  --accent-bg: #1d6fd1;
+  --accent-ink: #0b1726;
+  --on-accent: #ffffff;
+  --success: #15803d;
+  --success-text: #166534;
+  --success-bg: #dcfce7;
+  --success-border: #86c99a;
+  --warning: #b45309;
+  --warning-bg: #fef3c7;
+  --warning-border: #e0b25c;
+  --danger: #c0264f;
+  --danger-bg: #fde4ea;
+  --danger-border: #e7a1b3;
+  --purple: #7c3aed;
+  --purple-bg: #ede4fd;
+  --shadow: #475569;
+  --highlight: #ffffff;
+  color-scheme: light;
+}
+
+/* Legacy names still referenced by older rules. */
+:root {
+  --bg-primary: var(--bg-app);
+  --bg-secondary: var(--bg-sidebar);
+  --accent-hover: var(--accent-text);
+  --error: var(--danger);
+}
+
+/* One visible keyboard focus style everywhere. */
+:where(button, a, input, select, textarea, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.theme-choice { display: inline-flex; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+.theme-choice button { min-height: 36px; padding: 0 16px; border: 0; background: var(--bg-surface); color: var(--text-secondary); font: inherit; font-weight: 600; cursor: pointer; }
+.theme-choice button + button { border-left: 1px solid var(--border); }
+.theme-choice button:hover { background: var(--bg-hover); color: var(--text-primary); }
+.theme-choice button[aria-pressed="true"] { background: var(--accent-strong); color: var(--on-accent); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition-duration: 0s !important; animation-duration: 0s !important; }
+}
+
+.notification-master { display: flex; align-items: center; gap: 10px; font-weight: 600; }
+.notification-apps { display: grid; gap: 2px; max-height: 360px; overflow: auto; border: 1px solid var(--border-subtle); border-radius: 10px; }
+.notification-app { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 12px; cursor: pointer; }
+.notification-app:hover { background: var(--bg-hover); }
+.notification-app-name { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.notification-app-name > span { display: grid; min-width: 0; }
+.notification-app-name small { color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.notification-app img, .notification-app-placeholder { width: 24px; height: 24px; border-radius: 6px; flex: 0 0 24px; background: var(--bg-raised); }
+
+/* Light theme: selection is a soft tint, not a solid fill; primary actions are
+   flat with white text (the dark-theme glow reads as heavy on white). */
+:root[data-theme="light"] .nav-item.active {
+  color: var(--accent-text);
+  background: var(--bg-selected);
+  box-shadow: inset 3px 0 var(--accent);
+}
+:root[data-theme="light"] .view-button.active,
+:root[data-theme="light"] .theme-choice button[aria-pressed="true"] {
+  background: var(--bg-selected);
+  color: var(--accent-text);
+}
+:root[data-theme="light"] .btn-primary,
+:root[data-theme="light"] .app-open-button {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--shadow) 12%, transparent);
+}
+:root[data-theme="light"] .btn-primary:hover:not(:disabled),
+:root[data-theme="light"] .app-open-button:hover {
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
+  color: var(--on-accent);
+}
+:root[data-theme="light"] .app-open-caret { background: var(--accent-strong); border-color: var(--accent); }
+
+/* Runtime settings: Simple hides expert controls; Advanced shows everything. */
+/* The header's generic `> div` rule stretches children; the toggle keeps its size. */
+#page-runtime-settings .runtime-config-header > .settings-mode { display: inline-flex; flex: 0 0 auto; gap: 0; margin-left: auto; align-self: center; }
+#page-runtime-settings.settings-simple [data-level="advanced"],
+#page-runtime-settings.settings-simple .runtime-resource-fields,
+#page-runtime-settings.settings-simple .runtime-resource-diagnostics,
+#page-runtime-settings.settings-simple [id^="resource-budget-"] { display: none !important; }
+#page-runtime-settings:not(.settings-simple) .settings-mode-hint { display: none; }
+.settings-mode-hint { margin: -4px 0 16px; }
+
+/* Quick device / GPU choice: compact chips under the runtime name. */
+/* Percent-width selects add no min-content, so chips shrink (with ellipsis)
+   instead of widening the table. */
+.runtime-quick { margin-top: 6px; min-width: 9rem; max-width: 13rem; container-type: inline-size; }
+.runtime-quick-row { display: grid; gap: 6px; }
+/* Too narrow for names: icon-only chips; the menu and tooltip show names. */
+@container (max-width: 7.5rem) {
+  .runtime-quick-row { display: flex; }
+  .runtime-quick-chip { flex: 0 0 auto; }
+  #page-runtime .runtime-quick .runtime-quick-select { position: absolute; inset: 0; width: 100%; opacity: 0; }
+}
+.runtime-quick:empty { display: none; }
+.runtime-quick-chip { position: relative; display: flex; align-items: center; gap: 4px; min-width: 0; min-height: 26px; padding: 0 22px 0 8px; border: 1px solid var(--border-subtle); border-radius: 999px; background: var(--bg-surface); color: var(--text-secondary); font-size: 12px; cursor: pointer; }
+.runtime-quick-chip:hover { border-color: var(--border); color: var(--text-primary); }
+.runtime-quick-chip:focus-within { border-color: var(--accent); }
+.runtime-quick-chip::after { content: ""; position: absolute; right: 9px; top: 50%; width: 5px; height: 5px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: translateY(-70%) rotate(45deg); pointer-events: none; opacity: .7; }
+.runtime-quick-chip svg { width: 14px; height: 14px; flex: 0 0 14px; }
+/* Beat the page-wide select look (ID-scoped arrow, padding, height) inside chips. */
+#page-runtime .runtime-quick .runtime-quick-select { width: 100%; min-width: 0; max-width: none; height: auto; min-height: 0; margin: 0; padding: 0; border: 0; border-radius: 0; outline: 0; box-shadow: none; background: transparent none; color: inherit; font: inherit; line-height: 24px; text-overflow: ellipsis; white-space: nowrap; overflow: hidden; appearance: none; -webkit-appearance: none; cursor: pointer; }
+.runtime-quick-select:focus-visible { outline: 0; }
+#page-runtime .runtime-quick-select option, #page-runtime .runtime-quick-select optgroup { background: var(--bg-panel); color: var(--text-primary); }
+.runtime-quick-chip:has(select:disabled) { opacity: .6; cursor: default; }
+
+/* Themed popup for every <select> (see select-menu.js); GTK's native popup
+   ignores page CSS. */
+.select-menu { position: fixed; z-index: 10000; overflow: auto; padding: 4px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-panel); color: var(--text-primary); box-shadow: 0 12px 32px color-mix(in srgb, var(--shadow) 35%, transparent); font-size: 13px; overscroll-behavior: contain; }
+.select-menu-group { padding: 8px 10px 4px; color: var(--text-muted); font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; cursor: default; }
+.select-menu-option { position: relative; padding: 6px 28px 6px 10px; border-radius: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
+.select-menu-option.grouped { padding-left: 18px; }
+.select-menu-option.active { background: var(--bg-hover); }
+.select-menu-option.selected { color: var(--accent-text); font-weight: 600; }
+.select-menu-option.selected::after { content: ""; position: absolute; right: 10px; top: 50%; width: 4px; height: 8px; border-right: 2px solid currentColor; border-bottom: 2px solid currentColor; transform: translateY(-65%) rotate(45deg); }
+.select-menu-option.disabled { color: var(--text-muted); opacity: .6; cursor: default; }
+
+/* Keep the table within the default window once chips sit under the name. */
+/* Usage bars size themselves (about 206px); the old 250px floor plus the
+   chips pushed the table past narrow windows. */
+#page-runtime #runtime-table .runtime-usage-cell { min-width: 0; }
+@media (max-width: 1150px) { .runtime-quick { min-width: 4.5rem; } }
+/* Name + chips need more room than the status badge. */
+#page-runtime #runtime-table th:nth-child(2) { width: 27%; }
+#page-runtime #runtime-table th:nth-child(3) { width: 13%; }
+
+/* Settings → Updates */
+#update-section .runtime-actions { margin: 8px 0; }
+.update-notes-text { max-height: 220px; overflow: auto; white-space: pre-wrap; font: inherit; font-size: 12px; color: var(--text-secondary); background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 10px; }
+.update-repo-command { display: block; overflow-x: auto; padding: 8px 10px; border-radius: 8px; background: var(--bg-surface); border: 1px solid var(--border-subtle); color: var(--text-primary); font-size: 12px; user-select: all; }

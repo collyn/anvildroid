@@ -1,0 +1,14 @@
+[Unit]
+Description=AnvilDroid runtime controller socket
+
+[Socket]
+# The controller starts on the first client connection and exits again when
+# no runtime, job or client needs it. Authorization is SO_PEERCRED inside the
+# controller, so the endpoint itself is world-connectable.
+ListenStream=/run/anvildroid/control.sock
+SocketMode=0666
+DirectoryMode=0755
+Backlog=64
+
+[Install]
+WantedBy=sockets.target

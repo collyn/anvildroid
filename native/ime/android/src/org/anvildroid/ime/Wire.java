@@ -9,8 +9,11 @@ import org.json.*;
 final class Wire {
     static final int LIMIT = 32768;
     static JSONObject read(DataInputStream in) throws IOException, JSONException {
+        return read(in, LIMIT);
+    }
+    static JSONObject read(DataInputStream in, int limit) throws IOException, JSONException {
         int size = in.readInt();
-        if (size < 2 || size > LIMIT) throw new IOException("Invalid frame size");
+        if (size < 2 || size > limit) throw new IOException("Invalid frame size");
         byte[] bytes = new byte[size];
         in.readFully(bytes);
         String text = StandardCharsets.UTF_8.newDecoder()
@@ -20,8 +23,11 @@ final class Wire {
         return new JSONObject(text);
     }
     static void write(DataOutputStream out, JSONObject value) throws IOException {
+        write(out, value, LIMIT);
+    }
+    static void write(DataOutputStream out, JSONObject value, int limit) throws IOException {
         byte[] bytes = value.toString().getBytes(StandardCharsets.UTF_8);
-        if (bytes.length > LIMIT) throw new IOException("Frame too large");
+        if (bytes.length > limit) throw new IOException("Frame too large");
         out.writeInt(bytes.length);
         out.write(bytes);
         out.flush();

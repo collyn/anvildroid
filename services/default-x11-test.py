@@ -161,7 +161,7 @@ class DefaultX11Tests(unittest.TestCase):
         self.env['ADAPTER_CRASH'] = '1'
         result = subprocess.run(self.command(), env=self.env, capture_output=True, text=True, timeout=5)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn('Weston was not started', result.stderr)
+        self.assertIn('Native X11 adapter could not open the display', result.stderr)
         self.assertFalse((self.runtime / 'ready').exists())
         self.assertFalse((self.runtime / 'weston-started').exists())
 

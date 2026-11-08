@@ -23,7 +23,7 @@ test('failed feature retries only failed dependency, without rebinding successfu
 const source=fs.readFileSync('crates/anvildroid-gui/src-frontend/main.js','utf8');
 function navigation(){
  const calls=[],tasks=[],page={classList:{add(){}}};
- const ctx=vm.createContext({currentPage:'apps',libraryPage:true,appStatesTimer:null,appLibraryStarted:true,adbPage:null,syncRuntimeSettingsFeatures(){},
+ const ctx=vm.createContext({currentPage:'apps',libraryPage:true,appStatesTimer:null,appLibraryStarted:true,adbPage:null,syncRuntimeSettingsFeatures(){},runControllerWatch(){},
  clearTimeout(){},setTimeout(){},navItems:[],pages:[],document:{getElementById:()=>page},
  pageLoads:{schedule:(target,active,load)=>tasks.push({target,active,load})},
  lazyFeatures:{ensure:async feature=>calls.push(feature)},window:{AnvilKeymapLibrary:{refresh:async()=>calls.push('refresh')}},

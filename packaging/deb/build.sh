@@ -23,7 +23,7 @@ Pre-Depends: python3
 Recommends: adb
 Description: AnvilDroid GUI, CLI and Android runtime controller
  GPU accelerated Waydroid runtime controller with BinderFS, Wayland and native X11 support.
-Depends: libc6 (>= 2.39), libepoxy0, libdrm2, libgbm1, libx11-6, libxcb1, libegl1, libgles2, libwayland-server0, libxkbcommon0, libxcursor1, libxi6, libxfixes3, libxext6, libxrandr2, libxss1, libstdc++6, libgcc-s1, libexpat1, libvulkan1, util-linux, mount, iproute2, nftables, slirp4netns, lxc, kmod, curl, weston, python3, default-jre-headless (>= 2:1.17), systemd, patchelf (>= 0.18), libwebkit2gtk-4.1-0, libgtk-3-0, libglib2.0-0, libjavascriptcoregtk-4.1-0, libsoup-3.0-0, libpango-1.0-0, libcairo2, libgdk-pixbuf-2.0-0, libayatana-appindicator3-1 | libappindicator3-1
+Depends: libc6 (>= 2.39), libepoxy0, libdrm2, libgbm1, libx11-6, libxcb1, libegl1, libgles2, libwayland-server0, libxkbcommon0, libxcursor1, libxi6, libxfixes3, libxext6, libxrandr2, libxss1, libstdc++6, libgcc-s1, libexpat1, libvulkan1, util-linux, mount, iproute2, nftables, slirp4netns, lxc, kmod, curl, python3, default-jre-headless (>= 2:1.17), systemd, patchelf (>= 0.18), libwebkit2gtk-4.1-0, libgtk-3-0, libglib2.0-0, libjavascriptcoregtk-4.1-0, libsoup-3.0-0, libpango-1.0-0, libcairo2, libgdk-pixbuf-2.0-0, libayatana-appindicator3-1 | libappindicator3-1
 EOF
 install -m 0755 "$ROOT/packaging/deb/preinst.py" "$PKG/DEBIAN/preinst"
 cat > "$PKG/DEBIAN/postinst" <<'EOF'
@@ -51,8 +51,15 @@ if systemctl is-active --quiet waydroid-container.service \
   && [ "$(lxc-info -P /var/lib/waydroid/lxc -n waydroid -sH 2>/dev/null)" = STOPPED ]; then
   systemctl try-restart waydroid-container.service
 fi
-systemctl enable anvildroid-controller.service >/dev/null 2>&1 || true
-systemctl restart anvildroid-controller.service
+# The controller is socket activated; older releases enabled it at boot.
+systemctl disable anvildroid-controller.service >/dev/null 2>&1 || true
+systemctl enable anvildroid-controller.socket >/dev/null 2>&1 || true
+if systemctl is-active --quiet anvildroid-controller.socket; then
+  systemctl try-restart anvildroid-controller.service
+else
+  systemctl stop anvildroid-controller.service >/dev/null 2>&1 || true
+  systemctl start anvildroid-controller.socket
+fi
 fi
 command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database /usr/share/applications || true
 command -v gtk-update-icon-cache >/dev/null 2>&1 && gtk-update-icon-cache -f -t /usr/share/icons/hicolor || true
@@ -67,8 +74,9 @@ case "$1" in
     if [ -d /run/systemd/system ]; then
       # Stop only the controller unit. Managed worker scopes and persistent
       # runtime data belong to their own lifecycle; do not stop Waydroid.
-      systemctl stop anvildroid-controller.service
-      systemctl disable anvildroid-controller.service
+      systemctl stop anvildroid-controller.socket anvildroid-controller.service
+      systemctl disable anvildroid-controller.socket >/dev/null 2>&1 || true
+      systemctl disable anvildroid-controller.service >/dev/null 2>&1 || true
       if systemctl is-active --quiet anvildroid-controller.service; then
         echo 'AnvilDroid controller is still active; refusing package removal' >&2
         exit 1

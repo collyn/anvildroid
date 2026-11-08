@@ -202,12 +202,12 @@ fn write_managed_registration(id: &str, package: &str, launcher: &Path, hidden: 
     use base64::Engine;
     crate::managed::validate(id, package)?;
     let record = request(Request::Refresh { id: id.into() }).map_err(AnvilError::BackendFailed)?;
-    if package == "org.anvildroid.desktop" {
-        let class = format!("waydroid.anvildroid.{id}.Waydroid");
-        let content = format!("[Desktop Entry]\nType=Application\nName={} (AnvilDroid)\nExec={} --launch-app org.anvildroid.desktop --runtime {id}\nIcon=org.anvildroid.gui\nTerminal=false\nCategories=Utility;\nStartupNotify=false\nStartupWMClass={class}\nX-AnvilDroid-Runtime={id}\n{OWNER}\n",
-            value(record["name"].as_str().unwrap_or(id)), exec_path(&installed_launcher(launcher)?)?);
-        let path = write_content(data_dir()?.join("applications").join(format!("{class}.desktop")), &content)?;
-        refresh_menu_cache();
+    if package == FULL_UI {
+        let exec = exec_path(&installed_launcher(launcher)?)?;
+        let (path, changed) = write_full_ui_entry(&data_dir()?, id, record["name"].as_str().unwrap_or(id), &exec, hidden)?;
+        // Visible shortcuts are refreshed by the caller; a hidden registration
+        // only needs a refresh when it was actually created or changed.
+        if hidden && changed { refresh_menu_cache(); }
         return Ok(path);
     }
     let apps = request(Request::Apps { id: id.into() }).map_err(AnvilError::BackendFailed)?;
@@ -268,11 +268,40 @@ fn write_managed_registration(id: &str, package: &str, launcher: &Path, hidden: 
     } else {
         format!("anvildroid.{id}.{package}.desktop")
     };
-    write_content(
-        root.join("applications")
-            .join(filename),
-        &content,
-    )
+    let path = root.join("applications").join(filename);
+    if hidden && fs::read_to_string(&path).ok().as_deref() == Some(content.as_str()) {
+        return Ok(path);
+    }
+    write_content(path, &content)
+}
+
+const FULL_UI: &str = "org.anvildroid.desktop";
+
+/// Full UI uses the same two-file layout as app entries: a hidden
+/// `waydroid.anvildroid.<id>.Waydroid.desktop` matching the window class, and a
+/// visible `anvildroid.<id>.org.anvildroid.desktop.desktop` created only on request.
+/// Returns the written path and whether its content changed.
+fn write_full_ui_entry(root: &Path, id: &str, name: &str, exec: &str, hidden: bool) -> Result<(PathBuf, bool), AnvilError> {
+    crate::managed::validate(id, FULL_UI)?;
+    let class = format!("waydroid.anvildroid.{id}.Waydroid");
+    let mut content = format!("[Desktop Entry]\nType=Application\nName={} (AnvilDroid)\nExec={exec} --launch-app {FULL_UI} --runtime {id}\nIcon=org.anvildroid.gui\nTerminal=false\nCategories=Utility;\nStartupNotify=false\nStartupWMClass={class}\nX-AnvilDroid-Runtime={id}\n{OWNER}\n", value(name));
+    let visible = scoped_shortcut_path(root, id, FULL_UI)?;
+    if !hidden {
+        let changed = fs::read_to_string(&visible).ok().as_deref() != Some(content.as_str());
+        return Ok((write_content(visible, &content)?, changed));
+    }
+    let registration = root.join("applications").join(format!("{class}.desktop"));
+    // Older builds wrote this registration visible, either automatically or from
+    // "Create shortcut"; the two cannot be told apart. Keep the menu entry the
+    // user sees by moving it to the shortcut path, where status/remove find it.
+    if owned_shortcut_exists(&registration)? && !owned_shortcut_exists(&visible)? {
+        let legacy = fs::read_to_string(&registration)?;
+        if desktop_visible(&legacy) { write_content(visible, &legacy)?; }
+    }
+    content.push_str("NoDisplay=true\n");
+    let changed = fs::read_to_string(&registration).ok().as_deref() != Some(content.as_str());
+    if !changed { return Ok((registration, false)); }
+    Ok((write_content(registration, &content)?, true))
 }
 
 fn managed_entry(
@@ -413,6 +442,61 @@ fn remove_owned_shortcut(path: &Path) -> Result<(), AnvilError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn full_ui_registration_stays_hidden_and_shortcuts_are_separate() {
+        let root = std::env::temp_dir().join(format!("anvil-full-ui-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let id = "r-33333333333333333333333333333333";
+        let other = "r-44444444444444444444444444444444";
+        let registration = root.join("applications").join(format!("waydroid.anvildroid.{id}.Waydroid.desktop"));
+        let shortcut = scoped_shortcut_path(&root, id, FULL_UI).unwrap();
+        // Opening Full UI registers the window identity without a menu entry.
+        let (path, changed) = write_full_ui_entry(&root, id, "Games", "/usr/bin/anvildroid-gui", true).unwrap();
+        assert_eq!(path, registration);
+        assert!(changed);
+        let text = fs::read_to_string(&registration).unwrap();
+        assert!(!desktop_visible(&text));
+        assert!(text.contains(&format!("StartupWMClass=waydroid.anvildroid.{id}.Waydroid")));
+        assert!(!owned_shortcut_exists(&shortcut).unwrap());
+        // Repeated registration is idempotent and reports no change (no cache refresh).
+        assert!(!write_full_ui_entry(&root, id, "Games", "/usr/bin/anvildroid-gui", true).unwrap().1);
+        // Create shortcut: a visible entry at the path status/remove use.
+        let (path, _) = write_full_ui_entry(&root, id, "Games", "/usr/bin/anvildroid-gui", false).unwrap();
+        assert_eq!(path, shortcut);
+        assert!(desktop_visible(&fs::read_to_string(&shortcut).unwrap()));
+        // Registering the window again keeps the user's shortcut visible.
+        write_full_ui_entry(&root, id, "Games", "/usr/bin/anvildroid-gui", true).unwrap();
+        assert!(desktop_visible(&fs::read_to_string(&shortcut).unwrap()));
+        // Removing the shortcut keeps the taskbar registration and other runtimes.
+        write_full_ui_entry(&root, other, "Work", "/usr/bin/anvildroid-gui", false).unwrap();
+        remove_owned_shortcut(&shortcut).unwrap();
+        assert!(!shortcut.exists() && registration.exists());
+        assert!(scoped_shortcut_path(&root, other, FULL_UI).unwrap().exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn legacy_visible_full_ui_registration_is_kept_as_a_shortcut() {
+        let root = std::env::temp_dir().join(format!("anvil-full-ui-legacy-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let id = "r-55555555555555555555555555555555";
+        let registration = root.join("applications").join(format!("waydroid.anvildroid.{id}.Waydroid.desktop"));
+        let legacy = format!("[Desktop Entry]\nType=Application\nName=Old (AnvilDroid)\nExec=/usr/bin/anvildroid-gui --launch-app {FULL_UI} --runtime {id}\nStartupWMClass=waydroid.anvildroid.{id}.Waydroid\n{OWNER}\n");
+        write_content(registration.clone(), &legacy).unwrap();
+        write_full_ui_entry(&root, id, "Old", "/usr/bin/anvildroid-gui", true).unwrap();
+        let shortcut = scoped_shortcut_path(&root, id, FULL_UI).unwrap();
+        assert_eq!(fs::read_to_string(&shortcut).unwrap(), legacy);
+        assert!(!desktop_visible(&fs::read_to_string(&registration).unwrap()));
+        // A foreign file at the registration path is never replaced.
+        let foreign = std::env::temp_dir().join(format!("anvil-full-ui-foreign-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&foreign);
+        let path = foreign.join("applications").join(format!("waydroid.anvildroid.{id}.Waydroid.desktop"));
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "[Desktop Entry]\nName=Mine\n").unwrap();
+        assert!(write_full_ui_entry(&foreign, id, "Old", "/usr/bin/anvildroid-gui", true).is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "[Desktop Entry]\nName=Mine\n");
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(foreign).unwrap();
+    }
     #[test]
     fn native_waydroid_shortcuts_are_recognized_and_hidden_without_losing_actions() {
         let root = std::env::temp_dir().join(format!("anvil-native-shortcut-{}", std::process::id()));

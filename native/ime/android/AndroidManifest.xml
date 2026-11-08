@@ -1,9 +1,14 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="org.anvildroid.ime" android:versionCode="3" android:versionName="0.3">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="org.anvildroid.ime" android:versionCode="4" android:versionName="0.4">
     <uses-sdk android:minSdkVersion="23" android:targetSdkVersion="33"/>
+    <!-- Lets a host click open the app from the background, as ChromeOS does. -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
     <application android:label="AnvilDroid Input" android:allowBackup="false" android:theme="@android:style/Theme.Material.Light.NoActionBar">
         <service android:name=".BridgeIme" android:label="AnvilDroid host keyboard" android:permission="android.permission.BIND_INPUT_METHOD" android:exported="true">
             <intent-filter><action android:name="android.view.InputMethod"/></intent-filter>
             <meta-data android:name="android.view.im" android:resource="@xml/method"/>
+        </service>
+        <service android:name=".NotifyListener" android:label="AnvilDroid desktop notifications" android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE" android:exported="true">
+            <intent-filter><action android:name="android.service.notification.NotificationListenerService"/></intent-filter>
         </service>
         <activity android:name=".SmokeActivity" android:label="AnvilDroid input test" android:exported="true"/>
     </application>

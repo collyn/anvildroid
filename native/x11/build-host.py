@@ -54,6 +54,8 @@ def build():
     subprocess.run(cxx + ['-std=c++17', '-O2', '-g', '-Wall', '-Wextra', '-Werror',
                          *checked, str(HERE / 'output-mode-check.cpp'), '-o', str(OUT / 'output-mode-check')], check=True)
     subprocess.run(cxx + ['-std=c++17', '-O2', '-g', '-Wall', '-Wextra', '-Werror',
+                         *checked, str(HERE / 'window-positions-check.cpp'), '-o', str(OUT / 'window-positions-check')], check=True)
+    subprocess.run(cxx + ['-std=c++17', '-O2', '-g', '-Wall', '-Wextra', '-Werror',
                          *checked, str(HERE / 'dmabuf-format-check.cpp'), '-o', str(OUT / 'dmabuf-format-check')], check=True)
     subprocess.run(cxx + ['-std=c++17', '-O2', '-g', '-Wall', '-Wextra', '-Werror',
                          *checked, '-I' + str(OUT), str(HERE / 'host-client-check.cpp'), *objects,

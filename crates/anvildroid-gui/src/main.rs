@@ -9,18 +9,9 @@ use tauri::{Manager, State};
 #[cfg(target_os = "linux")]
 mod titlebar;
 mod preferences;
+mod custom_download;
+mod updater;
 
-#[derive(Clone)]
-struct CustomImageJob {
-    path: std::path::PathBuf,
-    total: u64,
-    status: String,
-    phase: String,
-    error: Option<String>,
-    result: Option<serde_json::Value>,
-}
-
-static CUSTOM_IMAGE_JOB: OnceLock<Arc<Mutex<Option<CustomImageJob>>>> = OnceLock::new();
 static STARTUP_TRACE: OnceLock<Option<std::time::Instant>> = OnceLock::new();
 
 fn startup_mark(stage: &str) {
@@ -29,8 +20,16 @@ fn startup_mark(stage: &str) {
     }
 }
 
-fn custom_image_job() -> &'static Arc<Mutex<Option<CustomImageJob>>> {
-    CUSTOM_IMAGE_JOB.get_or_init(|| Arc::new(Mutex::new(None)))
+#[tauri::command]
+fn set_window_theme(window: tauri::WebviewWindow, light: bool) {
+    #[cfg(target_os = "linux")]
+    {
+        // GTK widgets must be touched on the main thread.
+        let target = window.clone();
+        let _ = window.run_on_main_thread(move || titlebar::set_light(&target, light));
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = (window, light);
 }
 
 #[tauri::command]
@@ -386,11 +385,42 @@ fn copy_stage_tree(bundle: &std::path::Path, stage: &std::path::Path, relative: 
     Ok(())
 }
 
+/// Shared with scripts/install-runtime-controller.py, which reads the staged
+/// copy and refuses to install when a required path is missing.
+const CONTROLLER_PAYLOAD: &str = include_str!("../../../scripts/controller-payload.txt");
+
+/// (relative path, whole directory tree, optional) entries of the payload contract.
+fn controller_payload_entries() -> Vec<(&'static str, bool, bool)> {
+    CONTROLLER_PAYLOAD
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(|line| {
+            let optional = line.starts_with('?');
+            let path = line.trim_start_matches('?');
+            (path.trim_end_matches('/'), path.ends_with('/'), optional)
+        })
+        .collect()
+}
+
 /// Copy the controller payload out of the AppImage mount into a 0700 directory
 /// under /tmp. A pkexec-elevated process cannot read the FUSE mount (root has
 /// no access to user-owned FUSE mounts), so the helper must run from the stage.
+/// Every missing required path is reported before administrator access is requested.
 fn stage_controller_payload(bundle: &std::path::Path) -> Result<std::path::PathBuf, String> {
     use std::os::unix::fs::PermissionsExt;
+    let entries = controller_payload_entries();
+    let missing: Vec<String> = entries
+        .iter()
+        .filter(|(relative, tree, optional)| {
+            let source = bundle.join(relative);
+            !optional && !(if *tree { source.is_dir() } else { source.is_file() })
+        })
+        .map(|(relative, tree, _)| format!("{relative}{}", if *tree { "/" } else { "" }))
+        .collect();
+    if !missing.is_empty() {
+        return Err(format!("Bundled controller payload is missing: {}", missing.join(", ")));
+    }
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
@@ -404,43 +434,26 @@ fn stage_controller_payload(bundle: &std::path::Path) -> Result<std::path::PathB
     std::fs::set_permissions(&stage, std::fs::Permissions::from_mode(0o700))
         .map_err(|e| format!("Cannot secure stage directory: {e}"))?;
     let result = (|| -> Result<(), String> {
-    let copy = |relative: &str| -> Result<(), String> {
-        let source = bundle.join(relative);
-        if !source.is_file() {
-            return Err(format!("Bundled controller payload is missing: {relative}"));
+        for (relative, tree, _) in entries {
+            let source = bundle.join(relative);
+            if tree {
+                if source.is_dir() {
+                    std::fs::create_dir_all(stage.join(relative))
+                        .map_err(|e| format!("Cannot stage {relative}: {e}"))?;
+                    copy_stage_tree(bundle, &stage, relative)?;
+                }
+                continue;
+            }
+            if !source.is_file() {
+                continue; // optional and absent
+            }
+            let target = stage.join(relative);
+            if let Some(parent) = target.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| format!("Cannot stage {relative}: {e}"))?;
+            }
+            std::fs::copy(&source, &target).map_err(|e| format!("Cannot stage {relative}: {e}"))?;
         }
-        let target = stage.join(relative);
-        if let Some(parent) = target.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| format!("Cannot stage {relative}: {e}"))?;
-        }
-        std::fs::copy(&source, &target).map_err(|e| format!("Cannot stage {relative}: {e}"))?;
         Ok(())
-    };
-    for file in [
-        "scripts/start-runtime-controller.py",
-        "scripts/setup-waydroid.py",
-        "scripts/install-runtime-controller.py",
-        "target/native/libanvildroid-runtime-window.so",
-        "target/native/overlay-key.p12",
-        "target/ime/AnvilDroidIme.apk",
-        "target/shutdown/anvildroid-shutdown.jar",
-        "native/anvildroid-apps.rc",
-        "native/anvildroid-tasks.rc",
-        "native/anvildroid-apps.sh",
-        "native/anvildroid-tasks.sh",
-    ] {
-        copy(file)?;
-    }
-    for entry in std::fs::read_dir(bundle.join("services"))
-        .map_err(|e| format!("Bundled controller payload is missing: services ({e})"))?
-    {
-        let entry = entry.map_err(|e| e.to_string())?;
-        if entry.path().extension().is_some_and(|ext| ext == "py") {
-            copy(&format!("services/{}", entry.file_name().to_string_lossy()))?;
-        }
-    }
-    copy_stage_tree(bundle, &stage, "native/overlay")?;
-    Ok(())
     })();
     if let Err(error) = result {
         let _ = std::fs::remove_dir_all(&stage);
@@ -456,10 +469,17 @@ fn stage_setup_payload(bundle: &std::path::Path) -> Result<std::path::PathBuf, S
     std::fs::create_dir(&stage).map_err(|e| format!("Cannot create setup stage: {e}"))?;
     std::fs::set_permissions(&stage, std::fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;
     let result = (|| -> Result<(), String> {
-        for relative in ["scripts/setup-waydroid.py", "services/runtime-host.py", "services/runtime-arm.py", "services/runtime-arm-source.py", "services/runtime-extract.py", "services/runtime-download.py", "services/runtime-image-format.py", "services/runtime-existing.py", "services/runtime-resources.py", "services/runtime-gpu.py", "services/runtime-nvidia.py", "services/runtime-linux.py", "services/runtime-storage.py"] {
-            let source = bundle.join(relative);
+        let mut files = vec!["scripts/setup-waydroid.py".to_owned()];
+        for entry in std::fs::read_dir(bundle.join("services")).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            if entry.path().extension().is_some_and(|ext| ext == "py") {
+                files.push(format!("services/{}", entry.file_name().to_string_lossy()));
+            }
+        }
+        for relative in files {
+            let source = bundle.join(&relative);
             if !source.is_file() { return Err(format!("Bundled setup payload is missing: {relative}")); }
-            let target = stage.join(relative);
+            let target = stage.join(&relative);
             if let Some(parent) = target.parent() { std::fs::create_dir_all(parent).map_err(|e| e.to_string())?; }
             std::fs::copy(source, target).map_err(|e| e.to_string())?;
         }
@@ -591,29 +611,19 @@ async fn start_runtime_controller() -> Result<StartControllerResult, String> {
     .await
 }
 
+// Installs/repairs host runtime tools only; never initializes System Waydroid.
 #[tauri::command]
-async fn setup_waydroid(flavor: String, image_id: Option<String>) -> Result<StartControllerResult, String> {
+async fn setup_waydroid() -> Result<StartControllerResult, String> {
     blocking(move || {
-        if !matches!(flavor.as_str(), "VANILLA" | "GAPPS") {
-            return Err("Flavor must be VANILLA or GAPPS".into());
-        }
         let exe = std::env::current_exe().map_err(|e| e.to_string())?;
         let appdir = std::env::var("APPDIR").ok();
         let bundle = resolve_setup_root(&exe, appdir.as_deref()).ok_or_else(|| {
-            "Waydroid setup helper not found; this build does not bundle it. \
+            "Runtime tools helper not found; this build does not bundle it. \
              Use a packaged AppImage or portable release."
                 .to_string()
         })?;
         let stage = stage_setup_payload(&bundle)?;
-        let result = run_pkexec(
-            &stage.join(SETUP_HELPER),
-            &{
-                let mut args = vec!["--flavor", flavor.as_str()];
-                if let Some(id) = image_id.as_deref() { args.extend(["--image-id", id]); }
-                args
-            },
-            std::time::Duration::from_secs(1200),
-        );
+        let result = run_pkexec(&stage.join(SETUP_HELPER), &[], std::time::Duration::from_secs(1200));
         let _ = std::fs::remove_dir_all(&stage);
         result
     })
@@ -922,123 +932,53 @@ async fn import_runtime_image_folder(path: String, name: String) -> Result<serde
 }
 
 #[tauri::command]
-async fn import_runtime_image_url(url: String, name: String) -> Result<serde_json::Value, String> {
-    blocking(move || {
-        if !url.starts_with("https://") || url.len() > 2048 {
-            return Err("Custom image URL must be an HTTPS URL up to 2048 characters".into());
-        }
-        let jobs = custom_image_job().clone();
-        let mut guard = jobs.lock().map_err(|_| "Custom image job state is unavailable".to_string())?;
-        if guard.as_ref().is_some_and(|job| job.status == "Downloading") {
-            return Err("A custom image download is already running".into());
-        }
-        use std::os::unix::fs::{DirBuilderExt, MetadataExt};
-        use std::hash::{Hash, Hasher};
-        let home = std::env::var_os("HOME").ok_or("Home directory is unavailable")?;
-        let cache = std::path::PathBuf::from(home).join(".anvildroid-image-downloads");
-        let owner = std::fs::metadata("/proc/self").map_err(|e| e.to_string())?.uid();
-        let secure_directory = |directory: &std::path::Path| -> Result<(), String> {
-            match std::fs::DirBuilder::new().mode(0o700).create(directory) {
-                Ok(()) => (),
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => (),
-                Err(error) => return Err(error.to_string()),
-            }
-            let info = std::fs::symlink_metadata(directory).map_err(|e| e.to_string())?;
-            if !info.is_dir() || info.uid() != owner || info.mode() & 0o077 != 0 {
-                return Err("Unsafe custom image download directory".into());
-            }
-            Ok(())
-        };
-        secure_directory(&cache)?;
-        let mut hash = std::collections::hash_map::DefaultHasher::new();
-        url.hash(&mut hash);
-        let directory = cache.join(format!("{:016x}", hash.finish()));
-        secure_directory(&directory)?;
-        let source = directory.join("source-url");
-        if source.exists() {
-            if std::fs::read_to_string(&source).map_err(|e| e.to_string())? != url { return Err("Download cache URL mismatch".into()); }
-        } else { std::fs::write(&source, &url).map_err(|e| e.to_string())?; }
-        let path = directory.join("image.zip");
-        if let Ok(info) = std::fs::symlink_metadata(&path) {
-            if !info.is_file() || info.uid() != owner || info.nlink() != 1 { return Err("Unsafe partial image download".into()); }
-        }
-        let header_path = path.with_file_name("response-headers");
-        let total = std::process::Command::new("curl")
-            .args(["-fsSLI", "--proto", "=https", "--proto-redir", "=https", "--connect-timeout", "15", "--max-time", "30", "--dump-header"])
-            .arg(&header_path).arg("--").arg(&url).output()
-            .ok()
-            .and_then(|output| if output.status.success() { std::fs::read_to_string(&header_path).ok().and_then(|text| custom_download_total(&text)) } else { None })
-            .unwrap_or(0);
-        *guard = Some(CustomImageJob { path: path.clone(), total, status: "Downloading".into(), phase: "Downloading ZIP".into(), error: None, result: None });
-        drop(guard);
-        std::thread::spawn(move || {
-            let headers = path.with_file_name("response-headers");
-            let previous_headers = std::fs::read_to_string(&headers).unwrap_or_default();
-            let validator = previous_headers.lines().rev().find_map(|line| {
-                let (name, value) = line.split_once(':')?;
-                if name.eq_ignore_ascii_case("etag") && !value.trim().starts_with("W/") {
-                    Some(value.trim().to_owned())
-                } else { None }
-            });
-            let mut command = std::process::Command::new("curl");
-            if let Some(value) = validator { command.arg("--header").arg(format!("If-Range: {value}")); }
-            let outcome = command
-                .args(["-fsSL", "--retry", "5", "--retry-delay", "2", "--continue-at", "-",
-                    "--proto", "=https", "--proto-redir", "=https", "--connect-timeout", "15",
-                    "--max-time", "1800", "--max-filesize", "34359738368", "--dump-header"])
-                .arg(&headers).arg("-o").arg(&path).arg("--").arg(&url).output()
-                .map_err(|e| e.to_string())
-                .and_then(|output| if output.status.success() { Ok(()) } else {
-                    Err(String::from_utf8_lossy(&output.stderr).chars().take(1024).collect::<String>())
-                })
-                .and_then(|_| {
-                    if let Ok(mut state) = jobs.lock() {
-                        if let Some(job) = state.as_mut() { job.phase = "Validating and importing with Waydroid CLI".into(); }
-                    }
-                    anvildroid_core::controller::import_image(&path, &name)
-                });
-            if outcome.is_ok() {
-                // The controller duplicates the descriptor before acknowledging import.
-                let _ = std::fs::remove_file(&path);
-            }
-            if let Ok(mut state) = jobs.lock() {
-                if let Some(job) = state.as_mut() { job.status = if outcome.is_ok() { "Ready".into() } else { "Failed".into() }; job.phase = if outcome.is_ok() { "Custom image imported".into() } else { "Import failed".into() }; job.error = outcome.as_ref().err().map(|e| e.to_string()); job.result = outcome.ok(); }
-            }
-        });
-        Ok(serde_json::json!({"status":"Downloading","total_bytes":total,"received_bytes":0,"percent":0}))
-    }).await
+async fn check_update() -> Result<serde_json::Value, String> {
+    blocking(|| updater::check(env!("CARGO_PKG_VERSION"))).await
 }
 
-fn custom_download_total(headers: &str) -> Option<u64> {
-    let mut length = None;
-    let mut range = None;
-    let mut success = false;
-    for line in headers.lines() {
-        if line.starts_with("HTTP/") {
-            success = matches!(line.split_whitespace().nth(1), Some("200" | "206"));
-            length = None;
-            range = None;
-        } else if let Some((name, value)) = line.split_once(':') {
-            if name.eq_ignore_ascii_case("content-length") { length = value.trim().parse().ok(); }
-            if name.eq_ignore_ascii_case("content-range") {
-                range = value.rsplit_once('/').and_then(|(_, total)| total.trim().parse().ok());
-            }
-        }
-    }
-    if success { range.or(length) } else { None }
+#[tauri::command]
+async fn install_update() -> Result<serde_json::Value, String> {
+    blocking(updater::start).await
+}
+
+#[tauri::command]
+fn update_status() -> serde_json::Value {
+    updater::status()
+}
+
+/// Start the updated copy, then leave. Package updates replaced the running
+/// binary, so the new one is started by its installed path.
+#[tauri::command]
+fn restart_after_update(app: tauri::AppHandle) -> Result<(), String> {
+    use std::os::unix::process::CommandExt;
+    let path = updater::relaunch_path().ok_or("Cannot find the AnvilDroid executable")?;
+    std::process::Command::new(&path)
+        .env_remove("APPIMAGE")
+        .env_remove("APPDIR")
+        .env_remove("LD_LIBRARY_PATH")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .process_group(0)
+        .spawn()
+        .map_err(|e| format!("Cannot start {}: {e}", path.display()))?;
+    app.exit(0);
+    Ok(())
+}
+
+#[tauri::command]
+async fn import_runtime_image_url(url: String, name: String) -> Result<serde_json::Value, String> {
+    blocking(move || custom_download::start(url, name)).await
 }
 
 #[tauri::command]
 async fn custom_image_url_status() -> Result<serde_json::Value, String> {
-    blocking(|| {
-        let guard = custom_image_job().lock().map_err(|_| "Custom image job state is unavailable".to_string())?;
-        let Some(job) = guard.as_ref() else { return Ok(serde_json::json!({"status":"Idle","percent":0})); };
-        let received = std::fs::metadata(&job.path).map(|m| m.len()).unwrap_or(0);
-        let headers = std::fs::read_to_string(job.path.with_file_name("response-headers")).unwrap_or_default();
-        let total = custom_download_total(&headers).unwrap_or(job.total);
-        let percent = if total > 0 { Some(((received.min(total) as f64 / total as f64) * 100.0).floor() as u64) } else { None };
-        Ok(serde_json::json!({"status":job.status,"phase":job.phase,"total_bytes":total,"received_bytes":received,"percent":percent,"error":job.error,"result":job.result}))
-    }).await
+    blocking(custom_download::status).await
+}
+
+#[tauri::command]
+async fn cancel_custom_image_url() -> Result<serde_json::Value, String> {
+    blocking(custom_download::cancel).await
 }
 
 #[tauri::command]
@@ -1150,6 +1090,27 @@ fn uninstall_completed(package: &str) -> OperationResult {
     }
 }
 
+/// Login entry: ask the socket-activated controller to start this user's
+/// "start at login" runtimes, retrying while the desktop session comes up.
+fn login_start() -> i32 {
+    use anvildroid_core::controller::{last_error_code, request, Request};
+    for attempt in 0..15 {
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        match request(Request::LoginStart {}) {
+            Ok(result) => {
+                println!("{result}");
+                return 0;
+            }
+            Err(_) if attempt < 14 && last_error_code().as_deref() == Some("NO_DESKTOP") => continue,
+            Err(error) => {
+                eprintln!("Cannot start runtimes at login: {error}");
+                return 1;
+            }
+        }
+    }
+    1
+}
+
 fn main() {
     let _ = STARTUP_TRACE.set(std::env::var_os("ANVILDROID_STARTUP_TRACE")
         .filter(|value| value == "1").map(|_| std::time::Instant::now()));
@@ -1162,6 +1123,9 @@ fn main() {
         // Exit successfully so Restart=on-failure does not resurrect the service.
         eprintln!("Shortcut monitoring now runs inside the AnvilDroid GUI.");
         return;
+    }
+    if raw_args.len() == 1 && raw_args[0] == "--login-start" {
+        std::process::exit(login_start());
     }
     let open_settings = raw_args.len() == 1 && raw_args[0] == "--settings";
     let open_controls = raw_args.len() == 1 && raw_args[0] == "--controls";
@@ -1298,6 +1262,7 @@ fn main() {
             preferences::get_application_preferences,
             preferences::set_application_preference,
             preferences::set_default_runtime,
+            preferences::set_login_start,
             get_health_report,
             get_apps,
             get_app_details,
@@ -1334,6 +1299,12 @@ fn main() {
             import_runtime_image_folder,
             import_runtime_image_url,
             custom_image_url_status,
+            cancel_custom_image_url,
+            set_window_theme,
+            check_update,
+            install_update,
+            update_status,
+            restart_after_update,
             import_arm_translation,
             install_touch_probe,
             open_waydroid,
@@ -1343,6 +1314,11 @@ fn main() {
         .build(context)
         .expect("error while building AnvilDroid GUI")
         .run(|app, event| {
+            // Releasing the webview to the panel closes the last window; keep
+            // running for the tray. Exit from the tray passes an exit code.
+            if let tauri::RunEvent::ExitRequested { api, code: None, .. } = &event {
+                if preferences::minimize_to_panel(app) { api.prevent_exit(); }
+            }
             if matches!(event, tauri::RunEvent::Exit) {
                 app.state::<anvildroid_core::shortcut_preferences::ShortcutMonitor>().stop();
             }
@@ -1457,40 +1433,53 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
     #[test]
-    fn staging_copies_files_alongside_subdirectories() {
-        // Regression test: a file directly under native/overlay must stage
-        // correctly even when the subdirectory entry is processed after it.
-        let root = std::env::temp_dir().join(format!("anvildroid-stage-test-{}", std::process::id()));
+    fn setup_stage_survives_detached_init_and_imports_real_consumers() {
+        let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let stage = stage_setup_payload(&repo).unwrap();
+        let result = std::process::Command::new("python3")
+            .args(["-I", "-B"])
+            .arg(repo.join("services/setup-test.py"))
+            .arg("--stage")
+            .arg(&stage)
+            .output()
+            .unwrap();
+        let _ = std::fs::remove_dir_all(stage);
+        assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    }
+    #[test]
+    fn controller_stage_satisfies_installer_contract_without_the_bundle() {
+        // Producer -> stage -> consumer: the staged copy alone must satisfy the
+        // real installer, after the original bundle has been deleted.
+        let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let bundle = std::env::temp_dir().join(format!("anvildroid-controller-bundle-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&bundle);
+        let helper = repo.join("services/controller-stage-test.py");
+        let made = std::process::Command::new("python3").args(["-I", "-B"]).arg(&helper)
+            .arg("--make-fixture").arg(&bundle).output().unwrap();
+        assert!(made.status.success(), "{}", String::from_utf8_lossy(&made.stderr));
+        let stage = stage_controller_payload(&bundle).unwrap();
+        std::fs::remove_dir_all(&bundle).unwrap();
+        let result = std::process::Command::new("python3").args(["-I", "-B"]).arg(&helper)
+            .arg("--stage").arg(&stage).output().unwrap();
+        let _ = std::fs::remove_dir_all(&stage);
+        assert!(result.status.success(), "{}{}", String::from_utf8_lossy(&result.stdout), String::from_utf8_lossy(&result.stderr));
+    }
+    #[test]
+    fn controller_stage_names_missing_files_before_creating_a_stage() {
+        let root = std::env::temp_dir().join(format!("anvildroid-stage-missing-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("scripts")).unwrap();
-        std::fs::create_dir_all(root.join("services")).unwrap();
-        std::fs::create_dir_all(root.join("target/native")).unwrap();
-        std::fs::create_dir_all(root.join("target/ime")).unwrap();
-        std::fs::create_dir_all(root.join("target/shutdown")).unwrap();
-        std::fs::create_dir_all(root.join("native/overlay/res")).unwrap();
-        for relative in [
-            "scripts/start-runtime-controller.py",
-            "scripts/setup-waydroid.py",
-            "scripts/install-runtime-controller.py",
-            "services/runtime-controller.py",
-            "target/native/libanvildroid-runtime-window.so",
-            "target/native/overlay-key.p12",
-            "target/ime/AnvilDroidIme.apk",
-            "target/shutdown/anvildroid-shutdown.jar",
-            "native/anvildroid-apps.rc",
-            "native/anvildroid-tasks.rc",
-            "native/anvildroid-apps.sh",
-            "native/anvildroid-tasks.sh",
-            "native/overlay/AndroidManifest.xml",
-            "native/overlay/res/values.xml",
-        ] {
-            std::fs::write(root.join(relative), b"fixture").unwrap();
-        }
-        let stage = stage_controller_payload(&root).unwrap();
-        assert!(stage.join("native/overlay/AndroidManifest.xml").is_file());
-        assert!(stage.join("native/overlay/res/values.xml").is_file());
-        assert!(stage.join("scripts/start-runtime-controller.py").is_file());
-        let _ = std::fs::remove_dir_all(&stage);
+        std::fs::write(root.join("scripts/start-runtime-controller.py"), b"fixture").unwrap();
+        let before = std::fs::read_dir(std::env::temp_dir()).unwrap()
+            .filter(|e| e.as_ref().unwrap().file_name().to_string_lossy().starts_with("anvildroid-controller-stage-")).count();
+        let error = stage_controller_payload(&root).unwrap_err();
+        assert!(error.contains("target/native/libanvildroid-path-guard.so"), "{error}");
+        assert!(error.contains("native/anvildroid-keymap.rc"), "{error}");
+        assert!(error.contains("scripts/install-runtime-apparmor.py"), "{error}");
+        assert!(!error.contains("native-x11"), "optional payload reported: {error}");
+        let after = std::fs::read_dir(std::env::temp_dir()).unwrap()
+            .filter(|e| e.as_ref().unwrap().file_name().to_string_lossy().starts_with("anvildroid-controller-stage-")).count();
+        assert!(after <= before, "a stage was left behind");
         let _ = std::fs::remove_dir_all(&root);
     }
     #[test]

@@ -264,6 +264,14 @@ void Server::track_position(Top *t, const XConfigureEvent *event) {
   t->root_x = x;
   t->root_y = y;
   t->placed = true;
+  if (!t->popup && !t->maximized && !t->fullscreen && t->window.mapped &&
+      (!t->has_normal || t->normal_x != x || t->normal_y != y)) {
+    t->previous_normal_x = t->has_normal ? t->normal_x : x;
+    t->previous_normal_y = t->has_normal ? t->normal_y : y;
+    t->normal_x = x;
+    t->normal_y = y;
+    t->has_normal = true;
+  }
   if (changed)
     sync_entered(t);
 }

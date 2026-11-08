@@ -357,81 +357,6 @@ class WorkerPermissions(unittest.TestCase):
         self.assertEqual(props, ['a=b', 'persist.anvildroid.canvas=1920x1036'])
         self.assertEqual(info, {'capacity': [1920, 1036]})
 
-    def test_nested_weston_x11_argv_and_env(self):
-        with patch.dict(os.environ, {'DISPLAY': ':1', 'WAYLAND_DISPLAY': 'wayland-1',
-                                     'DBUS_SESSION_BUS_ADDRESS': 'unix:path=/bus',
-                                     'PULSE_SERVER': 'unix:/pulse', 'KEEP_ME': 'yes'}, clear=False):
-            args, env = worker.nested_weston(Path('/run/anvil-xdg'), 1920, 1080, ':0',
-                                             Path('/root/x11-authority'))
-        self.assertEqual(args, ['weston', '--backend=x11', '--renderer=gl',
-                                '--socket=wayland-probe', '--idle-time=0', '--no-config',
-                                '--width=1920', '--height=1080'])
-        self.assertEqual(env['XDG_RUNTIME_DIR'], '/run/anvil-xdg')
-        self.assertEqual(env['DISPLAY'], ':0')  # from the token, never inherited
-        self.assertEqual(env['XAUTHORITY'], '/root/x11-authority')
-        for stripped in ('WAYLAND_DISPLAY', 'DBUS_SESSION_BUS_ADDRESS', 'PULSE_SERVER'):
-            self.assertNotIn(stripped, env)
-        self.assertEqual(env.get('KEEP_ME'), 'yes')
-
-    def test_nested_weston_omits_authority_when_absent(self):
-        args, env = worker.nested_weston(Path('/run/anvil-xdg'), 800, 600, ':0', None)
-        self.assertNotIn('XAUTHORITY', env)
-        self.assertIn('--backend=x11', args)
-
-class WestonStartup(unittest.TestCase):
-    def test_failed_gl_with_stale_socket_retries_and_tracks_pixman(self):
-        from unittest.mock import Mock
-        import socket
-        with tempfile.TemporaryDirectory() as directory:
-            xdg = Path(directory)
-            path = xdg / 'wayland-probe'
-            stale = socket.socket(socket.AF_UNIX)
-            self.addCleanup(stale.close)
-            stale.bind(str(path))
-            (xdg / 'wayland-probe.lock').touch()
-            failed = Mock(); failed.poll.return_value = 1
-            live = Mock(); live.poll.return_value = None
-            calls = []
-            def spawn(args, **kwargs):
-                calls.append(list(args))
-                if len(calls) == 1:
-                    return failed
-                self.assertFalse(path.exists())
-                self.assertFalse((xdg / 'wayland-probe.lock').exists())
-                listener = socket.socket(socket.AF_UNIX)
-                self.addCleanup(listener.close)
-                listener.bind(str(path))
-                return live
-            processes = []
-            with patch.object(worker.subprocess, 'Popen', side_effect=spawn):
-                result = worker.start_weston(['weston', '--renderer=gl'], {}, None, xdg, processes, nested=True)
-            self.assertIs(result, live)
-            self.assertEqual(processes, [live])
-            self.assertEqual(calls[1], ['weston', '--renderer=pixman'])
-
-    def test_both_renderers_fail_without_further_retry(self):
-        from unittest.mock import Mock
-        failed = Mock(); failed.poll.return_value = 1
-        with tempfile.TemporaryDirectory() as directory, patch.object(worker.subprocess, 'Popen', return_value=failed) as spawn:
-            processes = []
-            with self.assertRaisesRegex(RuntimeError, 'Nested Weston exited'):
-                worker.start_weston(['weston', '--renderer=gl'], {}, None, Path(directory), processes, nested=True)
-            self.assertEqual(spawn.call_count, 2)
-            self.assertEqual(processes, [failed])
-
-    def test_headless_does_not_retry_and_timeout_keeps_process_for_cleanup(self):
-        from unittest.mock import Mock
-        for exit_code, message in [(1, 'exited'), (None, 'socket missing')]:
-            with self.subTest(exit_code=exit_code), tempfile.TemporaryDirectory() as directory:
-                process = Mock(); process.poll.return_value = exit_code
-                with patch.object(worker.subprocess, 'Popen', return_value=process) as spawn, patch.object(worker.time, 'sleep'):
-                    processes = []
-                    with self.assertRaisesRegex(RuntimeError, message):
-                        worker.start_weston(['weston', '--renderer=gl'], {}, None, Path(directory), processes)
-                    spawn.assert_called_once()
-                    self.assertEqual(processes, [process])
-
-
 class DesktopGpuTests(unittest.TestCase):
     def test_nvidia_auto_and_explicit_selection_use_venus_on_x11_and_wayland(self):
         import json
@@ -469,40 +394,20 @@ class DesktopGpuTests(unittest.TestCase):
                 payload.assert_not_called()
 
 
-class NestedX11Integration(unittest.TestCase):
-    def test_real_weston_exposes_guest_presentation_protocols_on_x11(self):
-        import select
-        import shutil
-        import socket
-        import subprocess
-        if not (shutil.which('weston') and shutil.which('Xvfb')):
-            self.skipTest('Requires Weston and Xvfb')
-        read_fd, write_fd = os.pipe()
-        xvfb = subprocess.Popen(['Xvfb', '-displayfd', str(write_fd), '-screen', '0', '800x600x24', '-nolisten', 'tcp'], pass_fds=(write_fd,), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        os.close(write_fd)
-        processes = []
-        try:
-            self.assertTrue(select.select([read_fd], [], [], 5)[0], 'Xvfb did not start')
-            display = ':' + os.read(read_fd, 30).decode().strip()
-            with tempfile.TemporaryDirectory() as directory:
-                xdg = Path(directory)
-                args, env = worker.nested_weston(xdg, 800, 600, display, None)
-                with (xdg / 'weston.log').open('w') as log:
-                    process = worker.start_weston(args, env, log, xdg, processes, nested=True)
-                    self.assertIsNone(process.poll())
-                    with socket.socket(socket.AF_UNIX) as connection:
-                        connection.settimeout(3)
-                        connection.connect(str(xdg / 'wayland-probe'))
-                        protocols = worker.desktop_module.registry_protocols(connection)
-                    for protocol in ('wl_compositor', 'wl_subcompositor', 'wl_shm', 'xdg_wm_base'):
-                        self.assertIn(protocol, protocols)
-        finally:
-            os.close(read_fd)
-            for process in processes + [xvfb]:
-                if process.poll() is None:
-                    process.terminate()
-                try:
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait(timeout=5)
+class DesktopRequired(unittest.TestCase):
+    def test_worker_rejects_missing_desktop_before_creating_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            instance = Path(directory)
+            with self.assertRaisesRegex(RuntimeError, 'desktop session is required'):
+                worker.main(instance, 'r-test', 'generation', 'mnt', 'net')
+            self.assertEqual(list(instance.iterdir()), [])
+
+    def test_boot_rejects_missing_desktop_before_privileged_operations(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = {'state': 'Starting'}
+            with patch.object(worker, 'run') as run, patch.object(worker.resources, 'verify') as verify:
+                worker.boot(Path(directory), 'r-test', 'generation', state, threading.Event(), threading.Event())
+            self.assertEqual(state['state'], 'Error')
+            self.assertIn('desktop session is required', state['error'])
+            run.assert_not_called()
+            verify.assert_not_called()

@@ -11,6 +11,7 @@
 #include "relative-pointer-server.h"
 #include "text-input-server.h"
 #include "viewporter-server.h"
+#include "window-positions.hpp"
 #include "x11-platform.hpp"
 #include "xdg-activation-server.h"
 #include "xdg-shell-server.h"
@@ -23,6 +24,7 @@
 #include <linux/input-event-codes.h>
 #include <locale.h>
 #include <map>
+#include <cerrno>
 #include <poll.h>
 #include <set>
 #include <sys/mman.h>
@@ -61,6 +63,8 @@ struct DmaBuffer {
   int width = 0, height = 0;
   // Accepted but not importable: shown as an opaque black placeholder.
   bool placeholder = false;
+  // EGLImage of this allocation, created on first use (see Platform::dmabuf).
+  std::shared_ptr<x11host::DmaImport> import;
   ~DmaBuffer() {
     for (auto &p : planes)
       if (p.fd >= 0)
@@ -109,6 +113,10 @@ struct Top {
   int root_x = 0, root_y = 0;
   bool placed = false;
   std::set<Output *> entered;
+  // Last position while neither maximized nor fullscreen, and the one before
+  // it: a WM-initiated maximize moves the window before _NET_WM_STATE changes.
+  bool has_normal = false, position_restored = false;
+  int normal_x = 0, normal_y = 0, previous_normal_x = 0, previous_normal_y = 0;
 };
 struct Text {
   bool enabled = false, pending = false;
@@ -169,6 +177,36 @@ static wl_resource *resource(wl_client *c, const wl_interface *type,
 #include "clipboard.hpp"
 struct Server {
   Platform platform;
+  // Send a buffer release once `fence` (a sync file) signals. Owns `fence`.
+  void release_after(int fence, std::function<void()> release) {
+    struct Pending {
+      wl_event_source *source = nullptr;
+      int fd;
+      std::function<void()> release;
+    };
+    auto *pending = new Pending{nullptr, fence, std::move(release)};
+    pending->source = wl_event_loop_add_fd(
+        loop, fence, WL_EVENT_READABLE,
+        [](int, uint32_t, void *data) {
+          auto *p = static_cast<Pending *>(data);
+          if (p->release)
+            p->release();
+          wl_event_source_remove(p->source);
+          close(p->fd);
+          delete p;
+          return 0;
+        },
+        pending);
+    if (!pending->source) {
+      // Cannot watch the fence: wait for it here rather than risk reuse.
+      pollfd wait{fence, POLLIN, 0};
+      while (poll(&wait, 1, -1) < 0 && errno == EINTR) {}
+      if (pending->release)
+        pending->release();
+      close(fence);
+      delete pending;
+    }
+  }
   wl_display *display;
   wl_event_loop *loop;
   wl_protocol_logger *protocol_trace = nullptr;
@@ -205,6 +243,63 @@ struct Server {
   void ensure_fractional();
   void fractional_client(wl_client *c);
   void track_position(Top *t, const XConfigureEvent *event);
+  WindowPositions positions;
+  void remember_position(Top *t) {
+    if (t && !t->popup && t->has_normal && !shares_app(t))
+      positions.remember(t->app, t->normal_x, t->normal_y);
+  }
+  void save_positions() {
+    if (positions.dirty() && !positions.save())
+      printf("x11_window_positions_save_failed path=%s\n", positions.path().c_str());
+  }
+  // Another mapped normal window of the same app: like the KWin script on
+  // Wayland, only a single window restores or records the app's position.
+  bool shares_app(Top *t) {
+    for (auto *other : tops)
+      if (other != t && !other->popup && other->window.mapped && other->app == t->app)
+        return true;
+    return false;
+  }
+  // Before the first map: reopen at the remembered position, else centered on
+  // the pointer's monitor workarea (the Wayland KWin placement rule).
+  void restore_position(Top *t, int width, int height) {
+    if (t->popup || t->position_restored || t->window.mapped)
+      return;
+    t->position_restored = true;
+    if (t->maximized || t->fullscreen || platform.testing())
+      return;
+    std::vector<Monitor> live;
+    for (auto &o : outputs)
+      if (!o->retired)
+        live.push_back(o->monitor);
+    if (live.empty())
+      live = platform.monitors();
+    std::vector<WindowPositions::Area> areas;
+    for (auto &m : live) {
+      auto a = platform.workarea(m);
+      areas.push_back({a.x, a.y, a.width, a.height});
+    }
+    const WindowPositions::Area *area = nullptr;
+    std::pair<int, int> at;
+    const char *source = "centered";
+    if (auto saved = shares_app(t) ? std::nullopt : positions.lookup(t->app))
+      if ((area = WindowPositions::area_for(areas, saved->first, saved->second, width, height))) {
+        at = *saved;
+        source = "restored";
+      }
+    WindowPositions::Area pointer_area;
+    if (!area) {
+      auto a = platform.workarea(monitor_for(t));
+      pointer_area = {a.x, a.y, a.width, a.height};
+      area = &pointer_area;
+      at = WindowPositions::centered(*area, width, height);
+    }
+    at = WindowPositions::clamp_large(*area, at.first, at.second, width, height);
+    platform.place(t->window, at.first, at.second);
+    printf("x11_toplevel_position_%s=0x%lx x=%d y=%d\n", source,
+           t->window.window, at.first, at.second);
+  }
+
   void sync_entered(Top *t);
   Monitor monitor_for(Top *t);
   // X11 pixel from a logical extent; 1x keeps the historical truncation.
@@ -519,6 +614,10 @@ struct Server {
       XDestroyIC(t->ic);
       t->ic = nullptr;
     }
+    remember_position(t);
+    save_positions();
+    t->has_normal = false;
+    t->position_restored = false;
     platform.destroy(t->window);
     t->entered.clear();
     t->placed = false;
@@ -624,6 +723,10 @@ struct Server {
             if (active_constraint && root(active_constraint->node) == t)
               release_constraint();
           }
+          if (t->window.mapped) {
+            remember_position(t);
+            save_positions();
+          }
           platform.map(t->window, false);
           sync_entered(t);
           continue;
@@ -654,6 +757,7 @@ struct Server {
           platform.resize(t->window, int(frame.bounds.w), int(frame.bounds.h));
           t->resize_window = false;
         }
+        restore_position(t, px(frame.bounds.w), px(frame.bounds.h));
         platform.map(t->window, true);
         sync_entered(t);
         sync_constraints();
@@ -948,6 +1052,11 @@ struct Server {
         t->wm_hidden = hidden;
         bool changed =
             t->maximized != (maxh && maxv) || t->fullscreen != full;
+        if (changed && !t->maximized && !t->fullscreen && ((maxh && maxv) || full)) {
+          // The WM already moved the window to the workarea origin.
+          t->normal_x = t->previous_normal_x;
+          t->normal_y = t->previous_normal_y;
+        }
         t->maximized = maxh && maxv;
         t->fullscreen = full;
         if (bytes)
@@ -1292,11 +1401,22 @@ static void surface_create(wl_client *c, wl_resource *r, uint32_t id) {
           auto found = s->buffers.find(b);
           if (found != s->buffers.end()) {
             auto buffer = found->second;
-            n->capture = [s, buffer]() {
+            n->capture = [s, buffer, n]() {
               if (buffer->placeholder)
                 return s->platform.placeholder(buffer->width, buffer->height);
-              return s->platform.dmabuf(buffer->layout, buffer->width,
-                                        buffer->height);
+              int fence = -1;
+              auto image = s->platform.dmabuf(buffer->layout, buffer->width,
+                                              buffer->height, &buffer->import,
+                                              &fence);
+              // commit() releases right after capture: defer that release
+              // until the GPU copy signals, so the event loop never blocks.
+              if (fence >= 0) {
+                auto release = std::move(n->release);
+                n->release = [s, fence, release]() mutable {
+                  s->release_after(fence, std::move(release));
+                };
+              }
+              return image;
             };
             n->release = [buffer]() {
               if (buffer->resource)
@@ -2157,6 +2277,14 @@ int main(int argc, char **argv) {
     ensure(!socket.empty() && socket[0] == '/' && socket.size() < 100,
            "Private absolute socket path required");
     Server server(testing);
+    if (!testing) {
+      server.positions = WindowPositions(WindowPositions::default_path(
+          getenv("ANVILDROID_RUNTIME_ID"), getenv("XDG_STATE_HOME"),
+          getenv("HOME")));
+      server.positions.load();
+      printf("x11_window_positions=%zu path=%s\n", server.positions.size(),
+             server.positions.path().c_str());
+    }
     ensure(!wl_display_add_socket(server.display, socket.c_str()),
            "Cannot bind private protocol socket");
     printf("x11_adapter_ready protocol=1 socket=%s headless=%d\n",
@@ -2186,6 +2314,10 @@ int main(int argc, char **argv) {
         continue;
       ensure(status >= 0, "Waydroid endpoint dispatch failed");
     }
+    for (auto *t : server.tops)
+      if (t->window.mapped)
+        server.remember_position(t);
+    server.save_positions();
     return 0;
   } catch (const std::exception &e) {
     fprintf(stderr, "FAIL X11 adapter: %s\n", e.what());

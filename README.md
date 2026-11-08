@@ -41,7 +41,7 @@ compatibility across custom images, desktops and games is still being developed.
   ZIP or ZIP URL; ext4, EROFS, SquashFS and Android sparse image handling.
 - App library with runtime filters, install, launch, force-stop, uninstall,
   favorites, recently opened apps and configurable desktop/menu shortcuts.
-- Desktop and headless modes, full Android UI, window profiles, resize controls,
+- Native X11 and Wayland desktops, full Android UI, window profiles, resize controls,
   host IME, clipboard and key mapping support.
   App windows and Full Android UI offer **Menu → Size** presets and
   **Landscape / Portrait**. **Custom** follows the user’s window size and
@@ -108,8 +108,11 @@ compatibility across custom images, desktops and games is still being developed.
 
 - Linux x86_64 with Wayland or X11. Automatic mode uses native X11 on Xorg
   and preserves the Wayland backend on Wayland. Unsupported native X11
-  configurations fail before starting Android; Weston requires explicitly
-  selecting the compatibility backend.
+  configurations fail before starting Android. Weston, the legacy X11 backend
+  and headless mode are no longer supported. Saved legacy/headless settings
+  migrate to automatic desktop mode without changing Android data.
+  Starting Android requires an active graphical session; image preparation
+  remains available without one.
   Native X11 is included as an experimental per-runtime option under Display →
   Desktop for SDK 33-36 images exposing Waydroid's per-app composer, with Mesa
   guest rendering. The pinned NVIDIA/Venus guest renderer requires SDK 33;
@@ -119,6 +122,10 @@ compatibility across custom images, desktops and games is still being developed.
 - Waydroid, LXC, Binder/BinderFS, Linux namespaces and cgroups.
   Managed runtimes can prepare downloaded/imported images before host Waydroid
   initialization; they use the installed Waydroid package’s LXC templates.
+  For managed runtimes, download or import an image in Images and create a
+  runtime. Runtime → Setup details offers Install / repair runtime tools when
+  host dependencies are missing. Optional: System Waydroid initializes the
+  separate shared installation; managed runtimes do not require this step.
   Default still requires Waydroid initialization.
 - Mesa-compatible Intel or AMD GPU, or an NVIDIA setup meeting the experimental
   backend requirements above.
@@ -346,6 +353,29 @@ It also prepares the pinned NVIDIA payload. If the default GitHub token cannot
 read the fork's Actions artifacts, configure `NVIDIA_ARTIFACT_TOKEN` with Actions
 read access to `collyn/waydroid-nvidia`. Those artifacts have retention limits;
 retain verified archives for reproducible local builds.
+
+### Package repositories and in-app updates
+
+Stable tags also publish signed APT, RPM and Arch repositories to GitHub Pages
+(`gh-pages`, built by `scripts/publish-repos.sh`, same layout as skey), plus the
+AppImage on the GitHub Release:
+
+```bash
+curl -fsSL https://collyn.github.io/anvildroid/install.sh | sudo bash          # Debian/Ubuntu/Mint
+curl -fsSL https://collyn.github.io/anvildroid/install-fedora.sh | sudo bash   # Fedora
+curl -fsSL https://collyn.github.io/anvildroid/install-opensuse.sh | sudo bash # openSUSE
+curl -fsSL https://collyn.github.io/anvildroid/install-arch.sh | sudo bash     # Arch
+```
+
+Repository publishing needs the `APT_GPG_PRIVATE_KEY` and `APT_GPG_KEY_EMAIL`
+secrets and GitHub Pages serving the `gh-pages` branch; without the secrets the
+release still succeeds and only the repositories are skipped. Prereleases are
+never published to the repositories.
+
+Settings → Updates checks GitHub Releases (also quietly once a day), downloads
+the package matching how AnvilDroid was installed (.deb, .rpm, Arch package or
+AppImage), verifies it against the release's `SHA256SUMS`, installs it through
+pkexec (an AppImage is replaced in place) and offers a restart.
 
 ## Development
 

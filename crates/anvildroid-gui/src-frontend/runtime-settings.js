@@ -72,6 +72,25 @@ const RuntimeSettings = (() => {
       throw new Error(`Runtime ${record.name} was created, but ${phase} failed: ${error}. ${recovery}`);
     }
   }
+  // A manual Prepare continues straight into Start, like a newly created runtime.
+  async function prepareAndStart(submitted, {send, progress = () => {}, update = () => {}, waitOptions = {}}) {
+    const id = submitted?.id;
+    if (!/^r-[a-f0-9]{32}$/.test(id) || !submitted.job?.id || submitted.job.operation !== 'prepare')
+      throw new Error('Invalid runtime operation response.');
+    progress('preparing');
+    let current = await wait(send, id, submitted.job.id, 'Prepared', {timeout:1800000, ...waitOptions, update});
+    try {
+      progress('booting');
+      const started = await send({op:'start', id});
+      if (started?.id !== id || !started.job?.id || started.job.operation !== 'start')
+        throw new Error('Invalid runtime operation response.');
+      update(started);
+      current = await wait(send, id, started.job.id, 'Running', {timeout:360000, ...waitOptions, update});
+    } catch (error) {
+      throw new Error(`Images are prepared, but the automatic start failed: ${error}. Check its status, then press Start.`);
+    }
+    return current;
+  }
   async function wait(send, id, jobId, expected, {sleep = ms => new Promise(resolve => setTimeout(resolve, ms)), now = Date.now, timeout = 360000, update = () => {}} = {}) {
     const deadline = now() + timeout;
     while (now() < deadline) {
@@ -84,6 +103,6 @@ const RuntimeSettings = (() => {
     }
     throw new Error(`Timed out waiting for runtime to become ${expected}.`);
   }
-  return {apply, wait, prepareReinstall, initialize};
+  return {apply, wait, prepareReinstall, initialize, prepareAndStart};
 })();
 if (typeof module !== 'undefined') module.exports = RuntimeSettings;

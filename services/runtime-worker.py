@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""One persistent headless Android instance; internal root-only worker protocol."""
+"""One persistent desktop Android instance; internal root-only worker protocol."""
 import argparse
 import base64
 import errno
@@ -85,6 +85,9 @@ spec.loader.exec_module(shares_module)
 spec = importlib.util.spec_from_file_location('runtime_device', Path(__file__).with_name('runtime-device.py'))
 device_module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(device_module)
+spec = importlib.util.spec_from_file_location('runtime_notifications', Path(__file__).with_name('runtime-notifications.py'))
+notifications_module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(notifications_module)
 
 
 def atomic(path, value):
@@ -160,7 +163,9 @@ class IdleSuspend:
 
     def tick(self):
         now = time.monotonic()
-        if self.state.get('adb_enabled'):
+        # ADB sessions and desktop notifications (ChromeOS keeps Android
+        # running to deliver them) both need a live guest.
+        if self.state.get('adb_enabled') or self.state.get('notifications_active'):
             self.idle_since = None
             return
         if self.state['state'] != 'Running' or self.stopping.is_set() or now < self.next_check:
@@ -765,6 +770,10 @@ def app_action(instance, identifier, action, package, desktop=False, generation=
                 # cannot be changed by the host-window resize bridge.
                 window_args = freeform_launch_arguments(android('cmd', 'activity', 'stack', 'list'), package)
         output = android('am', 'start', '--user', '0', *window_args, '-n', components[0])
+        # The task helper slows its snapshot when idle; ask for one now so the
+        # new window gets its Android bounds without waiting for the next tick.
+        try: android('sh', '-c', ': > /data/waydroid_tmp/anvildroid/wake')
+        except Exception: pass
         # Waydroid's launcher applies immersive policy after starting the
         # activity. Without this, newer custom images keep the task in the
         # Android display stack while HWC reports no published app window.
@@ -780,7 +789,7 @@ def app_action(instance, identifier, action, package, desktop=False, generation=
             'Android rejected app action: ' + diagnostic[:2048])
     if action == 'launch':
         check_app_startup(instance, identifier, package, exits_before)
-    return {'action': action, 'package': package, 'message': ('Android accepted launch in desktop preview.' if desktop else 'Android accepted launch (headless; no desktop window).') if action == 'launch' else 'Android accepted force-stop.'}
+    return {'action': action, 'package': package, 'message': 'Android accepted launch on desktop.' if action == 'launch' else 'Android accepted force-stop.'}
 
 
 class ControlReceiver:
@@ -891,6 +900,47 @@ def pin_audio_socket(uid):
         raise
 
 
+def pin_session_bus(uid):
+    """Pin the desktop user's session bus before /run is hidden (notifications)."""
+    require(uid > 0, 'Desktop notifications require a desktop owner')
+    directory = Path('/run/user') / str(uid)
+    path = directory / 'bus'
+    if not path.exists():
+        return None
+    require(path.resolve() == path and directory.stat().st_uid == uid, 'Session bus directory owner/path mismatch')
+    fd = os.open(path, os.O_PATH | os.O_NOFOLLOW)
+    try:
+        info = os.fstat(fd)
+        require(stat.S_ISSOCK(info.st_mode) and info.st_uid == uid, 'Session bus owner/type mismatch')
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
+            probe.settimeout(2)
+            probe.connect(str(path))
+            _, peer, _ = struct.unpack('3i', probe.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
+            current = path.stat()
+            require(peer == uid and (current.st_dev, current.st_ino) == (info.st_dev, info.st_ino),
+                    'Session bus identity changed')
+        return fd
+    except Exception:
+        os.close(fd)
+        raise
+
+
+def start_notification_relay(directory, uid, log_path):
+    """The desktop-user process that owns this runtime's desktop notifications."""
+    account = pwd.getpwuid(uid)
+    log = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
+    try:
+        return subprocess.Popen(
+            ['/usr/bin/python3', '-I', '-B', str(Path(__file__).with_name('notification-relay.py'))],
+            user=uid, group=account.pw_gid, extra_groups=os.getgrouplist(account.pw_name, account.pw_gid),
+            env={'PATH': '/usr/bin:/bin', 'HOME': account.pw_dir, 'LANG': 'C.UTF-8',
+                 'DBUS_SESSION_BUS_ADDRESS': 'unix:path=' + str(directory / 'bus'),
+                 'XDG_RUNTIME_DIR': str(directory)},
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log, cwd='/', start_new_session=True)
+    finally:
+        os.close(log)
+
+
 def android_overlay_options(lower, upper, work):
     # Bionic Android 13 realpath stores ino_t in 32 bits in 32-bit HALs.
     # Overlay xino synthesizes high inode bits and makes real files fail ENOENT.
@@ -955,48 +1005,10 @@ def mount_android_overlay(lower, upper, work, target, mount):
 def desktop_gpu(instance, desktop):
     node = gpu.resolve(instance)
     if gpu.is_nvidia(node):
-        # Venus uses Vulkan independently of the display server. On X11 the
-        # guest HWC presents to our nested Weston, including its wl_shm path
-        # when the compositor cannot import NVIDIA DMA-BUFs. Android rendering
-        # stays on Venus even if Weston needs its pixman renderer.
+        # Venus renders independently of the host Wayland or native X11 presenter.
         require(desktop, 'NVIDIA Venus experimental requires a Wayland or X11 desktop')
         gpu.nvidia.trusted_payload()
     return node
-
-
-def nested_weston(xdg, width, height, display, authority):
-    """argv + env for a nested Weston inside the user's X session; socket lands in xdg."""
-    args = ['weston', '--backend=x11', '--renderer=gl', '--socket=wayland-probe',
-            '--idle-time=0', '--no-config', f'--width={width}', f'--height={height}']
-    env = {k: v for k, v in os.environ.items()
-           if k not in ('DBUS_SESSION_BUS_ADDRESS', 'WAYLAND_DISPLAY', 'PULSE_SERVER', 'DISPLAY', 'XAUTHORITY')}
-    env['XDG_RUNTIME_DIR'] = str(xdg)
-    env['DISPLAY'] = display  # from the validated token, never inherited
-    if authority is not None:
-        env['XAUTHORITY'] = str(authority)
-    return args, env
-
-
-def start_weston(args, env, log, xdg, compositors, *, nested=False):
-    """Track only the current compositor; retain it for cleanup even on failure."""
-    args = list(args)
-    process = subprocess.Popen(args, env=env, stdout=log, stderr=log)
-    compositors.append(process)
-    for _ in range(100):
-        # Check exit before the socket: a failed renderer may leave a stale socket.
-        if process.poll() is not None:
-            if nested and '--renderer=gl' in args:
-                for name in ('wayland-probe', 'wayland-probe.lock'):
-                    (xdg / name).unlink(missing_ok=True)
-                args[args.index('--renderer=gl')] = '--renderer=pixman'
-                process = subprocess.Popen(args, env=env, stdout=log, stderr=log)
-                compositors[-1] = process
-                continue
-            raise RuntimeError('Nested Weston exited' if nested else 'Headless Weston exited')
-        if (xdg / 'wayland-probe').is_socket():
-            return process
-        time.sleep(.05)
-    raise RuntimeError('Nested Weston socket missing' if nested else 'Headless Weston socket missing')
 
 
 def managed_session_properties(props):
@@ -1053,7 +1065,7 @@ def recover_desktop_input(lxc, identifier, state):
 def configure_desktop_power(instance, shell, enabled):
     """Keep native desktop windows drawn; restore the Android timeout on switch."""
     # Retain the old marker name so existing X11 runtimes restore the original
-    # preference when switching to headless operation.
+    # preference when disabling the desktop power override.
     marker = instance / 'x11-screen-timeout.json'
     if not enabled and not marker.exists(): return
     current = shell('settings', '--user', '0', 'get', 'system', 'screen_off_timeout').strip()
@@ -1251,7 +1263,7 @@ def stop_android(lxc, identifier, boot_completed):
 def boot(instance, identifier, generation, state, stopping, done, desktop=None, host_net_fd=None, original_mnt=None):
     root = instance / 'android'
     root.mkdir(mode=0o700, exist_ok=True)
-    mounts, names, compositors, logfiles = [], [], [], []
+    mounts, names, logfiles = [], [], []
     scrcpy_process = None
     venus = None
     x11_session = None
@@ -1314,6 +1326,7 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
         require(shell('settings', 'get', 'global', 'device_provisioned').strip() == '1',
                 'Android device provisioning could not be completed')
     try:
+        require(desktop, 'A Wayland or X11 desktop session is required')
         state['resource_limits'] = resources.verify(identifier, generation, resources.load(instance))
         gpu_node = desktop_gpu(instance, desktop)
         nvidia_rendering = gpu.is_nvidia(gpu_node)
@@ -1340,6 +1353,8 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
         workarea_props = []
         workarea_info = {}
         x11 = {'display': None, 'authority': None, 'environment': {}}
+        session_bus_fd = None
+        notify_directory = None
         if desktop:
             fd = pin_audio_socket(desktop[1])
             if fd is not None:
@@ -1384,7 +1399,26 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
             # Probe the compositor workarea before the private /run mount hides
             # the session bus and Wayland socket; never fails the boot.
             workarea_props, workarea_info = workarea.boot_props([], desktop[0], desktop[1])
+            try:
+                session_bus_fd = pin_session_bus(desktop[1])
+            except (RuntimeError, OSError) as error:
+                state['notifications_error'] = 'Desktop session bus unavailable: ' + str(error)[-200:]
         mount('-t', 'tmpfs', 'tmpfs', '/run')
+        if session_bus_fd is not None:
+            try:
+                account = pwd.getpwuid(desktop[1])
+                notify_directory = Path('/run/anvil-notify-' + generation)
+                notify_directory.mkdir(mode=0o700)
+                os.chown(notify_directory, desktop[1], account.pw_gid)
+                (notify_directory / 'bus').touch(mode=0o600)
+                subprocess.run(['mount', '--no-canonicalize', '--bind', f'/proc/self/fd/{session_bus_fd}',
+                                str(notify_directory / 'bus')], pass_fds=(session_bus_fd,), check=True, capture_output=True)
+            except (OSError, subprocess.CalledProcessError) as error:
+                notify_directory = None
+                state['notifications_error'] = 'Desktop session bus could not be shared: ' + str(error)[-200:]
+            finally:
+                os.close(session_bus_fd)
+                session_bus_fd = None
         if native:
             require(x11['authority'] is not None, 'Native X11 requires desktop Xauthority')
             account = pwd.getpwuid(desktop[1])
@@ -1485,7 +1519,7 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
             allocator_init = fs / 'vendor' / allocator_rc
             if allocator_init.exists() and 'ANVILDROID_GRALLOC_METADATA' in allocator_init.read_text():
                 # Undo the previous boot's optional adapter before selecting
-                # compatibility for this boot (including headless mode).
+                # compatibility for this boot (for this desktop session).
                 allocator_init.write_text((work / 'vendor-lower' / allocator_rc).read_text())
             guard = path_guard.prepare(instance, fs, Path(__file__).parent) if arm_props is None or arm_props.get('ro.dalvik.vm.native.bridge') == 'libndk_translation.so' else None
             if guard:
@@ -1552,7 +1586,7 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
                 # too (including GPUs Android does not use). Keep ueventd's
                 # live listener for new APEX/loop devices, without replaying
                 # the host's entire hardware inventory. This also applies on
-                # Wayland/headless: uevents reach the host regardless of the
+                # Wayland: uevents reach the host regardless of the
                 # presentation backend.
                 props = [p for p in props if not p.startswith('ro.cold_boot_done=')]
                 props.append('ro.cold_boot_done=true')
@@ -1646,20 +1680,10 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
             if native:
                 (xdg / 'wayland-probe').touch(mode=0o600)
                 mount('--bind', x11_session.directory / 'wayland-probe', xdg / 'wayland-probe')
-            elif desktop and not x11['display']:
+            else:
+                require(not x11['display'], 'X11 requires the native adapter')
                 (xdg / 'wayland-probe').touch(mode=0o600)
                 mount('--bind', desktop_pin, xdg / 'wayland-probe')
-            else:
-                log = (work / 'weston.log').open('w')
-                logfiles.append(log)
-                if x11['display']:
-                    width, height = workarea_info.get('capacity') or (1920, 1080)
-                    args, env = nested_weston(xdg, width, height, x11['display'], x11['authority'])
-                else:
-                    args = ['weston', '--backend=headless', '--renderer=gl',
-                            '--socket=wayland-probe', '--idle-time=0', '--no-config', '--width=800', '--height=600']
-                    env = dict({k: v for k, v in os.environ.items() if k not in ('DBUS_SESSION_BUS_ADDRESS', 'DISPLAY', 'WAYLAND_DISPLAY', 'PULSE_SERVER')}, XDG_RUNTIME_DIR=str(xdg))
-                start_weston(args, env, log, xdg, compositors, nested=bool(x11['display']))
             if audio_available:
                 pulse = xdg / 'pulse'
                 pulse.mkdir(mode=0o755, exist_ok=True)
@@ -1667,7 +1691,6 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
                 (pulse / 'native').touch(mode=0o600, exist_ok=True)
                 mount('--bind', audio_pin, pulse / 'native')
             xdg.chmod(0o777)
-            if not native and (not desktop or x11['display']): (xdg / 'wayland-probe').chmod(0o777)
             original = (instance / 'support/config').read_text().splitlines()
             keep = ('lxc.arch', 'lxc.apparmor.profile', 'lxc.cap.keep', 'lxc.mount.auto', 'lxc.no_new_privs', 'lxc.seccomp.allow_nesting')
             # Android init writes its per-uid cgroup dirs at boot; the host
@@ -1919,6 +1942,24 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
                 state['desktop_ime'] = 'Unavailable'
                 state['desktop_ime_warning'] = str(error)[-1024:]
                 print('Desktop IME setup warning: ' + state['desktop_ime_warning'], flush=True)
+            if notify_directory is not None and state.get('desktop_ime') == 'Ready':
+                try:
+                    notifications_module.enable_listener(shell)
+                    android_data = loc(identifier)
+                    def connect_notifications():
+                        pid = lxc('lxc-info', identifier, '-pH', timeout=2, bounded_output=True).strip()
+                        require(pid.isdecimal() and int(pid) > 1, 'Android container is not running')
+                        return notifications_module.connect_android(f'/proc/{pid}/ns/net',
+                                                                    android_data / 'data/system/packages.list')
+                    notifications_module.NotificationBridge(
+                        identifier, notifications_module.Policy(instance / 'notifications.json'), connect_notifications,
+                        lambda: start_notification_relay(notify_directory, desktop[1],
+                                                         instance / ('notifications-' + generation + '.log')),
+                        stopping, state).start()
+                except (RuntimeError, OSError, subprocess.TimeoutExpired) as error:
+                    state['notifications'] = 'Unavailable'
+                    state['notifications_error'] = str(error)[-512:]
+                    print('Desktop notifications warning: ' + state['notifications_error'], flush=True)
             if x11_session:
                 ready_deadline = time.monotonic() + 20
                 while x11_session.state != 'ready':
@@ -1976,7 +2017,6 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
             if desktop and not native:
                 check_desktop_session()
             require(lxc('lxc-info', identifier, '-sH') in ('RUNNING', 'FROZEN'), 'Android container exited')
-            if compositors: require(compositors[0].poll() is None, 'Desktop compositor exited' if desktop else 'Headless compositor exited')
             if scrcpy_process is not None:
                 scrcpy_process.check(state.get('state') == 'Running')
                 if scrcpy_process.error: state['keymap_warning'] = scrcpy_process.error
@@ -2002,12 +2042,6 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
             try:
                 x11_session.close(verified_guest_stop, lambda: venus.close() if venus else None)
             except Exception as error: errors.append(str(error))
-        for process in compositors:
-            process.terminate()
-            try: process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait(timeout=5)
         if venus and not x11_session:
             try: venus.close()
             except Exception as error: errors.append(str(error))
@@ -2038,6 +2072,7 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
 
 
 def main(instance, identifier, generation, original_mnt, original_net, desktop=None, host_net_fd=None):
+    require(desktop, 'A Wayland or X11 desktop session is required')
     require(os.geteuid() == 0, 'Root worker required')
     require(linux.ns('mnt') != original_mnt and linux.ns('net') != original_net, 'Private namespaces required')
     require(instance.is_absolute() and instance.resolve() == instance and instance.name == identifier, 'Invalid worker path')
@@ -2047,7 +2082,7 @@ def main(instance, identifier, generation, original_mnt, original_net, desktop=N
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     endpoint = instance / 'worker.sock'
     endpoint.unlink(missing_ok=True)
-    state = dict(runtime_id=identifier, generation=generation, state='Starting', error=None, display_mode='desktop' if desktop else 'headless', capabilities=['graphics', 'apps', 'app_actions', 'uninstall_app', 'install_apk', 'google_services'])
+    state = dict(runtime_id=identifier, generation=generation, state='Starting', error=None, display_mode='desktop', capabilities=['graphics', 'apps', 'app_actions', 'uninstall_app', 'install_apk', 'google_services'])
     state['capabilities'].extend(['app_states', 'adb', 'app_compatibility', 'shared_folders'])
     if desktop: state['capabilities'].extend(['keymap_editor', 'keymap_schemes', 'full_ui', 'window_activation'])
     atomic(instance / 'worker-identity.json', dict(runtime_id=identifier, generation=generation))
@@ -2277,5 +2312,5 @@ if __name__ == '__main__':
                 args.desktop_socket.parent == Path('/run/user') / str(args.desktop_uid),
                 'Legacy desktop socket must belong to the selected user')
         args.desktop_display = args.desktop_socket.name
-    require((args.desktop_display is None) == (args.desktop_uid is None), 'Desktop display and UID must be provided together')
+    require(args.desktop_display and args.desktop_uid is not None, 'Desktop display and UID are required')
     main(args.instance, args.id, args.generation, *args.namespaces, desktop=(args.desktop_display, args.desktop_uid) if args.desktop_display else None, host_net_fd=args.host_net_fd)

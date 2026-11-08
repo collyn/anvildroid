@@ -45,7 +45,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends build-essential libx11-dev
       - name: Test runtime features without Android
-        run: sh scripts/test-runtime-features.sh
+        # Ownership fixtures require root; setup-node installs outside sudo's PATH.
+        run: sudo env "PATH=$PATH" sh scripts/test-runtime-features.sh
+      - name: Test desktop-only startup and backend selection
+        run: |
+          python3 -m unittest discover -s tests -p test_runtime_worker.py
+          python3 services/x11-integration-test.py
       - name: Test shared folders in a private PID1 mount namespace
         run: sudo python3 services/shares-test.py --mount-test
       - name: Test Default shared-folder lifecycle in a private PID1 mount namespace
@@ -102,6 +107,10 @@ jobs:
         run: python3 native/x11/host-check.py
       - name: Test native X11 input through a private software display
         run: python3 native/x11/host-check.py --software-x11
+      - name: Test Default X11 adapter lifecycle without Android
+        env:
+          ANVILDROID_DEFAULT_X11_SOFTWARE: '1'
+        run: python3 services/default-x11-test.py
       - name: Prepare pinned NVIDIA archives
         env:
           GH_TOKEN: ${{ secrets.NVIDIA_ARTIFACT_TOKEN || github.token }}
@@ -194,6 +203,88 @@ jobs:
             target/releases/*.pkg.tar.zst
           if-no-files-found: error
 
+  appimage:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      # Pinned packaging tools; checksums are verified before anything runs.
+      LINUXDEPLOY_URL: https://github.com/linuxdeploy/linuxdeploy/releases/download/1-alpha-20250213-2/linuxdeploy-x86_64.AppImage
+      LINUXDEPLOY_SHA256: 4648f278ab3ef31f819e67c30d50f462640e5365a77637d7e6f2ad9fd0b4522a
+      LINUXDEPLOY_APPIMAGE_URL: https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/releases/download/1-alpha-20250213-1/linuxdeploy-plugin-appimage-x86_64.AppImage
+      LINUXDEPLOY_APPIMAGE_SHA256: 992d502a248e14ab185448ddf6f6e7d25558cb84d4623c354c3af350c25fccb3
+      LINUXDEPLOY_GTK_URL: https://raw.githubusercontent.com/tauri-apps/linuxdeploy-plugin-gtk/b5eb8d05b4c0ed40107fe2158c5d8527f94568ef/linuxdeploy-plugin-gtk.sh
+      LINUXDEPLOY_GTK_SHA256: cb379f9b0733e9ad9f8bd78f8c2fa038aef2478523bb7d4c8e64ff6a1ea3501a
+      # Runners have no FUSE; the AppImage tools unpack themselves instead.
+      APPIMAGE_EXTRACT_AND_RUN: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with: {name: shared-ci-inputs, path: .}
+      - name: Restore shared input paths
+        run: |
+          mkdir -p target/tools target/native target/input-diagnostic target/native-x11
+          cp tools/r8-8.3.37.jar target/tools/r8-8.3.37.jar
+          cp native/init.waydroid.rc target/native/init.waydroid.rc
+          cp native/framework-res.apk target/native/framework-res.apk
+          cp -a tools/nvidia target/tools/nvidia
+          cp -a native-x11/package target/native-x11/package
+          cp input-diagnostic/scrcpy-server-cancel.jar input-diagnostic/scrcpy-LICENSE input-diagnostic/scrcpy-build.json target/input-diagnostic/
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config \
+            libgtk-3-dev libwebkit2gtk-4.1-dev librsvg2-dev libssl-dev libwayland-dev \
+            clang lld aapt apksigner patchelf file zstd libglib2.0-bin
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - uses: actions/setup-java@v4
+        with: {distribution: temurin, java-version: '17'}
+      - uses: android-actions/setup-android@v3
+        with: {packages: 'platform-tools'}
+      - name: Install Android APIs and image tools
+        run: |
+          sdkmanager 'platforms;android-23' 'build-tools;35.0.0'
+          sudo mkdir -p /usr/lib/android-sdk/platforms/android-23
+          sudo ln -sf "$ANDROID_HOME/platforms/android-23/android.jar" /usr/lib/android-sdk/platforms/android-23/android.jar
+      - name: Fetch pinned AppImage tools
+        run: |
+          tools="$RUNNER_TEMP/appimage-tools"
+          mkdir -p "$tools"
+          curl -fsSLo "$tools/linuxdeploy" "$LINUXDEPLOY_URL"
+          curl -fsSLo "$tools/linuxdeploy-plugin-appimage" "$LINUXDEPLOY_APPIMAGE_URL"
+          curl -fsSLo "$tools/linuxdeploy-plugin-gtk.sh" "$LINUXDEPLOY_GTK_URL"
+          printf '%s  %s\n' \
+            "$LINUXDEPLOY_SHA256" "$tools/linuxdeploy" \
+            "$LINUXDEPLOY_APPIMAGE_SHA256" "$tools/linuxdeploy-plugin-appimage" \
+            "$LINUXDEPLOY_GTK_SHA256" "$tools/linuxdeploy-plugin-gtk.sh" | sha256sum --check
+          chmod 755 "$tools/linuxdeploy" "$tools/linuxdeploy-plugin-appimage" "$tools/linuxdeploy-plugin-gtk.sh"
+          echo "$tools" >> "$GITHUB_PATH"
+          echo "LINUXDEPLOY=$tools/linuxdeploy" >> "$GITHUB_ENV"
+          echo "LINUXDEPLOY_GTK_PLUGIN=$tools/linuxdeploy-plugin-gtk.sh" >> "$GITHUB_ENV"
+      - name: Build runtime payload
+        env:
+          ANVILDROID_X11_PAYLOAD: ${{ github.workspace }}/target/native-x11/package
+        run: sh scripts/build-runtime.sh
+      - name: Build and verify AppImage
+        env:
+          ANVILDROID_X11_PAYLOAD: ${{ github.workspace }}/target/native-x11/package
+          # ubuntu-24.04 is the oldest supported baseline.
+          ANVILDROID_GLIBC_MAX: '2.39'
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          sh scripts/package-appimage.sh "$VERSION"
+          image="target/releases/$VERSION/AnvilDroid-$VERSION-x86_64.AppImage"
+          test -s "$image"
+          mkdir -p appimage-release
+          cp "$image" appimage-release/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-package-appimage
+          path: appimage-release/*.AppImage
+          if-no-files-found: error
+
   smoke:
     needs: [prepare, build]
     strategy:
@@ -212,7 +303,8 @@ jobs:
         with:
           name: linux-package-${{ matrix.package }}
           path: target/releases
-      - name: Install, run GUI/CLI and remove package
+      - name: Install, run GUI/CLI and remove package without Weston
+        shell: bash
         env:
           PACKAGE: ${{ matrix.package }}
           IMAGE: ${{ matrix.image }}
@@ -224,15 +316,92 @@ jobs:
             pkg) file="anvildroid-controller-${VERSION}-1-x86_64.pkg.tar.zst";;
             *) exit 2;;
           esac
-          docker run --rm \
+          docker run --rm -e ANVILDROID_REQUIRE_NO_WESTON=1 \
             -v "$PWD/scripts/verify-package.py:/work/scripts/verify-package.py:ro" \
             -v "$PWD/scripts/verify-package-install.sh:/work/scripts/verify-package-install.sh:ro" \
             -v "$PWD/target/releases/$file:/packages/$file:ro" "$IMAGE" \
-            sh /work/scripts/verify-package-install.sh "$PACKAGE" "/packages/$file" "$VERSION"
+            sh /work/scripts/verify-package-install.sh "$PACKAGE" "/packages/$file" "$VERSION" \
+            2>&1 | tee "package-smoke-$PACKAGE.log"
+      - name: Retain package smoke logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-smoke-${{ matrix.package }}
+          path: package-smoke-*.log
+          if-no-files-found: warn
+
+  # Signed Arch repository database (repo-add only exists on Arch).
+  arch-repo:
+    if: startsWith(github.ref, 'refs/tags/v') && needs.prepare.outputs.prerelease != 'true'
+    needs: [prepare, build]
+    runs-on: ubuntu-24.04
+    container: archlinux:base
+    steps:
+      - uses: actions/download-artifact@v4
+        with: {name: linux-package-pkg, path: .}
+      - name: Sign package and build the repository database
+        env:
+          APT_GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+          APT_GPG_KEY_EMAIL: ${{ secrets.APT_GPG_KEY_EMAIL }}
+        run: |
+          if [ -z "$APT_GPG_PRIVATE_KEY" ] || [ -z "$APT_GPG_KEY_EMAIL" ]; then
+            echo "::warning::APT_GPG_PRIVATE_KEY/APT_GPG_KEY_EMAIL are not set; package repositories are not published."
+            exit 0
+          fi
+          echo "$APT_GPG_PRIVATE_KEY" | gpg --batch --import
+          for pkg in anvildroid-controller-*-x86_64.pkg.tar.zst; do
+            gpg --batch --yes --local-user "$APT_GPG_KEY_EMAIL" --detach-sign -o "$pkg.sig" "$pkg"
+          done
+          repo-add -s -k "$APT_GPG_KEY_EMAIL" anvildroid.db.tar.gz anvildroid-controller-*-x86_64.pkg.tar.zst
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arch-repo
+          path: |
+            anvildroid-controller-*-x86_64.pkg.tar.zst.sig
+            anvildroid.db*
+            anvildroid.files*
+          if-no-files-found: ignore
+
+  # Signed APT/RPM/Arch repositories on GitHub Pages (gh-pages branch), so
+  # apt/dnf/zypper/pacman upgrades include AnvilDroid. Layout as collyn/skey.
+  pages:
+    if: startsWith(github.ref, 'refs/tags/v') && needs.prepare.outputs.prerelease != 'true'
+    needs: [prepare, smoke, arch-repo, release]
+    runs-on: ubuntu-24.04
+    permissions: {contents: write}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: linux-package-*
+          path: packages
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with: {name: arch-repo, path: packages}
+      - name: Install repository tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends dpkg-dev apt-utils createrepo-c rpm gnupg
+      - name: Publish signed repositories
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          APT_GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+          APT_GPG_KEY_EMAIL: ${{ secrets.APT_GPG_KEY_EMAIL }}
+        run: |
+          if [ -z "$APT_GPG_PRIVATE_KEY" ] || [ -z "$APT_GPG_KEY_EMAIL" ]; then
+            echo "::warning::APT_GPG_PRIVATE_KEY/APT_GPG_KEY_EMAIL are not set; skipping GitHub Pages repositories."
+            exit 0
+          fi
+          echo "$APT_GPG_PRIVATE_KEY" | gpg --batch --import
+          rm -f packages/*.AppImage   # AppImages update from GitHub Releases, not a package repo
+          cd packages
+          bash ../scripts/publish-repos.sh
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [prepare, build, smoke]
+    needs: [prepare, build, appimage, smoke]
     runs-on: ubuntu-24.04
     permissions: {contents: write}
     steps:
@@ -250,8 +419,8 @@ jobs:
           PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
         run: |
           cd release
-          sha256sum ./*.deb ./*.rpm ./*.pkg.tar.zst > SHA256SUMS
+          sha256sum ./*.deb ./*.rpm ./*.pkg.tar.zst ./*.AppImage > SHA256SUMS
           sha256sum --check SHA256SUMS
           args=(--verify-tag --title "AnvilDroid $RELEASE_VERSION" --generate-notes)
           if [[ "$PRERELEASE" == true ]]; then args+=(--prerelease); fi
-          gh release create "$RELEASE_TAG" "${args[@]}" ./*.deb ./*.rpm ./*.pkg.tar.zst SHA256SUMS
+          gh release create "$RELEASE_TAG" "${args[@]}" ./*.deb ./*.rpm ./*.pkg.tar.zst ./*.AppImage SHA256SUMS

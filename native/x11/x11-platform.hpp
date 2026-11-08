@@ -27,6 +27,7 @@
 #include <cstdio>
 #include <cstring>
 #include <functional>
+#include <tuple>
 #include <set>
 #include <string>
 #include <unistd.h>
@@ -36,10 +37,51 @@ inline void ensure(bool ok, const char *message) {
   if (!ok)
     throw std::runtime_error(message);
 }
+// Context token: GL objects that outlive the Platform skip GL cleanup (the
+// context, and with it every object, is already gone).
+struct GlContext {
+  EGLDisplay egl = EGL_NO_DISPLAY;
+  EGLSurface scratch = EGL_NO_SURFACE;
+  EGLContext context = EGL_NO_CONTEXT;
+  bool current() const {
+    return eglMakeCurrent(egl, scratch, scratch, context) == EGL_TRUE;
+  }
+};
+// Snapshot textures are recycled by size: allocating a new one per frame
+// made the kernel allocate and zero a fresh GPU buffer every frame.
+struct TexturePool {
+  static constexpr size_t limit = 4;
+  std::vector<std::tuple<int, int, GLuint>> spare;
+};
 struct GpuImage : Image {
+  std::weak_ptr<TexturePool> pool;
+  std::weak_ptr<GlContext> gl;
   ~GpuImage() override {
+    if (!texture)
+      return;
+    if (auto shared = pool.lock(); shared && shared->spare.size() < TexturePool::limit) {
+      shared->spare.emplace_back(width, height, texture);
+      return;
+    }
+    if (auto context = gl.lock(); context && context->current())
+      glDeleteTextures(1, &texture);
+  }
+};
+// One guest DMA-BUF imported once. Android re-renders into the same few
+// allocations, so later frames sample the cached EGLImage.
+struct DmaImport {
+  std::weak_ptr<GlContext> gl;
+  EGLImageKHR image = EGL_NO_IMAGE_KHR;
+  GLuint texture = 0;
+  PFNEGLDESTROYIMAGEKHRPROC destroy = nullptr;
+  ~DmaImport() {
+    auto context = gl.lock();
+    if (!context || !context->current())
+      return;
     if (texture)
       glDeleteTextures(1, &texture);
+    if (image != EGL_NO_IMAGE_KHR && destroy)
+      destroy(context->egl, image);
   }
 };
 struct NativeWindow {
@@ -51,6 +93,9 @@ struct NativeWindow {
   int width = 640, height = 480, pw = 640, ph = 480;
   bool mapped = false;
   bool swap_interval_set = false;
+  // Remembered position requested before the first map (physical root px).
+  bool position_hint = false;
+  int hint_x = 0, hint_y = 0;
 };
 class Platform {
   bool headless;
@@ -62,8 +107,18 @@ class Platform {
   PFNEGLCREATEIMAGEKHRPROC create_image = nullptr;
   PFNEGLDESTROYIMAGEKHRPROC destroy_image = nullptr;
   PFNGLEGLIMAGETARGETTEXTURE2DOESPROC bind_image = nullptr;
+  // EGL_ANDROID_native_fence_sync: release guest buffers when the GPU copy
+  // signals instead of blocking the event loop in glFinish().
+  PFNEGLCREATESYNCKHRPROC create_sync = nullptr;
+  PFNEGLDESTROYSYNCKHRPROC destroy_sync = nullptr;
+  PFNEGLDUPNATIVEFENCEFDANDROIDPROC dup_fence = nullptr;
   GLint pos = 0, uv = 0;
   unsigned fake_id = 1;
+  std::shared_ptr<GlContext> gl = std::make_shared<GlContext>();
+  std::shared_ptr<TexturePool> pool = std::make_shared<TexturePool>();
+  GLuint copy_fbo = 0;
+  struct Locations { GLint pos = -1, uv = -1, image = -1; };
+  Locations program_locations, external_locations;
   // Import fourccs this EGL accepts as LINEAR (or implicit) DMA-BUFs.
   std::vector<uint32_t> importable;
   std::set<std::string> reported;
@@ -149,12 +204,18 @@ class Platform {
   void quad(GLuint texture, bool external, const float *vertices,
             const float *coords) {
     auto p = external ? external_program : program;
+    auto &where = external ? external_locations : program_locations;
     glUseProgram(p);
-    pos = glGetAttribLocation(p, "position");
-    uv = glGetAttribLocation(p, "texcoord");
+    if (where.pos < 0) {
+      where.pos = glGetAttribLocation(p, "position");
+      where.uv = glGetAttribLocation(p, "texcoord");
+      where.image = glGetUniformLocation(p, "image");
+    }
+    pos = where.pos;
+    uv = where.uv;
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(external ? GL_TEXTURE_EXTERNAL_OES : GL_TEXTURE_2D, texture);
-    glUniform1i(glGetUniformLocation(p, "image"), 0);
+    glUniform1i(where.image, 0);
     glEnableVertexAttribArray(pos);
     glEnableVertexAttribArray(uv);
     glVertexAttribPointer(pos, 2, GL_FLOAT, GL_FALSE, 0, vertices);
@@ -179,6 +240,20 @@ class Platform {
     auto i = std::make_shared<GpuImage>();
     i->width = w;
     i->height = h;
+    i->pool = pool;
+    i->gl = gl;
+    auto &spare = pool->spare;
+    for (auto it = spare.begin(); it != spare.end(); ++it)
+      if (std::get<0>(*it) == w && std::get<1>(*it) == h) {
+        i->texture = std::get<2>(*it);
+        spare.erase(it);
+        return i;
+      }
+    // A different size: drop spares rather than growing the pool unbounded.
+    if (spare.size() >= TexturePool::limit) {
+      glDeleteTextures(1, &std::get<2>(spare.front()));
+      spare.erase(spare.begin());
+    }
     glGenTextures(1, &i->texture);
     glBindTexture(GL_TEXTURE_2D, i->texture);
     parameters(GL_TEXTURE_2D);
@@ -337,7 +412,18 @@ public:
            "Missing EGL DMA-BUF image support");
     program = make_program(false);
     external_program = make_program(true);
+    *gl = GlContext{egl, scratch, context};
     query_dmabuf_formats();
+    if (const char *extensions = eglQueryString(egl, EGL_EXTENSIONS);
+        extensions && std::strstr(extensions, "EGL_ANDROID_native_fence_sync") &&
+        !getenv("ANVILDROID_X11_SYNC_COPY")) {
+      create_sync = reinterpret_cast<PFNEGLCREATESYNCKHRPROC>(eglGetProcAddress("eglCreateSyncKHR"));
+      destroy_sync = reinterpret_cast<PFNEGLDESTROYSYNCKHRPROC>(eglGetProcAddress("eglDestroySyncKHR"));
+      dup_fence = reinterpret_cast<PFNEGLDUPNATIVEFENCEFDANDROIDPROC>(eglGetProcAddress("eglDupNativeFenceFDANDROID"));
+      if (!create_sync || !destroy_sync || !dup_fence)
+        create_sync = nullptr;
+    }
+    printf("x11_adapter_release=%s\n", create_sync ? "fence" : "finish");
     protocols = atom("WM_PROTOCOLS");
     wm_delete = atom("WM_DELETE_WINDOW");
     XSetLocaleModifiers("");
@@ -364,6 +450,12 @@ public:
     if (xim)
       XCloseIM(xim);
     current();
+    for (auto &spare : pool->spare)
+      glDeleteTextures(1, &std::get<2>(spare));
+    pool->spare.clear();
+    if (copy_fbo)
+      glDeleteFramebuffers(1, &copy_fbo);
+    gl.reset(); // objects released later find no context and skip GL calls
     glDeleteProgram(program);
     glDeleteProgram(external_program);
     eglMakeCurrent(egl, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
@@ -660,10 +752,66 @@ public:
   }
   // Snapshot a validated layout (see dma_check) into an owned texture.
   // Import failure is not fatal: the surface shows a black placeholder.
-  std::shared_ptr<Image> dmabuf(const DmaLayout &layout, int w, int h) {
+  // With `cache`, the EGLImage is created once per guest buffer and reused
+  // for every later frame Android renders into that allocation.
+  // With `release_fence`, the caller gets a sync-file fd that signals when the
+  // copy is done and must release the guest buffer only then (-1: already
+  // complete, release now).
+  std::shared_ptr<Image> dmabuf(const DmaLayout &layout, int w, int h,
+                                std::shared_ptr<DmaImport> *cache = nullptr,
+                                int *release_fence = nullptr) {
+    if (release_fence)
+      *release_fence = -1;
     current();
     if (headless)
       return image(w, h);
+    std::shared_ptr<DmaImport> imported = cache ? *cache : nullptr;
+    if (!imported) {
+      imported = import_dmabuf(layout, w, h);
+      if (!imported)
+        return placeholder(w, h);
+      if (cache)
+        *cache = imported;
+    }
+    auto i = image(w, h);
+    if (!copy_fbo)
+      glGenFramebuffers(1, &copy_fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, copy_fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                           i->texture, 0);
+    ensure(glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE,
+           "Cannot cache Android surface");
+    glViewport(0, 0, w, h);
+    glDisable(GL_BLEND);
+    const float vertices[] = {-1, -1, 1, -1, -1, 1, 1, 1},
+                coords[] = {0, 0, 1, 0, 0, 1, 1, 1};
+    quad(imported->texture, true, vertices, coords);
+    // The guest may reuse its buffer as soon as it is released; the copy
+    // must have completed first: either a fence the caller waits on, or a
+    // blocking finish when native fences are unavailable.
+    if (!release_fence || !(*release_fence = copy_fence(), *release_fence >= 0))
+      glFinish();
+    auto error = glGetError();
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    ensure(error == GL_NO_ERROR,
+           "Cannot snapshot Android DMA-BUF before release");
+    return i;
+  }
+  int copy_fence() {
+    if (!create_sync)
+      return -1;
+    const EGLint attributes[] = {EGL_SYNC_NATIVE_FENCE_FD_ANDROID,
+                                 EGL_NO_NATIVE_FENCE_FD_ANDROID, EGL_NONE};
+    auto sync = create_sync(egl, EGL_SYNC_NATIVE_FENCE_ANDROID, attributes);
+    if (sync == EGL_NO_SYNC_KHR)
+      return -1;
+    glFlush(); // the fence fd exists only once the command stream is flushed
+    int fd = dup_fence(egl, sync);
+    destroy_sync(egl, sync);
+    return fd >= 0 ? fd : -1;
+  }
+  bool releases_with_fences() const { return create_sync != nullptr; }
+  std::shared_ptr<DmaImport> import_dmabuf(const DmaLayout &layout, int w, int h) {
     static const EGLint plane_attrs[3][3] = {
         {EGL_DMA_BUF_PLANE0_FD_EXT, EGL_DMA_BUF_PLANE0_OFFSET_EXT,
          EGL_DMA_BUF_PLANE0_PITCH_EXT},
@@ -692,44 +840,27 @@ public:
       return create_image(egl, EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT, nullptr,
                           attrs.data());
     };
-    auto imported = import(layout.yuv);
-    if (imported == EGL_NO_IMAGE_KHR && layout.yuv)
-      imported = import(false);
-    if (imported == EGL_NO_IMAGE_KHR) {
+    auto image = import(layout.yuv);
+    if (image == EGL_NO_IMAGE_KHR && layout.yuv)
+      image = import(false);
+    if (image == EGL_NO_IMAGE_KHR) {
       auto error = eglGetError();
       char line[160];
       snprintf(line, sizeof(line),
                "x11_dmabuf_import_failed format=%s planes=%d egl=0x%x",
                fourcc_name(layout.import).c_str(), layout.planes, error);
       report_once("import:" + fourcc_name(layout.import), line);
-      return placeholder(w, h);
+      return nullptr;
     }
-    auto i = image(w, h);
-    GLuint texture, fbo;
-    glGenTextures(1, &texture);
-    glBindTexture(GL_TEXTURE_EXTERNAL_OES, texture);
+    auto imported = std::make_shared<DmaImport>();
+    imported->gl = gl;
+    imported->image = image;
+    imported->destroy = destroy_image;
+    glGenTextures(1, &imported->texture);
+    glBindTexture(GL_TEXTURE_EXTERNAL_OES, imported->texture);
     parameters(GL_TEXTURE_EXTERNAL_OES);
-    bind_image(GL_TEXTURE_EXTERNAL_OES, imported);
-    glGenFramebuffers(1, &fbo);
-    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
-                           i->texture, 0);
-    ensure(glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE,
-           "Cannot cache Android surface");
-    glViewport(0, 0, w, h);
-    glDisable(GL_BLEND);
-    const float vertices[] = {-1, -1, 1, -1, -1, 1, 1, 1},
-                coords[] = {0, 0, 1, 0, 0, 1, 1, 1};
-    quad(texture, true, vertices, coords);
-    glFinish();
-    auto error = glGetError();
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    glDeleteFramebuffers(1, &fbo);
-    glDeleteTextures(1, &texture);
-    destroy_image(egl, imported);
-    ensure(error == GL_NO_ERROR,
-           "Cannot snapshot Android DMA-BUF before release");
-    return i;
+    bind_image(GL_TEXTURE_EXTERNAL_OES, image);
+    return imported;
   }
   // Logs a diagnostic once per key (bounded), never per frame.
   void report_once(const std::string &key, const std::string &line) {
@@ -867,7 +998,75 @@ public:
       hints.max_width = max_w > 0 ? max_w : 32767;
       hints.max_height = max_h > 0 ? max_h : 32767;
     }
+    if (w.position_hint) {  // keep a requested position across hint updates
+      hints.flags |= USPosition;
+      hints.x = w.hint_x;
+      hints.y = w.hint_y;
+    }
     XSetWMNormalHints(display, w.window, &hints);
+  }
+  // The part of the current desktop's _NET_WORKAREA on this monitor, in
+  // physical root pixels; the whole monitor without a usable hint.
+  Monitor workarea(const Monitor &monitor) {
+    Monitor area = monitor;
+    if (headless)
+      return area;
+    Atom type;
+    int format;
+    unsigned long count, left;
+    unsigned char *bytes = nullptr;
+    unsigned long desktop = 0;
+    auto root_window = DefaultRootWindow(display);
+    if (XGetWindowProperty(display, root_window, atom("_NET_CURRENT_DESKTOP"), 0,
+                           1, False, XA_CARDINAL, &type, &format, &count, &left,
+                           &bytes) == Success &&
+        bytes) {
+      if (type == XA_CARDINAL && format == 32 && count)
+        desktop = *reinterpret_cast<unsigned long *>(bytes);
+      XFree(bytes);
+      bytes = nullptr;
+    }
+    if (desktop < 1024 &&
+        XGetWindowProperty(display, root_window, atom("_NET_WORKAREA"),
+                           desktop * 4, 4, False, XA_CARDINAL, &type, &format,
+                           &count, &left, &bytes) == Success &&
+        bytes) {
+      if (type == XA_CARDINAL && format == 32 && count == 4) {
+        auto *v = reinterpret_cast<unsigned long *>(bytes);
+        // _NET_WORKAREA spans every monitor; keep its part on this one.
+        long x0 = std::max<long>(long(v[0]), monitor.x),
+             y0 = std::max<long>(long(v[1]), monitor.y),
+             x1 = std::min<long>(long(v[0] + v[2]), long(monitor.x) + monitor.width),
+             y1 = std::min<long>(long(v[1] + v[3]), long(monitor.y) + monitor.height);
+        if (v[2] && v[3] && v[2] <= 65535 && v[3] <= 65535 && x1 > x0 && y1 > y0) {
+          area.x = int32_t(x0);
+          area.y = int32_t(y0);
+          area.width = int32_t(x1 - x0);
+          area.height = int32_t(y1 - y0);
+        }
+      }
+      XFree(bytes);
+    }
+    return area;
+  }
+  // Ask the WM to map the window at a user-chosen position. USPosition makes
+  // Muffin/Mutter/KWin/Xfwm honor it instead of their placement policy.
+  void place(NativeWindow &w, int x, int y) {
+    w.position_hint = true;
+    w.hint_x = x;
+    w.hint_y = y;
+    if (headless || !w.window)
+      return;
+    XSizeHints *hints = XAllocSizeHints();
+    long supplied = 0;
+    if (!XGetWMNormalHints(display, w.window, hints, &supplied))
+      hints->flags = 0;
+    hints->flags |= USPosition;
+    hints->x = x;
+    hints->y = y;
+    XSetWMNormalHints(display, w.window, hints);
+    XFree(hints);
+    XMoveWindow(display, w.window, x, y);
   }
   void frame_extents(NativeWindow &w, const WindowFrame &frame) {
     if (headless)

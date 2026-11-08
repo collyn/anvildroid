@@ -4,6 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>AnvilDroid</title>
+  <link rel="stylesheet" href="theme.css">
+  <script src="theme.js"></script>
   <link rel="stylesheet" href="style.css">
   <link rel="stylesheet" href="shell.css">
   <link rel="stylesheet" href="management.css">
@@ -83,14 +85,17 @@
         <div id="controller-setup" role="status"></div>
         <div id="waydroid-setup-actions" hidden>
           <div class="runtime-actions">
-            <select id="waydroid-init-flavor" class="select-control" aria-label="System Waydroid image">
-              <option value="">Choose an image from the Images library</option>
-            </select>
-            <button id="btn-init-waydroid" class="btn btn-primary" type="button">Set up System Waydroid</button>
+            <button id="btn-init-waydroid" class="btn btn-primary" type="button">Install / repair runtime tools</button>
           </div>
-          <p id="waydroid-init-status" class="hint" role="status"></p>
+          <p class="hint">Install the host tools needed to run Android. For managed runtimes, choose an image in Images, then create a runtime.</p>
         </div>
+        <p id="waydroid-init-status" class="hint" role="status"></p>
         <details id="controller-setup-help"><summary>Waydroid installation help</summary><div class="runtime-setup-actions"><button id="btn-waydroid-guide" class="btn" type="button">Waydroid setup guide</button><span class="hint">Install Waydroid with the setup guide. Administrator access is required.</span></div></details>
+        </div>
+        <div id="runtime-image-notice" class="runtime-feedback warning" role="status" hidden>
+          <strong>No Android image yet</strong>
+          <p>Download an official Waydroid image or import your own in Images, then create a runtime here.</p>
+          <div class="runtime-actions"><button id="btn-runtime-open-images" class="btn btn-primary" type="button">Go to Images</button></div>
         </div>
         <details id="runtime-create-panel" class="create-panel"><summary>New runtime</summary>
         <form id="controller-create" class="runtime-actions">
@@ -125,7 +130,7 @@
           <thead><tr><th scope="col" class="runtime-checkbox-cell"><input id="runtime-select-all" type="checkbox" aria-label="Select all runtimes"></th><th scope="col">Runtime</th><th scope="col">Status</th><th scope="col" class="runtime-usage-heading">Usage</th><th scope="col" class="runtime-actions-heading">Actions</th></tr></thead>
           <tbody id="controller-runtimes"></tbody>
           <tbody>
-            <tr id="legacy-runtime-row" class="runtime-summary" data-runtime-select="default"><td class="runtime-checkbox-cell"><input type="checkbox" data-runtime-check="default" aria-label="Select System Waydroid"></td><td><button type="button" class="runtime-select" data-runtime-select="default" aria-pressed="false"><span id="existing-runtime-label">System Waydroid</span><span id="existing-runtime-default"></span></button></td><td><span id="runtime-state" class="runtime-status info" role="status">—</span></td><td id="existing-runtime-usage" class="runtime-usage-cell" data-runtime-usage="default"></td><td>          <div class="runtime-actions">
+            <tr id="legacy-runtime-row" class="runtime-summary" data-runtime-select="default"><td class="runtime-checkbox-cell"><input type="checkbox" data-runtime-check="default" aria-label="Select System Waydroid"></td><td><button type="button" class="runtime-select" data-runtime-select="default" aria-pressed="false"><span id="existing-runtime-label">System Waydroid</span><span id="existing-runtime-default"></span></button><div id="existing-runtime-quick"></div></td><td><span id="runtime-state" class="runtime-status info" role="status">—</span></td><td id="existing-runtime-usage" class="runtime-usage-cell" data-runtime-usage="default"></td><td>          <div class="runtime-actions">
             <button id="btn-start" class="btn runtime-action-icon btn-primary" type="button" style="display:none" title="Start" aria-label="Start System Waydroid"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m8 5 11 7-11 7z"/></svg></button>
             <button id="btn-stop" class="btn runtime-action-icon btn-danger" type="button" style="display:none" title="Stop" aria-label="Stop System Waydroid"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1"/></svg></button>
             <button class="btn runtime-action-icon" type="button" data-controller-op="restart" data-controller-id="default" title="Restart" aria-label="Restart System Waydroid" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 11a9 9 0 1 1 2.6 7M3 4v7h7"/></svg></button>
@@ -141,16 +146,21 @@
       </section>
 
 
-      <section id="page-runtime-settings" class="page" aria-labelledby="runtime-settings-title">
+      <section id="page-runtime-settings" class="page settings-simple" aria-labelledby="runtime-settings-title">
         <header class="page-header runtime-page-header runtime-config-header">
           <button id="runtime-settings-back" type="button" class="btn btn-quiet">← Runtimes</button>
           <div><p class="runtime-config-eyebrow">Runtime settings</p><h1 id="runtime-settings-title" class="page-title" tabindex="-1"></h1></div>
+          <div class="theme-choice settings-mode" role="group" aria-label="Settings detail">
+            <button type="button" data-settings-mode="simple" aria-pressed="true" title="Common settings only">Simple</button>
+            <button type="button" data-settings-mode="advanced" aria-pressed="false" title="Storage, display backend, diagnostics and exact limits">Advanced</button>
+          </div>
         </header>
+        <p class="hint settings-mode-hint">Showing common settings. Choose <strong>Advanced</strong> for storage, display backend, diagnostics and exact RAM/CPU limits.</p>
         <div id="runtime-settings-content"></div>
         <div id="legacy-runtime-detail" hidden>
               <h3 id="existing-runtime-name" hidden>System Waydroid</h3>
               <div id="existing-runtime-management" aria-live="polite"></div>
-        <details class="runtime-settings-group"><summary>Session details</summary><div class="runtime-card">
+        <details class="runtime-settings-group" data-level="advanced"><summary>Session details</summary><div class="runtime-card">
           <div class="status-row">
             <span class="status-label">Session D-Bus:</span>
             <span id="session-service" class="status-value">—</span>
@@ -186,7 +196,7 @@
         <div id="custom-image-controls">
           <label class="custom-image-name">Image name<input id="custom-image-name" type="text" maxlength="128" placeholder="My custom Android" autocomplete="off"></label>
           <div class="runtime-actions"><button id="btn-import-runtime-folder" type="button" class="btn btn-primary">Choose image folder…</button><button id="btn-import-runtime-image" type="button" class="btn">Choose custom image ZIP…</button><button id="btn-cancel-custom-image" type="button" class="btn" hidden>Cancel import</button></div>
-          <div class="runtime-actions custom-image-url-row"><input id="custom-image-url" type="url" placeholder="https://example.com/waydroid-images.zip" aria-label="Custom image ZIP URL" autocomplete="off"><button id="btn-import-runtime-url" type="button" class="btn btn-primary">Download custom image</button></div>
+          <div class="runtime-actions custom-image-url-row"><input id="custom-image-url" type="url" placeholder="https://example.com/waydroid-images.zip" aria-label="Custom image ZIP URL" autocomplete="off"><button id="btn-import-runtime-url" type="button" class="btn btn-primary">Download custom image</button><button id="btn-cancel-custom-url" type="button" class="btn" hidden>Cancel download</button></div>
           <details class="image-import-help"><summary>Image requirements</summary><p class="hint">Choose a folder containing system.img and vendor.img directly, or a ZIP containing both files for Waydroid x86_64, Android SDK 33+ (ext4, EROFS, SquashFS or Android sparse). Sparse images are expanded automatically. Newer Android support is experimental: Prepare checks required Waydroid components; boot and desktop controls still depend on the build. Image import creates an independent runtime; it does not replace System Waydroid. Use images from a source you trust. Custom Android builds may not support AnvilDroid desktop controls or ARM translation.</p></details>
         </div>
           </div>
@@ -211,6 +221,30 @@
       <section id="page-settings" class="page">
         <div class="page-header"><h1 class="page-title">Settings</h1><button id="btn-refresh-settings" class="btn">Refresh</button></div>
         <div class="settings-section">
+          <div class="section-heading"><h2>Appearance</h2></div>
+          <div class="theme-choice" role="group" aria-label="Theme">
+            <button type="button" data-theme-choice="system" aria-pressed="false">System</button>
+            <button type="button" data-theme-choice="light" aria-pressed="false">Light</button>
+            <button type="button" data-theme-choice="dark" aria-pressed="false">Dark</button>
+          </div>
+          <p class="hint">System follows your desktop's light or dark setting.</p>
+        </div>
+        <div class="settings-section" id="update-section">
+          <div class="section-heading"><h2>Updates</h2></div>
+          <p id="update-summary" class="hint">AnvilDroid <span id="update-current">—</span></p>
+          <div class="runtime-actions">
+            <button id="btn-check-update" class="btn" type="button">Check for updates</button>
+            <button id="btn-install-update" class="btn btn-primary" type="button" hidden>Install update</button>
+            <button id="btn-restart-update" class="btn btn-primary" type="button" hidden>Restart AnvilDroid</button>
+          </div>
+          <p id="update-status" class="hint" role="status" aria-live="polite"></p>
+          <details id="update-notes" hidden><summary>Release notes</summary><pre class="update-notes-text"></pre></details>
+          <details id="update-repo" hidden><summary>Update with your package manager</summary>
+            <p class="hint">Add the signed AnvilDroid repository once; system updates then include AnvilDroid.</p>
+            <code id="update-repo-command" class="update-repo-command"></code>
+          </details>
+        </div>
+        <div class="settings-section">
           <div class="application-preferences">
           <label class="shortcut-preference"><input id="minimize-to-panel" type="checkbox" disabled> Minimize to panel</label>
           <label class="shortcut-preference"><input id="auto-startup" type="checkbox" disabled> Auto startup</label>
@@ -219,7 +253,7 @@
           </div>
         </div>
         <div class="settings-section">
-          <div class="section-heading"><h2>Start on boot</h2></div>
+          <div class="section-heading"><h2>Start at login</h2></div>
           <div id="runtime-startup-list"><p class="hint">Loading runtimes…</p></div>
         </div>
         <div class="settings-section image-settings">
@@ -260,7 +294,7 @@
     <footer class="app-footer"><span>AnvilDroid</span><span>Right-click an app for actions</span></footer>
     </div>
   </div>
-  <div id="app-toast" class="app-toast" hidden><p id="app-toast-message" role="status" aria-live="polite" aria-atomic="true"></p><button id="app-toast-close" type="button" aria-label="Dismiss notification">×</button></div>
+  <div class="toast-stack"><div id="progress-toasts" class="progress-toasts" hidden></div><div id="app-toast" class="app-toast" hidden><p id="app-toast-message" role="status" aria-live="polite" aria-atomic="true"></p><button id="app-toast-close" type="button" aria-label="Dismiss notification">×</button></div></div>
   <dialog id="runtime-storage-dialog" aria-labelledby="runtime-storage-title" aria-describedby="runtime-storage-description">
     <form id="runtime-storage-form">
       <h2 id="runtime-storage-title">Change storage location</h2>
@@ -349,6 +383,7 @@
       <div class="dialog-actions"><button id="app-dialog-cancel" class="btn" type="button">Cancel</button><button id="app-dialog-submit" class="btn btn-primary" type="submit">Continue</button></div>
     </form>
   </dialog>
+  <script src="select-menu.js" defer></script>
   <script src="app-dialog.js" defer></script>
   <script src="runtime-batch.js" defer></script>
   <script src="runtime-window.js" defer></script>

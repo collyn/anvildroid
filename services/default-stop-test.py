@@ -256,6 +256,18 @@ class AsyncStopTests(unittest.TestCase):
 
 
 class HardwareCallbackTests(unittest.TestCase):
+    def test_older_waydroid_with_five_callbacks_still_registers(self):
+        integration, _context = integration_fixture()
+        hardware = integration.tools.services.hardware_manager.IHardware
+        captured = []
+        hardware.add_service.side_effect = lambda args, *callbacks: captured.append(callbacks) or 'registered'
+        integration.install_hardware_callbacks()
+        integration.session_token = object()
+        callbacks = [Mock(return_value=n) for n in range(5)]
+        self.assertEqual(hardware.add_service(integration.args, *callbacks), 'registered')
+        self.assertEqual(len(captured[-1]), 5)
+        self.assertEqual([wrapped() for wrapped in captured[-1]], list(range(5)))
+
     def test_callbacks_are_versioned_and_cannot_act_during_or_after_stop(self):
         integration, _context = integration_fixture()
         hardware = integration.tools.services.hardware_manager.IHardware
@@ -263,7 +275,8 @@ class HardwareCallbackTests(unittest.TestCase):
         captured = []
         original.side_effect = lambda args, *callbacks: captured.append(callbacks) or 'registered'
         integration.install_hardware_callbacks()
-        callbacks = [Mock(return_value=number + 10) for number in range(5)]
+        # Waydroid 1.6.3 passes six callbacks (adds shutdownRequest); older five.
+        callbacks = [Mock(return_value=number + 10) for number in range(6)]
         integration.session_token = object()
         self.assertEqual(hardware.add_service(integration.args, *callbacks), 'registered')
         first = captured[-1]

@@ -128,6 +128,7 @@ resize_app_task() {
 }
 
 publish_task_snapshot() {
+    snapshot_changed=0
     snapshot=$(cmd activity stack list) || return 1
     # HWC displayFrame is in the physical display's orientation; task bounds
     # are logical Android coordinates. Publish the actual default-display
@@ -144,6 +145,7 @@ $snapshot"
         printf '%s\n' "$snapshot" > tasks.tmp && mv tasks.tmp tasks || return 1
         last_snapshot=$snapshot
         snapshot_published=1
+        snapshot_changed=1
     fi
 }
 
@@ -163,9 +165,13 @@ refresh_close_epoch() {
 }
 refresh_close_epoch
 display_bootstrap=0
-snapshot_ticks=0
+snapshot_ticks=0 idle_rounds=0 snapshot_changed=0
 last_snapshot= snapshot_published=0
 while true; do
+    # Bridge/worker hint: an app surface has no known task yet (e.g. an app
+    # just opened). Snapshot now instead of waiting for the idle interval.
+    # A hint this helper cannot delete is ignored, so it can never pin the fast rate.
+    if [ -f wake ] && rm -f wake 2>/dev/null && [ ! -f wake ]; then snapshot_ticks=0; idle_rounds=0; fi
     if [ -f close ] && [ ! -L close ]; then
         mv close close.processing
         read -r epoch task package extra < close.processing
@@ -186,7 +192,7 @@ while true; do
         printf '%s %s %s\n' "$task" "$package" "$result" > close-result.tmp
         mv close-result.tmp close-result
         rm -f close.processing
-        snapshot_ticks=0
+        snapshot_ticks=0 idle_rounds=0
     fi
     if [ -f resize ] && [ ! -L resize ]; then
         mv resize resize.processing
@@ -197,7 +203,7 @@ while true; do
                 if [ -z "$extra" ] && [ -z "$(getprop waydroid.anvil_full_ui)" ] && [ "$width" -ge 64 ] && [ "$height" -ge 64 ] &&
                    [ "$width" -le 8192 ] && [ "$height" -le 8192 ]; then
                     resize_app_task "$task" "$width" "$height"
-                    snapshot_ticks=0
+                    snapshot_ticks=0 idle_rounds=0
                 fi
                 ;;
         esac
@@ -226,12 +232,16 @@ while true; do
         rm -f display-state display-restore
         display_full=0
     fi
-    # Check resize requests at 50 ms, but keep the heavier ActivityManager
-    # snapshot at about 250 ms when idle. Refresh immediately after a resize.
+    # Requests are checked every 50 ms with shell builtins only. The snapshot
+    # launches cmd/dumpsys/sed and wakes system_server, so it runs every 250 ms
+    # while tasks change and every 1 s once they have been stable for ~3 s.
+    # Requests, resizes and bridge wakes return to the fast rate immediately.
     if [ "$snapshot_ticks" -eq 0 ]; then
-        refresh_close_epoch
+        # pidof is another process launch; close requests re-check it anyway.
+        [ $((idle_rounds % 8)) -eq 0 ] && refresh_close_epoch
         publish_task_snapshot
-        snapshot_ticks=5
+        if [ "$snapshot_changed" -eq 1 ]; then idle_rounds=0; else idle_rounds=$((idle_rounds + 1)); fi
+        if [ "$idle_rounds" -ge 12 ]; then snapshot_ticks=20; else snapshot_ticks=5; fi
     fi
     snapshot_ticks=$((snapshot_ticks - 1))
     wait_tick 0.05

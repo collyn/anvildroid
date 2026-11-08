@@ -231,6 +231,7 @@ static int game_fit_geometry(struct object *s,int x,int y,int sw,int sh) {
       s->app_id,sw,sh,s->fit_w,s->fit_h,r.x,r.y,r.width,r.height,!game_fit_enabled(s));
     union argument dest[2]={{.i=s->fit_w},{.i=s->fit_h}};
     wayland_send(s->viewport->p,2,dest);
+    s->viewport->viewport_w=s->fit_w;s->viewport->viewport_h=s->fit_h; /* shared with geometry() */
   }
   struct proxy *above=0;
   for(struct object *sub=objects;sub;sub=sub->next) {

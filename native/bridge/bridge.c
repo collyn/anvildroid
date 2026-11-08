@@ -121,6 +121,8 @@ struct object {
   int buffer_transport, transport_reported, transport_seen;
   struct object *next, *parent, *surface, *xdg, *viewport, *region;
   int region_x, region_y, region_width, region_height, region_valid;
+  int task_wake_sent; /* asked the task helper for a fresh snapshot once */
+  int viewport_w, viewport_h; /* last wp_viewport destination sent (0: none) */
   int frame_origin_valid, frame_origin_x, frame_origin_y;
   int x, y, width, height, valid, app;
   int source_x, source_y, source_width, source_height;
@@ -441,6 +443,16 @@ static void ime_protocol_init(void *library) {
   ime_object_types[1] = dlsym(library, "wl_seat_interface");
   ime_surface_types[0] = dlsym(library, "wl_surface_interface");
 }
+/* The shell-UID task helper slows its ActivityManager snapshot to 1 s when
+ * nothing changes. An app surface without a known task means a window just
+ * opened: ask for an immediate snapshot, once per surface. */
+static void request_task_snapshot(struct object *s) {
+  if (s->task_wake_sent) return;
+  s->task_wake_sent = 1;
+  void *wake = fopen("/data/waydroid_tmp/anvildroid/wake", "w");
+  if (wake) fclose(wake);
+}
+
 static void geometry(struct object *s) {
   if (!s || !s->xdg || (!s->app && !s->full_ui))
     return;
@@ -472,6 +484,8 @@ static void geometry(struct object *s) {
         task_matches++;
       }
     }
+    if (task_matches) s->task_wake_sent = 0;
+    else request_task_snapshot(s);
   }
   struct object *r = s->region ? s->region : &cached;
   if (!r->valid && !s->frame_origin_valid) {
@@ -567,8 +581,14 @@ static void geometry(struct object *s) {
     int w = r->x + r->width, h = r->y + r->height;
     if (w < 1) w = 1;
     if (h < 1) h = 1;
-    union argument a[2] = {{.i = w}, {.i = h}};
-    wayland_send(s->viewport->p, 2, a);
+    /* Viewport state persists across commits: resend only on change, not on
+     * every Android frame. */
+    if (s->viewport->viewport_w != w || s->viewport->viewport_h != h) {
+      union argument a[2] = {{.i = w}, {.i = h}};
+      wayland_send(s->viewport->p, 2, a);
+      s->viewport->viewport_w = w;
+      s->viewport->viewport_h = h;
+    }
   }
   content_clip_sync(s, r->x, r->y, r->width, r->height);
   csd_sync(s, r->x, r->y, r->width, r->height);

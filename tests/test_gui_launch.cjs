@@ -774,7 +774,7 @@ test('missing Waydroid explains setup and disables preparation while keeping ren
   assert.match((element('controller-runtimes').innerHTML + element('runtime-settings-content').innerHTML),/Install Waydroid first/);
 });
 
-test('failed preparation offers prepare retry and successful boot keeps headless settings visible', async () => {
+test('failed preparation offers prepare retry and successful boot shows desktop settings', async () => {
   let record = {id:'r-error',name:'Android',state:'Error',job:{operation:'prepare',status:'Failed',error:'Disk full'}};
   const {context,element} = gui(async (command,args) => {
     if(command === 'runtime_controller') return args.request.op === 'list' ? [record] : record;
@@ -789,8 +789,9 @@ test('failed preparation offers prepare retry and successful boot keeps headless
   await vm.runInContext('refreshController()',context);
   html = (element('controller-runtimes').innerHTML + element('runtime-settings-content').innerHTML);
   assert.match(html,/runtime-status success[^>]*>Running/);
-  assert.match(html,/Display mode: Headless/);
-  assert.match(html,/Background mode; no app windows/);
+  assert.match(html,/Display mode: Desktop/);
+  assert.doesNotMatch(html,/Use Headless|data-backend="legacy"|Weston compatibility/);
+  assert.match(html,/App windows use your X11 or Wayland desktop session/);
   assert.match(html,/aria-label="Stop · Android"/);
 });
 
@@ -927,7 +928,7 @@ test('package listing rejects a result for another runtime', async () => {
   assert.equal(vm.runInContext("managedSnapshots.has('r-two')",context),false);
 });
 
-test('headless app actions confirm their target, reserve clicks and report a job', async () => {
+test('desktop app actions confirm their target, reserve clicks and report a job', async () => {
   const consent=deferred();
   const calls=[];
   let submitted=false;
@@ -941,7 +942,7 @@ test('headless app actions confirm their target, reserve clicks and report a job
     if(request.op==='list') return [record];
     if(request.op==='refresh') return {...record};
     if(request.op==='app_job') return submitted?job:null;
-  },async(message)=>{ assert.match(message,/headless Android/);assert.match(message,/My runtime/);return consent.promise; });
+  },async(message)=>{ assert.match(message,/on your desktop/);assert.match(message,/My runtime/);return consent.promise; });
   await tick();
   vm.runInContext("runtimeSettingsId='r-action'",context);
   vm.runInContext("controllerRecords=[{id:'r-action',name:'My runtime',state:'Running'}]",context);
@@ -953,7 +954,7 @@ test('headless app actions confirm their target, reserve clicks and report a job
   await task;
   assert.equal(calls.filter(r=>r.op==='app_action').length,1);
   assert.equal(vm.runInContext('controllerRecords.length',context),1);
-  assert.match((element('controller-runtimes').innerHTML + element('runtime-settings-content').innerHTML),/Launching app in headless Android/);
+  assert.match((element('controller-runtimes').innerHTML + element('runtime-settings-content').innerHTML),/Launching desktop app/);
 });
 
 test('cancelled force-stop sends no app action', async () => {
@@ -965,17 +966,17 @@ test('cancelled force-stop sends no app action', async () => {
   assert.equal(actions.filter(r=>r.op==='app_action').length,0);
 });
 
-test('desktop mode exposes window actions and applies a display change with restart while running', () => {
+test('desktop mode exposes window actions without a headless toggle', () => {
   const {context,element}=gui(async()=>{});
   vm.runInContext("runtimeSettingsId='r-desktop';controllerRecords=[{id:'r-desktop',name:'Desktop',state:'Running',display:{mode:'desktop',effective_mode:'desktop'}}];renderController()",context);
   const html=element('controller-runtimes').innerHTML+element('runtime-settings-content').innerHTML;
   assert.match(html,/Display mode: Desktop/);
+  assert.doesNotMatch(html,/Use Headless|data-backend="legacy"|Weston compatibility/);
   assert.match(html,/data-controller-op="open_waydroid"[^>]*aria-label="Open Waydroid · Desktop"/);
-  assert.doesNotMatch(html,/data-controller-op="display_set"[^>]*disabled/);
-  assert.match(html,/Use Headless & restart/);
+  assert.doesNotMatch(html,/data-controller-op="display_set"/);
   vm.runInContext("controllerRecords[0].state='Stopped';renderController()",context);
   const stopped=element('runtime-settings-content').innerHTML;
-  assert.doesNotMatch(stopped,/data-controller-op="display_set"[^>]*disabled/);
+  assert.doesNotMatch(stopped,/data-controller-op="display_set"/);
   assert.doesNotMatch(stopped,/Use Headless & restart/);
 });
 
@@ -1603,7 +1604,7 @@ test('GAPPS creation pins the ready image pair then automatically prepares and s
  await tick();calls.length=0;
  element('controller-name').value='Play';element('controller-image').value='GAPPS';
  vm.runInContext("submitRuntimeCreate({preventDefault(){}})",context);
- assert.equal(calls.length,0);assert.match(element('controller-message').textContent,/Download and verify GAPPS/);
+ assert.equal(calls.length,0);assert.match(element('controller-message').textContent,/Download and verify Waydroid GAPPS in Images/);
  vm.runInContext("imageDownloadState={status:'Ready',flavor:'GAPPS',available_images:[{library_id:'gapps-one',status:'Ready',flavor:'GAPPS',images:{system:{sha256:'system'},vendor:{sha256:'vendor'}}}],images:{system:{sha256:'system'},vendor:{sha256:'vendor'}}};document.getElementById('controller-image').value='GAPPS';submitRuntimeCreate({preventDefault(){}})",context);
  await tick();await tick();
  const request=calls.find(r=>r.op==='create_image');
@@ -1945,6 +1946,28 @@ test('resource presets update custom fields without replacing the focused panel'
  assert.match(html,/RAM limits 0 MiB/);
 });
 
+for (const state of ['Running', 'Frozen', 'Stopped']) test(`resource preset on a ${state} runtime updates the draft that Save sends`,async()=>{
+ const sent=[];
+ const {context}=gui(async(command,args)=>{if(command==='runtime_controller')sent.push(args.request);},undefined,'?view=settings');await tick();
+ vm.runInContext(`controllerRecords=[{id:'r-limits',name:'Limits',state:'${state}',resources:{configured:{memory_mib:4096,cpu_count:4},host:{supported:true,memory_total_mib:32000,memory_available_mib:20511,cpu_count:16},presets:[{name:'Light',memory_mib:2048,cpu_count:2},{name:'Balanced',memory_mib:4096,cpu_count:4}]}}];renderController()`,context);
+ vm.runInContext("applyResourcePreset('r-limits','Light')",context);
+ assert.equal(vm.runInContext("JSON.stringify(runtimeResourceDraft.get('r-limits'))",context),JSON.stringify({memory_mib:2048,cpu_count:2}));
+ // The rendered controls agree with the draft: Light is selected and the fields show its values.
+ const html=vm.runInContext("renderResourceControls(controllerRecords[0], false)",context);
+ assert.match(html,/<option value="Light" selected>/);
+ assert.match(html,/value="2048" data-resource-id="r-limits" data-resource-field="memory_mib"/);
+ assert.match(html,/value="2" data-resource-id="r-limits" data-resource-field="cpu_count"/);
+ assert.equal(vm.runInContext("JSON.stringify({...(runtimeResourceDraft.get('r-limits')||controllerRecords[0].resources.configured)})",context),JSON.stringify({memory_mib:2048,cpu_count:2}));
+});
+
+test('resource presets are ignored while the runtime is busy or starting',async()=>{
+ const {context}=gui(async()=>{},undefined,'?view=settings');await tick();
+ vm.runInContext(`controllerRecords=[{id:'r-limits',name:'Limits',state:'Starting',resources:{configured:{memory_mib:4096,cpu_count:4},host:{supported:true,memory_total_mib:32000,memory_available_mib:20511,cpu_count:16},presets:[{name:'Light',memory_mib:2048,cpu_count:2}]}}];renderController()`,context);
+ vm.runInContext("applyResourcePreset('r-limits','Light')",context);
+ assert.equal(vm.runInContext("runtimeResourceDraft.has('r-limits')",context),false);
+ assert.match(vm.runInContext("renderResourceControls(controllerRecords[0], false)",context),/data-resource-field="preset" disabled/);
+});
+
 test('runtime summary shows RAM CPU and disk usage without opening details',async()=>{
  const {context}=gui(async()=>{},undefined,'?view=settings');await tick();
  vm.runInContext(`controllerRecords=[{id:'r-summary',name:'Summary',state:'Running',resources:{configured:{memory_mib:4096,cpu_count:2},effective:{memory_current_bytes:2147483648,memory_max_bytes:4294967296,cpu_quota_count:2}},storage:{used_bytes:1073741824,limit_bytes:10737418240}}];renderController()`,context);
@@ -1966,14 +1989,15 @@ test('runtime summary labels configured and unavailable resource states',async()
  assert.match(html,/runtime-usage-value">—/);assert.doesNotMatch(html,/aria-valuenow=/);
 });
 
-test('missing Wayland is optional for headless setup and capability is shown',async()=>{
- const setup={can_prepare:true,can_start:true,checks:[{id:'waydroid',label:'Waydroid',available:true,detail:'Installed'},{id:'desktop',label:'Desktop session',available:false,detail:'No Wayland socket'}],desktop:{desktop:false,session:'none',detail:'No Wayland socket is available; headless mode can still run.'}};
+test('missing graphical session requires setup before starting Android',async()=>{
+ const setup={can_prepare:true,can_start:false,checks:[{id:'waydroid',label:'Waydroid',available:true,detail:'Installed'},{id:'desktop',label:'Desktop session',available:false,detail:'No Wayland socket'}],desktop:{desktop:false,session:'none',detail:'A Wayland or X11 session is required.'}};
  const {context,element}=gui(async()=>{},undefined,'?view=settings',setup); await tick();
  vm.runInContext('controllerRequirements='+JSON.stringify(setup)+';renderControllerSetup()',context);
  const html=element('controller-setup').innerHTML;
- assert.doesNotMatch(html,/Setup required/);
- assert.match(html,/Desktop preview unavailable/);
- assert.match(html,/Headless mode remains available/);
+ assert.match(html,/Setup required/);
+ assert.match(html,/Desktop session unavailable/);
+ assert.match(html,/Open AnvilDroid from an X11 or Wayland desktop/);
+ assert.doesNotMatch(html,/Headless mode remains available/);
 });
 
 test('Wayland capability reports unverified decoration instead of claiming KDE',async()=>{
@@ -2043,39 +2067,63 @@ test('missing waydroid binary: confirm dialog gates the bundled installer, then 
   }, async () => { confirmations++; return true; }, '?view=runtime',
      { can_prepare: false, can_start: false, checks: [{ id: 'waydroid', label: 'Waydroid', available: false, detail: 'Install Waydroid for your Linux distribution first.' }] });
   await vm.runInContext('refreshController()', context);
-  assert.equal(element('btn-init-waydroid').textContent, 'Set up Waydroid');
+  assert.equal(element('btn-init-waydroid').textContent, 'Install / repair runtime tools');
   assert.equal(element('waydroid-setup-actions').hidden, false);
   await vm.runInContext('initializeWaydroid()', context);
   assert.equal(confirmations, 1);
   const setupCall = calls.find(([command]) => command === 'setup_waydroid');
   assert.ok(setupCall);
-  assert.equal(setupCall[1].flavor, 'VANILLA');
+  assert.equal(setupCall[1], undefined);
   await tick(); await tick();
   assert.equal(element('waydroid-init-status').textContent, '');
   assert.equal(element('app-toast-message').textContent, 'Waydroid initialized.');
 });
 
-test('missing support files uses the selected library image after confirmation', async () => {
+test('missing host tools can be repaired without selecting or initializing images', async () => {
   const calls = [];
-  let confirmations = 0;
+  let confirmation = '';
   const { context, element } = gui(async (command, args) => {
     calls.push([command, args]);
     if (command === 'runtime_controller' && args?.request?.op === 'list') return [];
-    if (command === 'setup_waydroid') return { ok: true, message: 'Waydroid initialization started in the background (GAPPS).' };
+    if (command === 'setup_waydroid') return { ok: false, message: 'Cancelled' };
     if (command === 'waydroid_init_status') return { state: 'none' };
-    return undefined;
-  }, async () => { confirmations++; return true; }, '?view=runtime',
-     { can_prepare: false, can_start: false, checks: [{ id: 'support', label: 'Waydroid setup', available: false, detail: 'Complete Waydroid initialization before starting an additional runtime.' }] });
+  }, async message => { confirmation = message; return true; }, '?view=runtime',
+     { can_prepare: false, can_start: false, installed_images: false, checks: [{ id: 'support', available: false }] });
   await vm.runInContext('refreshController()', context);
-  assert.equal(element('btn-init-waydroid').textContent, 'Choose image');
-  vm.runInContext("imageDownloadState={status:'Ready',available_images:[{library_id:'a'.repeat(64),flavor:'GAPPS'}]};updateWaydroidSetupActions()",context);
-  element('waydroid-init-flavor').value = 'a'.repeat(64);
+  assert.equal(element('btn-init-waydroid').textContent, 'Install / repair runtime tools');
   await vm.runInContext('initializeWaydroid()', context);
-  assert.equal(confirmations, 1);
+  assert.match(confirmation, /host tools/);
   const setupCall = calls.find(([command]) => command === 'setup_waydroid');
-  assert.ok(setupCall);
-  assert.equal(setupCall[1].flavor, 'GAPPS');
-  assert.equal(setupCall[1].imageId, 'a'.repeat(64));
+  assert.equal(setupCall[1], undefined);
+});
+
+test('packaged templates and a library image do not require System Waydroid setup', async () => {
+  const calls = [];
+  const { context, element } = gui(async (command, args) => { calls.push([command, args]); }, undefined, '?view=runtime');
+  await tick();
+  vm.runInContext("controllerRequirements={can_prepare:true,can_start:true,installed_images:false,system_runtime:false,checks:[{id:'waydroid',available:true},{id:'support',available:true},{id:'tools',available:true}]};imageDownloadState={status:'Idle',available_images:[{library_id:'a'.repeat(64),flavor:'GAPPS'}]};updateWaydroidSetupActions()", context);
+  assert.equal(element('waydroid-setup-actions').hidden, true);
+  assert.equal(element('runtime-image-notice').hidden, true);
+  assert(!calls.some(([command]) => command === 'setup_waydroid'));
+  const html = fs.readFileSync('crates/anvildroid-gui/src-frontend/index.html', 'utf8');
+  assert.doesNotMatch(html, /Optional: System Waydroid|btn-init-system-waydroid/);
+});
+
+test('runtime tab points to Images when no Android image exists', async () => {
+  const { context, element } = gui(async () => undefined, undefined, '?view=runtime');
+  await tick();
+  vm.runInContext("controllerRequirements={can_prepare:false,can_start:true,installed_images:false,checks:[{id:'images',available:false},{id:'waydroid',available:true}]};imageDownloadState={status:'Idle',available_images:[]};setupNavigation='';navigatePage=page=>setupNavigation=page;updateWaydroidSetupActions()", context);
+  assert.equal(element('runtime-image-notice').hidden, false);
+  element('btn-runtime-open-images').listeners.click();
+  assert.equal(vm.runInContext('setupNavigation', context), 'images');
+});
+
+test('installed System Waydroid images can create a runtime without System Waydroid setup', async () => {
+  const { context, element } = gui(async () => undefined, undefined, '?view=runtime');
+  await tick();
+  vm.runInContext("existingRuntime=null;controllerRequirements={can_prepare:true,can_start:true,installed_images:true,system_runtime:false,checks:[{id:'images',available:true}]};imageDownloadState={status:'Idle',available_images:[]};updateWaydroidSetupActions();renderImageSourceOptions()", context);
+  assert.equal(element('runtime-image-notice').hidden, true);
+  assert.match(element('controller-image').innerHTML, /value="installed"/);
 });
 
 test('initialization already in progress: click resumes polling without invoking setup again', async () => {
@@ -2112,10 +2160,10 @@ test('missing runtime tools expose in-app repair even when Waydroid is initializ
     if (command === 'waydroid_init_status') return {state:'none'};
     if (command === 'setup_waydroid') return {ok:false, message:'Cancelled'};
   }, async () => { confirmations++; return true; }, '?view=runtime',
-  {can_prepare:true, can_start:false, checks:[{id:'waydroid', available:true}, {id:'support', available:true}, {id:'tools', available:false, detail:'Missing: weston'}]});
+  {can_prepare:true, can_start:false, checks:[{id:'waydroid', available:true}, {id:'support', available:true}, {id:'tools', available:false, detail:'Missing: lxc-start'}]});
   await vm.runInContext('refreshController()', context);
   assert.equal(element('waydroid-setup-actions').hidden, false);
-  assert.equal(element('btn-init-waydroid').textContent, 'Set up Waydroid');
+  assert.equal(element('btn-init-waydroid').textContent, 'Install / repair runtime tools');
   await vm.runInContext('initializeWaydroid()', context);
   assert.equal(confirmations, 1);
   assert.ok(calls.some(([c]) => c === 'setup_waydroid'));
@@ -2177,6 +2225,10 @@ test('runtime usage computes CPU delta, falls back to host memory and pauses whi
   assert.match(cell.innerHTML,/aria-label="Disk"[^>]*aria-valuenow="10.0"/);
   calls.length=0;
   memoryLimit=null;
+  await vm.runInContext('refreshRuntimeUsage()',context);
+  // Disk usage was sampled moments ago: only live resources are re-read.
+  assert.deepEqual(calls.map(r=>r.op),['resources_info']);
+  vm.runInContext("runtimeStorageSampledAt.set('r-two', Date.now() - 31000)",context);calls.length=0;
   await vm.runInContext('refreshRuntimeUsage()',context);
   assert.deepEqual(calls.map(r=>r.op),['resources_info','storage_info']);
   assert.match(cell.innerHTML,/1.0 \/ 16.0 GiB/);
@@ -2394,7 +2446,8 @@ test('Settings action opens a separate runtime page and Back restores the list',
  element('runtime-settings-back').listeners.click();
  assert(element('page-runtime').classList.contains('active'));
  assert(!element('page-runtime-settings').classList.contains('active'));
- assert.equal(calls.length,0);
+ // Only the change watch talks to the controller while navigating.
+ assert.equal(calls.filter(([,args])=>args?.request?.op!=='watch').length,0);
 });
 test('runtime Settings supports Existing runtime and handles a deleted target', async()=>{
  const {context,element}=gui(async()=>[],undefined,'?view=controls');await tick();
@@ -2439,7 +2492,7 @@ test('runtime Settings exposes every original configuration group directly', asy
  for(const key of ['gpu','storage','arm','resources','display','google','health']) assert.match(html,new RegExp('data-settings-key="r-options:'+key+'"'));
  assert(!html.includes(':advanced'));
  assert(!html.includes('More settings'));
- for(const op of ['rename','reinstall','delete','display_set','gpu_set','resources_set']) assert.match(html,new RegExp('data-controller-op="'+op+'"'));
+ for(const op of ['rename','reinstall','delete','backend_set','gpu_set','resources_set']) assert.match(html,new RegExp('data-controller-op="'+op+'"'));
  vm.runInContext("existingRuntime={id:'default',name:'Existing',state:'Stopped',managed:true};openRuntimeSettings('default')",context);
  const existing=element('existing-runtime-management').innerHTML;
  for(const key of ['gpu','storage','arm','resources','google','health','import'])assert.match(existing,new RegExp('data-settings-key="default:'+key+'"'));
@@ -2575,27 +2628,6 @@ for (const mode of ['success', 'cancel-dialog', 'cancel-auth', 'failure', 'doubl
     if(!['busy','became-busy'].includes(mode))assert.equal(vm.runInContext('controllerMutation',context),false);
     assert.equal(element('btn-restart-controller').textContent,'Restart controller');
   });
-}
-
-for(const mode of ['official-library','custom-library','installed','no-image','cancel','double-click']) {
- test(`Default setup: ${mode}`,async()=>{
-  const calls=[];const gate=deferred();const id='a'.repeat(64);
-  const {context,element}=gui(async(command,args)=>{
-   if(command==='setup_waydroid'){calls.push(args);return {ok:false,message:'Authentication cancelled'};}
-   return {};
-  },async()=>{if(mode==='double-click')await gate.promise;return mode!=='cancel';},'?view=settings');
-  await tick();
-  vm.runInContext(`controllerRequirements={installed_images:${mode==='installed'},checks:[{id:'support',available:${mode==='installed'}}]};controllerMutation=false;waydroidInitBusy=false;setupNavigation='';navigatePage=page=>setupNavigation=page;imageDownloadState={status:'Idle',available_images:${mode==='no-image'?'[]':JSON.stringify([{library_id:id,flavor:mode==='custom-library'?'CUSTOM':'GAPPS',custom_name:mode==='custom-library'?'Custom Android':undefined}])}};updateWaydroidSetupActions()`,context);
-  element('waydroid-init-flavor').value=mode==='installed'?'installed':id;
-  const run=()=>vm.runInContext('initializeWaydroid()',context);
-  const task=run();
-  if(mode==='double-click'){await tick();await run();gate.resolve();}
-  await task;
-  assert.equal(calls.length,['no-image','cancel'].includes(mode)?0:1);
-  if(mode==='no-image')assert.equal(vm.runInContext('setupNavigation',context),'images');
-  if(calls.length)assert.deepEqual(JSON.parse(JSON.stringify(calls[0])),{flavor:['installed','custom-library'].includes(mode)?'VANILLA':'GAPPS',imageId:mode==='installed'?null:id});
-  assert.equal(vm.runInContext('waydroidInitBusy',context),false);
- });
 }
 
 for (const failed of [false, true]) test(`runtime icon busy: preserves SVG after ${failed ? 'failure' : 'success'}`, async () => {
@@ -3116,4 +3148,137 @@ test('device Custom validation and focused inputs suppress unsafe saves and poll
     vm.runInContext('renderController()',context);
     assert.equal(element('existing-runtime-management').innerHTML,'retained input');
   }
+});
+
+test('image download progress stays in a toast until it finishes', async () => {
+  const { context, element } = gui(async () => undefined, undefined, '?view=images');
+  await tick();
+  const base = {id:'job-1', flavor:'GAPPS', cache_path:'/cache', free_bytes:0, available_images:[]};
+  vm.runInContext(`renderImageDownload(${JSON.stringify({...base, status:'Downloading', phase:'Downloading system', download_bytes:4*1024**3, received_bytes:1024**3, can_cancel:true})})`, context);
+  assert.equal(element('progress-toasts').hidden, false);
+  assert.match(element('progress-toasts').innerHTML, /Downloading Waydroid GAPPS · 25%/);
+  assert.match(element('progress-toasts').innerHTML, /data-progress-cancel="image-download"/);
+  vm.runInContext(`renderImageDownload(${JSON.stringify({...base, status:'Ready', image_bytes:1})})`, context);
+  assert.equal(element('progress-toasts').hidden, true);
+  assert.match(element('app-toast-message').textContent, /Waydroid GAPPS is ready/);
+});
+
+test('custom URL progress toast offers cancel only while downloading', async () => {
+  const calls = [];
+  const { context, element } = gui(async command => {
+    calls.push(command);
+    if (command === 'cancel_custom_image_url') return {status:'Cancelling'};
+    if (command === 'custom_image_url_status') return {status:'Cancelled', percent:0};
+  }, undefined, '?view=images');
+  await tick();
+  vm.runInContext("customUrlState={status:'Downloading', total_bytes:100, received_bytes:50, percent:50, can_cancel:true};renderCustomUrlProgress()", context);
+  assert.match(element('progress-toasts').innerHTML, /Downloading custom image · 50%/);
+  assert.equal(element('btn-cancel-custom-url').hidden, false);
+  await vm.runInContext('cancelCustomImageUrl()', context);
+  await tick(); await tick();
+  assert.ok(calls.includes('cancel_custom_image_url'));
+  assert.equal(element('progress-toasts').hidden, true);
+  assert.match(element('custom-image-status').textContent, /Download cancelled/);
+  vm.runInContext("customUrlState={status:'Importing', phase:'Validating', can_cancel:false};renderCustomUrlProgress()", context);
+  assert.doesNotMatch(element('progress-toasts').innerHTML, /data-progress-cancel/);
+  assert.match(element('progress-toasts').innerHTML, /cannot be cancelled/);
+});
+
+test('progress toast escapes task names', async () => {
+  const { context, element } = gui(async () => undefined);
+  await tick();
+  vm.runInContext("showProgressToast('runtime-create', {title:'Creating <b>x</b>', detail:'Step 1', percent:null})", context);
+  assert.doesNotMatch(element('progress-toasts').innerHTML, /<b>x<\/b>/);
+  vm.runInContext("clearProgressToast('runtime-create')", context);
+  assert.equal(element('progress-toasts').hidden, true);
+});
+
+test('theme script resolves system preference, persists choice and syncs the native titlebar', () => {
+  const store = new Map(), invoked = [], listeners = [];
+  const root = {dataset: {}};
+  const context = vm.createContext({
+    localStorage: {getItem: key => store.get(key) ?? null, setItem: (key, value) => store.set(key, value)},
+    document: {documentElement: root, dispatchEvent() {}},
+    CustomEvent: class { constructor(type, init) { this.type = type; this.detail = init.detail; } },
+    window: {matchMedia: () => ({matches: true, addEventListener: (_, fn) => listeners.push(fn)}),
+      __TAURI__: {core: {invoke: (command, args) => { invoked.push([command, args]); return Promise.resolve(); }}}},
+  });
+  context.window.localStorage = context.localStorage;
+  vm.runInContext(fs.readFileSync('crates/anvildroid-gui/src-frontend/theme.js', 'utf8').replace(/window\.(matchMedia|__TAURI__)/g, 'window.$1'), context);
+  assert.equal(root.dataset.theme, 'light');               // system -> desktop prefers light
+  assert.equal(JSON.stringify(invoked.at(-1)), JSON.stringify(['set_window_theme', {light: true}]));
+  vm.runInContext("window.AnvilTheme.set('dark')", context);
+  assert.equal(root.dataset.theme, 'dark');
+  assert.equal(store.get('anvildroid.theme'), 'dark');
+  vm.runInContext("window.AnvilTheme.set('purple')", context);  // invalid values are ignored
+  assert.equal(store.get('anvildroid.theme'), 'dark');
+});
+
+test('stylesheets use theme tokens instead of literal colours', () => {
+  for (const name of ['style.css', 'shell.css', 'management.css', 'dialogs.css']) {
+    const css = fs.readFileSync(`crates/anvildroid-gui/src-frontend/${name}`, 'utf8');
+    assert.doesNotMatch(css, /#[0-9a-fA-F]{3,8}\b|rgba?\(\s*\d/, `${name} contains a literal colour; add or reuse a token in theme.css`);
+  }
+});
+
+test('Prepare button prepares then starts the runtime and reports it running', async () => {
+  const id = 'r-' + 'b'.repeat(32);
+  const sent = [];
+  let record = {id, name:'Android', state:'Allocated', job:null};
+  const { context, element } = gui(async (command, args) => {
+    if (command !== 'runtime_controller') return;
+    const op = args.request.op;
+    sent.push(op);
+    if (op === 'prepare') { record = {...record, state:'Provisioning', job:{id:'p1', operation:'prepare', status:'Running', error:null}}; return record; }
+    if (op === 'start') { record = {...record, state:'Starting', job:{id:'s1', operation:'start', status:'Running', error:null}}; return record; }
+    if (op === 'refresh' && record.job?.status === 'Running') {
+      record = {...record, state: record.job.operation === 'prepare' ? 'Prepared' : 'Running', job:{...record.job, status:'Succeeded'}};
+    }
+    return op === 'list' ? [record] : record;
+  }, async () => true);
+  await vm.runInContext('refreshController()', context);
+  await vm.runInContext(`mutateController({op:'prepare', id:'${id}'})`, context);
+  assert.ok(sent.indexOf('start') > sent.indexOf('prepare'), sent.join(','));
+  assert.equal(record.state, 'Running');
+  assert.match(element('app-toast-message').textContent, /Images prepared\. Android is running\./);
+  assert.equal(element('progress-toasts').hidden, true);
+});
+
+test('runtime notifications list apps with per-app toggles and save through the controller', async () => {
+  const sent = [];
+  const id = 'r-' + 'c'.repeat(32);
+  const { context } = gui(async (command, args) => {
+    if (command !== 'runtime_controller') return;
+    sent.push(args.request);
+    const request = args.request;
+    if (request.op === 'notifications_app_set') return {runtime_id:id, enabled:true, blocked: request.allowed ? [] : [request.package], status:{state:'Connected'}};
+    if (request.op === 'notifications_set') return {runtime_id:id, enabled:request.enabled, blocked:[], status:null};
+  });
+  await tick();
+  vm.runInContext(`controllerRecords=[{id:'${id}',name:'Phone',state:'Running',notifications:{enabled:true,blocked:['com.old'],status:{state:'Connected'}}}];
+    managedSnapshots.set('${id}', [{package:'com.chat',label:'<Chat>',launchable:true},{package:'org.anvildroid.desktop',label:'Waydroid'}]);`, context);
+  let html = vm.runInContext("renderRuntimeNotifications(controllerRecords[0], false)", context);
+  assert.match(html, /Status: Connected/);
+  assert.match(html, /&lt;Chat&gt;/);                                  // labels are escaped
+  assert.doesNotMatch(html, /org\.anvildroid\.desktop/);                // Full UI is not an app
+  assert.match(html, /data-notifications-app="com\.chat" checked/);
+  assert.match(html, /data-notifications-app="com\.old" (?!checked)/);  // blocked apps stay listed
+  vm.runInContext(`handleRuntimeConfigChange({target:{dataset:{notificationsRuntime:'${id}', notificationsApp:'com.chat'}, checked:false}})`, context);
+  await tick(); await tick();
+  assert.equal(JSON.stringify(sent.at(-1)), JSON.stringify({op:'notifications_app_set', package:'com.chat', allowed:false, id}));
+  assert.equal(vm.runInContext("JSON.stringify(controllerRecords[0].notifications.blocked)", context), '["com.chat"]');
+  vm.runInContext(`handleRuntimeConfigChange({target:{dataset:{notificationsRuntime:'${id}', notificationsMaster:''}, checked:false}})`, context);
+  await tick(); await tick();
+  html = vm.runInContext("renderRuntimeNotifications(controllerRecords[0], false)", context);
+  assert.match(html, /Status: Off/);
+  assert.match(html, /data-notifications-app="com\.chat" checked disabled/);   // per-app toggles wait for the master switch
+});
+
+test('optional ARM package download is not reported as required setup',async()=>{
+ const setup={can_prepare:true,can_start:true,checks:[{id:'waydroid',label:'Waydroid',available:true,detail:'Installed'},{id:'arm_payload',label:'ARM app support package',available:false,optional:true,detail:'Downloaded automatically during Prepare or setup.'},{id:'desktop',label:'Desktop session',available:true,detail:'X11'}],desktop:{desktop:true,session:'x11',detail:'X11'}};
+ const {context,element}=gui(async()=>{},undefined,'?view=settings',setup); await tick();
+ vm.runInContext('controllerRequirements='+JSON.stringify(setup)+';renderControllerSetup()',context);
+ const html=element('controller-setup').innerHTML;
+ assert.doesNotMatch(html,/Setup required/);
+ assert.match(html,/Ready to prepare and start/);
 });

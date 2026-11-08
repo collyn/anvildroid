@@ -43,7 +43,7 @@ dependencies = [
 
 [[package]]
 name = "anvildroid-cli"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anvildroid-core",
  "serde_json",
@@ -51,7 +51,7 @@ dependencies = [
 
 [[package]]
 name = "anvildroid-core"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "base64 0.22.1",
  "dirs",
@@ -62,7 +62,7 @@ dependencies = [
 
 [[package]]
 name = "anvildroid-gui"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anvildroid-core",
  "cc",
@@ -70,6 +70,7 @@ dependencies = [
  "libloading",
  "serde",
  "serde_json",
+ "sha2",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",

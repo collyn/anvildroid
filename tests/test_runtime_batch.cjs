@@ -167,7 +167,7 @@ function harness(records = [record('one'), record('two')]) {
     renderExistingRuntime(){},syncRuntimeSettingsFeatures(){},document:{...rc.document,activeElement:null},
     defaultRuntimeFirst:records=>records,defaultRuntimeBadge:()=>'',setDefaultRuntimeButton:()=>'',
     escapeHtml:value=>String(value).replaceAll('<','&lt;').replaceAll('>','&gt;')});
-  for(const name of ['renderGpuControls','renderRuntimeGraphics','renderRuntimeArm','renderRuntimeGoogle','renderResourceControls','renderRuntimeHealth','renderRuntimeDevice'])rc[name]=()=>'';
+  for(const name of ['renderGpuControls','renderRuntimeGraphics','renderRuntimeArm','renderRuntimeGoogle','renderResourceControls','renderRuntimeHealth','renderRuntimeDevice','renderRuntimeNotifications','renderQuickSettings'])rc[name]=()=>'';
   const from=source.indexOf('function renderRuntimeUsage('),to=source.indexOf('\nfunction beginReinstall',from);
   vm.runInContext(source.slice(from,to),rc);
   rc.runtimeBatchSelection.add('one');rc.renderController();

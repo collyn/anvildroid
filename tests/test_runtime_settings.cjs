@@ -233,3 +233,43 @@ test('Settings distinguishes source variants and warns about an Android target m
   f.drafts.set('test',{engine:'libhoudini',sha256:'d'.repeat(64)});
   assert.doesNotMatch(f.context.renderRuntimeArm(f.record,false),/arm-target-warning/);
 });
+
+const {prepareAndStart} = require('../crates/anvildroid-gui/src-frontend/runtime-settings.js');
+const ID = 'r-' + 'a'.repeat(32);
+
+function prepareFixture(startFails = false) {
+  const sent = [], phases = [];
+  let state = 'Provisioning', job = {id:'p1', operation:'prepare', status:'Running'};
+  const send = async request => {
+    sent.push(request.op);
+    if (request.op === 'start') {
+      if (startFails) throw new Error('No desktop session');
+      state = 'Starting'; job = {id:'s1', operation:'start', status:'Running'};
+      return {id:ID, state, job};
+    }
+    // Each poll advances the current job to its target state.
+    if (job.operation === 'prepare') { state = 'Prepared'; job = {...job, status:'Succeeded'}; }
+    else { state = 'Running'; job = {...job, status:'Succeeded'}; }
+    return {id:ID, state, job};
+  };
+  const options = {send, progress: phase => phases.push(phase), waitOptions:{sleep: async () => {}}};
+  return {sent, phases, options, submitted:{id:ID, state:'Provisioning', job:{id:'p1', operation:'prepare', status:'Running'}}};
+}
+
+test('manual Prepare continues straight into Start after images are ready', async () => {
+  const {sent, phases, options, submitted} = prepareFixture();
+  const record = await prepareAndStart(submitted, options);
+  assert.equal(record.state, 'Running');
+  assert.deepEqual(sent, ['refresh', 'start', 'refresh']);
+  assert.deepEqual(phases, ['preparing', 'booting']);
+});
+
+test('a failed automatic start says the images are already prepared', async () => {
+  const {options, submitted} = prepareFixture(true);
+  await assert.rejects(prepareAndStart(submitted, options), /Images are prepared, but the automatic start failed: Error: No desktop session/);
+});
+
+test('prepare-and-start rejects a response for a different operation', async () => {
+  const {options} = prepareFixture();
+  await assert.rejects(prepareAndStart({id:ID, job:{id:'x', operation:'start'}}, options), /Invalid runtime operation response/);
+});

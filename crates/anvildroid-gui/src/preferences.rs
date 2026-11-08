@@ -17,6 +17,9 @@ use tauri::{
 
 const TRAY_ID: &str = "anvildroid-panel";
 const AUTOSTART_FILE: &str = "org.anvildroid.gui.desktop";
+/// Hidden login entry that asks the controller to start "start at login"
+/// runtimes. The controller is socket activated, so login is the trigger.
+const LOGIN_START_FILE: &str = "org.anvildroid.login-start.desktop";
 
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -82,6 +85,10 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
 }
 
 fn desktop_entry(executable: &Path) -> Result<String, String> {
+    entry_for(executable, "AnvilDroid", "--autostart", "")
+}
+
+fn entry_for(executable: &Path, name: &str, argument: &str, extra: &str) -> Result<String, String> {
     let path = executable.to_str().ok_or("Executable path is not UTF-8")?;
     if path.contains(['\n', '\r', '\0']) {
         return Err("Invalid executable path".into());
@@ -95,13 +102,29 @@ fn desktop_entry(executable: &Path) -> Result<String, String> {
         .replace('$', "\\$")
         .replace('%', "%%");
     let escaped = quoted.replace('\\', "\\\\");
-    Ok(format!("[Desktop Entry]\nType=Application\nName=AnvilDroid\nExec=\"{escaped}\" --autostart\nIcon=org.anvildroid.gui\nTerminal=false\nX-GNOME-Autostart-enabled=true\n"))
+    Ok(format!("[Desktop Entry]\nType=Application\nName={name}\nExec=\"{escaped}\" {argument}\nIcon=org.anvildroid.gui\nTerminal=false\n{extra}X-GNOME-Autostart-enabled=true\n"))
 }
 
 fn set_autostart_at(root: &Path, enabled: bool, executable: &Path) -> Result<(), String> {
-    let path = root.join("autostart").join(AUTOSTART_FILE);
-    if enabled {
-        write_atomic(&path, desktop_entry(executable)?.as_bytes())
+    let entry = if enabled { Some(desktop_entry(executable)?) } else { None };
+    set_entry(&root.join("autostart").join(AUTOSTART_FILE), entry)
+}
+
+fn set_login_start_at(root: &Path, enabled: bool, executable: &Path) -> Result<(), String> {
+    let entry = if enabled {
+        Some(entry_for(executable, "AnvilDroid runtimes", "--login-start", "NoDisplay=true\n")?)
+    } else {
+        None
+    };
+    set_entry(&root.join("autostart").join(LOGIN_START_FILE), entry)
+}
+
+fn set_entry(path: &Path, entry: Option<String>) -> Result<(), String> {
+    if let Some(entry) = entry {
+        if fs::read_to_string(path).is_ok_and(|current| current == entry) {
+            return Ok(());
+        }
+        write_atomic(path, entry.as_bytes())
     } else {
         match fs::remove_file(path) {
             Ok(()) => Ok(()),
@@ -111,8 +134,58 @@ fn set_autostart_at(root: &Path, enabled: bool, executable: &Path) -> Result<(),
     }
 }
 
-fn show_main(app: &tauri::AppHandle) {
-    if let Some(window) = app.get_webview_window("main") {
+/// Window geometry kept while the webview is released to the panel.
+#[derive(Clone, Copy)]
+struct Geometry {
+    position: tauri::PhysicalPosition<i32>,
+    size: tauri::PhysicalSize<u32>,
+    maximized: bool,
+}
+static RELEASED: Mutex<Option<Geometry>> = Mutex::new(None);
+
+/// Hiding to the panel destroys the webview instead of keeping it hidden:
+/// WebKit's web process (~150 MiB) exits and the GUI keeps only its tray,
+/// shortcut monitor and Rust state. Reopening loads the page again.
+pub fn release_main(app: &tauri::AppHandle) {
+    let Some(window) = app.get_webview_window("main") else { return };
+    if let (Ok(position), Ok(size)) = (window.outer_position(), window.inner_size()) {
+        let maximized = window.is_maximized().unwrap_or(false);
+        *RELEASED.lock().unwrap_or_else(|e| e.into_inner()) = Some(Geometry { position, size, maximized });
+    }
+    let _ = window.destroy();
+}
+
+/// Release from inside a window callback without destroying the window
+/// while GTK or Tauri is still dispatching its event.
+pub fn release_main_later(app: &tauri::AppHandle) {
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || release_main(&handle));
+}
+
+fn recreate_main(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String> {
+    let config = app.config().app.windows.iter()
+        .find(|window| window.label == "main")
+        .cloned()
+        .ok_or("Main window configuration is missing")?;
+    let window = tauri::WebviewWindowBuilder::from_config(app, &config)
+        .and_then(|builder| builder.build())
+        .map_err(|e| e.to_string())?;
+    #[cfg(target_os = "linux")]
+    crate::titlebar::install_window(&window).map_err(|e| e.to_string())?;
+    if let Some(geometry) = *RELEASED.lock().unwrap_or_else(|e| e.into_inner()) {
+        let _ = window.set_size(geometry.size);
+        let _ = window.set_position(geometry.position);
+        if geometry.maximized { let _ = window.maximize(); }
+    }
+    Ok(window)
+}
+
+pub fn show_main(app: &tauri::AppHandle) {
+    let window = match app.get_webview_window("main") {
+        Some(window) => Some(window),
+        None => recreate_main(app).map_err(|e| eprintln!("Cannot reopen AnvilDroid: {e}")).ok(),
+    };
+    if let Some(window) = window {
         let _ = window.unminimize();
         let _ = window.show();
         let _ = window.set_focus();
@@ -134,10 +207,9 @@ fn handle_panel_menu(app: &tauri::AppHandle, id: &str) {
 
 pub fn handle_close(window: &tauri::Window, event: &tauri::WindowEvent) {
     if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-        if window.label() == "main" && minimize_to_panel(window.app_handle())
-            && window.hide().is_ok()
-        {
+        if window.label() == "main" && minimize_to_panel(window.app_handle()) {
             api.prevent_close();
+            release_main_later(window.app_handle());
         }
     }
 }
@@ -211,7 +283,11 @@ pub fn show_at_startup(app: &tauri::AppHandle, explicit_view: bool) -> tauri::Re
     if let Some(window) = app.get_webview_window("main") {
         match startup_visibility(&prefs, minimize_to_panel(app), explicit_view) {
             StartupVisibility::Show => window.show()?,
-            StartupVisibility::Hide => {}
+            StartupVisibility::Hide => {
+                drop(prefs);
+                release_main_later(app);
+                return Ok(());
+            }
             StartupVisibility::Minimize => {
                 window.show()?;
                 window.minimize()?;
@@ -279,12 +355,7 @@ pub fn set_application_preference(
             }
         }
         "auto_startup" => {
-            // AppImage's mounted executable is temporary; use its persistent path.
-            let executable = std::env::var_os("APPIMAGE")
-                .map(PathBuf::from)
-                .filter(|path| path.is_absolute() && path.is_file())
-                .unwrap_or(std::env::current_exe().map_err(|e| e.to_string())?);
-            set_autostart_at(&config_root(), enabled, &executable)?;
+            set_autostart_at(&config_root(), enabled, &persistent_executable()?)?;
             prefs.auto_startup = enabled;
         }
         "startup_minimize" => {
@@ -301,6 +372,20 @@ pub fn set_application_preference(
     let mut result = prefs.clone();
     result.minimize_to_panel = minimize_to_panel(&app);
     Ok(result)
+}
+
+/// AppImage's mounted executable is temporary; use its persistent path.
+fn persistent_executable() -> Result<PathBuf, String> {
+    Ok(std::env::var_os("APPIMAGE")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute() && path.is_file())
+        .unwrap_or(std::env::current_exe().map_err(|e| e.to_string())?))
+}
+
+/// Keep the login entry in step with "start at login" runtimes.
+#[tauri::command]
+pub fn set_login_start(enabled: bool) -> Result<(), String> {
+    set_login_start_at(&config_root(), enabled, &persistent_executable()?)
 }
 
 #[tauri::command]
@@ -393,36 +478,35 @@ mod tests {
                 install(app)?;
                 app.manage(anvildroid_core::shortcut_preferences::ShortcutMonitor::start()?);
                 crate::titlebar::install(app)?;
-                let window = app.get_webview_window("main").unwrap();
-                show_at_startup(app.handle(), false)?;
-                assert!(!window.is_visible()?);
+                // Startup-to-panel releases the webview; an explicit view keeps it.
+                assert_eq!(startup_visibility(&Preferences { minimize_to_panel: true, auto_startup: false, startup_minimize: true, default_runtime: None }, true, false), StartupVisibility::Hide);
                 show_at_startup(app.handle(), true)?;
                 let handle = app.handle().clone();
                 let mut stage = 0;
-                gtk::glib::timeout_add_local(std::time::Duration::from_millis(200), move || {
-                    let window = handle
-                        .get_webview_window("main")
-                        .expect("main survives hiding");
-                    let native = window.gtk_window().unwrap();
+                gtk::glib::timeout_add_local(std::time::Duration::from_millis(300), move || {
+                    // Hiding to the panel destroys the webview; opening recreates it.
+                    let window = handle.get_webview_window("main");
+                    let shown = window.as_ref().is_some_and(|w| w.is_visible().unwrap_or(false));
                     match stage {
                         0 => {
-                            assert!(window.is_visible().unwrap());
+                            assert!(shown);
                             assert!(handle.tray_by_id(TRAY_ID).is_some());
+                            let native = window.unwrap().gtk_window().unwrap();
                             let bar = native.titlebar().unwrap().downcast::<gtk::Box>().unwrap();
                             let button =
                                 bar.children()[1].clone().downcast::<gtk::Button>().unwrap();
                             button.emit_clicked();
                         }
                         1 => {
-                            assert!(!window.is_visible().unwrap());
+                            assert!(window.is_none(), "minimize to panel releases the webview");
                             handle_panel_menu(&handle, "panel-open");
                         }
                         2 => {
-                            assert!(window.is_visible().unwrap());
-                            native.close();
+                            assert!(shown, "panel open recreates the window");
+                            window.unwrap().gtk_window().unwrap().close();
                         }
                         3 => {
-                            assert!(!window.is_visible().unwrap());
+                            assert!(window.is_none(), "close to panel releases the webview");
                             let state = handle.state::<ApplicationPreferences>();
                             assert!(
                                 set_application_preference(
@@ -453,7 +537,7 @@ mod tests {
                             assert!(!minimize_to_panel(&handle));
                         }
                         4 => {
-                            assert!(window.is_visible().unwrap());
+                            assert!(shown, "disabling the panel brings the window back");
                             let state = handle.state::<ApplicationPreferences>();
                             set_application_preference(
                                 handle.clone(),
@@ -462,10 +546,10 @@ mod tests {
                                 true,
                             )
                             .unwrap();
-                            native.close();
+                            window.unwrap().gtk_window().unwrap().close();
                         }
                         _ => {
-                            assert!(!window.is_visible().unwrap());
+                            assert!(window.is_none());
                             handle_panel_menu(&handle, "panel-exit");
                             return gtk::glib::ControlFlow::Break;
                         }
@@ -479,6 +563,9 @@ mod tests {
             .unwrap();
         assert_eq!(
             app.run_return(|app, event| {
+                if let tauri::RunEvent::ExitRequested { api, code: None, .. } = &event {
+                    if minimize_to_panel(app) { api.prevent_exit(); }
+                }
                 if matches!(event, tauri::RunEvent::Exit) {
                     app.state::<anvildroid_core::shortcut_preferences::ShortcutMonitor>()
                         .stop();
@@ -487,6 +574,22 @@ mod tests {
             0
         );
         assert!(!root.join("autostart").join(AUTOSTART_FILE).exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn login_start_entry_is_hidden_and_removable() {
+        let root = std::env::temp_dir().join(format!("anvil-login-start-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let path = root.join("autostart").join(LOGIN_START_FILE);
+        set_login_start_at(&root, true, Path::new("/usr/bin/anvildroid-gui")).unwrap();
+        let entry = fs::read_to_string(&path).unwrap();
+        assert!(entry.contains("Exec=\"/usr/bin/anvildroid-gui\" --login-start"));
+        assert!(entry.contains("NoDisplay=true"));
+        // The GUI's own autostart preference is a different entry.
+        assert!(!read_at(&root).unwrap().auto_startup);
+        set_login_start_at(&root, false, Path::new("/usr/bin/anvildroid-gui")).unwrap();
+        set_login_start_at(&root, false, Path::new("/usr/bin/anvildroid-gui")).unwrap();
+        assert!(!path.exists());
         fs::remove_dir_all(root).unwrap();
     }
     #[test]

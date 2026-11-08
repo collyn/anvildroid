@@ -32,6 +32,17 @@ pub enum Request {
     ComponentsSet { id: String, component_id: String, enabled: bool, archive_sha256: Option<String>, revision: String },
     #[serde(rename = "diagnostics_collect")]
     DiagnosticsCollect { id: String, include_logs: bool },
+    /// Start the caller's start-on-login runtimes in the caller's desktop session.
+    #[serde(rename = "login_start")]
+    LoginStart {},
+    /// Long-poll until the caller's runtime view changes (or `timeout` seconds).
+    Watch { since: Option<String>, timeout: u32 },
+    #[serde(rename = "notifications_get")]
+    NotificationsGet { id: String },
+    #[serde(rename = "notifications_set")]
+    NotificationsSet { id: String, enabled: bool },
+    #[serde(rename = "notifications_app_set")]
+    NotificationsAppSet { id: String, package: String, allowed: bool },
     #[serde(rename = "adb_info")]
     AdbInfo { id: String },
     #[serde(rename = "adb_set")]
@@ -327,7 +338,18 @@ pub fn desktop_session_display() -> Option<String> {
     )
 }
 
+thread_local! {
+    static LAST_ERROR_CODE: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Controller error code (NOT_FOUND, BUSY, INVALID_STATE, ...) of the last
+/// failed request on this thread; `None` for success or transport errors.
+pub fn last_error_code() -> Option<String> {
+    LAST_ERROR_CODE.with(|code| code.borrow().clone())
+}
+
 pub fn request(request: Request) -> Result<Value, String> {
+    LAST_ERROR_CODE.with(|code| *code.borrow_mut() = None);
     let socket = UnixStream::connect("/run/anvildroid/control.sock")
         .map_err(|e| format!("Runtime controller unavailable: {e}"))?;
     exchange(socket, request).map_err(|e| format!("Runtime controller: {e}"))
@@ -446,7 +468,9 @@ fn exchange_files(
         return Err("Refusing endpoint not owned by root".into());
     }
     // ARM staging fsyncs hundreds of library files before publishing a version.
-    let reply_timeout = if matches!(&request, Request::ArmImport {} | Request::ArmSet { .. } | Request::ComponentsSet { .. }) {
+    let reply_timeout = if let Request::Watch { timeout, .. } = &request {
+        u64::from((*timeout).min(25)) + 10
+    } else if matches!(&request, Request::ArmImport {} | Request::ArmSet { .. } | Request::ComponentsSet { .. }) {
         180
     } else if matches!(&request, Request::CompatibilityGet { .. } | Request::CompatibilitySet { .. }
         | Request::CompatibilityReset { .. } | Request::DiagnosticsCollect { .. } | Request::ComponentsGet { .. }) {
@@ -525,6 +549,9 @@ fn decode(reader: impl BufRead) -> Result<Value, String> {
         return Err("Invalid or oversized response".into());
     }
     let response: Value = serde_json::from_slice(&data).map_err(|e| e.to_string())?;
+    LAST_ERROR_CODE.with(|code| {
+        *code.borrow_mut() = response.pointer("/error/code").and_then(Value::as_str).map(str::to_owned)
+    });
     match response.get("ok").and_then(Value::as_bool) {
         Some(true) => response
             .get("result")

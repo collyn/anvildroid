@@ -38,44 +38,11 @@ void Server::popup_configure(Top *t, uint32_t token, bool reposition) {
                  platform.logical(monitor.width),
                  platform.logical(monitor.height)};
   if (!platform.testing()) {
-    Atom type;
-    int format;
-    unsigned long count, left;
-    unsigned char *bytes = nullptr;
-    unsigned long desktop = 0;
-    auto root_window = DefaultRootWindow(platform.display);
-    if (XGetWindowProperty(platform.display, root_window,
-                           platform.atom("_NET_CURRENT_DESKTOP"), 0, 1, False,
-                           XA_CARDINAL, &type, &format, &count, &left,
-                           &bytes) == Success &&
-        bytes) {
-      if (type == XA_CARDINAL && format == 32 && count)
-        desktop = *reinterpret_cast<unsigned long *>(bytes);
-      XFree(bytes);
-      bytes = nullptr;
-    }
-    if (desktop < 1024 &&
-        XGetWindowProperty(platform.display, root_window,
-                           platform.atom("_NET_WORKAREA"), desktop * 4, 4,
-                           False, XA_CARDINAL, &type, &format, &count, &left,
-                           &bytes) == Success &&
-        bytes) {
-      if (type == XA_CARDINAL && format == 32 && count == 4) {
-        auto *v = reinterpret_cast<unsigned long *>(bytes);
-        // _NET_WORKAREA spans every monitor; keep its part on this one.
-        long x0 = std::max<long>(long(v[0]), monitor.x),
-             y0 = std::max<long>(long(v[1]), monitor.y),
-             x1 = std::min<long>(long(v[0] + v[2]), long(monitor.x) + monitor.width),
-             y1 = std::min<long>(long(v[1] + v[3]), long(monitor.y) + monitor.height);
-        if (v[2] && v[3] && v[2] <= 65535 && v[3] <= 65535 && x1 > x0 &&
-            y1 > y0)
-          available = {platform.logical(double(x0)) - ox,
-                       platform.logical(double(y0)) - oy,
-                       platform.logical(double(x1 - x0)),
-                       platform.logical(double(y1 - y0))};
-      }
-      XFree(bytes);
-    }
+    auto area = platform.workarea(monitor);
+    available = {platform.logical(double(area.x)) - ox,
+                 platform.logical(double(area.y)) - oy,
+                 platform.logical(double(area.width)),
+                 platform.logical(double(area.height))};
   }
   t->popup_geometry = t->positioner.place(available);
   if (reposition && wl_resource_get_version(t->resource) >= 3)

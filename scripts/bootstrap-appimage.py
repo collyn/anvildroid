@@ -1,19 +1,13 @@
 #!/usr/bin/python3
-"""Idempotent first-run administrator bootstrap for the AppImage."""
+"""Idempotent first-run administrator bootstrap for the AppImage.
+
+Installs or repairs the runtime tools, then starts the controller. Android
+images are not installed here: users download or import them in Images.
+"""
 import os
 import subprocess
 import sys
 from pathlib import Path
-
-
-def support_complete():
-    return all(Path(path).exists() for path in (
-        '/var/lib/waydroid/images/system.img',
-        '/var/lib/waydroid/images/vendor.img',
-        '/var/lib/waydroid/waydroid.prop',
-        '/var/lib/waydroid/lxc/waydroid/config',
-        '/var/lib/waydroid/lxc/waydroid/waydroid.seccomp',
-        '/var/lib/waydroid/overlay'))
 
 
 def main():
@@ -26,16 +20,12 @@ def main():
     if not setup.is_file() or not controller.is_file():
         print('The AppImage is missing its bootstrap payload.', file=sys.stderr)
         return 2
-    flavor = os.environ.get('ANVILDROID_FLAVOR', 'VANILLA')
-    if flavor not in ('VANILLA', 'GAPPS'):
-        print('ANVILDROID_FLAVOR must be VANILLA or GAPPS.', file=sys.stderr)
-        return 2
-    if not support_complete() or not Path('/usr/bin/waydroid').exists():
-        print('Setting up Waydroid and verified Android images…', flush=True)
-        code = subprocess.run(['/usr/bin/python3', str(setup), '--run-init', '--flavor', flavor]).returncode
-        if code:
-            print('Waydroid setup failed; existing data was preserved.', file=sys.stderr)
-            return code
+    # No-op when Waydroid, the host tools and its LXC templates are present.
+    print('Checking Android runtime tools…', flush=True)
+    code = subprocess.run(['/usr/bin/python3', str(setup), '--run-init']).returncode
+    if code:
+        print('Runtime tools setup failed; existing data was preserved.', file=sys.stderr)
+        return code
     print('Installing and starting the AnvilDroid controller…', flush=True)
     return subprocess.run(['/usr/bin/python3', str(controller)]).returncode
 

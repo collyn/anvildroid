@@ -138,7 +138,7 @@ def run():
                     break
                 time.sleep(.1)
             if presenter.poll() is not None or not connected(endpoint):
-                raise RuntimeError('Native X11 adapter could not open the display; inspect its log above. Weston was not started.')
+                raise RuntimeError('Native X11 adapter could not open the display; inspect its log above.')
             env['WAYLAND_DISPLAY'] = SOCKET
             session = subprocess.Popen(['waydroid', 'session', 'start'], env=env, start_new_session=True)
             while session.poll() is None:

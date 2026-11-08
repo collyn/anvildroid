@@ -1,17 +1,17 @@
 #!/usr/bin/python3
-"""GUI-authorized host setup. Persist the helper before starting a detached job.
+"""GUI-authorized runtime tools setup. Persist the helper before starting a detached job.
 
-Repository setup, package installation and Android image initialization report
-progress in /run/anvildroid/waydroid-init.status. No dependency on the AppImage
+Installs Waydroid and the host tools managed runtimes need, and repairs the
+Waydroid LXC templates. It never initializes System Waydroid or downloads
+Android images: those come from the Images library when a runtime is created.
+Progress is reported in /run/anvildroid/waydroid-init.status. No dependency on the AppImage
 FUSE mount or its short-lived privilege-escalation staging directory remains.
 """
 import argparse
-import configparser
 import fcntl
 import importlib.util
 import json
 import os
-import re
 import shutil
 import stat
 import subprocess
@@ -21,40 +21,44 @@ from pathlib import Path
 PYTHON = '/usr/bin/python3'
 RUN_DIR = Path('/run/anvildroid')
 STORE = Path('/var/lib/anvildroid-controller')
-HOST_IMAGES = Path('/var/lib/waydroid/images')
 STATUS_FILE = RUN_DIR / 'waydroid-init.status'
 INIT_LOG = STORE / 'waydroid-init.log'
-# Exactly the set checked by runtime-controller.py requirements() and read by
-# runtime-provision.py — do not deviate.
-SUPPORT_PATHS = (Path('/var/lib/waydroid/overlay'),
-                 Path('/var/lib/waydroid/images/system.img'),
-                 Path('/var/lib/waydroid/images/vendor.img'),
-                 Path('/var/lib/waydroid/waydroid.prop'),
-                 Path('/var/lib/waydroid/lxc/waydroid/config'),
-                 Path('/var/lib/waydroid/lxc/waydroid/waydroid.seccomp'))
-BASE_PROP = Path('/var/lib/waydroid/waydroid_base.prop')
-WAYDROID_CFG = Path('/var/lib/waydroid/waydroid.cfg')
-WAYDROID_PROP = Path('/var/lib/waydroid/waydroid.prop')
-FLAVORS = ('VANILLA', 'GAPPS')
+# runtime-provision.py loads runtime-image-format.py and runtime-images.py.
+SETUP_MODULES = ('runtime-host.py', 'runtime-provision.py', 'runtime-image-format.py', 'runtime-images.py')
 ENV = {'PATH': '/usr/local/lib/anvildroid-controller/tools:/usr/sbin:/usr/bin:/sbin:/bin', 'PYTHONNOUSERSITE': '1'}
 INSTALL_SCRIPT_URL = 'https://repo.waydro.id'
+# Files written by the official repository script. apt reads them as the
+# unprivileged _apt user, so they must be world-readable.
+APT_SOURCE_FILES = (Path('/usr/share/keyrings/waydroid.gpg'), Path('/etc/apt/sources.list.d/waydroid.list'))
+
+
+def system_umask():
+    # This helper runs with umask 077 for its own state. Package tools and the
+    # repository script must create normal system files (0644), or apt cannot
+    # read the Waydroid key ("NO_PUBKEY") or source list.
+    os.umask(0o022)
+
+
+def repair_apt_sources(paths=APT_SOURCE_FILES):
+    """Make Waydroid apt files written by an earlier run under umask 077 readable."""
+    repaired = []
+    for path in paths:
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            continue
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_nlink != 1:
+            continue  # never follow or touch anything we did not expect
+        if stat.S_IMODE(info.st_mode) != 0o644 and not info.st_mode & 0o022:
+            os.chmod(path, 0o644)
+            repaired.append(str(path))
+    return repaired
 HOST_MODULE = Path(__file__).resolve().parent.parent / 'services/runtime-host.py'
 if not HOST_MODULE.is_file():
     HOST_MODULE = Path(__file__).with_name('runtime-host.py')
 spec = importlib.util.spec_from_file_location('runtime_host', HOST_MODULE)
 host = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(host)
-ARM_MODULE = HOST_MODULE.with_name('runtime-arm.py')
-spec_arm = importlib.util.spec_from_file_location('runtime_arm', ARM_MODULE)
-arm = importlib.util.module_from_spec(spec_arm)
-spec_arm.loader.exec_module(arm)
-
-
-def ensure_arm_archive():
-    """Use the same verified default ARM package as runtime preparation."""
-    write_status(STATUS_FILE, 'installing', detail='Downloading verified ARM app support…', pid=os.getpid())
-    return arm.ensure_default_archive()
-
 
 
 def ensure_directory(path, mode):
@@ -69,21 +73,8 @@ def ensure_directory(path, mode):
     os.chmod(path, mode)
 
 
-def validate_flavor(flavor):
-    if flavor not in FLAVORS:
-        raise ValueError(f'Flavor must be one of {", ".join(FLAVORS)}')
-
-
-def support_complete(paths=SUPPORT_PATHS):
-    return all(p.exists() for p in paths)
-
-
-def missing_support(paths=SUPPORT_PATHS):
-    return [str(p) for p in paths if not p.exists()]
-
-
-def write_status(status_path, state, flavor=None, detail='', error=None, pid=None):
-    payload = {'state': state, 'flavor': flavor, 'detail': detail, 'error': error, 'pid': pid}
+def write_status(status_path, state, detail='', error=None, pid=None):
+    payload = {'state': state, 'detail': detail, 'error': error, 'pid': pid}
     fd, temporary = tempfile.mkstemp(prefix='.waydroid-init.', dir=status_path.parent)
     try:
         with os.fdopen(fd, 'w') as stream:
@@ -127,54 +118,10 @@ def tail(text, maximum=400):
     return text[-maximum:]
 
 
-def ensure_waydroid_prop():
-    """Generate /var/lib/waydroid/waydroid.prop when waydroid >= 1.6 has not
-    created it. Newer waydroid writes this file only while mounting a session,
-    so an init on a running container can finish with the file absent; the
-    controller's requirements check and runtime provisioning both need it.
-    Mirrors waydroid's own make_prop (images.py): base prop + host identity +
-    fixed container paths."""
-    if WAYDROID_PROP.exists() or not BASE_PROP.exists():
-        return False
-    props = BASE_PROP.read_text().splitlines()
-    cfg = configparser.ConfigParser()
-    try:
-        cfg.read(WAYDROID_CFG)
-    except configparser.Error:
-        pass
-
-    def add_prop(key, section, option):
-        if cfg.has_option(section, option):
-            value = cfg.get(section, option)
-            if value and value != 'None':
-                props.append(key + '=' + value.replace('/mnt/', '/mnt_extra/'))
-
-    for key, option in (('waydroid.host.user', 'user_name'),
-                        ('waydroid.host.uid', 'user_id'),
-                        ('waydroid.host.gid', 'group_id'),
-                        ('waydroid.host_data_path', 'waydroid_data'),
-                        ('waydroid.background_start', 'background_start')):
-        add_prop(key, 'waydroid', option)
-    props.append('waydroid.xdg_runtime_dir=/run/xdg')
-    props.append('waydroid.pulse_runtime_path=/run/xdg/pulse')
-    props.append('waydroid.wayland_display=wayland-0')
-    if shutil.which('waydroid-sensord') is None:
-        props.append('waydroid.stub_sensors_hal=1')
-    for section in ('properties', 'waydroid'):
-        if cfg.has_option(section, 'lcd_density'):
-            density = cfg.get(section, 'lcd_density')
-            if density and density != '0':
-                props.append('ro.sf.lcd_density=' + density)
-    temporary = WAYDROID_PROP.with_name('.waydroid.prop.new')
-    temporary.write_text('\n'.join(props) + '\n')
-    os.chmod(temporary, 0o644)
-    os.replace(temporary, WAYDROID_PROP)
-    return True
-
-
 def apt(*args):
     with open(INIT_LOG, 'ab') as log:
-        result = subprocess.run(['apt-get', '-o', 'DPkg::Lock::Timeout=120', *args],
+        repair_apt_sources()
+        result = subprocess.run(['apt-get', '-o', 'DPkg::Lock::Timeout=120', *args], preexec_fn=system_umask,
                                 stdout=log, stderr=subprocess.STDOUT,
                                 env={**ENV, 'DEBIAN_FRONTEND': 'noninteractive'}, timeout=1800)
     if result.returncode:
@@ -207,9 +154,12 @@ def run_installer(status_path=STATUS_FILE, log_path=INIT_LOG):
                              capture_output=True, env=ENV, timeout=130)
     if fetched.returncode != 0 or not fetched.stdout.strip():
         raise RuntimeError('Cannot download the official Waydroid repository setup: ' + tail(fetched.stderr.decode('utf-8', 'replace')))
+    # Overwriting an existing file keeps its old mode, so repair before and after.
+    repair_apt_sources()
     with open(log_path, 'ab') as log:
-        installed = subprocess.run(['bash', '-e', '-s'], input=fetched.stdout,
+        installed = subprocess.run(['bash', '-e', '-s'], input=fetched.stdout, preexec_fn=system_umask,
                                    stdout=log, stderr=subprocess.STDOUT, env=ENV, timeout=600)
+    repair_apt_sources()
     if installed.returncode:
         raise RuntimeError(f'Waydroid repository setup failed; see {log_path}')
     # repo.waydro.id adds an apt source and updates metadata; it does NOT install
@@ -218,131 +168,54 @@ def run_installer(status_path=STATUS_FILE, log_path=INIT_LOG):
     apt('install', '-y', 'waydroid')
 
 
-def install_library_images(image_id, owner_uid):
-    """Publish only a verified pair from this administrator-authorized user's cache."""
-    target = HOST_IMAGES
-    if target.is_symlink():
-        raise RuntimeError('Unsafe Waydroid image directory')
-    if all((target / name).is_file() for name in ('system.img', 'vendor.img')):
-        for name in ('system.img', 'vendor.img'):
-            info = (target / name).lstat()
-            if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
-                raise RuntimeError('Unsafe installed Waydroid image')
-        return target  # Repair configuration without changing an installed pair.
-    if not image_id or not re.fullmatch(r'[0-9a-f]{64}', image_id):
-        raise RuntimeError('Choose a downloaded or imported image from the Images library first.')
-    cache = STORE / 'image-cache'
-    info = cache.lstat()
-    if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o077 or cache.resolve() != cache:
-        raise RuntimeError('Unsafe image cache directory')
-    spec = importlib.util.spec_from_file_location('setup_extract', HOST_MODULE.with_name('runtime-extract.py'))
-    extract = importlib.util.module_from_spec(spec); spec.loader.exec_module(extract)
-    library = cache / 'library.json'
-    extract.download.Downloads.check_file(library)
-    if library.stat().st_size > 4 * 1024**2:
-        raise RuntimeError('Image library is too large')
-    item = json.loads(library.read_text()).get(image_id)
-    if not item or item.get('owner_uid') != owner_uid:
-        raise RuntimeError('Selected image is not available for this user')
-    if target.is_symlink() or (target.exists() and any(target.iterdir())):
-        raise RuntimeError('Waydroid image directory is not empty; repair the incomplete image pair first.')
-    write_status(STATUS_FILE, 'initializing', detail='Verifying and unpacking the selected library image…', pid=os.getpid())
-    target.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
-    staging = Path(tempfile.mkdtemp(prefix='.anvildroid-setup-', dir=target.parent))
-    try:
-        pair = staging / 'images'
-        extract.extract_pair(cache, item['images'], pair, 'default')
-        (pair / 'manifest.json').unlink()
-        if target.exists(): target.rmdir()  # Only an empty directory; never overwrite images.
-        os.rename(pair, target)
-        extract.download.sync(target.parent)
-    finally:
-        shutil.rmtree(staging)
-    return target
+def ensure_managed_support():
+    """Repair package templates without initializing System Waydroid images."""
+    spec = importlib.util.spec_from_file_location('setup_provision', HOST_MODULE.with_name('runtime-provision.py'))
+    provision = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(provision)
+    if provision.managed_support_available():
+        return
+    distro = dict(line.split('=', 1) for line in Path('/etc/os-release').read_text().splitlines() if '=' in line)
+    family = (distro.get('ID', '') + ' ' + distro.get('ID_LIKE', '')).replace('"', '').split()
+    if not {'ubuntu', 'debian'}.intersection(family) or not shutil.which('apt-get'):
+        raise RuntimeError('Reinstall the Waydroid package for your distribution to restore its LXC templates, then refresh.')
+    write_status(STATUS_FILE, 'installing', detail='Repairing Waydroid runtime tools…', pid=os.getpid())
+    apt('update')
+    apt('install', '-y', '--no-install-recommends', '--reinstall', 'waydroid')
+    if not provision.managed_support_available():
+        raise RuntimeError('The Waydroid package did not provide the required LXC templates; see ' + str(INIT_LOG))
 
 
-def offline_init_command(waydroid, images):
-    # Waydroid skips both OTA discovery and download for preinstalled images.
-    # Register our fixed local pair in this child only; no distro file patches.
-    launcher = str(Path(waydroid).resolve())
-    code = ("import sys,runpy;sys.path.insert(0,sys.argv[1]);"
-            "import tools.config;tools.config.defaults['preinstalled_images_paths']=[sys.argv[2]];"
-            "launcher=sys.argv[3];sys.argv=[launcher,'init'];runpy.run_path(launcher,run_name='__main__')")
-    return [PYTHON, '-B', '-c', code, str(Path(launcher).parent), str(images), launcher]
-
-
-def run_init(flavor, image_id=None, owner_uid=None):
+def run_init():
     # Body of the --run-init subcommand; runs detached as root.
     if os.geteuid() != 0:
         raise SystemExit('The init subcommand must run as root.')
-    validate_flavor(flavor)
     ensure_host_packages()
-    ensure_arm_archive()
-    ensure_waydroid_prop()
-    if support_complete():
-        write_status(STATUS_FILE, 'done', flavor=flavor, detail='Android runtime setup is ready.', pid=os.getpid())
-        return
-    images = install_library_images(image_id, owner_uid)
-    write_status(STATUS_FILE, 'initializing', flavor=flavor,
-                 detail='Initializing System Waydroid from local images…', pid=os.getpid())
-    waydroid = shutil.which('waydroid')
-    if waydroid is None:
-        write_status(STATUS_FILE, 'failed', flavor=flavor,
-                     detail='waydroid binary not found after installation.',
-                     error='waydroid binary not found after installation')
-        raise SystemExit(1)
-    process = subprocess.Popen(offline_init_command(waydroid, images),
-                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                               text=True, bufsize=1, env=ENV)
-    assert process.stdout is not None
-    for line in process.stdout:
-        line = line.rstrip()
-        print(line)  # inherited fd: lands in INIT_LOG
-        if line.strip():
-            write_status(STATUS_FILE, 'initializing', flavor=flavor,
-                         detail=tail(line, 400), pid=os.getpid())
-    code = process.wait()
-    # waydroid >= 1.6 may finish init without creating waydroid.prop (it is
-    # only written while a session mounts); generate it from base prop + cfg.
-    ensure_waydroid_prop()
-    if code == 0 and support_complete():
-        write_status(STATUS_FILE, 'initializing', detail='Selecting GPU and installing ARM translation…', pid=os.getpid())
-        spec = importlib.util.spec_from_file_location('setup_existing', HOST_MODULE.with_name('runtime-existing.py'))
-        existing = importlib.util.module_from_spec(spec); spec.loader.exec_module(existing)
-        existing.ExistingRuntime(STORE).apply_defaults()
-        write_status(STATUS_FILE, 'done', flavor=flavor,
-                     detail=f'Waydroid initialized ({flavor}).', pid=os.getpid())
-        raise SystemExit(0)
-    missing = missing_support()
-    detail = f'waydroid init exited with {code}.'
-    error = (f'waydroid init exited with {code} and configuration is still missing: '
-             f'{", ".join(missing)}; see {INIT_LOG}')
-    write_status(STATUS_FILE, 'failed', flavor=flavor,
-                 detail=detail, error=error, pid=os.getpid())
-    raise SystemExit(1)
+    ensure_managed_support()
+    write_status(STATUS_FILE, 'done', detail='Runtime tools are ready. Choose an image in Images and create a runtime.', pid=os.getpid())
 
 
-def spawn_init(flavor, lock_fd, image_id=None, owner_uid=None):
+def spawn_init(lock_fd):
     # GUI removes its stage after pkexec returns. Persist BOTH this helper and
     # its dependency before spawn, so delayed exec/reopening the AppImage works.
     helper_dir = STORE / 'setup'
     ensure_directory(helper_dir, 0o700)
-    for source, name in ((Path(__file__).resolve(), 'setup-waydroid.py'),
-                         (HOST_MODULE, 'runtime-host.py'), (ARM_MODULE, 'runtime-arm.py'),
-                         (ARM_MODULE.with_name('runtime-arm-source.py'), 'runtime-arm-source.py'),
-                         *[(HOST_MODULE.with_name(name), name) for name in
-                           ('runtime-extract.py', 'runtime-download.py', 'runtime-image-format.py', 'runtime-existing.py', 'runtime-keymap.py', 'runtime-resources.py', 'runtime-gpu.py', 'runtime-nvidia.py', 'runtime-linux.py', 'runtime-storage.py')]):
+    # Read every dependency before publishing any helper files or spawning a job.
+    sources = {'setup-waydroid.py': Path(__file__).resolve().read_bytes(),
+               **{name: HOST_MODULE.with_name(name).read_bytes() for name in SETUP_MODULES}}
+    for name, data in sources.items():
+        compile(data, name, 'exec')
+    for name, data in sources.items():
         fd, temporary = tempfile.mkstemp(prefix='.setup-', dir=helper_dir)
         try:
             with os.fdopen(fd, 'wb') as stream:
-                stream.write(source.read_bytes()); stream.flush(); os.fsync(stream.fileno())
+                stream.write(data); stream.flush(); os.fsync(stream.fileno())
             os.replace(temporary, helper_dir / name)
         finally:
             Path(temporary).unlink(missing_ok=True)
     with open(INIT_LOG, 'ab') as log:
         process = subprocess.Popen([PYTHON, '-B', str(helper_dir / 'setup-waydroid.py'),
-                                    '--run-init', '--flavor', flavor, '--lock-fd', str(lock_fd),
-                                    '--owner-uid', str(owner_uid), *(['--image-id', image_id] if image_id else [])],
+                                    '--run-init', '--lock-fd', str(lock_fd)],
                                    stdin=subprocess.DEVNULL, stdout=log, stderr=log,
                                    start_new_session=True, cwd='/', env=ENV, pass_fds=(lock_fd,))
     # The child writes all progress, including its PID. The parent must not
@@ -351,16 +224,10 @@ def spawn_init(flavor, lock_fd, image_id=None, owner_uid=None):
 
 
 def main():
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description='Install or repair the host tools for AnvilDroid runtimes.')
     parser.add_argument('--run-init', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--lock-fd', type=int, help=argparse.SUPPRESS)
-    parser.add_argument('--flavor', choices=FLAVORS, default='VANILLA')
-    parser.add_argument('--image-id')
-    parser.add_argument('--owner-uid', type=int, help=argparse.SUPPRESS)
     args = parser.parse_args()
-    owner_uid = args.owner_uid if args.run_init else int(os.environ.get('PKEXEC_UID', os.getuid()))
-    if args.image_id and not re.fullmatch(r'[0-9a-f]{64}', args.image_id):
-        raise SystemExit('Invalid image library ID')
     if os.geteuid() != 0:
         raise SystemExit('Run this helper as root via pkexec.')
     os.umask(0o077)
@@ -376,20 +243,18 @@ def main():
             return
         if args.run_init:
             try:
-                run_init(args.flavor, args.image_id, owner_uid)
+                run_init()
             except Exception as error:
-                write_status(STATUS_FILE, 'failed', flavor=args.flavor,
-                             detail=tail(str(error)), error=tail(str(error)), pid=os.getpid())
+                write_status(STATUS_FILE, 'failed', detail=tail(str(error)), error=tail(str(error)), pid=os.getpid())
                 raise SystemExit(str(error))
             return
-        write_status(STATUS_FILE, 'initializing', flavor=args.flavor,
-                     detail='Starting Android runtime setup…', pid=os.getpid())
+        write_status(STATUS_FILE, 'initializing', detail='Starting runtime tools setup…', pid=os.getpid())
         try:
-            spawn_init(args.flavor, descriptor, args.image_id, owner_uid)
+            spawn_init(descriptor)
         except Exception as error:
             write_status(STATUS_FILE, 'failed', error=tail(str(error)))
             raise
-        print('Android runtime setup started. Progress and any errors will appear in the app.')
+        print('Runtime tools setup started. Progress and any errors will appear in the app.')
     finally:
         os.close(descriptor)
 

@@ -30,11 +30,11 @@ class PortablePackagingTest(unittest.TestCase):
             self.write('services/' + name, (ROOT / 'services' / name).read_bytes())
         for name in ('package-portable.sh', 'build-x11-payload.py', 'release-version.py',
                      'install-portable.sh', 'install-runtime-controller.py',
-                     'start-runtime-controller.py', 'setup-waydroid.py', 'apk-align.py'):
+                     'start-runtime-controller.py', 'setup-waydroid.py', 'apk-align.py', 'controller-payload.txt'):
             self.write('scripts/' + name, (ROOT / 'scripts' / name).read_bytes())
         # Pure fixture policy: the file-copy installer must never inspect host AppArmor.
         self.write('scripts/install-runtime-apparmor.py', b'def install(): return "Fixture AppArmor: no host changes"\n')
-        for name in ('anvildroid-controller.service', '50-anvildroid.conf'):
+        for name in ('anvildroid-controller.service', 'anvildroid-controller.socket', '50-anvildroid.conf'):
             self.write('packaging/systemd/' + name, (ROOT / 'packaging/systemd' / name).read_bytes())
         for name in ('anvildroid-apps.rc', 'anvildroid-apps.sh', 'anvildroid-tasks.rc',
                      'anvildroid-tasks.sh', 'anvildroid-keymap.rc', 'anvildroid-keymap.sh'):

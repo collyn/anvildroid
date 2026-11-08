@@ -124,7 +124,7 @@ chmod 755 "$appdir/AppRun.wrapped"
 mkdir -p "$appdir/scripts" "$appdir/services" "$appdir/target/native" \
   "$appdir/target/ime" "$appdir/target/shutdown" "$appdir/native" \
   "$appdir/packaging/systemd"
-cp scripts/bootstrap-appimage.py scripts/install-runtime-controller.py scripts/install-runtime-apparmor.py scripts/apk-align.py scripts/start-runtime-controller.py scripts/setup-waydroid.py "$appdir/scripts/"
+cp scripts/bootstrap-appimage.py scripts/controller-payload.txt scripts/install-runtime-controller.py scripts/install-runtime-apparmor.py scripts/apk-align.py scripts/start-runtime-controller.py scripts/setup-waydroid.py "$appdir/scripts/"
 cp services/*.py "$appdir/services/"
 cp native/anvildroid-*.rc native/anvildroid-*.sh "$appdir/native/"
 cp -a native/overlay "$appdir/native/"
@@ -135,7 +135,9 @@ cp target/native/libanvildroid-path-guard.so target/native/libanvildroid-runtime
   target/native/overlay-key.p12 "$appdir/target/native/"
 cp target/ime/AnvilDroidIme.apk "$appdir/target/ime/"
 cp target/shutdown/anvildroid-shutdown.jar "$appdir/target/shutdown/"
-cp packaging/systemd/anvildroid-controller.service "$appdir/packaging/systemd/"
+cp packaging/systemd/anvildroid-controller.service packaging/systemd/anvildroid-controller.socket "$appdir/packaging/systemd/"
+# Native X11 is the only X11 backend; ship the verified payload the installer auto-detects.
+python3 scripts/build-x11-payload.py --stage-parent "$appdir"
 
 # The WebKit library contains two absolute helper paths. Replace each prefix
 # with an equally long path relative to AppRun's working directory (usr/).
@@ -176,11 +178,11 @@ for helper in WebKitWebProcess WebKitNetworkProcess WebKitGPUProcess injected-bu
   }
 done
 squash="$stage/inspect/squashfs-root"
-for bundled in scripts/bootstrap-appimage.py scripts/start-runtime-controller.py scripts/setup-waydroid.py scripts/install-runtime-controller.py scripts/install-runtime-apparmor.py scripts/apk-align.py \
+for bundled in scripts/bootstrap-appimage.py scripts/controller-payload.txt scripts/start-runtime-controller.py scripts/setup-waydroid.py scripts/install-runtime-controller.py scripts/install-runtime-apparmor.py scripts/apk-align.py \
     target/native/libanvildroid-runtime-window.so target/native/overlay-key.p12 \
     target/ime/AnvilDroidIme.apk target/shutdown/anvildroid-shutdown.jar \
     native/anvildroid-apps.sh native/overlay/AndroidManifest.xml \
-    packaging/systemd/anvildroid-controller.service; do
+    packaging/systemd/anvildroid-controller.service packaging/systemd/anvildroid-controller.socket; do
   [ -s "$squash/$bundled" ] || {
     echo "AppImage is missing controller payload: $bundled" >&2
     exit 1

@@ -2,7 +2,9 @@
 """Apply safe Waydroid host fixes that survive AnvilDroid package upgrades."""
 from pathlib import Path
 import os
+import re
 import shutil
+import sys
 
 
 TARGET = Path('/usr/lib/waydroid/tools/helpers/run_core.py')
@@ -16,12 +18,15 @@ def main():
     if MARKER in text or ('sel.close()' in text and 'process.stdout.close()' in text):
         return
     start = '    sel.register(process.stdout, selectors.EVENT_READ)\n'
-    end = '        return (process.returncode, b"".join(output_buffer).decode("utf-8"))\n'
     begin = text.find(start)
-    finish = text.find(end, begin)
-    if begin < 0 or finish < 0:
+    # Waydroid has shipped this return at different indentation levels
+    # (1.6.3: function level). Accept any; never fail silently.
+    match = re.compile(r'^[ ]+return \(process\.returncode, b""\.join\(output_buffer\)\.decode\("utf-8"\)\)\n',
+                       re.MULTILINE).search(text, max(begin, 0))
+    if begin < 0 or not match:
+        print('AnvilDroid: Waydroid run_core.py layout changed; selector fd fix not applied', file=sys.stderr)
         return
-    finish += len(end)
+    finish = match.end()
     body = text[begin:finish]
     indented = ''.join('    ' + line if line.strip() else line for line in body.splitlines(True))
     replacement = ('    ' + MARKER + '\n'

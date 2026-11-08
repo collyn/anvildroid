@@ -2,6 +2,7 @@
 """Test the per-app endpoint without opening X11, EGL, Android or Weston."""
 import os
 import argparse
+import stat
 from pathlib import Path
 import subprocess
 import tempfile
@@ -134,12 +135,15 @@ def main(software_x11=False, xim=False):
             raise RuntimeError('Software X11 test dependencies missing from PATH: ' + ', '.join(missing))
     subprocess.run([str(OUT / 'surface-tree-check')], check=True)
     subprocess.run([str(OUT / 'output-mode-check')], check=True)
+    subprocess.run([str(OUT / 'window-positions-check')], check=True)
     subprocess.run([str(OUT / 'dmabuf-format-check')], check=True)
     subprocess.run([str(OUT / 'feature-state-check')], check=True)
     with tempfile.TemporaryDirectory(prefix='anvil-x11-host-', dir='/tmp') as directory, ExitStack() as cleanup:
         root = Path(directory)
         socket = root / 'wayland-test'
-        environment = dict(os.environ, XDG_RUNTIME_DIR=directory)
+        environment = dict(os.environ, XDG_RUNTIME_DIR=directory,
+                           # Remembered window positions stay in this disposable directory.
+                           XDG_STATE_HOME=str(Path(directory) / 'state'))
         environment.pop('DISPLAY', None)
         environment.pop('WAYLAND_DISPLAY', None)
         environment.pop('XAUTHORITY', None)
@@ -250,6 +254,15 @@ def main(software_x11=False, xim=False):
                     formats = [line for line in output.splitlines() if line.startswith('x11_adapter_dmabuf_formats=')]
                     assert formats and 'NV12' in formats[-1] and 'YV12' in formats[-1], formats
                 if software_x11:
+                    # First maps are centered on the workarea; reopened app
+                    # windows return to the position saved when they closed.
+                    state = Path(environment['XDG_STATE_HOME']) / 'anvildroid/x11-window-positions-default.tsv'
+                    assert 'x11_window_positions=0 path=' + str(state) in output, output[:2000]
+                    assert 'x11_toplevel_position_centered=' in output, 'New windows were not centered'
+                    assert 'x11_toplevel_position_restored=' in output, 'Reopened windows did not restore'
+                    saved = state.read_text().splitlines()
+                    assert saved and all(len(line.split('\t')) == 3 for line in saved), saved
+                    assert stat.S_IMODE(state.stat().st_mode) == 0o600
                     subprocess.run([str(OUT / 'keymap-client-check'), str(socket)], env=environment, check=True, timeout=30)
                     subprocess.run([str(OUT / 'feature-client-check'), str(socket)], env=environment, check=True, timeout=30)
                     assert host.poll() is None

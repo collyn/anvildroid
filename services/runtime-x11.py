@@ -74,14 +74,17 @@ def selection(instance):
             value['backend'] not in ('auto', 'legacy', 'native-x11') or
             value['presenter'] not in ('amd', 'intel', 'nvidia')):
         raise RuntimeError('Invalid display backend setting')
+    # Old compatibility selections now follow the active desktop session.
+    if value['backend'] == 'legacy':
+        value = dict(value, backend='auto')
     return value
 
 
 def resolve_backend(config, x11_desktop):
-    """Automatic X11 must never silently launch the compatibility compositor."""
+    """Resolve the desktop transport without a nested compositor."""
     resolved = dict(config)
     if resolved['backend'] == 'auto':
-        resolved['backend'] = 'native-x11' if x11_desktop else 'legacy'
+        resolved['backend'] = 'native-x11' if x11_desktop else 'wayland'
     return resolved
 
 
@@ -89,14 +92,14 @@ def preflight(instance, nvidia_rendering, *, defer_contract=False):
     report = json.loads((instance / 'support/compatibility.json').read_text())
     sdk = report.get('sdk')
     if sdk not in (33, 34, 35, 36):
-        raise RuntimeError(f"Native X11 supports SDK 33-36; this image uses SDK {sdk}. Weston was not started")
+        raise RuntimeError(f"Native X11 supports SDK 33-36; this image uses SDK {sdk}")
     if nvidia_rendering and sdk != 33 and (report.get('app_window_contract') != 'waydroid-hidl'
             or report.get('desktop_bridge') != 'anvildroid'):
-        raise RuntimeError(f'Native X11 NVIDIA/Venus requires the Waydroid per-app composer and desktop bridge on SDK {sdk}. Weston was not started')
+        raise RuntimeError(f'Native X11 NVIDIA/Venus requires the Waydroid per-app composer and desktop bridge on SDK {sdk}')
     pending_contract = defer_contract and 'app_window_contract' not in report
     if not nvidia_rendering and ((not pending_contract and report.get('app_window_contract') != 'waydroid-hidl')
             or report.get('desktop_bridge') == 'native-wayland'):
-        raise RuntimeError(f'Native X11 requires the Waydroid per-app composer contract (SDK {sdk}). Weston was not started')
+        raise RuntimeError(f'Native X11 requires the Waydroid per-app composer contract (SDK {sdk})')
     return load_payload(INSTALL)
 
 

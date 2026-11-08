@@ -46,7 +46,7 @@ fn launch_with(
             .is_some_and(|mode| mode != "desktop")
     {
         return Err(
-            "Select Desktop mode for this runtime in Settings before opening its shortcut.".into(),
+            "Desktop integration is unavailable. Restart this runtime from your graphical session before opening its shortcut.".into(),
         );
     }
     let deadline = Instant::now() + Duration::from_secs(360);

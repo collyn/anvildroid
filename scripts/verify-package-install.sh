@@ -5,6 +5,16 @@ FORMAT=${1:?deb, rpm or pkg required}
 PACKAGE_FILE=${2:?absolute package path required}
 VERSION=${3:?workspace version required}
 UPGRADE_FROM=${4:-}
+check_no_weston() {
+  if [ "${ANVILDROID_REQUIRE_NO_WESTON:-0}" = 1 ]; then
+    if command -v weston >/dev/null 2>&1; then
+      echo 'Weston must not be installed in this acceptance container' >&2
+      exit 1
+    fi
+    echo 'ACCEPTANCE: Weston is absent'
+  fi
+}
+check_no_weston
 package_version=$VERSION
 if [ -n "$UPGRADE_FROM" ]; then
   test "$FORMAT" = deb || { echo 'Upgrade fixture is currently supported for deb only' >&2; exit 2; }
@@ -15,9 +25,11 @@ if [ -n "$UPGRADE_FROM" ]; then
   dpkg --compare-versions "$(dpkg-deb -f "$UPGRADE_FROM" Version)" lt "$package_version"
 fi
 verify_installed() {
+  check_no_weston
   if [ -d /run/systemd/system ]; then
-    systemctl is-active --quiet anvildroid-controller.service
-    echo 'ACCEPTANCE: real systemd controller service active'
+    # Socket activated: the service itself may already have exited idle.
+    systemctl is-active --quiet anvildroid-controller.socket
+    echo 'ACCEPTANCE: real systemd controller socket listening'
   fi
   xvfb-run -a dbus-run-session -- python3 /work/scripts/verify-package.py \
     --installed --gui --version "$VERSION"
@@ -113,8 +125,8 @@ esac
 test ! -e /usr/bin/anvildroid
 test ! -e /usr/bin/anvildroid-gui
 if [ -d /run/systemd/system ]; then
-  if systemctl is-active --quiet anvildroid-controller.service; then
-    echo 'Controller service still active after package removal' >&2
+  if systemctl is-active --quiet anvildroid-controller.service || systemctl is-active --quiet anvildroid-controller.socket; then
+    echo 'Controller service or socket still active after package removal' >&2
     exit 1
   fi
 fi

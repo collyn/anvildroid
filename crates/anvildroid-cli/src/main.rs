@@ -6,6 +6,8 @@ use std::process::{Command, ExitCode};
 use anvildroid_core::backend;
 use anvildroid_core::runtime;
 
+mod managed_cli;
+
 const HELP: &str = concat!("AnvilDroid ", env!("CARGO_PKG_VERSION"), " — experimental Waydroid backend
 Usage: anvildroid COMMAND [--json]
   doctor                 Read-only preliminary host checks
@@ -25,10 +27,22 @@ Usage: anvildroid COMMAND [--json]
 
 Options:
   --json                 Output machine-readable JSON (status, health, apps, gpu, runtimes)
-  --runtime ID           Explicit target (managed runtimes support run PACKAGE)
+  --runtime ID           Target a managed runtime (see below)
+
+{MANAGED}
 
 Setup: see README.md. Container must be started separately.
 No ARM translation or native-integration guarantees in this prototype.");
+
+fn report(result: Result<u8, managed_cli::Failure>) -> Result<u8, String> {
+    match result {
+        Ok(code) => Ok(code),
+        Err(failure) => {
+            eprintln!("anvildroid: {}", failure.message);
+            Ok(failure.code)
+        }
+    }
+}
 
 fn wants_json(args: &[OsString]) -> bool {
     args.iter().any(|a| a == "--json")
@@ -43,7 +57,7 @@ fn run() -> Result<u8, String> {
     if raw_args.is_empty()
         || (raw_args.len() == 1 && matches!(raw_args[0].to_str(), Some("--help" | "-h")))
     {
-        println!("{HELP}");
+        println!("{}", HELP.replace("{MANAGED}", managed_cli::HELP));
         return Ok(0);
     }
 
@@ -54,14 +68,37 @@ fn run() -> Result<u8, String> {
 
     let command = args.first().and_then(|s| s.to_str()).unwrap_or("");
 
-    if command == "run" && anvildroid_core::library::valid_managed_runtime(&runtime_id) {
-        if args.len() != 2 || json {
-            return Err("Usage: anvildroid --runtime ID run PACKAGE".into());
+    if anvildroid_core::library::valid_managed_runtime(&runtime_id) {
+        // Managed runtimes are served only by the controller, never the singleton backend.
+        match command {
+            "run" => {
+                if args.len() != 2 || json {
+                    return report(Err(managed_cli::Failure { code: managed_cli::USAGE,
+                        message: "Usage: anvildroid --runtime ID run PACKAGE".into() }));
+                }
+                let package = args[1].to_str().ok_or("Package must be UTF-8")?;
+                anvildroid_core::managed::launch(&runtime_id, package).map_err(|e| e.to_string())?;
+                println!("Opened {package} in {runtime_id}");
+                return Ok(0);
+            }
+            "install" => {
+                if args.len() != 2 || json {
+                    return report(Err(managed_cli::Failure { code: managed_cli::USAGE,
+                        message: "Usage: anvildroid --runtime ID install FILE.apk".into() }));
+                }
+                anvildroid_core::managed::install(&runtime_id, std::path::Path::new(&args[1]))
+                    .map_err(|e| e.to_string())?;
+                println!("Installed into {runtime_id}; Android confirmed installation.");
+                return Ok(0);
+            }
+            _ => return report(managed_cli::run(&mut managed_cli::Live, &runtime_id, &raw_args)),
         }
-        let package = args[1].to_str().ok_or("Package must be UTF-8")?;
-        anvildroid_core::managed::launch(&runtime_id, package).map_err(|e| e.to_string())?;
-        println!("Opened {package} in {runtime_id}");
-        return Ok(0);
+    }
+    if command == "managed-runtimes" {
+        if runtime_id != anvildroid_core::scope::LEGACY_ID {
+            return Err("managed-runtimes lists every runtime; do not pass --runtime".into());
+        }
+        return report(managed_cli::list(&mut managed_cli::Live, &raw_args));
     }
 
     // Even global queries reject unsupported explicit selectors. Never forward

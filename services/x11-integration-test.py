@@ -27,10 +27,15 @@ class Integration(unittest.TestCase):
     def test_auto_uses_native_on_x11_and_preserves_wayland(self):
         auto = dict(backend='auto', presenter='amd')
         self.assertEqual(x11.resolve_backend(auto, True)['backend'], 'native-x11')
-        self.assertEqual(x11.resolve_backend(auto, False)['backend'], 'legacy')
+        self.assertEqual(x11.resolve_backend(auto, False)['backend'], 'wayland')
         self.assertEqual(auto['backend'], 'auto')
-        compatibility = dict(backend='legacy', presenter='intel')
-        self.assertEqual(x11.resolve_backend(compatibility, True), compatibility)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'display-backend.json').write_text(json.dumps(dict(backend='legacy', presenter='intel')))
+            migrated = x11.selection(root)
+            self.assertEqual(migrated, dict(backend='auto', presenter='intel'))
+            self.assertEqual(x11.resolve_backend(migrated, True)['backend'], 'native-x11')
+            self.assertEqual(x11.resolve_backend(migrated, False)['backend'], 'wayland')
 
     def test_unsupported_auto_does_not_launch_weston(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -40,7 +45,7 @@ class Integration(unittest.TestCase):
             backend = x11.resolve_backend(x11.selection(root), True)
             self.assertEqual(backend['backend'], 'native-x11')
             with patch.object(x11, 'load_payload') as load:
-                with self.assertRaisesRegex(RuntimeError, 'composer contract.*SDK 36.*Weston was not started'):
+                with self.assertRaisesRegex(RuntimeError, 'composer contract.*SDK 36'):
                     x11.preflight(root, False)
                 load.assert_not_called()
 

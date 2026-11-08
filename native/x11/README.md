@@ -46,6 +46,14 @@ waiting, flushes input before rendering, and uses EGL swap interval zero: Androi
 paces the producer and the desktop compositor schedules scanout. Stop signals
 also wake this wait, including when no clients remain. DMA-BUF snapshot completion
 still precedes buffer release; this scheduling change does not bypass GPU fences.
+
+Each guest DMA-BUF is imported once (its EGLImage lives until the guest destroys
+the `wl_buffer`), snapshot textures are recycled by size and one FBO is reused,
+so a steady frame allocates no GPU memory. With `EGL_ANDROID_native_fence_sync`
+(logged `x11_adapter_release=fence`) the snapshot's sync file is watched on the
+event loop and `wl_buffer.release` is sent when it signals; the loop never
+blocks in `glFinish`. Without the extension, or with `ANVILDROID_X11_SYNC_COPY=1`
+(diagnostics), it falls back to `glFinish` before release (`=finish`).
 Outputs follow X11 monitors: one wl_output (v4, with name/description) per
 RandR 1.5 monitor, so `xrandr --setmonitor` virtual monitors count; without
 RandR 1.5, one per active CRTC; without RandR, the whole screen. Each carries
@@ -312,3 +320,18 @@ The package manifest hashes the executable, runtime adapter and source provenanc
 Packaging rejects sanitizer builds, source mismatches and the superseded Full UI
 payload format. See [the integration contract](backend-contract.md) for live
 acceptance scenarios still to verify.
+
+Window placement matches the Wayland KWin placement script. Before an app
+window is first mapped, the adapter asks the window manager (`USPosition`) to
+put it at the position remembered for that app, or, without one, centered on
+the workarea of the monitor under the pointer. A remembered position is reused
+only while at least min(160, width) pixels of the header stay visible and the
+top min(64, height) rows lie inside a current workarea, so an unplugged monitor
+never hides the window. Only an app's single window restores or records its
+position; maximized/fullscreen positions are never recorded (a WM-initiated
+maximize rolls back to the previous normal position). Positions are saved when
+a window is hidden or closed and when the adapter stops, in
+`$XDG_STATE_HOME/anvildroid/x11-window-positions-<runtime>.tsv` (default
+`~/.local/state`), written atomically with mode 0600 by the desktop user. Log
+lines: `x11_window_positions=`, `x11_toplevel_position_centered=`,
+`x11_toplevel_position_restored=`.

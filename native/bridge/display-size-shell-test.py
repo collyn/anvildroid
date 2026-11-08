@@ -155,7 +155,7 @@ dumpsys() { if [ "$1" = window ]; then printf '%s' "$NOSCALE"; return; fi; echo 
         self.assertEqual(files['display-restore'], '1000x600 1 2 disabled 1\n')
 
     def test_leaving_full_ui_restores_previous_display(self):
-        restore = SOURCE[SOURCE.index('    if [ "$snapshot_ticks" -eq 0 ] && [ "$display_full" -eq 1 ]'):SOURCE.index('    # Check resize requests')]
+        restore = SOURCE[SOURCE.index('    if [ "$snapshot_ticks" -eq 0 ] && [ "$display_full" -eq 1 ]'):SOURCE.index('    # Requests are checked every 50 ms')]
         result, files = self.run_helper('\nresize_display 720 1280 full\nFULL=\nsnapshot_ticks=0\n' + restore, 'active')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('size 1000x600', files['calls'])
@@ -163,6 +163,38 @@ dumpsys() { if [ "$1" = window ]; then printf '%s' "$NOSCALE"; return; fi; echo 
         self.assertIn('fixed-to-user-rotation disabled', files['calls'])
         self.assertNotIn('display-state', files)
         self.assertNotIn('display-restore', files)
+
+    def test_snapshot_rate_backs_off_when_stable_and_wakes_on_hints(self):
+        loop = SOURCE[SOURCE.index('snapshot_ticks=0 idle_rounds=0'):]
+        loop = loop.replace('while true; do', 'for round in $(seq 1 ${ROUNDS}); do', 1)
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            script = (
+                'cmd() { echo "$round" >> snaps; cat state; }\n'
+                'dumpsys() { :; }\n'
+                'getprop() { echo 0; }\n'
+                'refresh_close_epoch() { echo epoch >> calls; }\n'
+                'wait_tick() { :; }\n'
+                'display_full=0 display_bootstrap=1\n'
+                + SOURCE[SOURCE.index('publish_task_snapshot()'):SOURCE.index('# Fresh capability token')]
+                + loop.replace('    wait_tick 0.05\n', '    echo "$snapshot_ticks" >> ticks\n    [ "$round" != "${WAKE_AT}" ] || : > wake\n    wait_tick 0.05\n'))
+            (root / 'state').write_text('taskId=1\n')
+            env = {'PATH': '/usr/bin:/bin', 'ROUNDS': '200', 'WAKE_AT': '150'}
+            subprocess.run(['sh', '-c', script], cwd=root, env=env, check=True)
+            ticks = [int(v) for v in (root / 'ticks').read_text().split()]
+            snapshots = [int(v) - 1 for v in (root / 'snaps').read_text().split()]  # 0-based rounds
+            # Fast (every 5 ticks) at first, then every 20 once stable.
+            self.assertEqual(ticks[0], 4)
+            self.assertIn(19, ticks[:120])
+            gaps = [b - a for a, b in zip(snapshots, snapshots[1:])]
+            self.assertEqual(gaps[0], 5)
+            self.assertEqual(max(gaps), 20)
+            # A wake file forces an immediate snapshot and the fast rate again.
+            self.assertIn(150, snapshots)   # wake written at the end of (1-based) round 150
+            self.assertEqual(ticks[150], 4)
+            self.assertFalse((root / 'wake').exists())
+            # pidof-based epoch checks are sparser than snapshots.
+            self.assertLess((root / 'calls').read_text().count('epoch'), len(snapshots))
 
     def test_rejects_invalid_sizes_and_inactive_full_ui(self):
         for command in ['resize_display 0 720 canvas', 'resize_display 9000 720 canvas',

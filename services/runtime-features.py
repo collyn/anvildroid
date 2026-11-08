@@ -1,4 +1,5 @@
 """Owner-authorized feature integration for controller, independent of IPC UI."""
+import contextlib
 import hashlib
 import importlib.util
 import json
@@ -21,6 +22,7 @@ components = module('runtime-components')
 diagnostics = module('runtime-diagnostics')
 linux = module('runtime-linux')
 device = module('runtime-device')
+notifications = module('runtime-notifications')
 
 FIELDS = {
     'device_info': {'op', 'id'},
@@ -34,6 +36,9 @@ FIELDS = {
     'components_get': {'op', 'id'},
     'components_set': {'op', 'id', 'component_id', 'enabled', 'archive_sha256', 'revision'},
     'diagnostics_collect': {'op', 'id', 'include_logs'},
+    'notifications_get': {'op', 'id'},
+    'notifications_set': {'op', 'id', 'enabled'},
+    'notifications_app_set': {'op', 'id', 'package', 'allowed'},
 }
 
 
@@ -41,6 +46,8 @@ def authorize(store, identifier, uid):
     if not isinstance(identifier, str) or (identifier != 'default' and not re.fullmatch(r'r-[0-9a-f]{32}', identifier)):
         raise RuntimeError('Invalid runtime ID')
     if identifier == 'default':
+        if 'default' in store.active_jobs:
+            raise RuntimeError('Wait for the System Waydroid operation to finish')
         session, saved = store.existing.authorize(uid)
         return store.existing.record(session, saved)
     record = next((row for row in store.data['runtimes'] if row['id'] == identifier and row['owner_uid'] == uid), None)
@@ -157,8 +164,10 @@ def dispatch(store, request, uid, descriptor=None):
             if not isinstance(after, dict) or after.get('pid') != session.get('pid') or after.get('user_id') != session.get('user_id'):
                 raise RuntimeError('System Waydroid changed during compatibility action; refresh before retrying')
             return result
-        return compatibility.worker_request(store.android, identifier, action, request['package'],
-                                            request.get('settings'), request.get('revision'))
+        rpc = getattr(store, 'worker_rpc', None)
+        with (rpc(identifier) if rpc else contextlib.nullcontext()):
+            return compatibility.worker_request(store.android, identifier, action, request['package'],
+                                                request.get('settings'), request.get('revision'))
     if op.startswith('shares_'):
         if identifier == 'default':
             adapter = default_shares.DefaultShares(store.existing.store, store.existing)
@@ -187,6 +196,35 @@ def dispatch(store, request, uid, descriptor=None):
             store._dispatch(arm_request, uid)
             return component_report(store, identifier, uid)
         return report
+    if op.startswith('notifications_'):
+        if identifier == 'default':
+            raise RuntimeError('Desktop notifications are available for AnvilDroid-managed runtimes')
+        path = store.backend.location(identifier) / 'notifications.json'
+        policy = notifications.read_policy(path)
+        if op == 'notifications_set':
+            if type(request['enabled']) is not bool:
+                raise RuntimeError('enabled must be boolean')
+            policy = notifications.write_policy(path, dict(policy, enabled=request['enabled']))
+        elif op == 'notifications_app_set':
+            if type(request['allowed']) is not bool or not isinstance(request['package'], str) \
+                    or not notifications.PACKAGE.fullmatch(request['package']) or len(request['package']) > 255:
+                raise RuntimeError('Invalid package or setting')
+            packages = dict(policy['packages'])
+            if request['allowed']:
+                packages.pop(request['package'], None)  # allowed is the default
+            else:
+                packages[request['package']] = False
+            policy = notifications.write_policy(path, dict(policy, packages=packages))
+        status = None
+        if record['state'] in ('Running', 'Frozen'):
+            try:
+                worker = store.android.status(identifier)
+                status = {'state': worker.get('notifications'), 'error': worker.get('notifications_error')}
+            except (OSError, RuntimeError, ValueError):
+                status = None
+        return {'runtime_id': identifier, 'enabled': policy['enabled'],
+                'blocked': sorted(name for name, allowed in policy['packages'].items() if not allowed),
+                'status': status}
     if op == 'diagnostics_collect':
         if type(request['include_logs']) is not bool:
             raise RuntimeError('include_logs must be boolean')

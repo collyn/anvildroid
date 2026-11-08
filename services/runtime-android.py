@@ -1,4 +1,4 @@
-"""Root controller adapter for persistent isolated headless workers."""
+"""Root controller adapter for persistent isolated desktop workers."""
 import base64
 import re
 import fcntl
@@ -437,6 +437,8 @@ class AndroidBackend:
             return resumed
         if previous['state'] in ('Starting', 'Stopping'):
             raise RuntimeError('Worker transition already in progress')
+        if not desktop:
+            raise RuntimeError('A Wayland or X11 desktop session is required')
         self.snapshot_support(identifier)
         helper = Path('/usr/local/lib/anvildroid-controller/anvildroid-shutdown.jar')
         if helper.exists():

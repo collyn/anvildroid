@@ -19,20 +19,6 @@ def load(name, path):
 
 
 existing = load('arm_defaults_existing', 'services/runtime-existing.py')
-setup = load('arm_defaults_setup', 'scripts/setup-waydroid.py')
-
-
-class SetupArmDefaultsTests(unittest.TestCase):
-    def test_setup_uses_same_default_archive_as_prepare(self):
-        archive = Path('/unused/houdini.zip')
-        with patch.object(setup, 'write_status'), patch.object(setup.arm, 'ensure_default_archive', return_value=archive) as download:
-            self.assertEqual(setup.ensure_arm_archive(), archive)
-        download.assert_called_once_with()
-
-    def test_setup_propagates_verification_failure(self):
-        with patch.object(setup, 'write_status'), patch.object(setup.arm, 'ensure_default_archive', side_effect=ValueError('SHA-256 mismatch')):
-            with self.assertRaisesRegex(ValueError, 'SHA-256 mismatch'):
-                setup.ensure_arm_archive()
 
 
 @unittest.skipUnless(os.geteuid() == 0, 'System overlay staging requires root-owned fixtures')

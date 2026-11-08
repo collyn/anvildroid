@@ -1,0 +1,29 @@
+# Controller payload contract: every path install-runtime-controller.py reads
+# from its source root. The GUI stages exactly these paths out of an AppImage or
+# portable bundle (root cannot read the FUSE mount), and the installer verifies
+# them before touching the host.
+#
+# One path per line, relative to the bundle root.
+#   trailing /  copy the whole directory tree
+#   leading ?   optional; skipped when absent from the bundle
+scripts/controller-payload.txt
+scripts/start-runtime-controller.py
+scripts/install-runtime-controller.py
+scripts/install-runtime-apparmor.py
+scripts/apk-align.py
+services/
+target/native/libanvildroid-runtime-window.so
+target/native/libanvildroid-path-guard.so
+target/native/overlay-key.p12
+target/ime/AnvilDroidIme.apk
+target/shutdown/anvildroid-shutdown.jar
+target/input-diagnostic/scrcpy-server-cancel.jar
+native/anvildroid-apps.rc
+native/anvildroid-tasks.rc
+native/anvildroid-apps.sh
+native/anvildroid-tasks.sh
+native/anvildroid-keymap.rc
+native/anvildroid-keymap.sh
+native/menu-font-OFL.txt
+native/overlay/
+?native-x11/

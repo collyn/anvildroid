@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""Client for experimental runtime metadata, image preparation and headless lifecycle."""
+"""Client for experimental runtime metadata, image preparation and desktop lifecycle."""
 import argparse
 import json
 import os
@@ -44,12 +44,12 @@ if __name__ == '__main__':
     commands.add_parser('app_job').add_argument('id')
     backend = commands.add_parser('backend_set')
     backend.add_argument('id')
-    backend.add_argument('backend', choices=['auto', 'legacy', 'native-x11'])
+    backend.add_argument('backend', choices=['auto', 'native-x11'])
     backend.add_argument('presenter', choices=['amd', 'intel', 'nvidia'])
     commands.add_parser('display_info').add_argument('id')
     display = commands.add_parser('display_set')
     display.add_argument('id')
-    display.add_argument('mode', choices=['headless','desktop'])
+    display.add_argument('mode', choices=['desktop'])
     action = commands.add_parser('app_action')
     action.add_argument('id')
     action.add_argument('action', choices=['launch', 'force_stop', 'keymap_edit', 'full_ui'])
@@ -58,7 +58,7 @@ if __name__ == '__main__':
     for operation in ('start', 'stop', 'refresh'):
         operation_parser = commands.add_parser(operation)
         operation_parser.add_argument('id')
-        if operation == 'start': operation_parser.add_argument('--display', default=os.environ.get('WAYLAND_DISPLAY'))
+        if operation == 'start': operation_parser.add_argument('--display', default=os.environ.get('WAYLAND_DISPLAY') or ('x11:' + os.environ['DISPLAY'] if os.environ.get('DISPLAY') else None))
     commands.add_parser('storage_info').add_argument('id')
     move = commands.add_parser('move')
     move.add_argument('id')

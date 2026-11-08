@@ -10,10 +10,14 @@ import runpy
 import socket
 import stat
 import subprocess
+import sys
 import tempfile
 import time
 import tomllib
 import zipfile
+
+# Import probes must leave the extracted/installed payload unchanged.
+sys.dont_write_bytecode = True
 
 ROOT = Path(__file__).resolve().parents[1]
 PAYLOAD = Path('usr/local/lib/anvildroid-controller')
@@ -98,7 +102,7 @@ def payload(root, installed=False):
         actual = stat.S_IMODE(path.stat().st_mode)
         assert actual == expected, f'Wrong directory permissions: {path}: {actual:04o}, expected {expected:04o}'
     required = ('runtime-controller.py', 'runtime-worker.py', 'runtime-adb.py',
-                'runtime-features.py', 'runtime-compatibility.py', 'runtime-shares.py', 'runtime-default-shares.py', 'runtime-device.py', 'runtime-components.py', 'runtime-diagnostics.py',
+                'runtime-features.py', 'runtime-compatibility.py', 'runtime-shares.py', 'runtime-default-shares.py', 'runtime-device.py', 'runtime-components.py', 'runtime-diagnostics.py', 'runtime-notifications.py', 'notification-relay.py',
                 'runtime-path-guard.py', 'libanvildroid-window.so',
                 'libanvildroid-hwc-shim.so', 'libanvildroid-android-window.so',
                 'libanvildroid-path-guard.so', 'AnvilDroidIme.apk',
@@ -129,6 +133,12 @@ def payload(root, installed=False):
     print('Native X11 surface adapter manifest, hashes, dependencies and notices: OK')
     for path in base.rglob('*.py'):
         compile(path.read_bytes(), str(path), 'exec')
+    setup = runpy.run_path(str(base / 'scripts/setup-waydroid.py'))
+    for name in setup['SETUP_MODULES']:
+        assert (base / 'services' / name).is_file(), f'Missing setup dependency: {name}'
+    for name in ('runtime-existing.py', 'runtime-provision.py'):
+        runpy.run_path(str(base / 'services' / name))
+    print('Installed setup dependencies and isolated consumer imports: OK')
     manifests = list(base.glob('nvidia-*/manifest.json'))
     if installed:
         # Development hosts can retain older manually installed payloads. Verify
@@ -141,6 +151,7 @@ def payload(root, installed=False):
         path = manifests[0].parent / relative
         assert hashlib.sha256(path.read_bytes()).hexdigest() == digest, f'Payload changed: {path}'
     for relative in ('usr/lib/systemd/system/anvildroid-controller.service',
+                     'usr/lib/systemd/system/anvildroid-controller.socket',
                      'usr/lib/systemd/system/waydroid-container.service.d/50-anvildroid.conf',
                      'usr/share/applications/org.anvildroid.gui.desktop',
                      'usr/share/licenses/anvildroid-controller/LICENSE-MIT'):
@@ -245,12 +256,15 @@ def extract(package, destination, version):
         actual = run(['dpkg-deb', '-f', str(package), 'Version']).stdout.strip()
         assert actual == version.replace('-', '~', 1), actual
         assert run(['dpkg-deb', '-f', str(package), 'Architecture']).stdout.strip() == 'amd64'
+        dependencies = run(['dpkg-deb', '-f', str(package), 'Depends', 'Recommends']).stdout
+        assert not re.search(r'\bweston\b', dependencies), 'Weston must not be a package dependency'
         run(['dpkg-deb', '-x', str(package), str(destination)])
     elif package.name.endswith('.rpm'):
         actual = run(['rpm', '-qp', '--qf', '%{VERSION}', str(package)]).stdout
         assert actual == version.replace('-', '~', 1), actual
         assert run(['rpm', '-qp', '--qf', '%{ARCH}', str(package)]).stdout == 'x86_64'
         dependencies = run(['rpm', '-qp', '--requires', str(package)]).stdout
+        assert not re.search(r'\bweston\b', dependencies), 'Weston must not be a package dependency'
         assert not re.search(r'lib(c|dl|m)\.so\(|libc\+\+\.so|liblog\.so', dependencies), dependencies
         for library in ('libwayland-client.so.0()(64bit)', 'libwayland-server.so.0()(64bit)'):
             assert library in dependencies.splitlines(), f'Missing Wayland runtime dependency: {library}'
@@ -263,6 +277,7 @@ def extract(package, destination, version):
         assert '.PKGINFO' in entries and '.INSTALL' in entries, 'pacman requires root metadata names without ./ prefixes'
         run(['tar', '--use-compress-program=zstd', '--same-permissions', '-xf', str(package), '-C', str(destination)])
         metadata = (destination / '.PKGINFO').read_text()
+        assert not re.search(r'^(?:depend|optdepend)\s*=\s*weston\b', metadata, re.MULTILINE), 'Weston must not be a package dependency'
         assert f'pkgver = {version}-1\n' in metadata and 'arch = x86_64\n' in metadata
         assert int(re.search(r'^size = (\d+)$', metadata, re.MULTILINE)[1]) > 0
         assert (destination / '.INSTALL').is_file()

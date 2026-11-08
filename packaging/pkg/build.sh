@@ -48,7 +48,6 @@ depend = slirp4netns
 depend = lxc
 depend = kmod
 depend = curl
-depend = weston
 depend = python3
 depend = java-runtime-headless>=17
 depend = systemd
@@ -72,14 +71,21 @@ post_install() {
   fi
   if [ -d /run/systemd/system ]; then
   systemctl daemon-reload >/dev/null 2>&1 || true
-  systemctl enable anvildroid-controller.service >/dev/null 2>&1 || true
-  systemctl restart anvildroid-controller.service >/dev/null 2>&1 || true
+  # Socket activated; older releases enabled the service at boot.
+  systemctl disable anvildroid-controller.service >/dev/null 2>&1 || true
+  systemctl enable anvildroid-controller.socket >/dev/null 2>&1 || true
+  if systemctl is-active --quiet anvildroid-controller.socket; then
+    systemctl try-restart anvildroid-controller.service >/dev/null 2>&1 || true
+  else
+    systemctl stop anvildroid-controller.service >/dev/null 2>&1 || true
+    systemctl start anvildroid-controller.socket >/dev/null 2>&1 || true
+  fi
   fi
 }
 post_upgrade() { post_install; }
 pre_remove() {
   if [ -d /run/systemd/system ]; then
-    systemctl disable --now anvildroid-controller.service >/dev/null 2>&1 || true
+    systemctl disable --now anvildroid-controller.socket anvildroid-controller.service >/dev/null 2>&1 || true
   fi
 }
 EOF

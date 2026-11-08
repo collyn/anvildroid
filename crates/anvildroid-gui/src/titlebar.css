@@ -52,3 +52,16 @@ window.anvildroid-main.maximized .anvildroid-window-button.close,
 window.anvildroid-main.fullscreen .anvildroid-window-button.close {
     border-radius: 0;
 }
+
+window.anvildroid-main.light .anvildroid-titlebar {
+    background-color: #ffffff;
+    color: #44556c;
+    border-bottom-color: #e1e7ef;
+}
+window.anvildroid-main.light .anvildroid-titlebar button.anvildroid-window-button:hover,
+window.anvildroid-main.light .anvildroid-titlebar button.anvildroid-window-button:focus {
+    background-color: #e4ecf5;
+}
+window.anvildroid-main.light .anvildroid-titlebar button.anvildroid-window-button.close:hover {
+    background-color: #c0264f;
+}

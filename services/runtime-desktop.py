@@ -82,7 +82,7 @@ def registry_protocols(connection, timeout=2):
 def require_window_controls(protocols):
     """Advertisement is a prerequisite, not proof of per-window SSD acceptance."""
     if not protocols.get('xdg_wm_base'):
-        raise RuntimeError('Desktop compositor does not provide xdg-shell windows. Use Headless mode or another Wayland session.')
+        raise RuntimeError('Desktop compositor does not provide xdg-shell windows. Use another Wayland session or native X11.')
     if not protocols.get('zxdg_decoration_manager_v1'):
         if not all(protocols.get(name) for name in ('wl_compositor', 'wl_subcompositor', 'wl_shm')):
             raise RuntimeError('Desktop compositor lacks the Wayland protocols required for AnvilDroid CSD')
@@ -264,12 +264,12 @@ def capabilities(uid):
             return {'session': 'x11', 'wayland': False, 'desktop': True,
                     'display': display, 'decoration': 'wm-managed',
                     'placement': 'wm-managed',
-                    'detail': (f'X11 display {display} detected; select the native X11 backend in Display for supported Android 13 NVIDIA runtimes.'
+                    'detail': (f'X11 display {display} detected; AnvilDroid uses native X11 app windows.'
                                if reachable else
                                f'X11 display {display} found; server connectivity is verified at startup.')}
         return {'session': 'none', 'wayland': False, 'desktop': False,
                 'decoration': 'unavailable', 'placement': 'generic',
-                'detail': 'No Wayland socket or X11 display is available for this user. Headless mode can still run; Desktop mode needs a graphical login.'}
+                'detail': 'No Wayland socket or X11 display is available for this user. Log in to a graphical desktop to start Android.'}
     return {'session': 'wayland', 'wayland': True, 'desktop': True,
             'socket': sockets[0].name, 'decoration': 'unverified',
             'placement': 'compositor-managed',

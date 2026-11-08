@@ -25,8 +25,8 @@ stage="$(mktemp -d "$(pwd)/target/.portable.XXXXXX")"
 trap 'rm -rf "$stage"' EXIT
 mkdir -p "$stage/bin" "$stage/scripts" "$stage/services" "$stage/packaging/systemd" "$stage/target/native" "$stage/target/ime" "$stage/target/shutdown" "$stage/native"
 cp "$gui_bin" "$cli_bin" "$stage/bin/"
-cp scripts/install-portable.sh scripts/apk-align.py scripts/install-runtime-controller.py scripts/install-runtime-apparmor.py scripts/start-runtime-controller.py scripts/setup-waydroid.py "$stage/scripts/"
-cp packaging/systemd/anvildroid-controller.service packaging/systemd/50-anvildroid.conf "$stage/packaging/systemd/"
+cp scripts/install-portable.sh scripts/apk-align.py scripts/controller-payload.txt scripts/install-runtime-controller.py scripts/install-runtime-apparmor.py scripts/start-runtime-controller.py scripts/setup-waydroid.py "$stage/scripts/"
+cp packaging/systemd/anvildroid-controller.service packaging/systemd/anvildroid-controller.socket packaging/systemd/50-anvildroid.conf "$stage/packaging/systemd/"
 # Validate source identity, manifest hashes and release-build provenance before
 # staging the payload automatically consumed by the controller installer.
 python3 scripts/build-x11-payload.py --stage-parent "$stage"
