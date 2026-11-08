@@ -260,7 +260,11 @@ jobs:
       - name: Install packaging tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends clang lld aapt apksigner patchelf rpm zstd cpio
+          # verify-package.py resolves the bundled X11 host's libraries (ldd).
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config \
+            libgtk-3-dev libwebkit2gtk-4.1-dev librsvg2-dev libssl-dev libwayland-dev \
+            libegl1 libgles2 libwayland-server0 \
+            clang lld aapt apksigner patchelf rpm zstd cpio
       - uses: actions/setup-java@v4
         with: {distribution: temurin, java-version: '17'}
       - uses: android-actions/setup-android@v3
