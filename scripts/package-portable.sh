@@ -9,7 +9,11 @@ fi
 case "$1" in ''|*[!a-zA-Z0-9._-]*|.|..) echo 'Invalid release name' >&2; exit 1;; esac
 dest="$(pwd)/target/releases/$1"
 [ ! -e "$dest" ] || { echo "Release already exists: $dest" >&2; exit 1; }
-cargo build --release --locked -p anvildroid-gui -p anvildroid-cli
+if [ "${ANVILDROID_PREBUILT_RUNTIME:-0}" = 1 ]; then
+  sh scripts/build-runtime.sh   # CI: binaries come from the shared runtime job
+else
+  cargo build --release --locked -p anvildroid-gui -p anvildroid-cli
+fi
 # Refuse incomplete bundles before creating a staging directory. Cargo does
 # not build the Java IME/shutdown helpers, and cached native outputs may be old.
 gui_bin="${CARGO_TARGET_DIR:-target}/release/anvildroid-gui"
