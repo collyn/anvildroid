@@ -10,6 +10,21 @@ windows on Wayland and X11, desktop notifications, game controls and more.
 
 > **Experimental, actively developed.** Linux x86_64 only.
 
+![App library with apps from a running runtime](docs/images/apps.png)
+
+<table>
+  <tr>
+    <td><img src="docs/images/runtimes.png" alt="Runtimes: status, usage and quick device/GPU choice"></td>
+    <td><img src="docs/images/runtime-settings.png" alt="Runtime settings in the Simple view"></td>
+  </tr>
+  <tr>
+    <td align="center">Runtimes with live usage and quick device/GPU switch</td>
+    <td align="center">Runtime settings (Simple view), per-app notifications</td>
+  </tr>
+</table>
+
+<sub>Screenshots show the built-in apps of a LineageOS-based Waydroid image.</sub>
+
 ## Install
 
 **Debian, Ubuntu, Linux Mint**
@@ -100,8 +115,7 @@ More: [compatibility and limitations](docs/TECHNICAL.md#compatibility-and-limita
 
 - [Technical guide](docs/TECHNICAL.md): architecture diagrams, display and
   notification pipelines, building from source, releasing and development
-- [Design system](docs/DESIGN.md) · [native X11](native/x11/README.md) ·
-  [NVIDIA payload](native/nvidia/README.md)
+- [Native X11 adapter](native/x11/README.md) · [NVIDIA payload](native/nvidia/README.md)
 
 ## Credits
 

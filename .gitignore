@@ -5,8 +5,10 @@ __pycache__/
 *.py[cod]
 *.log
 
-# Local project notes and internal documentation
-/docs/
+# Local project notes and internal documentation (public docs re-included)
+/docs/*
+!/docs/TECHNICAL.md
+!/docs/images/
 /PLAN.md
 /AnvilDroid-Architecture.md
 
