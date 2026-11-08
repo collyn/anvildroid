@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Validate an extracted AppImage payload and its optional glibc baseline."""
 import argparse
+import os
 import ast
 import json
 from pathlib import Path
@@ -13,7 +14,7 @@ REQUIRED = (
     'AppRun', 'AppRun.wrapped', 'usr/bin/anvildroid-gui', 'usr/bin/anvildroid',
     'scripts/bootstrap-appimage.py', 'scripts/start-runtime-controller.py', 'scripts/setup-waydroid.py',
     'scripts/install-runtime-controller.py', 'scripts/apk-align.py', 'services/runtime-host.py',
-    'services/runtime-features.py', 'services/runtime-compatibility.py', 'services/runtime-shares.py', 'services/runtime-default-shares.py', 'services/runtime-device.py', 'services/runtime-components.py', 'services/runtime-diagnostics.py', 'services/runtime-notifications.py', 'services/notification-relay.py',
+    'services/runtime-features.py', 'services/runtime-compatibility.py', 'services/runtime-shares.py', 'services/runtime-default-shares.py', 'services/runtime-device.py', 'services/runtime-components.py', 'services/runtime-diagnostics.py', 'services/runtime-notifications.py', 'services/runtime-camera.py', 'services/notification-relay.py',
     'target/native/libanvildroid-path-guard.so', 'target/native/libanvildroid-runtime-window.so', 'target/native/libanvildroid-window.so',
     'target/native/overlay-key.p12', 'target/ime/AnvilDroidIme.apk',
     'target/shutdown/anvildroid-shutdown.jar', 'native/overlay/AndroidManifest.xml',
@@ -85,8 +86,11 @@ def validate(root, glibc_max=None):
             observed = max(observed, required)
             if glibc_max and required > glibc_max:
                 raise RuntimeError(f'{path.relative_to(root)} requires glibc {".".join(map(str, required))}, above requested baseline')
+    # Only the bundled CLI is under test: never install a controller (pkexec)
+    # on the build host.
     result = subprocess.run([str(root / 'AppRun.wrapped'), '--cli', '--help'],
-                            capture_output=True, text=True, timeout=20)
+                            capture_output=True, text=True, timeout=20,
+                            env=dict(os.environ, ANVILDROID_SKIP_BOOTSTRAP='1'))
     if result.returncode or 'AnvilDroid' not in result.stdout:
         raise RuntimeError('Bundled CLI failed to start: ' + result.stderr[-1000:])
     return {'payload': 'verified', 'maximum_glibc': '.'.join(map(str, observed)), 'cli': 'passed'}

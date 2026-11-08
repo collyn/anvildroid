@@ -2,11 +2,19 @@
 set -e
 appdir="$(dirname "$(readlink -f "$0")")"
 export APPDIR="$appdir"
+# Help/version output needs no controller, so it never asks for root.
+case "${1:-} ${2:-}" in
+  "--cli --help"|"--cli -h"|"--cli --version"|"--cli help") ANVILDROID_SKIP_BOOTSTRAP=1 ;;
+esac
 if [ "${ANVILDROID_SKIP_BOOTSTRAP:-0}" != 1 ]; then
   # Install missing administrator-owned Waydroid support before opening GUI.
   controller_ready=0
   if [ -S /run/anvildroid/control.sock ]; then
     /usr/bin/python3 -c 'import socket; s=socket.socket(socket.AF_UNIX); s.settimeout(1); s.connect("/run/anvildroid/control.sock")' >/dev/null 2>&1 && controller_ready=1 || true
+  fi
+  if [ "$controller_ready" -eq 0 ] && ! command -v pkexec >/dev/null 2>&1; then
+    echo 'AnvilDroid needs pkexec (polkit) to install its runtime controller. Install polkit, then start AnvilDroid again.' >&2
+    exit 1
   fi
   if [ "$controller_ready" -eq 0 ] && ! pkexec /usr/bin/python3 "$appdir/scripts/bootstrap-appimage.py"; then
     echo 'AnvilDroid bootstrap failed; see the administrator/setup error above.' >&2

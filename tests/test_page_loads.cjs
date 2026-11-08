@@ -49,7 +49,7 @@ test('Images only loads image data; entering does not start an online catalog ch
   calls.length = 0; await ctx.refreshImagesPage(); assert.deepEqual(calls, ['download', true]);
 });
 function controllerContext() {
-  const calls = [], elements = new Map(), previous = {id:'r-one',state:'Stopped',display:{mode:'desktop'},gpu:{node:'gpu'},arm:{enabled:true},notifications:{enabled:true,blocked:[]}};
+  const calls = [], elements = new Map(), previous = {id:'r-one',state:'Stopped',display:{mode:'desktop'},gpu:{node:'gpu'},arm:{enabled:true},notifications:{enabled:true,blocked:[]},camera:{enabled:false,devices:[],available:[]}};
   const ctx = vm.createContext({
     controllerLoading:false, controllerMutation:false, runtimeOperations:new Map(), controllerTimer:null, controllerRequirements:{can_prepare:true,can_start:true,checks:[]},
     controllerRecords:[previous], controllerSetupError:'', armSourceState:{sources:[{sha256:'abc'}]},
@@ -304,4 +304,42 @@ test('automatic update checks run at most once a day and tolerate clock changes'
   assert.equal(ctx.updateCheckDue(now), true);
   store.set('anvildroid.updateCheckedAt', String(now + 3600 * 1000));  // clock moved back
   assert.equal(ctx.updateCheckDue(now), true);
+});
+function cameraContext(camera, state = 'Stopped') {
+  const record = {id:'r-cam', state, camera}, sent = [], toasts = [];
+  const ctx = vm.createContext({escapeHtml:v => String(v).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;'), runtimeSettingsOpen:new Set(),
+    runtimeRecord:id => id === 'r-cam' ? record : null, runtimeOperationBusy:() => false, document:{getElementById:() => null},
+    mutateController:async request => sent.push(request), showAppToast:(text, kind) => toasts.push([kind, text])});
+  const start = source.indexOf('const runtimeCameraDraft = new Map();');
+  vm.runInContext(source.slice(start, source.indexOf('\nfunction renderRuntimeDevice(', start)), ctx);
+  return {ctx, record, sent, toasts};
+}
+const CAMERAS = [{id:'usb-A', name:'Integrated Camera', node:'video0'}, {id:'usb-B', name:'USB <Cam>', node:'video2'}];
+test('camera access is off by default and enabling selects every connected camera', async () => {
+  const {ctx, record, sent} = cameraContext({enabled:false, devices:[], available:CAMERAS, active:null});
+  let html = ctx.renderRuntimeCamera(record, false);
+  assert.doesNotMatch(html, /data-camera-enabled checked/);
+  assert.match(html, /USB &lt;Cam&gt;/);
+  assert.match(html, /data-controller-op="camera_set"[^>]*disabled/);        // nothing to save yet
+  ctx.handleCameraChange({target:{dataset:{cameraRuntime:'r-cam', cameraEnabled:''}, checked:true}});
+  html = ctx.renderRuntimeCamera(record, false);
+  assert.match(html, /data-camera-device="usb-A" checked/);
+  assert.match(html, /data-camera-device="usb-B" checked/);
+  assert.doesNotMatch(html, /data-controller-op="camera_set"[^>]*disabled/);
+  ctx.handleCameraChange({target:{dataset:{cameraRuntime:'r-cam', cameraDevice:'usb-A'}, checked:false}});
+  await ctx.saveRuntimeCamera('r-cam');
+  assert.deepEqual(JSON.parse(JSON.stringify(sent)), [{op:'camera_set', id:'r-cam', enabled:true, devices:['usb-B']}]);
+});
+test('unplugged cameras stay listed, empty selections are refused and running runtimes restart', async () => {
+  const {ctx, record, sent, toasts} = cameraContext({enabled:true, devices:['usb-gone'], available:[CAMERAS[0]], active:['video0']}, 'Running');
+  const html = ctx.renderRuntimeCamera(record, false);
+  assert.match(html, /usb-gone<\/strong><small>Not connected/);
+  assert.match(html, /In use by Android: \/dev\/video0/);
+  assert.match(html, />Save & restart</);
+  ctx.handleCameraChange({target:{dataset:{cameraRuntime:'r-cam', cameraDevice:'usb-gone'}, checked:false}});
+  await ctx.saveRuntimeCamera('r-cam');
+  assert.equal(sent.length, 0);
+  assert.equal(toasts[0][0], 'error');
+  const none = cameraContext({enabled:false, devices:[], available:[], active:null});
+  assert.match(none.ctx.renderRuntimeCamera(none.record, false), /No camera found on this computer/);
 });

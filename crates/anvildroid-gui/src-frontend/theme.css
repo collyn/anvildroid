@@ -200,3 +200,11 @@
 #update-section .runtime-actions { margin: 8px 0; }
 .update-notes-text { max-height: 220px; overflow: auto; white-space: pre-wrap; font: inherit; font-size: 12px; color: var(--text-secondary); background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 10px; }
 .update-repo-command { display: block; overflow-x: auto; padding: 8px 10px; border-radius: 8px; background: var(--bg-surface); border: 1px solid var(--border-subtle); color: var(--text-primary); font-size: 12px; user-select: all; }
+
+/* Runtime settings → Camera */
+.camera-list { display: grid; gap: 2px; margin: 8px 0; border: 1px solid var(--border-subtle); border-radius: 10px; overflow: hidden; }
+.camera-choice { display: flex; align-items: center; gap: 12px; padding: 8px 12px; cursor: pointer; }
+.camera-choice:hover { background: var(--bg-hover); }
+.camera-choice > span { display: grid; }
+.camera-choice small { color: var(--text-muted); }
+.camera-choice.missing strong { color: var(--text-secondary); }

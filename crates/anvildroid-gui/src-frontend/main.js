@@ -2869,6 +2869,7 @@ function renderController() {
       <div class="runtime-settings-list runtime-settings-visible">
       ${renderRuntimeDevice(record, busy)}
       ${renderRuntimeNotifications(record, busy)}
+      ${renderRuntimeCamera(record, busy)}
       <details class="runtime-setting-row" data-settings-key="${escapeHtml(record.id)}:google" ${runtimeSettingsOpen.has(record.id + ':google') ? 'open' : ''}><summary><span><strong>Google Play</strong></span></summary><div class="runtime-setting-body"><div class="runtime-google-panel">${renderRuntimeGoogle(record)}</div></div></details>
       <details class="runtime-setting-row" data-level="advanced" data-settings-key="${escapeHtml(record.id)}:display" ${runtimeSettingsOpen.has(record.id + ':display') ? 'open' : ''}><summary><span><strong>Display</strong><small>Desktop windows</small></span></summary><div class="runtime-setting-body"><div class="runtime-display-panel"><strong>Display mode: Desktop</strong>
       <p class="hint">App windows use your X11 or Wayland desktop session.</p>
@@ -3018,6 +3019,8 @@ async function refreshController({light = false} = {}) {
       catch (error) { record.deviceError = `Cannot read device identity: ${error}`; }
       try { record.notifications = cached('notifications') ? previous.notifications : await controllerRequest({op:'notifications_get', id:r.id}); delete record.notificationsError; }
       catch (error) { record.notifications = previous?.notifications; record.notificationsError = `Cannot read notification settings: ${error}`; }
+      try { record.camera = cached('camera') ? previous.camera : await controllerRequest({op:'camera_get', id:r.id}); delete record.cameraError; }
+      catch (error) { record.camera = previous?.camera; record.cameraError = `Cannot read camera settings: ${error}`; }
       try { record.appJob = await controllerRequest({ op: 'app_job', id: r.id }); }
       catch (error) { record.appJob = previousRecords.find(previous => previous.id === r.id)?.appJob; }
       invalidateRuntimeGraphics(previousRecords.find(previous => previous.id === r.id), record);
@@ -3214,6 +3217,10 @@ async function mutateController(request) {
       const record = runtimeRecord(request.id);
       if (record) record.device = result;
       runtimeDeviceDraft.delete(request.id);
+    } else if (request.op === 'camera_set') {
+      const record = runtimeRecord(request.id);
+      if (record) record.camera = result;
+      runtimeCameraDraft.delete(request.id);
     } else if (request.op === 'resources_set') {
       const record = runtimeRecord(request.id);
       if (record) record.resources = result;
@@ -3238,7 +3245,7 @@ async function mutateController(request) {
       else controllerRecords[position] = result;
     }
     controllerPending = null;
-    completionNotice = ({device_set:'Device identity saved. Start Android to apply it.', resources_set: 'RAM and CPU limits saved. Start this runtime to apply them.', gpu_set: 'GPU saved. Start this runtime to apply it.', arm_set: `ARM translation ${request.enabled ? 'installed' : 'disabled'}. Start this runtime to apply it.`, delete: 'Deletion accepted. The runtime will disappear when its data has been removed.', display_set: 'Display mode saved. Start Android to apply it.', backend_set: 'Display backend saved. Start Android to apply it.', app_action: 'App action accepted. Watch its job result below.', create: 'Runtime created. Android is running.', create_image: 'Runtime created. Android is running.', rename: 'Runtime name saved.', prepare: 'Images prepared. Android is running.', start: 'Start request accepted. The runtime card below shows boot progress and the result.', stop: 'Stop request accepted. The runtime card below shows progress and the result.', move: 'Storage move accepted. Keep both disks connected until verification completes.', discard_previous: 'Removal accepted. Watch storage status below; active runtime data is kept.', existing_import: 'Import started. Keep System Waydroid stopped until preparation succeeds.'})[request.op] || 'Request accepted.';
+    completionNotice = ({camera_set:'Camera settings saved. Start this runtime to apply them.', device_set:'Device identity saved. Start Android to apply it.', resources_set: 'RAM and CPU limits saved. Start this runtime to apply them.', gpu_set: 'GPU saved. Start this runtime to apply it.', arm_set: `ARM translation ${request.enabled ? 'installed' : 'disabled'}. Start this runtime to apply it.`, delete: 'Deletion accepted. The runtime will disappear when its data has been removed.', display_set: 'Display mode saved. Start Android to apply it.', backend_set: 'Display backend saved. Start Android to apply it.', app_action: 'App action accepted. Watch its job result below.', create: 'Runtime created. Android is running.', create_image: 'Runtime created. Android is running.', rename: 'Runtime name saved.', prepare: 'Images prepared. Android is running.', start: 'Start request accepted. The runtime card below shows boot progress and the result.', stop: 'Stop request accepted. The runtime card below shows progress and the result.', move: 'Storage move accepted. Keep both disks connected until verification completes.', discard_previous: 'Removal accepted. Watch storage status below; active runtime data is kept.', existing_import: 'Import started. Keep System Waydroid stopped until preparation succeeds.'})[request.op] || 'Request accepted.';
     if (restarted) {
       completionNotice = 'Settings applied. Android restarted successfully.';
     }
@@ -3403,6 +3410,7 @@ function handleRuntimeAction(event) {
     if (value) mutateController({op:'resources_set', id, ...value});
   }
   else if (button.dataset.controllerOp === 'gpu_check') checkRuntimeGraphics(button.dataset.controllerId);
+  else if (button.dataset.controllerOp === 'camera_set') saveRuntimeCamera(button.dataset.controllerId);
   else if (button.dataset.controllerOp === 'gpu_set') {
     const id = button.dataset.controllerId;
     const record = runtimeRecord(id);
@@ -3610,6 +3618,7 @@ async function checkRuntimeGoogle(id) {
 
 function handleRuntimeConfigChange(event) {
   handleNotificationToggle(event);
+  handleCameraChange(event);
   if (event.target.dataset?.deviceProfile) changeRuntimeDeviceProfile(event.target.dataset.deviceProfile, event.target.value);
   const id = event.target.dataset?.gpuSelect;
   if (id) runtimeGpuDraft.set(id, event.target.value);
@@ -3735,6 +3744,70 @@ function handleNotificationToggle(event) {
   if (!id) return;
   if (input.dataset.notificationsMaster !== undefined) setNotificationPolicy(id, {op:'notifications_set', enabled:input.checked});
   else if (input.dataset.notificationsApp) setNotificationPolicy(id, {op:'notifications_app_set', package:input.dataset.notificationsApp, allowed:input.checked});
+}
+
+// Host cameras (V4L2 passthrough). Off by default; the selection is a draft
+// until saved, and saving a running runtime restarts Android.
+const runtimeCameraDraft = new Map();
+function cameraDraft(record) {
+  const saved = record.camera;
+  return runtimeCameraDraft.get(record.id) || {enabled:Boolean(saved?.enabled), devices:[...(saved?.devices || [])]};
+}
+function renderRuntimeCamera(record, busy) {
+  const id = escapeHtml(record.id), data = record.camera;
+  const open = runtimeSettingsOpen.has(record.id + ':camera') ? 'open' : '';
+  const head = `<details class="runtime-setting-row" data-settings-key="${id}:camera" ${open}><summary><span><strong>Camera</strong><small>Use this computer's cameras</small></span></summary><div class="runtime-setting-body"><div class="runtime-camera-panel">`;
+  const tail = '</div></div></details>';
+  if (!data) return head + `<p class="hint">${escapeHtml(record.cameraError || 'Loading camera settings…')}</p>` + tail;
+  const draft = cameraDraft(record);
+  const available = Array.isArray(data.available) ? data.available : [];
+  const running = ['Running', 'Frozen'].includes(record.state);
+  const disabled = busy || !['Allocated', 'Prepared', 'Stopped', 'Error', 'Running', 'Frozen'].includes(record.state);
+  const attr = disabled ? 'disabled' : '';
+  // An empty saved list means every camera.
+  const chosen = new Set(draft.devices.length ? draft.devices : available.map(camera => camera.id));
+  const missing = draft.devices.filter(device => !available.some(camera => camera.id === device));
+  const rows = available.map(camera => `<label class="camera-choice"><input type="checkbox" data-camera-runtime="${id}" data-camera-device="${escapeHtml(camera.id)}" ${chosen.has(camera.id) ? 'checked' : ''} ${attr || (!draft.enabled ? 'disabled' : '')}><span><strong>${escapeHtml(camera.name)}</strong><small>/dev/${escapeHtml(camera.node)}</small></span></label>`).join('')
+    + missing.map(device => `<label class="camera-choice missing"><input type="checkbox" data-camera-runtime="${id}" data-camera-device="${escapeHtml(device)}" checked ${attr || (!draft.enabled ? 'disabled' : '')}><span><strong>${escapeHtml(device)}</strong><small>Not connected</small></span></label>`).join('');
+  const dirty = draft.enabled !== Boolean(data.enabled) || JSON.stringify(draft.devices) !== JSON.stringify(data.devices || []);
+  const active = running && Array.isArray(data.active)
+    ? `<p class="hint">In use by Android: ${data.active.length ? data.active.map(node => '/dev/' + escapeHtml(node)).join(', ') : 'none'}</p>` : '';
+  return head + `<label class="notification-master"><input type="checkbox" data-camera-runtime="${id}" data-camera-enabled ${draft.enabled ? 'checked' : ''} ${attr}> Let Android use this computer's camera</label>
+    ${available.length || missing.length ? `<div class="camera-list" role="group" aria-label="Cameras">${rows}</div>` : '<p class="hint">No camera found on this computer. Connect one, then refresh.</p>'}
+    ${available.length > 1 ? '<p class="hint">Each selected camera appears as a separate camera in Android apps.</p>' : ''}
+    ${active}
+    <p class="hint">Off by default for privacy. Android uses its V4L2 camera driver; some apps expect resolutions a webcam may not offer.</p>
+    <div class="runtime-actions"><button class="btn btn-quiet" data-controller-op="camera_set" data-controller-id="${id}" ${disabled || !dirty ? 'disabled' : ''}>${running ? 'Save & restart' : 'Save camera'}</button></div>` + tail;
+}
+function handleCameraChange(event) {
+  const input = event.target;
+  const id = input?.dataset?.cameraRuntime;
+  const record = id && runtimeRecord(id);
+  if (!record?.camera) return;
+  const draft = cameraDraft(record);
+  const available = (record.camera.available || []).map(camera => camera.id);
+  if (input.dataset.cameraEnabled !== undefined) {
+    draft.enabled = input.checked;
+    // First enable: start with every connected camera selected.
+    if (draft.enabled && !draft.devices.length) draft.devices = [...available];
+  } else if (input.dataset.cameraDevice) {
+    const current = new Set(draft.devices.length ? draft.devices : available);
+    input.checked ? current.add(input.dataset.cameraDevice) : current.delete(input.dataset.cameraDevice);
+    draft.devices = [...available, ...draft.devices].filter((device, index, list) => current.has(device) && list.indexOf(device) === index);
+  } else return;
+  runtimeCameraDraft.set(id, draft);
+  const panel = document.getElementById('page-runtime-settings')?.querySelector?.(`[data-settings-key="${id}:camera"]`);
+  if (panel) panel.outerHTML = renderRuntimeCamera(record, runtimeOperationBusy(id));
+}
+function saveRuntimeCamera(id) {
+  const record = runtimeRecord(id);
+  if (!record?.camera || runtimeOperationBusy(id)) return;
+  const draft = cameraDraft(record);
+  if (draft.enabled && !draft.devices.length && (record.camera.available || []).length) {
+    showAppToast('Select at least one camera, or turn camera access off.', 'error');
+    return;
+  }
+  return mutateController({op:'camera_set', id, enabled:draft.enabled, devices:draft.enabled ? draft.devices : []});
 }
 
 function renderRuntimeDevice(record, busy) {

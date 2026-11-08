@@ -88,6 +88,9 @@ spec.loader.exec_module(device_module)
 spec = importlib.util.spec_from_file_location('runtime_notifications', Path(__file__).with_name('runtime-notifications.py'))
 notifications_module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(notifications_module)
+spec = importlib.util.spec_from_file_location('runtime_camera', Path(__file__).with_name('runtime-camera.py'))
+camera_module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(camera_module)
 
 
 def atomic(path, value):
@@ -1329,6 +1332,10 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
         require(desktop, 'A Wayland or X11 desktop session is required')
         state['resource_limits'] = resources.verify(identifier, generation, resources.load(instance))
         gpu_node = desktop_gpu(instance, desktop)
+        # Opt-in host cameras, resolved by stable ID at each start.
+        camera_nodes = camera_module.selected_nodes(camera_module.read_policy(instance / camera_module.POLICY),
+                                                    camera_module.discover())
+        state['cameras'] = camera_nodes
         nvidia_rendering = gpu.is_nvidia(gpu_node)
         state['gpu_node'] = gpu_node
         backend = native_x11.resolve_backend(native_x11.selection(instance),
@@ -1569,6 +1576,7 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
             props = [p for p in props if not p.startswith('ro.adb.secure=')] + ['ro.adb.secure=1']
             props = managed_session_properties(props)
             props = device_module.boot_properties(instance, props)
+            props = camera_module.boot_properties(props, camera_nodes)
             props = [p for p in props if not p.startswith((
                 'waydroid.anvil_shm_presentation=', 'waydroid.anvil_gpu_copy_presentation='))]
             if nvidia_rendering and compatibility.get('sdk', 0) > 33:
@@ -1765,7 +1773,7 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
                     stale.unlink()
             for device in ('null', 'zero', 'full', 'fuse', 'tty', 'loop-control',
                            'loop0', 'loop1', 'loop2', 'loop3', 'loop4', 'loop5', 'loop6', 'loop7',
-                           *((gpu_node.removeprefix('/dev/'),) if gpu_node else ())):
+                           *((gpu_node.removeprefix('/dev/'),) if gpu_node else ()), *camera_nodes):
                 if Path('/dev', device).exists():
                     source = Path('/dev', device)
                     # Android's graphics services run as uid 1000 and do not

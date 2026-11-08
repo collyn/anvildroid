@@ -43,6 +43,10 @@ pub enum Request {
     NotificationsSet { id: String, enabled: bool },
     #[serde(rename = "notifications_app_set")]
     NotificationsAppSet { id: String, package: String, allowed: bool },
+    #[serde(rename = "camera_get")]
+    CameraGet { id: String },
+    #[serde(rename = "camera_set")]
+    CameraSet { id: String, enabled: bool, devices: Vec<String> },
     #[serde(rename = "adb_info")]
     AdbInfo { id: String },
     #[serde(rename = "adb_set")]

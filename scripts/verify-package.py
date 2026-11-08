@@ -102,7 +102,7 @@ def payload(root, installed=False):
         actual = stat.S_IMODE(path.stat().st_mode)
         assert actual == expected, f'Wrong directory permissions: {path}: {actual:04o}, expected {expected:04o}'
     required = ('runtime-controller.py', 'runtime-worker.py', 'runtime-adb.py',
-                'runtime-features.py', 'runtime-compatibility.py', 'runtime-shares.py', 'runtime-default-shares.py', 'runtime-device.py', 'runtime-components.py', 'runtime-diagnostics.py', 'runtime-notifications.py', 'notification-relay.py',
+                'runtime-features.py', 'runtime-compatibility.py', 'runtime-shares.py', 'runtime-default-shares.py', 'runtime-device.py', 'runtime-components.py', 'runtime-diagnostics.py', 'runtime-notifications.py', 'runtime-camera.py', 'notification-relay.py',
                 'runtime-path-guard.py', 'libanvildroid-window.so',
                 'libanvildroid-hwc-shim.so', 'libanvildroid-android-window.so',
                 'libanvildroid-path-guard.so', 'AnvilDroidIme.apk',

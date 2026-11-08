@@ -23,6 +23,7 @@ diagnostics = module('runtime-diagnostics')
 linux = module('runtime-linux')
 device = module('runtime-device')
 notifications = module('runtime-notifications')
+camera = module('runtime-camera')
 
 FIELDS = {
     'device_info': {'op', 'id'},
@@ -39,6 +40,8 @@ FIELDS = {
     'notifications_get': {'op', 'id'},
     'notifications_set': {'op', 'id', 'enabled'},
     'notifications_app_set': {'op', 'id', 'package', 'allowed'},
+    'camera_get': {'op', 'id'},
+    'camera_set': {'op', 'id', 'enabled', 'devices'},
 }
 
 
@@ -225,6 +228,24 @@ def dispatch(store, request, uid, descriptor=None):
         return {'runtime_id': identifier, 'enabled': policy['enabled'],
                 'blocked': sorted(name for name, allowed in policy['packages'].items() if not allowed),
                 'status': status}
+    if op.startswith('camera_'):
+        if identifier == 'default':
+            raise RuntimeError('Camera selection is for AnvilDroid-managed runtimes; System Waydroid passes every camera through')
+        path = store.backend.location(identifier) / camera.POLICY
+        if op == 'camera_set':
+            if record['state'] not in ('Allocated', 'Prepared', 'Stopped', 'Error') or not store.android.quiescent(identifier):
+                raise RuntimeError('Stop this runtime completely before changing cameras')
+            policy = camera.write_policy(path, {'enabled': request['enabled'], 'devices': request['devices']})
+        else:
+            policy = camera.read_policy(path)
+        active = None
+        if record['state'] in ('Running', 'Frozen'):
+            try:
+                active = store.android.status(identifier).get('cameras')
+            except (OSError, RuntimeError, ValueError):
+                active = None
+        return {'runtime_id': identifier, 'enabled': policy['enabled'], 'devices': policy['devices'],
+                'available': camera.discover(), 'active': active}
     if op == 'diagnostics_collect':
         if type(request['include_logs']) is not bool:
             raise RuntimeError('include_logs must be boolean')
