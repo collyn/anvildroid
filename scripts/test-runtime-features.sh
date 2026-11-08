@@ -4,7 +4,7 @@
 set -eu
 ROOT=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
-for suite in setup desktop-mode compatibility shares default-shares default-binder default-native-pool default-stop device components diagnostics features overlay portable-packaging camera; do
+for suite in setup desktop-mode compatibility shares default-shares default-binder default-native-pool default-stop device components diagnostics features overlay portable-packaging camera migrate-source; do
   python3 "services/$suite-test.py"
 done
 for suite in compatibility shares runtime-actions; do

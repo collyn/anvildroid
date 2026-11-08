@@ -15,7 +15,7 @@ cat > "$STAGE/.PKGINFO" <<EOF
 pkgname = anvildroid-controller
 pkgver = ${VERSION}-1
 pkgdesc = AnvilDroid GUI, CLI and Android runtime controller
-url = https://github.com/collyn/anvildroid
+url = https://github.com/anvildroid/anvildroid
 builddate = $(date +%s)
 packager = AnvilDroid contributors
 size = $INSTALLED_SIZE
@@ -64,6 +64,7 @@ cat > "$STAGE/.INSTALL" <<'EOF'
 post_install() {
   python3 /usr/local/lib/anvildroid-controller/scripts/install-runtime-apparmor.py || return 1
   python3 /usr/local/lib/anvildroid-controller/scripts/patch-waydroid.py >/dev/null 2>&1 || true
+  python3 /usr/local/lib/anvildroid-controller/scripts/migrate-package-source.py || true
   net=/usr/lib/waydroid/data/scripts/waydroid-net.sh
   if [ -f "$net" ] && command -v iptables-nft >/dev/null 2>&1 && command -v iptables-legacy >/dev/null 2>&1 && ! iptables-legacy -t filter -L >/dev/null 2>&1 && grep -q 'command -v iptables-legacy' "$net"; then
     [ -e "$net.anvildroid-legacy-backup" ] || cp -p "$net" "$net.anvildroid-legacy-backup"

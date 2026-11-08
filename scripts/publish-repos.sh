@@ -15,14 +15,17 @@ KEEP=3
 WORKDIR="$(mktemp -d)"
 trap 'rm -rf "$WORKDIR"' EXIT
 
+# PAGES_REPOSITORY (owner/name) publishes to a separate package repository
+# (its gh-pages branch); otherwise this repository's gh-pages is used.
+TARGET_REPOSITORY="${PAGES_REPOSITORY:-${GITHUB_REPOSITORY:-anvildroid/anvildroid}}"
+REPO_OWNER="${TARGET_REPOSITORY%%/*}"
+REPO_NAME="${TARGET_REPOSITORY##*/}"
 if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
-    REPO_URL="https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
-    REPO_NAME="${GITHUB_REPOSITORY##*/}"
-    REPO_OWNER="${GITHUB_REPOSITORY_OWNER}"
+    REPO_URL="https://x-access-token:${PAGES_TOKEN:-$GITHUB_TOKEN}@github.com/${TARGET_REPOSITORY}.git"
+elif [[ -n "${PAGES_REPOSITORY:-}" ]]; then
+    REPO_URL="${REPO_URL:-https://github.com/${TARGET_REPOSITORY}.git}"
 else
     REPO_URL="${REPO_URL:-$(git -C "$(dirname "$(readlink -f "$0")")/.." remote get-url origin)}"
-    REPO_NAME="anvildroid"
-    REPO_OWNER="collyn"
 fi
 PAGES_URL="https://${REPO_OWNER}.github.io/${REPO_NAME}"
 

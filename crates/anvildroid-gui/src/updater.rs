@@ -13,9 +13,12 @@ use std::{
     time::Duration,
 };
 
-const REPO: &str = "collyn/anvildroid";
+const REPO: &str = "anvildroid/anvildroid";
+/// Asset links may still name the repository's previous owner while GitHub
+/// redirects it; both belong to this project.
+const ASSET_REPOS: [&str; 2] = [REPO, "collyn/anvildroid"];
 /// Signed APT/RPM/Arch repositories published by CI (scripts/publish-repos.sh).
-pub const PAGES: &str = "https://collyn.github.io/anvildroid";
+pub const PAGES: &str = "https://anvildroid.github.io/packages";
 const PACKAGE: &str = "anvildroid-controller";
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
@@ -135,11 +138,14 @@ fn plan(release: &Value, kind: Kind) -> Option<(String, String, u64, String)> {
     // Prefer the API asset endpoint (served even when github.com pages are
     // degraded); fall back to the browser download link. Both must belong to
     // this repository.
-    let api = format!("https://api.github.com/repos/{REPO}/releases/assets/");
-    let web = format!("https://github.com/{REPO}/releases/download/");
+    let ours = |url: &&str, prefix: &str| {
+        ASSET_REPOS.iter().any(|repo| url.starts_with(&prefix.replace("{repo}", repo)))
+    };
     let url = |asset: &Value| {
-        asset.get("url").and_then(Value::as_str).filter(|url| url.starts_with(&api))
-            .or_else(|| asset.get("browser_download_url").and_then(Value::as_str).filter(|url| url.starts_with(&web)))
+        asset.get("url").and_then(Value::as_str)
+            .filter(|url| ours(url, "https://api.github.com/repos/{repo}/releases/assets/"))
+            .or_else(|| asset.get("browser_download_url").and_then(Value::as_str)
+                .filter(|url| ours(url, "https://github.com/{repo}/releases/download/")))
             .map(str::to_string)
     };
     let package = assets.iter().find(|asset| {
@@ -399,6 +405,10 @@ mod tests {
             {"name": "anvildroid-controller_0.1.7_amd64.deb", "url": "https://api.github.com/repos/evil/anvildroid/releases/assets/1"},
             {"name": "SHA256SUMS", "url": "https://api.github.com/repos/collyn/anvildroid/releases/assets/2"}]});
         assert!(plan(&other_repo, Kind::Deb).is_none());
+        let moved = json!({"assets": [
+            {"name": "anvildroid-controller_0.1.7_amd64.deb", "url": "https://api.github.com/repos/anvildroid/anvildroid/releases/assets/1"},
+            {"name": "SHA256SUMS", "url": "https://api.github.com/repos/anvildroid/anvildroid/releases/assets/2"}]});
+        assert!(plan(&moved, Kind::Deb).is_some());
         let foreign = json!({"assets": [
             {"name": "anvildroid-controller_0.1.7_amd64.deb", "browser_download_url": "https://example.com/x.deb"},
             {"name": "SHA256SUMS", "browser_download_url": format!("{base}SHA256SUMS")}]});

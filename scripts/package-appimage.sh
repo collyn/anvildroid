@@ -51,11 +51,16 @@ for helper in WebKitWebProcess WebKitNetworkProcess WebKitGPUProcess injected-bu
   [ -s "$webkit_helpers/$helper" ] || { echo "Missing WebKit helper: $webkit_helpers/$helper" >&2; exit 1; }
 done
 
-cargo build --release -p anvildroid-gui -p anvildroid-cli
-# Java payloads are not Cargo outputs. Rebuild them rather than shipping stale
-# helpers from whichever developer run happened to populate target/.
-sh scripts/build-ime.sh
-sh scripts/build-shutdown.sh
+if [ "${ANVILDROID_PREBUILT_RUNTIME:-0}" = 1 ]; then
+  # CI: the shared runtime job already built and verified these.
+  sh scripts/build-runtime.sh
+else
+  cargo build --release -p anvildroid-gui -p anvildroid-cli
+  # Java payloads are not Cargo outputs. Rebuild them rather than shipping stale
+  # helpers from whichever developer run happened to populate target/.
+  sh scripts/build-ime.sh
+  sh scripts/build-shutdown.sh
+fi
 target_dir=${CARGO_TARGET_DIR:-"$root/target"}
 gui="$target_dir/release/anvildroid-gui"
 cli="$target_dir/release/anvildroid"

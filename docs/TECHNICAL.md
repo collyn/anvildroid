@@ -237,7 +237,7 @@ sudo apt-get install -y --no-install-recommends \
   libxext-dev libxtst-dev libgl1-mesa-dri libgbm1 libvulkan1 \
   libayatana-appindicator3-1 dpkg-dev rpm zstd cpio gh
 
-git clone https://github.com/collyn/anvildroid.git
+git clone https://github.com/anvildroid/anvildroid.git
 cd anvildroid
 rustup toolchain install stable --profile minimal
 rustup default stable

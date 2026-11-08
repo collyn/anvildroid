@@ -1,7 +1,7 @@
 # AnvilDroid
 
-[![Latest release](https://img.shields.io/github/v/release/collyn/anvildroid?display_name=tag)](https://github.com/collyn/anvildroid/releases/latest)
-[![Release build](https://github.com/collyn/anvildroid/actions/workflows/release.yml/badge.svg)](https://github.com/collyn/anvildroid/actions/workflows/release.yml)
+[![Latest release](https://img.shields.io/github/v/release/anvildroid/anvildroid?display_name=tag)](https://github.com/anvildroid/anvildroid/releases/latest)
+[![Release build](https://github.com/anvildroid/anvildroid/actions/workflows/release.yml/badge.svg)](https://github.com/anvildroid/anvildroid/actions/workflows/release.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE-MIT)
 
 Run Android apps on the Linux desktop. AnvilDroid is a GUI and runtime
@@ -30,29 +30,29 @@ windows on Wayland and X11, desktop notifications, game controls and more.
 **Debian, Ubuntu, Linux Mint**
 
 ```bash
-curl -fsSL https://collyn.github.io/anvildroid/install.sh | sudo bash
+curl -fsSL https://anvildroid.github.io/packages/install.sh | sudo bash
 ```
 
 **Fedora**
 
 ```bash
-curl -fsSL https://collyn.github.io/anvildroid/install-fedora.sh | sudo bash
+curl -fsSL https://anvildroid.github.io/packages/install-fedora.sh | sudo bash
 ```
 
 **openSUSE**
 
 ```bash
-curl -fsSL https://collyn.github.io/anvildroid/install-opensuse.sh | sudo bash
+curl -fsSL https://anvildroid.github.io/packages/install-opensuse.sh | sudo bash
 ```
 
 **Arch Linux**
 
 ```bash
-curl -fsSL https://collyn.github.io/anvildroid/install-arch.sh | sudo bash
+curl -fsSL https://anvildroid.github.io/packages/install-arch.sh | sudo bash
 ```
 
 **AppImage (any distribution):** download `AnvilDroid-<version>-x86_64.AppImage`
-from the [latest release](https://github.com/collyn/anvildroid/releases/latest),
+from the [latest release](https://github.com/anvildroid/anvildroid/releases/latest),
 make it executable and run it. It installs the runtime controller on first use
 (administrator approval required).
 

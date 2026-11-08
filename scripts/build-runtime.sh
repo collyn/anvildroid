@@ -3,6 +3,15 @@
 set -eu
 ROOT=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
+# CI builds this payload once and unpacks it into every packaging job
+# (scripts/runtime-artifacts.txt); only check that it is complete.
+if [ "${ANVILDROID_PREBUILT_RUNTIME:-0}" = 1 ]; then
+  while IFS= read -r path; do
+    case "$path" in ''|'#'*) continue;; esac
+    test -e "$path" || { echo "Prebuilt runtime is missing: $path" >&2; exit 1; }
+  done < scripts/runtime-artifacts.txt
+  exit 0
+fi
 for tool in cargo clang ld.lld javac java jar keytool aapt apksigner; do
   command -v "$tool" >/dev/null 2>&1 || { echo "Missing build tool: $tool" >&2; exit 1; }
 done

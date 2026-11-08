@@ -24,6 +24,7 @@ for size in 32 48 64 128 256; do
 done
 install -m 0755 "$ROOT/scripts/setup-waydroid.py" "$DEST/usr/local/lib/anvildroid-controller/scripts/setup-waydroid.py"
 install -m 0755 "$ROOT/scripts/patch-waydroid.py" "$DEST/usr/local/lib/anvildroid-controller/scripts/patch-waydroid.py"
+install -m 0755 "$ROOT/scripts/migrate-package-source.py" "$DEST/usr/local/lib/anvildroid-controller/scripts/migrate-package-source.py"
 install -m 0755 "$ROOT/scripts/install-nvidia-payload.py" "$DEST/usr/local/lib/anvildroid-controller/scripts/install-nvidia-payload.py"
 install -m 0755 "$ROOT/scripts/prepare-nvidia-fork.py" "$DEST/usr/local/lib/anvildroid-controller/scripts/prepare-nvidia-fork.py"
 install -m 0755 "$ROOT/scripts/install-runtime-apparmor.py" "$DEST/usr/local/lib/anvildroid-controller/scripts/install-runtime-apparmor.py"

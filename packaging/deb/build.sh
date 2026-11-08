@@ -33,6 +33,7 @@ install -d -m 0700 /var/lib/anvildroid-controller
 install -d -m 0755 /run/anvildroid
 python3 /usr/local/lib/anvildroid-controller/scripts/install-runtime-apparmor.py
 python3 /usr/local/lib/anvildroid-controller/scripts/patch-waydroid.py || true
+python3 /usr/local/lib/anvildroid-controller/scripts/migrate-package-source.py || true
 # Ubuntu kernels commonly provide nftables without the legacy iptables tables
 # expected by Waydroid's bundled network helper.
 net=/usr/lib/waydroid/data/scripts/waydroid-net.sh

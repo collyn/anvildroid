@@ -23,7 +23,7 @@ Version: $VERSION
 Release: 1
 Summary: AnvilDroid GUI, CLI and Android runtime controller
 License: MIT AND BSD-3-Clause AND Apache-2.0
-URL: https://github.com/collyn/anvildroid
+URL: https://github.com/anvildroid/anvildroid
 BuildArch: x86_64
 Requires: python3, iproute, nftables, slirp4netns, lxc, kmod, curl, systemd, patchelf >= 0.18
 Requires: java-headless >= 1:17
@@ -45,6 +45,7 @@ cp -a $STAGE/. %{buildroot}/
 %post
 python3 /usr/local/lib/anvildroid-controller/scripts/install-runtime-apparmor.py || exit 1
 python3 /usr/local/lib/anvildroid-controller/scripts/patch-waydroid.py >/dev/null 2>&1 || :
+python3 /usr/local/lib/anvildroid-controller/scripts/migrate-package-source.py || :
 # Prefer nftables when this kernel has no legacy iptables tables.
 net=/usr/lib/waydroid/data/scripts/waydroid-net.sh
 if [ -f "\$net" ] && command -v iptables-nft >/dev/null 2>&1 && command -v iptables-legacy >/dev/null 2>&1 && ! iptables-legacy -t filter -L >/dev/null 2>&1 && grep -q 'command -v iptables-legacy' "\$net"; then

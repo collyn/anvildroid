@@ -1,0 +1,19 @@
+# Outputs of scripts/build-runtime.sh shared by every package job in CI.
+target/release/anvildroid-gui
+target/release/anvildroid
+target/native/init.waydroid.rc
+target/native/framework-res.apk
+target/native/framework-res.apk.sha256
+target/native/overlay-key.p12
+target/native/AnvilDroidCaption.apk
+target/native/libanvildroid-window.so
+target/native/libanvildroid-runtime-window.so
+target/native/libanvildroid-android-window.so
+target/native/libanvildroid-hwc-shim.so
+target/native/libanvildroid-path-guard.so
+target/ime/AnvilDroidIme.apk
+target/shutdown/anvildroid-shutdown.jar
+target/input-diagnostic/scrcpy-server-cancel.jar
+target/input-diagnostic/scrcpy-LICENSE
+target/input-diagnostic/scrcpy-build.json
+target/native-x11/package
