@@ -16,9 +16,21 @@ if [ "${ANVILDROID_SKIP_BOOTSTRAP:-0}" != 1 ]; then
     echo 'AnvilDroid needs pkexec (polkit) to install its runtime controller. Install polkit, then start AnvilDroid again.' >&2
     exit 1
   fi
-  if [ "$controller_ready" -eq 0 ] && ! pkexec /usr/bin/python3 "$appdir/scripts/bootstrap-appimage.py"; then
-    echo 'AnvilDroid bootstrap failed; see the administrator/setup error above.' >&2
-    exit 1
+  if [ "$controller_ready" -eq 0 ]; then
+    # The FUSE mount is private to this user: root (pkexec) cannot read it.
+    # Hand the controller payload over through a private copy; the root
+    # bootstrap then stages it again into a root-owned directory.
+    payload="$(mktemp -d "${TMPDIR:-/tmp}/anvildroid-bootstrap.XXXXXX")"
+    for part in scripts services target native native-x11 packaging; do
+      if [ -e "$appdir/$part" ]; then cp -R "$appdir/$part" "$payload/"; fi
+    done
+    status=0
+    pkexec /usr/bin/python3 -B "$payload/scripts/bootstrap-appimage.py" || status=$?
+    rm -rf "$payload"
+    if [ "$status" -ne 0 ]; then
+      echo 'AnvilDroid bootstrap failed; see the administrator/setup error above.' >&2
+      exit 1
+    fi
   fi
 fi
 if [ "${1:-}" = --cli ]; then
