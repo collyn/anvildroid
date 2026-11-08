@@ -1576,7 +1576,11 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
             props = [p for p in props if not p.startswith('ro.adb.secure=')] + ['ro.adb.secure=1']
             props = managed_session_properties(props)
             props = device_module.boot_properties(instance, props)
-            props = camera_module.boot_properties(props, camera_nodes)
+            # The legacy gralloc alias needs the AnvilDroid bridge inside the
+            # composer (it reports the alias as "gbm" to Waydroid's HWC).
+            bridge_composer = bool(desktop) and not custom_stock_hwc and not native_wayland
+            props = camera_module.boot_properties(props, camera_nodes,
+                                                  bridge_composer and camera_module.legacy_gralloc_available(fs / 'vendor'))
             props = [p for p in props if not p.startswith((
                 'waydroid.anvil_shm_presentation=', 'waydroid.anvil_gpu_copy_presentation='))]
             if nvidia_rendering and compatibility.get('sdk', 0) > 33:
@@ -1676,6 +1680,8 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
                     require(config_text.count(marker) == 1, 'Desktop preview requires the AnvilDroid native bridge')
                     config_text = config_text.replace(marker, marker + '\n    setenv ANVILDROID_RUNTIME_ID ' + identifier + '\n    setenv ANVILDROID_RUNTIME_GENERATION ' + generation)
             init.write_text(config_text)
+            camera_module.gralloc_alias(fs / 'vendor', 'ro.hardware.gralloc=' + camera_module.GRALLOC_ALIAS in props)
+            camera_module.vendor_files(fs / 'vendor', (patches / 'vendor', work / 'vendor-lower'), camera_nodes)
             (fs / 'vendor/waydroid.prop').write_text('\n'.join(props) + '\n')
             ensure_binder_filesystem()
             mount('-t', 'binder', 'binder', work / 'binder')

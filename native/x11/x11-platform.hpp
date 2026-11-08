@@ -840,6 +840,20 @@ public:
       return create_image(egl, EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT, nullptr,
                           attrs.data());
     };
+    if (layout.yuv) {
+      // Once per format/size: the plane layout actually imported, to compare
+      // against the allocator (chroma placement is reconstructed, see
+      // dmabuf-format.hpp).
+      char line[256];
+      off_t bytes = lseek(layout.fd[0], 0, SEEK_END);
+      snprintf(line, sizeof(line),
+               "x11_dmabuf_yuv format=%s size=%dx%d planes=%d stride=%u,%u,%u offset=%u,%u,%u bytes=%lld",
+               fourcc_name(layout.import).c_str(), w, h, layout.planes, layout.stride[0],
+               layout.planes > 1 ? layout.stride[1] : 0, layout.planes > 2 ? layout.stride[2] : 0,
+               layout.offset[0], layout.planes > 1 ? layout.offset[1] : 0,
+               layout.planes > 2 ? layout.offset[2] : 0, (long long)bytes);
+      report_once("yuv:" + fourcc_name(layout.import) + ":" + std::to_string(w) + "x" + std::to_string(h), line);
+    }
     auto image = import(layout.yuv);
     if (image == EGL_NO_IMAGE_KHR && layout.yuv)
       image = import(false);

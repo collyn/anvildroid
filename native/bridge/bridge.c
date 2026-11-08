@@ -62,6 +62,35 @@ static int resize_uses_nvidia(void) {
   return enabled;
 }
 
+/* Camera runtimes select the image's legacy gbm gralloc through an alias
+ * name, because the image's init rewrites ro.hardware.gralloc=gbm to
+ * minigbm_gbm_mesa (see runtime-camera.py). Waydroid's HWC chooses its
+ * buffer import path by the exact name "gbm" and otherwise falls back to
+ * shared-memory copies, which cannot carry the camera's YV12 preview. Only
+ * the alias value is rewritten; every other property is returned unchanged. */
+static int gralloc_alias_result(const char *key, char *value, int length) {
+  if (length > 0 && key && value && !strcmp(key, "ro.hardware.gralloc") &&
+      !strcmp(value, "anvilgbm")) {
+    snprintf(value, 92, "%s", "gbm");
+    return 3;
+  }
+  return length;
+}
+typedef int (*property_get_fn)(const char *, char *, const char *);
+#ifndef ANVIL_BOOT_CANVAS
+int property_get(const char *key, char *value, const char *fallback) {
+  static property_get_fn real;
+  property_get_fn get = __atomic_load_n(&real, __ATOMIC_ACQUIRE);
+  if (!get) {
+    void *library = dlopen("libcutils.so", 2);
+    get = library ? (property_get_fn)dlsym(library, "property_get") : 0;
+    if (!get) abort();
+    __atomic_store_n(&real, get, __ATOMIC_RELEASE);
+  }
+  return gralloc_alias_result(key, value, get(key, value, fallback));
+}
+#endif
+
 struct message {
   const char *name, *signature;
   const void **types;

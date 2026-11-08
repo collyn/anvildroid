@@ -4,7 +4,6 @@
 #ifdef ANVIL_BOOT_CANVAS
 #include "boot-canvas.h"
 static int boot_hint_width, boot_hint_height, boot_width, boot_height, boot_decided;
-typedef int (*property_get_fn)(const char *, char *, const char *);
 static property_get_fn boot_real_property_get;
 /* Reserved Android pixels are allocation capacity, not the maximized window's
  * geometry. Strict xdg-shell compositors require the configured geometry even
@@ -26,7 +25,7 @@ int property_get(const char *key, char *value, const char *fallback) {
     __atomic_store_n(&boot_real_property_get, get, __ATOMIC_RELEASE);
   }
   if (strcmp(key, "persist.waydroid.width") && strcmp(key, "persist.waydroid.height"))
-    return get(key, value, fallback);
+    return gralloc_alias_result(key, value, get(key, value, fallback));
   /* Desktop bridges reserve a larger canvas for independent app windows.
    * A stock headless compositor instead requires its exact configured size. */
   const char *runtime = getenv("ANVILDROID_RUNTIME_ID");

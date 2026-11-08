@@ -1,6 +1,7 @@
 """Host camera discovery, selection and controller ops; no real devices."""
 import importlib.util
 import json
+import re
 from pathlib import Path
 import tempfile
 import types
@@ -80,9 +81,97 @@ class Selection(unittest.TestCase):
 
     def test_android_hal_only_with_a_camera(self):
         props = ['ro.hardware.camera=legacy', 'ro.product.model=x']
-        self.assertEqual(camera.boot_properties(props, ['video0']), ['ro.product.model=x', 'ro.hardware.camera=v4l2'])
+        self.assertEqual(camera.boot_properties(props, ['video0']), ['ro.product.model=x', 'ro.hardware.camera=v4l2',
+                                                                     'media.settings.xml=/vendor/etc/media_profiles_V1_0.xml'])
         self.assertEqual(camera.boot_properties(props, []), ['ro.product.model=x'])
 
+    def test_camera_switches_mesa_gralloc_to_legacy_alias_only(self):
+        mesa = ['ro.hardware.gralloc=minigbm_gbm_mesa', 'gralloc.gbm.device=/dev/dri/renderD128']
+        self.assertIn('ro.hardware.gralloc=anvilgbm', camera.boot_properties(mesa, ['video0'], True))
+        self.assertEqual(camera.boot_properties(mesa, [], True), mesa)               # no camera: untouched
+        self.assertIn('ro.hardware.gralloc=minigbm_gbm_mesa', camera.boot_properties(mesa, ['video0'], False))
+        software = ['ro.hardware.gralloc=default']
+        self.assertIn('ro.hardware.gralloc=default', camera.boot_properties(software, ['video0'], True))
+
+    def test_gralloc_alias_is_created_and_removed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            vendor = Path(directory)
+            self.assertFalse(camera.legacy_gralloc_available(vendor))
+            for folder in camera.HAL_DIRS:
+                (vendor / folder).mkdir(parents=True)
+                (vendor / folder / 'gralloc.gbm.so').write_text('elf')
+            self.assertTrue(camera.legacy_gralloc_available(vendor))
+            camera.gralloc_alias(vendor, True)
+            camera.gralloc_alias(vendor, True)                                       # idempotent
+            alias = vendor / 'lib64/hw/gralloc.anvilgbm.so'
+            self.assertEqual((alias.readlink(), alias.read_text()), (Path('gralloc.gbm.so'), 'elf'))
+            camera.gralloc_alias(vendor, False)
+            self.assertFalse(alias.is_symlink())
+            (vendor / 'lib/hw/gralloc.anvilgbm.so').write_text('not ours')
+            with self.assertRaises(RuntimeError):
+                camera.gralloc_alias(vendor, True)
+
+CONFIG = """<ExternalCamera>
+    <Provider>
+        <ignore>
+        </ignore>
+    </Provider>
+    <Device/>
+</ExternalCamera>
+"""
+PROFILES = """<MediaSettings>
+    <CamcorderProfiles cameraId="0">
+        <EncoderProfile quality="720p " fileFormat="mp4" duration="60"/>
+    </CamcorderProfiles>
+
+    <CamcorderProfiles cameraId="1">
+        <EncoderProfile quality="720p" fileFormat="mp4" duration="60"/>
+    </CamcorderProfiles>
+    <EncoderOutputFileFormat format="mp4" />
+</MediaSettings>
+"""
+
+
+class VendorFiles(unittest.TestCase):
+    def test_camera_ids_follow_video_nodes(self):
+        self.assertEqual(camera.camera_ids(['video0', 'video12', 'bogus']), [0, 12])
+
+    def test_external_cameras_are_numbered_from_zero_only_while_enabled(self):
+        enabled = camera.external_config(CONFIG, True)
+        self.assertIn('<CameraIdOffset>0</CameraIdOffset>\n    </Provider>', enabled)
+        self.assertEqual(camera.external_config(enabled, True), enabled)            # idempotent
+        self.assertEqual(camera.external_config(enabled, False), CONFIG)
+
+    def test_recording_profiles_follow_the_camera_modes(self):
+        webcam = {(1280, 720): 10, (640, 480): 30, (320, 240): 30, (160, 120): 30}
+        self.assertEqual(camera.media_profiles(PROFILES, {}), PROFILES)           # no camera: image file untouched
+        self.assertIn('cameraId="1"', camera.media_profiles(PROFILES, {0: {}}))  # no usable modes: image profiles kept
+        self.assertNotIn('"720p "', camera.media_profiles(PROFILES, {5: webcam}))   # parser-safe quality names
+        result = camera.media_profiles(PROFILES, {0: webcam})
+        block = result[result.index('cameraId="0"'):result.index('</CamcorderProfiles>')]
+        self.assertEqual(re.findall(r'EncoderProfile quality="([^"]+)"', block), ['qvga', '480p', '720p'])
+        self.assertIn('width="1280" height="720" frameRate="10"', block)
+        self.assertEqual(result.count('cameraId="0"'), 1)
+        self.assertIn('<CamcorderProfiles cameraId="1">', result)                    # other ids untouched
+        self.assertLess(result.index('cameraId="0"'), result.index('cameraId="1"'))
+        added = camera.media_profiles(PROFILES, {7: webcam})
+        self.assertLess(added.index('cameraId="7"'), added.index('cameraId="0"'))
+        self.assertTrue(added.rstrip().endswith('</MediaSettings>'))
+
+    def test_vendor_files_are_rebuilt_from_the_image(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            lower, vendor = root / 'lower', root / 'vendor'
+            for base in (lower, vendor):
+                (base / 'etc').mkdir(parents=True)
+            (lower / camera.EXTERNAL_CONFIG).write_text(CONFIG)
+            (lower / camera.MEDIA_PROFILES).write_text(PROFILES)
+            camera.vendor_files(vendor, [root / 'patches', lower], ['video4'], sizes=lambda _: {(640, 480): 30})
+            self.assertIn('CameraIdOffset', (vendor / camera.EXTERNAL_CONFIG).read_text())
+            self.assertIn('cameraId="4"', (vendor / camera.MEDIA_PROFILES).read_text())
+            camera.vendor_files(vendor, [root / 'patches', lower], [], sizes=lambda _: {})
+            self.assertEqual((vendor / camera.EXTERNAL_CONFIG).read_text(), CONFIG)
+            self.assertEqual((vendor / camera.MEDIA_PROFILES).read_text(), PROFILES)
 
 features_spec = importlib.util.spec_from_file_location('features_camera_test', HERE / 'runtime-features.py')
 features = importlib.util.module_from_spec(features_spec)
