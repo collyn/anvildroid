@@ -20,7 +20,7 @@ if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
     REPO_NAME="${GITHUB_REPOSITORY##*/}"
     REPO_OWNER="${GITHUB_REPOSITORY_OWNER}"
 else
-    REPO_URL="$(git remote get-url origin)"
+    REPO_URL="${REPO_URL:-$(git -C "$(dirname "$(readlink -f "$0")")/.." remote get-url origin)}"
     REPO_NAME="anvildroid"
     REPO_OWNER="collyn"
 fi
