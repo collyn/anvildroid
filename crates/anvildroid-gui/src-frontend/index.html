@@ -10,6 +10,7 @@
   <link rel="stylesheet" href="shell.css">
   <link rel="stylesheet" href="management.css">
   <link rel="stylesheet" href="dialogs.css">
+  <link rel="stylesheet" href="layout.css">
   <link rel="stylesheet" href="skin.css">
 </head>
 <body>
@@ -52,7 +53,7 @@
           </div>
         </div>
         <div class="library-filters unified-filters">
-          <div class="runtime-filter-group"><details id="filter-runtime" class="library-runtime-filter"><summary id="runtime-filter-label" class="select-control" aria-label="Filter by runtimes">All runtimes</summary><div id="runtime-filter-options" class="runtime-filter-options" role="group" aria-label="Runtimes"><label class="runtime-filter-option runtime-filter-all"><input type="checkbox" data-library-runtime="all" checked>All runtimes</label><label class="runtime-filter-option"><input type="checkbox" data-library-runtime="default" checked>System Waydroid</label></div></details></div>
+          <div class="runtime-filter-group"><details id="filter-runtime" class="library-runtime-filter"><summary id="runtime-filter-label" class="select-control" aria-label="Filter by devices">All devices</summary><div id="runtime-filter-options" class="runtime-filter-options" role="group" aria-label="Devices"><label class="runtime-filter-option runtime-filter-all"><input type="checkbox" data-library-runtime="all" checked>All devices</label><label class="runtime-filter-option"><input type="checkbox" data-library-runtime="default" checked>System Waydroid</label></div></details></div>
           <select id="sort-apps" hidden><option value="name-asc">Name A–Z</option><option value="name-desc">Name Z–A</option><option value="package">Package</option><option value="recent">Recently opened</option><option value="favorites">Favorites first</option></select>
           <div class="category-filters"><select id="filter-tag" class="select-control" aria-label="Filter apps by tag"><option value="all">All tags</option></select></div>
           <button id="btn-manage-tags" class="btn btn-quiet" type="button" aria-label="Manage tags" title="Manage tags">+</button>
@@ -83,26 +84,26 @@
           <div class="runtime-actions">
             <button id="btn-init-waydroid" class="btn btn-primary" type="button">Install / repair runtime tools</button>
           </div>
-          <p class="hint">Install the host tools needed to run Android. For managed runtimes, choose an image in Images, then create a runtime.</p>
+          <p class="hint">Install the host tools needed to run Android. For new devices, get an image in Android images, then create a device.</p>
         </div>
         <p id="waydroid-init-status" class="hint" role="status"></p>
         <details id="controller-setup-help"><summary>Waydroid installation help</summary><div class="runtime-setup-actions"><button id="btn-waydroid-guide" class="btn" type="button">Waydroid setup guide</button><span class="hint">Install Waydroid with the setup guide. Administrator access is required.</span></div></details>
         </div>
         <div id="runtime-image-notice" class="runtime-feedback warning" role="status" hidden>
           <strong>No Android image yet</strong>
-          <p>Download an official Waydroid image or import your own in Images, then create a runtime here.</p>
-          <div class="runtime-actions"><button id="btn-runtime-open-images" class="btn btn-primary" type="button">Go to Images</button></div>
+          <p>Download an official Waydroid image or import your own in Android images, then create a device here.</p>
+          <div class="runtime-actions"><button id="btn-runtime-open-images" class="btn btn-primary" type="button">Open Android images</button></div>
         </div>
         <details id="runtime-create-panel" class="create-panel"><summary>+ New device</summary>
         <form id="controller-create" class="runtime-actions">
-          <div class="form-field"><label for="controller-name">Runtime name</label>
+          <div class="form-field"><label for="controller-name">Device name</label>
           <input id="controller-name" maxlength="128" required placeholder="My Android" /></div>
           <div class="form-field"><label for="controller-image">Image</label>
           <select id="controller-image" class="select-control" aria-describedby="controller-image-hint"><option value="" disabled>No available images</option></select></div>
           <button id="controller-create-button" class="btn btn-primary" type="submit" disabled>Create device</button>
           <button id="controller-reinstall-cancel" class="btn" type="button" hidden>Cancel reinstall</button>
         </form>
-        <p class="hint"><button class="btn btn-quiet nav-item" data-page="images" type="button">Open Images</button></p>
+        <p class="hint"><button class="btn btn-quiet nav-item" data-page="images" type="button">Open Android images</button></p>
         <p id="controller-image-hint" class="hint">Creates a separate runtime, prepares its images and starts Android automatically.</p></details>
         <p id="controller-message" role="status" aria-live="polite"></p>
         <div id="controller-start" style="display:none">
@@ -218,7 +219,10 @@
         <div class="page-header"><h1 class="page-title">Settings</h1><button id="btn-refresh-settings" class="btn">Refresh</button></div>
         <div class="settings-section">
           <div class="section-heading"><h2>Appearance</h2></div>
-          <div class="theme-choice" role="group" aria-label="Theme">
+          <h3 class="settings-subheading">Theme</h3>
+          <div class="skin-choice" role="group" aria-label="Theme"><button type="button" class="skin-option" data-skin-choice="classic" aria-pressed="false"><span>Classic</span><small>Rounded, calm</small></button><button type="button" class="skin-option" data-skin-choice="hud" aria-pressed="false"><span>HUD</span><small>Square, high-contrast game look</small></button></div>
+          <h3 class="settings-subheading">Light or dark</h3>
+          <div class="theme-choice" role="group" aria-label="Light or dark">
             <button type="button" data-theme-choice="system" aria-pressed="false">System</button>
             <button type="button" data-theme-choice="light" aria-pressed="false">Light</button>
             <button type="button" data-theme-choice="dark" aria-pressed="false">Dark</button>
@@ -226,7 +230,7 @@
           <p class="hint">System follows your desktop's light or dark setting.</p>
           <h3 class="settings-subheading">Accent colour</h3>
           <div class="accent-choice" role="group" aria-label="Accent colour"><button type="button" class="accent-option" data-accent-choice="blue" aria-pressed="false"><span class="accent-swatch" data-swatch="blue" aria-hidden="true"></span><span>Blue</span></button><button type="button" class="accent-option" data-accent-choice="forge" aria-pressed="false"><span class="accent-swatch" data-swatch="forge" aria-hidden="true"></span><span>Forge</span></button><button type="button" class="accent-option" data-accent-choice="toxic" aria-pressed="false"><span class="accent-swatch" data-swatch="toxic" aria-hidden="true"></span><span>Toxic</span></button><button type="button" class="accent-option" data-accent-choice="crimson" aria-pressed="false"><span class="accent-swatch" data-swatch="crimson" aria-hidden="true"></span><span>Crimson</span></button><button type="button" class="accent-option" data-accent-choice="synthwave" aria-pressed="false"><span class="accent-swatch" data-swatch="synthwave" aria-hidden="true"></span><span>Synthwave</span></button><button type="button" class="accent-option" data-accent-choice="ice" aria-pressed="false"><span class="accent-swatch" data-swatch="ice" aria-hidden="true"></span><span>Ice</span></button></div>
-          <p class="hint">Blue is the default. Each style works in light and dark.</p>
+          <p class="hint">Blue is the default. Every theme and accent works in light and dark.</p>
         </div>
         <div class="settings-section" id="update-section">
           <div class="section-heading"><h2>Updates</h2></div>
@@ -270,7 +274,7 @@
         <div class="page-header controls-header">
           <h1 class="page-title">Game Controls</h1>
           <div class="controls-toolbar">
-            <select id="keymap-runtime-filter" aria-label="Filter keymaps by runtime"><option value="all">All runtimes</option><option value="default">System Waydroid</option></select>
+            <select id="keymap-runtime-filter" aria-label="Filter keymaps by device"><option value="all">All devices</option><option value="default">System Waydroid</option></select>
             <button id="keymap-list-refresh" class="btn" type="button">Refresh</button>
           </div>
         </div>
@@ -316,7 +320,7 @@
   <dialog id="runtime-rename-dialog" aria-labelledby="runtime-rename-title">
     <form id="runtime-rename-form">
       <h2 id="runtime-rename-title">Rename runtime</h2>
-      <label for="runtime-rename-name">Runtime name</label>
+      <label for="runtime-rename-name">Device name</label>
       <input id="runtime-rename-name" class="select-control" maxlength="128" required />
       <p id="runtime-rename-error" role="alert"></p>
       <div class="runtime-actions">

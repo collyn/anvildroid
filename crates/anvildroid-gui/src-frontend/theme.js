@@ -28,7 +28,27 @@
     document.querySelectorAll?.('[data-accent-choice]').forEach(button =>
       button.setAttribute('aria-pressed', String(button.dataset.accentChoice === accent)));
   }
+  // Themes change the look only (skin.css is scoped to data-skin="hud");
+  // navigation and layout are the same in every theme. Classic is the default.
+  const SKIN_KEY = 'anvildroid.skin';
+  const SKINS = ['classic', 'hud'];
+  function savedSkin() {
+    try { const value = localStorage.getItem(SKIN_KEY); return SKINS.includes(value) ? value : 'classic'; }
+    catch (_) { return 'classic'; }
+  }
+  function applySkin(skin) {
+    document.documentElement.dataset.skin = skin;
+    document.querySelectorAll?.('[data-skin-choice]').forEach(button =>
+      button.setAttribute('aria-pressed', String(button.dataset.skinChoice === skin)));
+  }
   const AnvilTheme = {
+    skins: SKINS,
+    skin: savedSkin,
+    setSkin(skin) {
+      if (!SKINS.includes(skin)) return;
+      try { localStorage.setItem(SKIN_KEY, skin); } catch (_) {}
+      applySkin(skin);
+    },
     accents: ACCENTS,
     accent: savedAccent,
     setAccent(accent) {
@@ -46,14 +66,18 @@
   };
   media?.addEventListener?.('change', () => { if (saved() === 'system') apply('system'); });
   window.AnvilTheme = AnvilTheme;
+  applySkin(savedSkin());
   applyAccent(savedAccent());
   apply(saved());
-  // The picker lives in Settings → Appearance; bind it once the page exists.
+  // The pickers live in Settings → Appearance; bind them once the page exists.
   document.addEventListener?.('DOMContentLoaded', () => {
+    applySkin(savedSkin());
     applyAccent(savedAccent());
     document.addEventListener('click', event => {
-      const button = event.target.closest?.('[data-accent-choice]');
-      if (button) AnvilTheme.setAccent(button.dataset.accentChoice);
+      const accent = event.target.closest?.('[data-accent-choice]');
+      if (accent) AnvilTheme.setAccent(accent.dataset.accentChoice);
+      const skin = event.target.closest?.('[data-skin-choice]');
+      if (skin) AnvilTheme.setSkin(skin.dataset.skinChoice);
     });
   });
 })();

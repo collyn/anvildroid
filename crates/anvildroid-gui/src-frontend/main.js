@@ -493,13 +493,13 @@ function renderRuntimeFilter() {
   const records = defaultRuntimeFirst([...systemRuntimeRecords(), ...managedLibrary]);
   const label = document.getElementById('runtime-filter-label');
   const selected = records.filter(record => libraryRuntimeSelected(record.id));
-  label.textContent = libraryRuntimeSelection === null ? 'All runtimes'
+  label.textContent = libraryRuntimeSelection === null ? 'All devices'
     : selected.length === 1 ? selected[0].name : `${selected.length} runtimes`;
-  label.title = libraryRuntimeSelection === null ? 'All runtimes' : selected.map(record => record.name).join(', ') || 'No runtimes selected';
+  label.title = libraryRuntimeSelection === null ? 'All devices' : selected.map(record => record.name).join(', ') || 'No devices selected';
   const panel = document.getElementById('runtime-filter-options');
   const structure = JSON.stringify(records.map(record => [record.id, record.name]));
   if (panel._runtimeStructure !== structure) {
-    panel.innerHTML = `<label class="runtime-filter-option runtime-filter-all"><input type="checkbox" data-library-runtime="all">All runtimes</label>` + records.map(record => `<label class="runtime-filter-option"><input type="checkbox" data-library-runtime="${escapeHtml(record.id)}"><span title="${escapeHtml(record.name)}">${escapeHtml(record.name)}</span></label>`).join('');
+    panel.innerHTML = `<label class="runtime-filter-option runtime-filter-all"><input type="checkbox" data-library-runtime="all">All devices</label>` + records.map(record => `<label class="runtime-filter-option"><input type="checkbox" data-library-runtime="${escapeHtml(record.id)}"><span title="${escapeHtml(record.name)}">${escapeHtml(record.name)}</span></label>`).join('');
     panel._runtimeStructure = structure;
   }
   panel.querySelectorAll('input[data-library-runtime]').forEach(input => {
@@ -963,11 +963,11 @@ function renderLibraryEmpty() {
     const busy = libraryStarts.has(record.id) || ['Starting', 'Stopping', 'Provisioning'].includes(record.state);
     const canStart = !record.error && ['Stopped', 'Ready', 'Frozen'].includes(record.state) && record.import_status !== 'pending';
     const error = libraryStartErrors.get(record.id) || record.error;
-    const note = error || (busy ? 'Please wait. Apps will appear automatically when this runtime is running.' : canStart ? 'Start this runtime to see and open its apps.' : 'Open runtime settings to check its status and finish setup.');
-    return `<section class="library-runtime-empty"><h3>${escapeHtml(record.name || record.id)}</h3><span class="hint">${escapeHtml(busy ? 'Starting / updating' : record.state)}</span><p ${error ? 'role="alert"' : ''}>${escapeHtml(note)}</p><div class="runtime-actions">${canStart || busy ? `<button class="btn btn-primary" data-library-start="${escapeHtml(record.id)}" ${busy ? 'disabled' : ''}>${busy ? 'Please wait...' : 'Start runtime'}</button>` : ''}<button class="btn btn-quiet" data-library-manage="${escapeHtml(record.id)}">Runtime settings</button><button class="btn btn-quiet" data-library-refresh>Refresh</button></div></section>`;
+    const note = error || (busy ? 'Please wait. Apps will appear automatically when this device is running.' : canStart ? 'Start this device to see and open its apps.' : 'Open device settings to check its status and finish setup.');
+    return `<section class="library-runtime-empty"><h3>${escapeHtml(record.name || record.id)}</h3><span class="hint">${escapeHtml(busy ? 'Starting / updating' : record.state)}</span><p ${error ? 'role="alert"' : ''}>${escapeHtml(note)}</p><div class="runtime-actions">${canStart || busy ? `<button class="btn btn-primary" data-library-start="${escapeHtml(record.id)}" ${busy ? 'disabled' : ''}>${busy ? 'Please wait...' : 'Start device'}</button>` : ''}<button class="btn btn-quiet" data-library-manage="${escapeHtml(record.id)}">Device settings</button><button class="btn btn-quiet" data-library-refresh>Refresh</button></div></section>`;
   }).join('');
   const guide = quickStartVisible() ? quickStartMarkup() : '';
-  const markup = guide ? guide : `<div class="library-empty-panel" role="status"><h2>${libraryRuntimeSelection?.size === 0 ? 'Select runtimes to view apps' : 'Start a runtime to view apps'}</h2><p class="hint">Only apps from running runtimes appear here.</p>${panels || '<p>Choose runtimes in the filter above.</p>'}</div>`;
+  const markup = guide ? guide : `<div class="library-empty-panel" role="status"><h2>${libraryRuntimeSelection?.size === 0 ? 'Select devices to view apps' : 'Start a device to view apps'}</h2><p class="hint">Only apps from running devices appear here.</p>${panels || '<p>Choose devices in the filter above.</p>'}</div>`;
   appsGrid.setAttribute('aria-busy', String(libraryStarts.size > 0));
   if (appsGrid._appMarkup === markup) return;
   appsGrid._appMarkup = markup;
@@ -1479,7 +1479,7 @@ function chooseApkTargets(records) {
   const preferred = libraryRuntimeSelection || new Set([defaultRuntimeId()]);
   records = defaultRuntimeFirst(records);
   targets.innerHTML = `<table class="apk-runtime-table"><thead><tr><th scope="col"><input id="apk-install-all" type="checkbox" aria-label="Select all available runtimes" title="Select all"></th><th scope="col">Runtime</th><th scope="col">Image</th></tr></thead><tbody>${records.map(record => `<tr><td><input id="apk-target-${escapeHtml(record.id)}" type="checkbox" aria-label="Select ${escapeHtml(record.name)}" value="${escapeHtml(record.id)}" ${!apkTargetAvailable(record) ? 'disabled' : preferred?.has(record.id) || records.filter(apkTargetAvailable).length === 1 ? 'checked' : ''}></td><td><label for="apk-target-${escapeHtml(record.id)}">${escapeHtml(record.name)}</label><small id="apk-target-state-${escapeHtml(record.id)}" class="apk-target-state ${record.state === 'Running' ? 'running' : 'idle'}">${escapeHtml(record.state || 'Unavailable')}</small></td><td>${escapeHtml(apkRuntimeImageLabel(record))}</td></tr>`).join('') || '<tr><td colspan="3" class="hint">No runtimes available.</td></tr>'}</tbody></table>`;
-  error.textContent = records.some(apkTargetAvailable) ? '' : 'Start a runtime to install an APK.';
+  error.textContent = records.some(apkTargetAvailable) ? '' : 'Start a device to install an APK.';
   const selected = () => Array.from(targets.querySelectorAll('tbody input:checked')).filter(input => !input.disabled).map(input => input.value);
   const selectAll = document.getElementById('apk-install-all');
   const update = () => {
@@ -2301,7 +2301,7 @@ function renderAvailableImages() {
       return `<tr class="image-not-cached"><td><strong>Waydroid ${escapeHtml(variant.flavor)}</strong><br><span class="hint">${escapeHtml(variant.system.version)} · ${escapeHtml(imageCatalogState.report.architecture)}</span></td><td>Official<br><span class="hint">Not downloaded</span></td><td>${(variant.download_bytes / 1024**3).toFixed(2)} GiB</td><td>${imageActionButton('Download Waydroid ' + variant.flavor, `data-download-flavor="${escapeHtml(variant.flavor)}"`, 'download', busy || imageDownloadBusy || imageDownloadActive() || !variant.matching_versions, true)}</td></tr>`;
     }
     const label = item.flavor === 'CUSTOM' ? (item.custom_name || 'Custom image ' + item.library_id.slice(0, 8)) : 'Waydroid ' + item.flavor;
-    return `<tr><td><strong>${escapeHtml(label)}</strong><details><summary>Image details</summary>${['system', 'vendor'].map(kind => `<p class="hint">${kind}: ${escapeHtml(item.images[kind].filename)}<br>SHA-256: <code>${escapeHtml(item.images[kind].sha256)}</code></p>`).join('')}</details></td><td>${item.flavor === 'CUSTOM' ? 'Imported' : 'Official'}</td><td>${(item.image_bytes / 1024**3).toFixed(2)} GiB</td><td><div class="runtime-actions">${imageActionButton('Create runtime · ' + label, `data-image-use="${escapeHtml(item.library_id)}"`, 'create', busy, true)}${imageActionButton(canReinstall ? 'Reinstall ' + target.name + ' · ' + label : 'Select a stopped runtime to reinstall', `data-image-reinstall="${escapeHtml(item.library_id)}"`, 'reinstall', busy || !canReinstall)}${item.flavor === 'CUSTOM' ? imageActionButton('Rename · ' + label, `data-image-rename="${escapeHtml(item.library_id)}"`, 'rename', busy) : ''}</div></td></tr>`;
+    return `<tr><td><strong>${escapeHtml(label)}</strong><details><summary>Image details</summary>${['system', 'vendor'].map(kind => `<p class="hint">${kind}: ${escapeHtml(item.images[kind].filename)}<br>SHA-256: <code>${escapeHtml(item.images[kind].sha256)}</code></p>`).join('')}</details></td><td>${item.flavor === 'CUSTOM' ? 'Imported' : 'Official'}</td><td>${(item.image_bytes / 1024**3).toFixed(2)} GiB</td><td><div class="runtime-actions">${imageActionButton('Create device · ' + label, `data-image-use="${escapeHtml(item.library_id)}"`, 'create', busy, true)}${imageActionButton(canReinstall ? 'Reinstall ' + target.name + ' · ' + label : 'Select a stopped device to reinstall', `data-image-reinstall="${escapeHtml(item.library_id)}"`, 'reinstall', busy || !canReinstall)}${item.flavor === 'CUSTOM' ? imageActionButton('Rename · ' + label, `data-image-rename="${escapeHtml(item.library_id)}"`, 'rename', busy) : ''}</div></td></tr>`;
   }).join('')}</tbody></table></div>`;
 }
 document.getElementById('available-runtime-images').addEventListener('click', async event => {
@@ -3348,7 +3348,7 @@ async function mutateController(request) {
       else controllerRecords[position] = result;
     }
     controllerPending = null;
-    completionNotice = ({camera_set:'Camera settings saved. Start this runtime to apply them.', device_set:'Device identity saved. Start Android to apply it.', resources_set: 'RAM and CPU limits saved. Start this runtime to apply them.', gpu_set: 'GPU saved. Start this runtime to apply it.', arm_set: `ARM translation ${request.enabled ? 'installed' : 'disabled'}. Start this runtime to apply it.`, delete: 'Deletion accepted. The runtime will disappear when its data has been removed.', display_set: 'Display mode saved. Start Android to apply it.', backend_set: 'Display backend saved. Start Android to apply it.', app_action: 'App action accepted. Watch its job result below.', create: 'Runtime created. Android is running.', create_image: 'Runtime created. Android is running.', rename: 'Runtime name saved.', prepare: 'Images prepared. Android is running.', start: 'Start request accepted. The runtime card below shows boot progress and the result.', stop: 'Stop request accepted. The runtime card below shows progress and the result.', move: 'Storage move accepted. Keep both disks connected until verification completes.', discard_previous: 'Removal accepted. Watch storage status below; active runtime data is kept.', existing_import: 'Import started. Keep System Waydroid stopped until preparation succeeds.'})[request.op] || 'Request accepted.';
+    completionNotice = ({camera_set:'Camera settings saved. Start this runtime to apply them.', device_set:'Device identity saved. Start Android to apply it.', resources_set: 'RAM and CPU limits saved. Start this runtime to apply them.', gpu_set: 'GPU saved. Start this runtime to apply it.', arm_set: `ARM translation ${request.enabled ? 'installed' : 'disabled'}. Start this runtime to apply it.`, delete: 'Deletion accepted. The runtime will disappear when its data has been removed.', display_set: 'Display mode saved. Start Android to apply it.', backend_set: 'Display backend saved. Start Android to apply it.', app_action: 'App action accepted. Watch its job result below.', create: 'Device created. Android is running.', create_image: 'Device created. Android is running.', rename: 'Device name saved.', prepare: 'Images prepared. Android is running.', start: 'Start request accepted. The runtime card below shows boot progress and the result.', stop: 'Stop request accepted. The runtime card below shows progress and the result.', move: 'Storage move accepted. Keep both disks connected until verification completes.', discard_previous: 'Removal accepted. Watch storage status below; active runtime data is kept.', existing_import: 'Import started. Keep System Waydroid stopped until preparation succeeds.'})[request.op] || 'Request accepted.';
     if (restarted) {
       completionNotice = 'Settings applied. Android restarted successfully.';
     }
@@ -4161,10 +4161,12 @@ function renderManagedLibraryStatus() {
   const records = managedLibrary.filter(record => libraryRuntimeSelected(record.id));
   const markup =
     (managedLibraryError ? `<p>${escapeHtml(managedLibraryError)}</p>` : '') + records.map(record => {
-      const count = managedSnapshots.get(record.id)?.length;
-      const note = record.error || (!['Running', 'Frozen'].includes(record.state) ? 'Select this runtime to start it.' : `${count ?? 0} apps`);
+      // Same count as the Apps grid, which adds a Waydroid entry when the snapshot has none.
+      const snapshot = managedSnapshots.get(record.id) || [];
+      const count = snapshot.length + (snapshot.some(app => app.package === 'org.anvildroid.desktop') ? 0 : 1);
       const starting = libraryStarts.has(record.id);
       const canStart = !record.error && ['Stopped', 'Ready', 'Frozen'].includes(record.state) && record.import_status !== 'pending';
+      const note = record.error || (!['Running', 'Frozen'].includes(record.state) ? (canStart ? 'Start it to see its apps.' : ['Starting', 'Provisioning'].includes(record.state) ? 'Apps appear when it is running.' : 'Open it on the Devices page to finish setup.') : `${count} ${count === 1 ? 'app' : 'apps'}`);
       const button = starting ? '<button type="button" class="btn" disabled>Starting…</button>'
         : canStart ? `<button type="button" class="btn btn-primary" data-library-start="${escapeHtml(record.id)}">Start</button>` : '';
       return `<div class="device-chip" data-state="${escapeHtml(String(record.error ? 'error' : record.state).toLowerCase())}"><p><strong>${escapeHtml(record.name)}</strong> · ${escapeHtml(record.state)} · ${escapeHtml(note)}${managedPreferenceErrors.has(record.id) ? ` · ${escapeHtml(managedPreferenceErrors.get(record.id))}` : ''}</p>${button}</div>`;
@@ -4251,7 +4253,7 @@ async function runManagedAppAction(action, pkg, runtimeId) {
   const notify = showAppToast;
   const appName = (managedSnapshots.get(runtimeId) || []).find(app => app.package === pkg)?.label || pkg;
   try {
-    if (!record || !['Running', 'Frozen'].includes(record.state) || record.error) throw new Error('Start this runtime on the Runtime page, then refresh its apps.');
+    if (!record || !['Running', 'Frozen'].includes(record.state) || record.error) throw new Error('Start this device on the Devices page, then refresh its apps.');
     if (!(managedSnapshots.get(runtimeId) || []).some(app => app.package === pkg && app.launchable === true)) throw new Error('Refresh the app list before retrying.');
     if (action === 'uninstall' && !await AppDialog.confirm(`Uninstall ${appName} (${pkg}) from runtime ${record.name}? This removes its data in this runtime.`, {title:'Uninstall app',kind:'warning'})) return;
     if (action === 'force_stop' && !await AppDialog.confirm(`Force-stop ${pkg} in runtime ${record.name}? Unsaved app work may be lost.`, {title:'Force-stop app',kind:'warning'})) return;

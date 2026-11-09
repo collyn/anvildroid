@@ -1,0 +1,119 @@
+/* Navigation and components shared by every theme: Devices sub-tabs, the
+   first-run guide, device chips, grouped app grid, the tabbed device settings
+   and the appearance pickers. Written in the Classic look (rounded, sentence
+   case); skin.css restyles the same parts for the HUD theme. Colours come only
+   from theme.css tokens. */
+
+/* Sub-tabs under the Devices title (Devices · Android images · ADB). */
+.subtabs { display: inline-flex; overflow: hidden; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-surface); }
+.subtab { min-height: 32px; padding: 0 14px; border: 0; background: transparent; color: var(--text-secondary); font: inherit; font-size: var(--font-md); font-weight: 600; cursor: pointer; }
+.subtab + .subtab { border-left: 1px solid var(--border); }
+.subtab:hover { color: var(--text-primary); background: var(--bg-hover); }
+.subtab[aria-selected="true"] { background: var(--accent); color: var(--on-accent); }
+.page-header:has(.subtabs) { flex-wrap: wrap; gap: 10px; }
+.page-header:has(.subtabs) > .page-title { flex: 0 0 auto; }
+.page-header:has(.subtabs) > .subtabs { margin-right: auto; }
+.setup-panel-actions { margin-bottom: 12px; }
+
+/* Apps page: first-run guide. It owns the page while it shows. */
+.apps-grid > .quick-start { grid-column: 1 / -1; }
+.apps-grid:has(> .quick-start) { display: block; padding-inline: 0; }
+.quick-start { padding: 24px; border: 1px solid var(--border); border-top: 3px solid var(--accent); border-radius: var(--radius); background: var(--bg-panel); }
+.quick-start > h2 { font-size: var(--font-xl); }
+.quick-start > .hint { margin: 4px 0 18px; }
+.quick-start-steps { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.quick-start-step { display: grid; grid-template-columns: 44px 1fr auto; align-items: center; gap: 16px; padding: 14px 16px; border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); background: var(--bg-surface); }
+.quick-start-number { display: grid; place-items: center; width: 44px; height: 44px; border: 2px solid var(--border-strong); border-radius: 50%; color: var(--text-secondary); font-size: var(--font-lg); font-weight: 800; }
+.quick-start-body h3 { display: flex; align-items: center; gap: 10px; margin: 0; font-size: var(--font-lg); }
+.quick-start-body p { margin: 4px 0 0; color: var(--text-secondary); font-size: var(--font-md); }
+.quick-start-tag { padding: 2px 8px; border: 1px solid var(--border); border-radius: 999px; color: var(--text-muted); font-size: var(--font-xs); font-weight: 600; }
+.quick-start-step .btn { min-width: 170px; min-height: 40px; }
+.quick-start-step:is([data-status="todo"], [data-status="ready"]) { border-color: var(--accent-strong); }
+.quick-start-step:is([data-status="todo"], [data-status="ready"]) .quick-start-number { border-color: var(--accent); background: var(--accent); color: var(--on-accent); }
+.quick-start-step:is([data-status="todo"], [data-status="ready"]) .quick-start-tag { border-color: var(--accent); color: var(--accent-text); }
+.quick-start-step[data-status="busy"] .quick-start-number { border-color: var(--warning); color: var(--warning); }
+.quick-start-step[data-status="busy"] .quick-start-tag { border-color: var(--warning-border); color: var(--warning); }
+.quick-start-step[data-status="done"] .quick-start-number { border-color: var(--success); background: var(--success-bg); color: var(--success); }
+.quick-start-step[data-status="done"] .quick-start-tag { border-color: var(--success-border); color: var(--success-text); }
+.quick-start-step[data-status="locked"] { opacity: .55; }
+.quick-start-step [role="alert"] { color: var(--danger); }
+.quick-start-body progress { display: block; width: 100%; max-width: 420px; margin-top: 8px; accent-color: var(--accent); }
+
+/* Apps page: one chip per device with its own Start button. */
+#library-runtime-status:has(.device-chip) { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+.device-chip { display: flex; align-items: center; gap: 12px; min-height: 44px; padding: 6px 8px 6px 12px; border: 1px solid var(--border); border-left: 4px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--bg-panel); color: var(--text-secondary); }
+.device-chip p { margin: 0; }
+.device-chip strong { color: var(--text-primary); }
+.device-chip .btn { min-height: 30px; }
+.device-chip[data-state="running"] { border-left-color: var(--success); }
+.device-chip:is([data-state="frozen"], [data-state="starting"], [data-state="provisioning"]) { border-left-color: var(--warning); }
+.device-chip[data-state="error"] { border-left-color: var(--danger); }
+
+/* Apps grid: one block per device when several are shown. */
+.app-group-heading { grid-column: 1 / -1; display: flex; align-items: baseline; gap: 10px; margin-top: 10px; padding: 6px 0; border-bottom: 1px solid var(--border); }
+.app-group-heading:first-child { margin-top: 0; }
+.app-group-heading strong { color: var(--text-primary); font-size: var(--font-lg); }
+.app-group-heading span { color: var(--text-muted); font-size: var(--font-sm); }
+.apps-grid:has(.app-group-heading) .app-runtime-name { display: none; }
+.app-initial { display: grid; place-items: center; width: 100%; height: 100%; border-radius: inherit; background: var(--accent-bg); color: var(--accent-text); font-size: 26px; font-weight: 800; }
+:root[data-theme="light"] .app-initial { background: var(--bg-selected); }
+
+/* Device settings: categories on the left, one category on the right
+   (settings-tabs.js). Narrow windows put the categories in a row on top. */
+#page-runtime-settings { container: settings / inline-size; }
+#page-runtime-settings .tabbed-settings { margin-top: 12px !important; }
+.tabbed-settings { display: grid !important; grid-template-columns: 210px minmax(0, 1fr); gap: 14px 20px; align-items: start;
+  padding: 0 !important; border: 0 !important; background: none !important; }
+.tabbed-settings .tabs-passthrough { display: contents !important; }
+.tabbed-settings[hidden], .tabbed-settings .tabs-passthrough[hidden] { display: none !important; } /* the grid rule must never un-hide a hidden block */
+.tabbed-settings .tabs-bar-item { grid-column: 1 / -1; order: -1; margin: 0; }
+.tabbed-settings > .runtime-actions.tabs-bar-item { grid-row: 1; justify-self: end; }
+.tabbed-settings > .runtime-image-details.tabs-bar-item { grid-row: 1; justify-self: start; align-self: center; }
+.settings-tabs-nav { grid-column: 1; position: sticky; top: 0; display: flex; flex-direction: column; gap: 2px; padding: 6px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-panel); }
+.settings-tabs-nav button { min-height: 38px; padding: 0 12px; border: 0; border-left: 3px solid transparent; border-radius: var(--radius-sm); background: transparent; color: var(--text-secondary); font: inherit; font-size: var(--font-md); font-weight: 600; text-align: left; cursor: pointer; }
+.settings-tabs-nav button:hover { background: var(--bg-hover); color: var(--text-primary); }
+.settings-tabs-nav button[aria-current="true"] { background: var(--accent-bg); border-left-color: var(--accent); color: var(--accent-text); }
+:root[data-theme="light"] .settings-tabs-nav button[aria-current="true"] { background: var(--bg-selected); }
+#page-runtime-settings.settings-simple .settings-tabs-nav [data-level="advanced"] { display: none !important; }
+.tabbed-settings .settings-tab-hidden { display: none !important; }
+.tabbed-settings .settings-tab-active { grid-column: 2; margin: 0 !important; padding: 18px 20px !important; border: 1px solid var(--border) !important; border-radius: var(--radius); background: var(--bg-panel) !important; }
+.tabbed-settings .settings-tab-active > summary { pointer-events: none; list-style: none; margin-bottom: 12px; padding: 0 0 10px !important; border-bottom: 1px solid var(--border-subtle); font-size: var(--font-lg) !important; }
+.tabbed-settings .settings-tab-active > summary::-webkit-details-marker { display: none; }
+.tabbed-settings .settings-tab-active > summary::before, .tabbed-settings .settings-tab-active > summary::after { display: none !important; }
+/* The summary is the panel heading; the old accordion spacing would double it. */
+.tabbed-settings .settings-tab-active > summary + * { margin-top: 0 !important; padding-top: 0 !important; border-top: 0 !important; }
+@container settings (max-width: 760px) {
+  .tabbed-settings { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+  .tabbed-settings > .runtime-actions.tabs-bar-item, .tabbed-settings > .runtime-image-details.tabs-bar-item { grid-row: auto; justify-self: start; }
+  .settings-tabs-nav { position: static; flex-direction: row; flex-wrap: wrap; gap: 0; padding: 4px; }
+  .settings-tabs-nav button { min-height: 30px; padding: 0 9px; border-left: 0; border-bottom: 3px solid transparent; font-size: var(--font-sm); }
+  .settings-tabs-nav button[aria-current="true"] { border-bottom-color: var(--accent); }
+  .tabbed-settings .settings-tab-active { grid-column: 1; padding: 14px 16px !important; }
+  /* The active tab already names the section. */
+  .tabbed-settings .settings-tab-active > summary { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); margin: 0; padding: 0 !important; border: 0; }
+}
+
+/* Settings header: small label stacked above the device name. */
+#page-runtime-settings .runtime-config-header { align-items: center; }
+#page-runtime-settings .runtime-config-header > div:not(.theme-choice) { display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: 2px; }
+#page-runtime-settings .runtime-config-eyebrow { margin: 0; line-height: 1.2; }
+#page-runtime-settings .runtime-config-header .page-title { line-height: 1.1; }
+
+/* Vertical rhythm: a button (or button row) after text in a stacked block gets
+   breathing room; items in a horizontal row stay centred on one line. */
+:where(#page-runtime-settings, #page-settings, #page-images, #page-adb, #page-controls, dialog)
+  :where(p, label, .hint, small, ul, ol, pre, progress, h3, h4, .runtime-feedback) + :is(.btn, .runtime-actions) { margin-top: 12px; }
+:is(.runtime-actions, .settings-inline, .dialog-actions, .page-header, .notification-master) > :is(.btn, p, .hint, span, label) { margin-top: 0 !important; margin-bottom: 0 !important; }
+:is(.runtime-actions, .settings-inline, .dialog-actions) { align-items: center; }
+.arm-provider-fields + .btn, .arm-provider-fields + .arm-source-actions { margin-top: 12px; }
+:is(#page-controls, #page-settings, #page-images, #page-adb, #page-runtime) details[open] > summary { margin-bottom: 10px; }
+
+/* Settings → Appearance: theme and accent pickers. */
+.settings-subheading { margin: 18px 0 8px; font-size: var(--font-md); font-weight: 600; color: var(--text-secondary); }
+.accent-choice, .skin-choice { display: flex; flex-wrap: wrap; gap: 8px; }
+.accent-option, .skin-option { display: inline-flex; align-items: center; gap: 8px; min-height: 36px; padding: 0 14px 0 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-surface); color: var(--text-secondary); font: inherit; font-size: var(--font-md); font-weight: 600; cursor: pointer; }
+.accent-option:hover, .skin-option:hover { border-color: var(--border-strong); color: var(--text-primary); }
+.accent-option[aria-pressed="true"], .skin-option[aria-pressed="true"] { border-color: var(--accent); color: var(--text-primary); box-shadow: inset 0 0 0 1px var(--accent); }
+.accent-swatch { width: 16px; height: 16px; flex: 0 0 16px; border-radius: 50%; }
+.skin-option { flex-direction: column; align-items: flex-start; gap: 2px; padding: 8px 14px; }
+.skin-option small { color: var(--text-muted); font-size: var(--font-sm); font-weight: 400; }

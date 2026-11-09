@@ -1,8 +1,8 @@
 /* Design tokens. Every colour in the other stylesheets resolves to one of these,
    so dark and light themes differ only here. theme.js sets data-theme. */
 :root {
-  --radius: 6px;     /* cards, panels, dialogs */
-  --radius-sm: 4px;  /* buttons, inputs, tags, chips */
+  --radius: 12px;    /* cards, panels, dialogs (HUD: 6px) */
+  --radius-sm: 8px;  /* buttons, inputs, tags, chips (HUD: 4px) */
   --sidebar-width: 260px;
   --font-xs: 11px; --font-sm: 12px; --font-md: 13px; --font-lg: 15px; --font-xl: 22px;
   --focus-ring: 0 0 0 2px var(--bg-app), 0 0 0 4px var(--accent);
@@ -27,7 +27,7 @@
   --accent-strong: #1f63c4;
   --accent-bg: #1c4a7d;
   --accent-ink: #0b1726;
-  --on-accent: #06111f;
+  --on-accent: #ffffff;
   --success: #35d07f;
   --success-text: #6ee5a0;
   --success-bg: #103f2e;
@@ -209,6 +209,11 @@
 .camera-choice > span { display: grid; }
 .camera-choice small { color: var(--text-muted); }
 .camera-choice.missing strong { color: var(--text-secondary); }
+
+/* HUD theme (data-skin="hud", skin.css): tighter radii, and dark text on the
+   bright default blue. The other accent presets set --on-accent themselves. */
+:root[data-skin="hud"] { --radius: 6px; --radius-sm: 4px; }
+:root[data-skin="hud"]:not([data-theme="light"]):is([data-accent="blue"], :not([data-accent])) { --on-accent: #06111f; }
 
 /* Accent presets (Settings → Appearance). Blue is the default above; the
    others use neutral steel surfaces so the accent carries the style. */

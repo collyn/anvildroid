@@ -1055,9 +1055,9 @@ test('stopped runtime keeps saved apps, partial failure keeps other runtimes usa
   await vm.runInContext('refreshManagedLibrary()',context);
   assert.doesNotMatch(element('apps-grid').innerHTML,/data-package="com.example.app"/);
   assert.equal(vm.runInContext("managedSnapshots.get('r-one')[0].package",context),'com.example.app');
-  assert.match(element('library-runtime-status').innerHTML,/Select this runtime to start it/);
+  assert.match(element('library-runtime-status').innerHTML,/Start it to see its apps/);
   await vm.runInContext("launchApp('com.example.app','r-one')",context);
-  assert.match(element('app-toast-message').textContent,/Start this runtime on the Runtime page/);
+  assert.match(element('app-toast-message').textContent,/Start this device on the Devices page/);
 });
 
 test('managed library launch pins runtime and never invokes legacy actions', async()=>{
@@ -1132,7 +1132,7 @@ test('stopped runtime loads persisted snapshot after reopening without starting 
   await vm.runInContext('refreshManagedLibrary()',context);
   assert.doesNotMatch(element('apps-grid').innerHTML,/data-package="com.example.saved"/);
   assert.equal(vm.runInContext("managedSnapshots.get('r-one')[0].package",context),'com.example.saved');
-  assert.match(element('library-runtime-status').innerHTML,/Select this runtime to start it/);
+  assert.match(element('library-runtime-status').innerHTML,/Start it to see its apps/);
   assert.deepEqual(calls,['list','refresh']);
 });
 
@@ -1366,7 +1366,7 @@ test('APK modal opens before loading runtimes even when none are running',async(
  assert.equal(element('apk-install-dialog').open,true);
  assert.equal(element('apk-install-pick').disabled,true);
  gate.resolve([{id:'default',name:'Default',state:'Stopped'}]);await tick();
- assert.match(element('apk-install-error').textContent,/Start a runtime/);
+ assert.match(element('apk-install-error').textContent,/Start a device/);
  assert.match(element('apk-install-targets').innerHTML,/disabled/);
  assert.equal(element('apk-install-submit').disabled,true);
  assert.equal(element('apk-install-pick').disabled,false);
@@ -2186,8 +2186,8 @@ test('library runtime status reports observed states and escapes failures', () =
   const {context, element} = gui(async () => undefined, undefined, '?view=controls');
   vm.runInContext("managedLibrary=[{id:'r-one',name:'One',state:'Running'},{id:'r-two',name:'Two',state:'Starting'},{id:'r-three',name:'<Three>',state:'Running',error:'<offline>'}];managedSnapshots.set('r-one',[{package:'com.example',launchable:true}]);renderManagedLibraryStatus()", context);
   const html=element('library-runtime-status').innerHTML;
-  assert.match(html,/<strong>One<\/strong> · Running · 1 apps/);
-  assert.match(html,/<strong>Two<\/strong> · Starting · Select this runtime to start it/);
+  assert.match(html,/<strong>One<\/strong> · Running · 2 apps/);
+  assert.match(html,/<strong>Two<\/strong> · Starting · Apps appear when it is running/);
   assert.match(html,/&lt;Three&gt;.*&lt;offline&gt;/);
   vm.runInContext("managedLibraryError='Cannot load <registry>';renderManagedLibraryStatus()",context);
   assert.match(element('library-runtime-status').innerHTML,/Cannot load &lt;registry&gt;/);
@@ -2819,7 +2819,7 @@ test('library runtime multi-select separates duplicate app names and preserves p
   assert.match(element('apps-grid').innerHTML,/data-runtime-id="r-one"/);
   assert.doesNotMatch(element('apps-grid').innerHTML,/data-runtime-id="r-two"/);
   vm.runInContext('setLibraryRuntimeFilter([])',context);
-  assert.match(element('apps-grid').innerHTML,/Select runtimes to view apps/);
+  assert.match(element('apps-grid').innerHTML,/Select devices to view apps/);
   assert.doesNotMatch(element('apps-grid').innerHTML,/data-package=/);
   vm.runInContext('setLibraryRuntimeFilter(null)',context);
   assert.equal((element('apps-grid').innerHTML.match(/data-package="com.test.same"/g)||[]).length,3);
@@ -2872,7 +2872,7 @@ test('library refresh prunes removed selections without exposing unrelated runti
   records=[];
   await context.refreshManagedLibrary();
   assert.equal(context.libraryRuntimeSelected('default'),false);
-  assert.match(element('apps-grid').innerHTML,/Select runtimes to view apps/);
+  assert.match(element('apps-grid').innerHTML,/Select devices to view apps/);
   context.setLibraryRuntimeFilter(null);
   records=[{id:'r-new',name:'New',state:'Stopped'}];
   await context.refreshManagedLibrary();
