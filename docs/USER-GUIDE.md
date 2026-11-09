@@ -55,7 +55,7 @@ AnvilDroid shows it as **System Waydroid** and skips this guide.
   Compatibility… (per-app *Fake Wi-Fi* and *Mouse as touch*), Force-stop…,
   Create/update menu shortcut, Uninstall….
 
-![Apps from two devices open in their own windows](images/app-windows.jpg)
+![Play Store, Clock, Music and Calendar open in their own windows](images/app-windows.jpg)
 
 Only apps from running devices are listed. New apps get a menu shortcut in your
 desktop's application menu automatically (you can turn this off in Settings).

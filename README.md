@@ -13,9 +13,9 @@ windows on Wayland and X11, desktop notifications, game controls and more.
 
 > **Experimental, actively developed.** Linux x86_64 only.
 
-![Android apps in their own desktop windows next to AnvilDroid: Play Store, Clock, Music and Calendar from one device, the full Android UI of System Waydroid from another](docs/images/app-windows.jpg)
+![Play Store, Clock, Music and Calendar in their own desktop windows next to AnvilDroid](docs/images/app-windows.jpg)
 
-<sub>Real windows on KDE Plasma (Wayland): four apps from one device and the full Android UI of a second device, side by side.</sub>
+<sub>Real windows on KDE Plasma (Wayland): four apps from one device, each in its own window.</sub>
 
 <table>
   <tr>
