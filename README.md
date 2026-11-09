@@ -13,28 +13,30 @@ windows on Wayland and X11, desktop notifications, game controls and more.
 
 > **Experimental, actively developed.** Linux x86_64 only.
 
-![App library with apps from a running device](docs/images/apps.png)
+![Android apps in their own desktop windows next to AnvilDroid: Play Store, Clock, Music and Calendar from one device, the full Android UI of System Waydroid from another](docs/images/app-windows.jpg)
+
+<sub>Real windows on KDE Plasma (Wayland): four apps from one device and the full Android UI of a second device, side by side.</sub>
 
 <table>
   <tr>
+    <td><img src="docs/images/apps.png" alt="App library in the HUD theme"></td>
     <td><img src="docs/images/devices.png" alt="Devices: status, live usage and quick device/GPU choice"></td>
-    <td><img src="docs/images/device-settings.png" alt="Device settings with categories in the Simple view"></td>
   </tr>
   <tr>
+    <td align="center">App library with the apps of every running device</td>
     <td align="center">Devices with live usage and a quick device/GPU switch</td>
+  </tr>
+  <tr>
+    <td><img src="docs/images/device-settings.png" alt="Device settings with categories in the Simple view"></td>
+    <td><img src="docs/images/game-controls.png" alt="Game Controls with per-app control schemes"></td>
+  </tr>
+  <tr>
     <td align="center">Device settings, one category at a time</td>
-  </tr>
-  <tr>
-    <td><img src="docs/images/game-controls.png" alt="Game Controls with per-app control schemes, HUD theme"></td>
-    <td><img src="docs/images/theme-hud.png" alt="App library in the HUD theme with the Forge accent"></td>
-  </tr>
-  <tr>
     <td align="center">Game controls with per-app schemes</td>
-    <td align="center">Classic or HUD theme, six accent colours</td>
   </tr>
 </table>
 
-<sub>Screenshots show the built-in apps of a LineageOS-based Waydroid image.</sub>
+<sub>Screenshots show the built-in apps of LineageOS-based Waydroid images. Page screenshots use sample device data.</sub>
 
 ## Install
 

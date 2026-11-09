@@ -55,6 +55,8 @@ AnvilDroid shows it as **System Waydroid** and skips this guide.
   Compatibility… (per-app *Fake Wi-Fi* and *Mouse as touch*), Force-stop…,
   Create/update menu shortcut, Uninstall….
 
+![Apps from two devices open in their own windows](images/app-windows.jpg)
+
 Only apps from running devices are listed. New apps get a menu shortcut in your
 desktop's application menu automatically (you can turn this off in Settings).
 
@@ -169,7 +171,7 @@ and end when the device or controller stops.
   shortcuts for new apps.
 - **Start at login:** choose which devices start when you log in.
 
-![The HUD theme with the Forge accent](images/theme-hud.png)
+![The Classic theme in light mode](images/theme-classic.png)
 
 ## Troubleshooting
 
