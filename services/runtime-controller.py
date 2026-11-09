@@ -1599,6 +1599,68 @@ def service_processes(cgroup_root=Path('/sys/fs/cgroup'), proc=Path('/proc/self/
     return pids
 
 
+TAKEOVER_WAIT = 30
+
+
+def standalone_controllers(store_path, proc=Path('/proc'), self_pid=None, root=0):
+    """PIDs of other root runtime-controller.py processes serving store_path."""
+    me = os.getpid() if self_pid is None else self_pid
+    found = []
+    try:
+        entries = list(proc.iterdir())
+    except OSError:
+        return found
+    for entry in entries:
+        if not entry.name.isdigit() or int(entry.name) == me:
+            continue
+        try:
+            if entry.stat().st_uid != root:
+                continue
+            args = [part.decode(errors='replace') for part in (entry / 'cmdline').read_bytes().split(b'\0') if part]
+        except OSError:
+            continue
+        if not any(arg.endswith('/runtime-controller.py') for arg in args) or '--store' not in args:
+            continue
+        index = args.index('--store')
+        if index + 1 < len(args) and Path(args[index + 1]) == Path(store_path):
+            found.append(int(entry.name))
+    return found
+
+
+def store_locked(store_path):
+    """True when another process holds the store lock (non-destructive probe)."""
+    try:
+        fd = os.open(Path(store_path) / 'controller.lock', os.O_RDWR | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return False
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return True
+    finally:
+        os.close(fd)  # closing also releases a probe lock
+    return False
+
+
+def take_over_store(store_path, wait=TAKEOVER_WAIT, find=standalone_controllers, kill=os.kill,
+                    sleep=time.sleep, clock=time.monotonic):
+    """A socket-activated controller found the store locked by a controller
+    started outside systemd (GUI start button, AppImage bootstrap). systemd
+    now owns the endpoint, so that process never sees new clients and they
+    queue unanswered (EAGAIN). Replace it: SIGKILL, because releases before
+    0.1.10 unlink the shared endpoint path on a clean exit. Runtime workers
+    are separate processes and keep running."""
+    pids = find(store_path)
+    for pid in pids:
+        print(f'Taking over from controller process {pid} started outside systemd', flush=True)
+        with contextlib.suppress(ProcessLookupError):
+            kill(pid, signal.SIGKILL)
+    deadline = clock() + wait
+    while find(store_path) and clock() < deadline:
+        sleep(0.2)
+    return pids
+
+
 class IdleExit:
     """Decides when a socket-activated controller may exit."""
     def __init__(self, store, ipc, seconds, clock=time.monotonic, processes=service_processes):
@@ -1622,6 +1684,8 @@ def serve(store_path, socket_path, image_source, allow_temporary_storage=False, 
     require(os.geteuid() == 0, 'CONFIG', 'Controller must run as root')
     inherited = activation_socket()
     secure_directory(socket_path.parent, False)
+    if inherited and store_locked(store_path):
+        take_over_store(store_path)
     store = Store(store_path, image_source, allow_temporary_storage)
     endpoint_lock = os.open(str(socket_path) + '.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     metadata = os.fstat(endpoint_lock)
@@ -1646,7 +1710,7 @@ def serve(store_path, socket_path, image_source, allow_temporary_storage=False, 
                     raise RequestError('CONFIG', 'Endpoint already in use')
         if not inherited:
             server.bind(str(socket_path))
-            bound = True
+            bound = socket_path.lstat().st_ino
             os.chmod(socket_path, 0o666)  # authorization is SO_PEERCRED + record ownership
             server.listen(64)
         print('ready', flush=True)
@@ -1668,8 +1732,11 @@ def serve(store_path, socket_path, image_source, allow_temporary_storage=False, 
             ipc.close()
     finally:
         server.close()
-        if bound:
-            socket_path.unlink(missing_ok=True)
+        # Remove only our own endpoint: systemd may have bound a new socket
+        # at this path while we were running.
+        with contextlib.suppress(OSError):
+            if bound and socket_path.lstat().st_ino == bound:
+                socket_path.unlink()
         store.close()
         os.close(endpoint_lock)
 

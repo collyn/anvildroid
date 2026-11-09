@@ -43,8 +43,14 @@ def trusted_directory(path, strict=True):
                 raise RuntimeError(f'Unsafe installation directory (not root-owned): {path}')
             if info.st_mode & 0o022:
                 raise RuntimeError(f'Unsafe installation directory (group/world-writable): {path}')
+            # Desktop users execute the X11 host and read payloads from here.
+            # Repair directories created 0700 under a restrictive umask
+            # (AppImage bootstrap) by releases before 0.1.10.
+            if stat.S_IMODE(info.st_mode) & 0o055 != 0o055:
+                os.chmod(path, stat.S_IMODE(info.st_mode) | 0o755)
     else:
         path.mkdir(mode=0o755)
+        os.chmod(path, 0o755)  # mkdir's mode is reduced by the caller's umask
     if path != path.parent:
         trusted_directory(path.parent, strict=False)
 
@@ -170,7 +176,10 @@ def install_controller_files(source_root, destination=DESTINATION, arm_archive=N
     replace(destination / 'anvildroid-shutdown.jar', shutdown)
     for name, data in assets.items():
         target = destination / 'provision' / name
-        target.parent.mkdir(parents=True, exist_ok=True)
+        # Create each level through trusted_directory: mkdir(parents=True)
+        # would leave intermediate directories at the caller's umask (0700).
+        for level in reversed(target.parent.relative_to(destination).parents):
+            trusted_directory(destination / level)
         trusted_directory(target.parent)
         replace(target, data)
 

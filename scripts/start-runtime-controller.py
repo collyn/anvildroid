@@ -20,6 +20,8 @@ DESTINATION = Path('/usr/local/lib/anvildroid-controller')
 SOCKET_PATH = RUN_DIR / 'control.sock'
 CONTROLLER = DESTINATION / 'runtime-controller.py'
 CONTROLLER_LOG = STORE / 'controller.log'
+SOCKET_UNIT = 'anvildroid-controller.socket'
+UNIT_DIRS = (Path('/etc/systemd/system'), Path('/usr/lib/systemd/system'), Path('/lib/systemd/system'))
 
 
 def load_installer():
@@ -93,6 +95,8 @@ def socket_state(path):
         if not stat.S_ISSOCK(info.st_mode) or info.st_uid != 0:
             return 'unsafe'
         return 'stale'
+    except (BlockingIOError, TimeoutError, socket.timeout):
+        return 'busy'  # a listener whose queue is full: nobody is accepting
     except OSError as error:
         raise RuntimeError(f'Cannot check controller socket {path}: {error}')
 
@@ -106,6 +110,19 @@ def spawn_controller():
                      start_new_session=True, cwd='/',
                      env={'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'PYTHONNOUSERSITE': '1'})
     os.close(log)
+
+
+def systemd_unit_installed(run=Path('/run/systemd/system'), dirs=UNIT_DIRS):
+    """Packages ship a socket-activated unit. A second controller started
+    beside it would fight systemd for the endpoint, so use the unit instead."""
+    return run.is_dir() and any((directory / SOCKET_UNIT).is_file() for directory in dirs)
+
+
+def start_with_systemd():
+    subprocess.run(['systemctl', 'enable', '--now', SOCKET_UNIT], check=True,
+                   stdout=subprocess.DEVNULL)
+    # Connecting starts the service; wait for it below like a spawned one.
+    subprocess.run(['systemctl', 'start', 'anvildroid-controller.service'], check=True)
 
 
 def tail_log(maximum=2048):
@@ -133,8 +150,15 @@ def main():
         return
     if state == 'unsafe':
         raise SystemExit(f'Refusing to touch {SOCKET_PATH}: it exists but is not a root-owned socket.')
-    installer.install_controller_files(ROOT)
-    spawn_controller()
+    if systemd_unit_installed():
+        # The package already installed these files; only start its service.
+        # A controller started earlier outside systemd is replaced by it.
+        start_with_systemd()
+    elif state == 'busy':
+        raise SystemExit(f'{SOCKET_PATH} accepts no connections; stop the other controller process and retry.')
+    else:
+        installer.install_controller_files(ROOT)
+        spawn_controller()
     try:
         installer.wait_for_ready_socket(
             SOCKET_PATH, time.monotonic() + 30,
@@ -144,9 +168,12 @@ def main():
         if log_tail:
             print(log_tail, file=sys.stderr)
         raise
-    print(f'Controller installed to {DESTINATION} and started as a background '
-          f'root process (no system service). Log: {CONTROLLER_LOG}. '
-          f'Start it again after rebooting.')
+    if systemd_unit_installed():
+        print(f'Controller started by {SOCKET_UNIT}; it starts on demand after rebooting.')
+    else:
+        print(f'Controller installed to {DESTINATION} and started as a background '
+              f'root process (no system service). Log: {CONTROLLER_LOG}. '
+              f'Start it again after rebooting.')
 
 
 if __name__ == '__main__':
