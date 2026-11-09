@@ -6,6 +6,9 @@
   --sidebar-width: 260px;
   --font-xs: 11px; --font-sm: 12px; --font-md: 13px; --font-lg: 15px; --font-xl: 22px;
   --focus-ring: 0 0 0 2px var(--bg-app), 0 0 0 4px var(--accent);
+  /* Modals: an opaque panel with a strong edge, in every theme and accent. */
+  --dialog-surface: var(--bg-panel);
+  --dialog-border: var(--border-strong);
 
   --bg-app: #091321;
   --bg-sidebar: #0c1827;
