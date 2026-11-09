@@ -1,7 +1,8 @@
 /* Design tokens. Every colour in the other stylesheets resolves to one of these,
    so dark and light themes differ only here. theme.js sets data-theme. */
 :root {
-  --radius: 12px;
+  --radius: 6px;     /* cards, panels, dialogs */
+  --radius-sm: 4px;  /* buttons, inputs, tags, chips */
   --sidebar-width: 260px;
   --font-xs: 11px; --font-sm: 12px; --font-md: 13px; --font-lg: 15px; --font-xl: 22px;
   --focus-ring: 0 0 0 2px var(--bg-app), 0 0 0 4px var(--accent);
@@ -26,7 +27,7 @@
   --accent-strong: #1f63c4;
   --accent-bg: #1c4a7d;
   --accent-ink: #0b1726;
-  --on-accent: #ffffff;
+  --on-accent: #06111f;
   --success: #35d07f;
   --success-text: #6ee5a0;
   --success-bg: #103f2e;
@@ -208,3 +209,133 @@
 .camera-choice > span { display: grid; }
 .camera-choice small { color: var(--text-muted); }
 .camera-choice.missing strong { color: var(--text-secondary); }
+
+/* Accent presets (Settings → Appearance). Blue is the default above; the
+   others use neutral steel surfaces so the accent carries the style. */
+:root[data-accent]:not([data-accent="blue"]):not([data-theme="light"]) {
+  --bg-app: #0a0c10;
+  --bg-sidebar: #0d1015;
+  --bg-panel: #12161d;
+  --bg-surface: #161b23;
+  --bg-raised: #1b212b;
+  --bg-hover: #232b37;
+  --border-subtle: #222a35;
+  --border: #2e3845;
+  --border-strong: #4a5668;
+  --text-primary: #eef2f6;
+  --text-soft: #c6ced8;
+  --text-secondary: #a6b0bd;
+  --text-muted: #8c97a5;
+}
+:root[data-accent]:not([data-accent="blue"])[data-theme="light"] {
+  --bg-app: #e9ecf0;
+  --bg-sidebar: #f6f7f9;
+  --bg-panel: #ffffff;
+  --bg-surface: #f3f5f7;
+  --bg-raised: #e8ebef;
+  --bg-hover: #dfe4ea;
+  --border-subtle: #d8dde3;
+  --border: #c2c9d1;
+  --border-strong: #959fac;
+  --text-primary: #10141a;
+  --text-soft: #262c35;
+  --text-secondary: #454d59;
+  --text-muted: #5b6470;
+}
+:root[data-accent="forge"]:not([data-theme="light"]) {
+  --accent: #ff8a1f;
+  --accent-text: #ffb066;
+  --accent-deep: #f07a0c;
+  --accent-strong: #c85f00;
+  --accent-bg: #3a2410;
+  --bg-selected: #2c2217;
+  --on-accent: #140b02;
+}
+:root[data-accent="forge"][data-theme="light"] {
+  --accent: #c2570a;
+  --accent-text: #9a4508;
+  --accent-deep: #c2570a;
+  --accent-strong: #a84a05;
+  --accent-bg: #c2570a;
+  --bg-selected: #ffe6cf;
+  --on-accent: #ffffff;
+}
+:root[data-accent="toxic"]:not([data-theme="light"]) {
+  --accent: #3ee07a;
+  --accent-text: #8af0b0;
+  --accent-deep: #22c55e;
+  --accent-strong: #15803d;
+  --accent-bg: #12351f;
+  --bg-selected: #183022;
+  --on-accent: #04140a;
+}
+:root[data-accent="toxic"][data-theme="light"] {
+  --accent: #15803d;
+  --accent-text: #116a32;
+  --accent-deep: #15803d;
+  --accent-strong: #166534;
+  --accent-bg: #15803d;
+  --bg-selected: #dcfce7;
+  --on-accent: #ffffff;
+}
+:root[data-accent="crimson"]:not([data-theme="light"]) {
+  --accent: #ff4d5e;
+  --accent-text: #ff8f9a;
+  --accent-deep: #f43f5e;
+  --accent-strong: #be123c;
+  --accent-bg: #3a1218;
+  --bg-selected: #2e171b;
+  --on-accent: #1a0306;
+}
+:root[data-accent="crimson"][data-theme="light"] {
+  --accent: #c81e3a;
+  --accent-text: #a3162f;
+  --accent-deep: #c81e3a;
+  --accent-strong: #9f1239;
+  --accent-bg: #c81e3a;
+  --bg-selected: #ffe4e8;
+  --on-accent: #ffffff;
+}
+:root[data-accent="synthwave"]:not([data-theme="light"]) {
+  --accent: #c77dff;
+  --accent-text: #e2b8ff;
+  --accent-deep: #a855f7;
+  --accent-strong: #7e22ce;
+  --accent-bg: #2d1847;
+  --bg-selected: #261a38;
+  --on-accent: #12051f;
+}
+:root[data-accent="synthwave"][data-theme="light"] {
+  --accent: #7c3aed;
+  --accent-text: #6425c9;
+  --accent-deep: #7c3aed;
+  --accent-strong: #6d28d9;
+  --accent-bg: #7c3aed;
+  --bg-selected: #ede4fd;
+  --on-accent: #ffffff;
+}
+:root[data-accent="ice"]:not([data-theme="light"]) {
+  --accent: #22d3ee;
+  --accent-text: #8be9f7;
+  --accent-deep: #06b6d4;
+  --accent-strong: #0e7490;
+  --accent-bg: #0f3340;
+  --bg-selected: #142c35;
+  --on-accent: #031417;
+}
+:root[data-accent="ice"][data-theme="light"] {
+  --accent: #0e7490;
+  --accent-text: #0b5f75;
+  --accent-deep: #0e7490;
+  --accent-strong: #155e75;
+  --accent-bg: #0e7490;
+  --bg-selected: #d9f6fb;
+  --on-accent: #ffffff;
+}
+/* Swatches in the accent picker show each preset's colour in any theme. */
+.accent-swatch[data-swatch="blue"] { background: #4ca7ff; }
+.accent-swatch[data-swatch="forge"] { background: #ff8a1f; }
+.accent-swatch[data-swatch="toxic"] { background: #3ee07a; }
+.accent-swatch[data-swatch="crimson"] { background: #ff4d5e; }
+.accent-swatch[data-swatch="synthwave"] { background: #c77dff; }
+.accent-swatch[data-swatch="ice"] { background: #22d3ee; }
