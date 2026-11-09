@@ -101,8 +101,7 @@ test_*.py
 
 # Local agent configuration, credentials and scratch data
 /.agents/
-/.claude/*
-!/.claude/skills/
+/.claude/
 /.codex/
 /.aws/
 /.g-*/
