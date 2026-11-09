@@ -55,6 +55,9 @@
 .app-group-heading strong { color: var(--text-primary); font-size: var(--font-lg); }
 .app-group-heading span { color: var(--text-muted); font-size: var(--font-sm); }
 .apps-grid:has(.app-group-heading) .app-runtime-name { display: none; }
+/* A real icon draws its own shape; the tile colour only backs the letter
+   placeholder, else transparent icons show a grey square behind them. */
+.app-icon:has(> img) { background: transparent; }
 .app-initial { display: grid; place-items: center; width: 100%; height: 100%; border-radius: inherit; background: var(--accent-bg); color: var(--accent-text); font-size: 26px; font-weight: 800; }
 :root[data-theme="light"] .app-initial { background: var(--bg-selected); }
 
