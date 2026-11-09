@@ -5,21 +5,32 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE-MIT)
 
 Run Android apps on the Linux desktop. AnvilDroid is a GUI and runtime
-controller for [Waydroid](https://waydro.id): isolated Android runtimes, app
+controller for [Waydroid](https://waydro.id): isolated Android devices, app
 windows on Wayland and X11, desktop notifications, game controls and more.
+
+**Website:** [anvildroid.github.io](https://anvildroid.github.io/) ·
+**User guide:** [docs/USER-GUIDE.md](docs/USER-GUIDE.md)
 
 > **Experimental, actively developed.** Linux x86_64 only.
 
-![App library with apps from a running runtime](docs/images/apps.png)
+![App library with apps from a running device](docs/images/apps.png)
 
 <table>
   <tr>
-    <td><img src="docs/images/runtimes.png" alt="Runtimes: status, usage and quick device/GPU choice"></td>
-    <td><img src="docs/images/runtime-settings.png" alt="Runtime settings in the Simple view"></td>
+    <td><img src="docs/images/devices.png" alt="Devices: status, live usage and quick device/GPU choice"></td>
+    <td><img src="docs/images/device-settings.png" alt="Device settings with categories in the Simple view"></td>
   </tr>
   <tr>
-    <td align="center">Runtimes with live usage and quick device/GPU switch</td>
-    <td align="center">Runtime settings (Simple view), per-app notifications</td>
+    <td align="center">Devices with live usage and a quick device/GPU switch</td>
+    <td align="center">Device settings, one category at a time</td>
+  </tr>
+  <tr>
+    <td><img src="docs/images/game-controls.png" alt="Game Controls with per-app control schemes, HUD theme"></td>
+    <td><img src="docs/images/theme-hud.png" alt="App library in the HUD theme with the Forge accent"></td>
+  </tr>
+  <tr>
+    <td align="center">Game controls with per-app schemes</td>
+    <td align="center">Classic or HUD theme, six accent colours</td>
   </tr>
 </table>
 
@@ -69,13 +80,18 @@ release.
 ## Getting started
 
 1. Open **AnvilDroid** from your applications menu.
-2. **Images** → download an official Waydroid image (or import your own).
-3. **Runtimes** → **New runtime** → pick the image → **Create**. AnvilDroid
-   prepares the images and starts Android; this takes a few minutes the first time.
-4. **Apps** → install an APK or open an app. Each app gets its own desktop window.
+2. On first start the **Apps** page shows **Get started**: **Download Android**,
+   then **Create and start**. The first start takes a few minutes while the
+   image is prepared.
+3. **Install APK** or open an app. Each app gets its own desktop window.
 
-Runtime settings come in **Simple** and **Advanced** views. Change the device
-identity or GPU right from the runtime list; a running runtime restarts to apply it.
+Prefer to do it by hand? **Devices → Android images** downloads or imports an
+image, then **Devices → + New device** creates a device from it.
+
+Device settings come in **Simple** and **Advanced** views. Change the device
+identity or GPU right from the Devices list; a running device restarts to apply
+it. The [user guide](docs/USER-GUIDE.md) walks through every page: apps,
+devices, images, device settings, game controls, ADB, themes and updates.
 
 ## Updates
 
@@ -86,9 +102,10 @@ identity or GPU right from the runtime list; a running runtime restarts to apply
 
 ## Features
 
-- Multiple isolated Android runtimes running side by side, each with its own
+- Multiple isolated Android devices running side by side, each with its own
   apps, data, storage location and RAM/CPU limits
-- System Waydroid management alongside managed runtimes
+- System Waydroid management alongside managed devices
+- Guided first start: download Android, create a device, install apps
 - Android apps as native windows on Wayland and X11, plus the full Android UI
 - Desktop notifications from Android apps, with per-app control
 - Host input method (e.g. Fcitx), clipboard and shared folders
@@ -97,7 +114,8 @@ identity or GPU right from the runtime list; a running runtime restarts to apply
 - Official and custom images (folder, ZIP or URL; ext4, EROFS, SquashFS)
 - ARM translation (libndk_translation, libhoudini), device identity profiles,
   Google Play registration help
-- ADB for Android Studio, diagnostics export, light and dark themes
+- ADB for Android Studio, diagnostics export
+- Classic and HUD themes, light or dark, six accent colours
 
 ## Known limitations
 
@@ -106,13 +124,15 @@ identity or GPU right from the runtime list; a running runtime restarts to apply
 - App and game compatibility depends on the image, ARM translator and GPU.
   Apps that require Play Integrity (banking, some games, DRM video) usually
   do not work.
-- Full Android UI and separate app windows cannot be used at the same time in
-  one runtime.
+- Full Android UI and separate app windows cannot be used at the same time on
+  one device.
 
 More: [compatibility and limitations](docs/TECHNICAL.md#compatibility-and-limitations).
 
 ## Documentation
 
+- [User guide](docs/USER-GUIDE.md): using every page, from the first start to
+  game controls, themes and troubleshooting
 - [Technical guide](docs/TECHNICAL.md): architecture diagrams, display and
   notification pipelines, building from source, releasing and development
 - [Native X11 adapter](native/x11/README.md) · [NVIDIA payload](native/nvidia/README.md)

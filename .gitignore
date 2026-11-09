@@ -8,6 +8,7 @@ __pycache__/
 # Local project notes and internal documentation (public docs re-included)
 /docs/*
 !/docs/TECHNICAL.md
+!/docs/USER-GUIDE.md
 !/docs/images/
 /PLAN.md
 /AnvilDroid-Architecture.md
