@@ -34,7 +34,7 @@ function navigatePage(target, refresh = true) {
   libraryPage = target === 'apps';
   clearTimeout(appStatesTimer);
   navItems.forEach(n => {
-    const selected = n.dataset.page === (target === 'runtime-settings' ? 'runtime' : target);
+    const selected = n.dataset.page === (['runtime-settings', 'images', 'adb'].includes(target) ? 'runtime' : target);
     n.classList.toggle('active', selected);
     if (selected) n.setAttribute('aria-current', 'page');
     else n.removeAttribute('aria-current');
@@ -85,6 +85,11 @@ navItems.forEach(item => {
       navigatePage(item.dataset.page);
     }
   });
+});
+// Devices, Android images and ADB share one sidebar entry; sub-tabs switch between them.
+document.addEventListener('click', event => {
+  const tab = event.target.closest?.('[data-subtab]');
+  if (tab) navigatePage(tab.dataset.subtab);
 });
 document.getElementById('btn-refresh-runtimes').addEventListener('click', refreshRuntimePage);
 document.getElementById('btn-refresh-images').addEventListener('click', refreshImagesPage);
@@ -392,6 +397,7 @@ let currentCategory = 'all';
 let allApps = [];
 let currentSort = 'name-asc';
 let managedLibrary = [];
+let managedLibraryLoaded = false; // true after the first successful device list
 let managedLibraryLoading = false;
 let managedLibraryError = '';
 let libraryDefaultState = 'Unknown';
@@ -780,17 +786,30 @@ function renderApps(apps) {
     return;
   }
 
-  const sorted = sortApps(apps, currentSort);
+  // Keep the chosen sort inside each device, but show one block per device so
+  // the same app from two devices never sits side by side.
+  const deviceOrder = id => id === 'default' ? -1 : managedLibrary.findIndex(record => record.id === id);
+  const sorted = sortApps(apps, currentSort).sort((a, b) => deviceOrder(a.runtime_id || 'default') - deviceOrder(b.runtime_id || 'default'));
+  const grouped = new Set(sorted.map(app => app.runtime_id || 'default')).size > 1;
+  const groupCounts = new Map();
+  sorted.forEach(app => { const id = app.runtime_id || 'default'; groupCounts.set(id, (groupCounts.get(id) || 0) + 1); });
+  const groupHeading = (app, index) => {
+    const id = app.runtime_id || 'default';
+    if (!grouped || (index > 0 && (sorted[index - 1].runtime_id || 'default') === id)) return '';
+    const count = groupCounts.get(id);
+    return `<div class="app-group-heading"><strong>${escapeHtml(app.runtime_name || 'System Waydroid')}</strong><span>${count} ${count === 1 ? 'app' : 'apps'}</span></div>`;
+  };
+  const appInitial = app => escapeHtml(String(app.label || app.package.split('.').pop() || '?').trim().charAt(0).toUpperCase() || '?');
   const structure = JSON.stringify(sorted.map(app => [app.runtime_id || 'default', app.package, app.label, app.runtime_name, libraryIconUrl(app), isFavorite(app), pendingWaydroidRuntime === (app.runtime_id || 'default') && !!app.desktop_entry]));
-  const markup = sorted.map(app => `
+  const markup = sorted.map((app, index) => `${groupHeading(app, index)}
     <div class="app-card${pendingWaydroidRuntime === (app.runtime_id || 'default') && app.desktop_entry ? ' processing' : ''}" tabindex="${pendingWaydroidRuntime === (app.runtime_id || 'default') && app.desktop_entry ? '-1' : '0'}" role="button" aria-disabled="${pendingWaydroidRuntime === (app.runtime_id || 'default') && app.desktop_entry ? 'true' : 'false'}" data-package="${escapeHtml(app.package)}" data-runtime-id="${escapeHtml(app.runtime_id || 'default')}" data-app-status="${escapeHtml(appExecutionLabel(app))}" aria-label="${escapeHtml(appAccessibleLabel(app))}" title="${escapeHtml(`${app.package} · ${app.runtime_name || (app.runtime_id === 'default' ? 'System Waydroid' : 'Runtime')}`)}">
       <button type="button" class="app-favorite-button favorite-mark${isFavorite(app) ? ' active' : ''}" aria-label="${isFavorite(app) ? 'Remove favorite' : 'Add favorite'}">♡</button>
       <div class="app-icon">
         ${pendingWaydroidRuntime === (app.runtime_id || 'default') && app.desktop_entry
           ? '<span class="app-processing" role="status" aria-label="Processing">Processing…</span>'
           : libraryIconUrl(app)
-            ? `<img src="${libraryIconUrl(app)}" alt="" loading="lazy" decoding="async" onerror="this.parentElement.innerHTML='App'">`
-            : 'App'}
+            ? `<img src="${libraryIconUrl(app)}" alt="" loading="lazy" decoding="async" data-initial="${appInitial(app)}" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'app-initial',textContent:this.dataset.initial}))">`
+            : `<span class="app-initial">${appInitial(app)}</span>`}
       </div>
       <div class="app-caption"><div class="app-name">${pendingWaydroidRuntime === (app.runtime_id || 'default') && app.desktop_entry ? 'Processing…' : escapeHtml(app.label || app.package.split('.').pop())}</div><div class="app-runtime-name" title="${escapeHtml(app.runtime_name || 'System Waydroid')}">${escapeHtml(app.runtime_name || 'System Waydroid')}</div></div>
       <span class="app-status-dot ${appExecutionLabel(app) === 'Foreground' || appExecutionLabel(app) === 'Background process' ? 'running' : ''}" aria-label="${escapeHtml(appExecutionLabel(app))}"></span>
@@ -947,7 +966,8 @@ function renderLibraryEmpty() {
     const note = error || (busy ? 'Please wait. Apps will appear automatically when this runtime is running.' : canStart ? 'Start this runtime to see and open its apps.' : 'Open runtime settings to check its status and finish setup.');
     return `<section class="library-runtime-empty"><h3>${escapeHtml(record.name || record.id)}</h3><span class="hint">${escapeHtml(busy ? 'Starting / updating' : record.state)}</span><p ${error ? 'role="alert"' : ''}>${escapeHtml(note)}</p><div class="runtime-actions">${canStart || busy ? `<button class="btn btn-primary" data-library-start="${escapeHtml(record.id)}" ${busy ? 'disabled' : ''}>${busy ? 'Please wait...' : 'Start runtime'}</button>` : ''}<button class="btn btn-quiet" data-library-manage="${escapeHtml(record.id)}">Runtime settings</button><button class="btn btn-quiet" data-library-refresh>Refresh</button></div></section>`;
   }).join('');
-  const markup = `<div class="library-empty-panel" role="status"><h2>${libraryRuntimeSelection?.size === 0 ? 'Select runtimes to view apps' : 'Start a runtime to view apps'}</h2><p class="hint">Only apps from running runtimes appear here.</p>${panels || '<p>Choose runtimes in the filter above.</p>'}</div>`;
+  const guide = quickStartVisible() ? quickStartMarkup() : '';
+  const markup = guide ? guide : `<div class="library-empty-panel" role="status"><h2>${libraryRuntimeSelection?.size === 0 ? 'Select runtimes to view apps' : 'Start a runtime to view apps'}</h2><p class="hint">Only apps from running runtimes appear here.</p>${panels || '<p>Choose runtimes in the filter above.</p>'}</div>`;
   appsGrid.setAttribute('aria-busy', String(libraryStarts.size > 0));
   if (appsGrid._appMarkup === markup) return;
   appsGrid._appMarkup = markup;
@@ -955,13 +975,96 @@ function renderLibraryEmpty() {
   appsGrid.innerHTML = markup;
 }
 
+// --- Quick start: first-run guide shown on the Apps page while no device exists ---
+let quickStartLoaded = false, quickStartTimer = null, quickStartAction = null;
+// Shown until the first device runs: no device yet, or a single new one that is
+// still being set up. Existing System Waydroid users get the normal panels.
+function quickStartVisible() {
+  // Wait for both the device list and System Waydroid's state, so existing
+  // users never see the guide flash while the app is still loading.
+  return typeof AnvilQuickStart !== 'undefined' && libraryRuntimeSelection === null &&
+    managedLibraryLoaded && libraryDefaultState !== 'Unknown' &&
+    managedLibrary.length <= 1 && !managedLibrary.some(record => libraryRuntimeRunning(record.id)) &&
+    !['Running', 'Frozen', 'Stopped', 'Ready'].includes(libraryDefaultState);
+}
+function quickStartImage() {
+  const ready = (imageDownloadState?.available_images || []).find(item => item?.images?.system?.sha256 && item?.images?.vendor?.sha256);
+  return ready || (imageDownloadState?.status === 'Ready' && imageDownloadState.images ? imageDownloadState : null);
+}
+function quickStartState() {
+  const total = Number(imageDownloadState?.download_bytes) || 0;
+  return {
+    setupMissing: controllerRequirements ? !controllerRequirements.can_prepare : false,
+    imageReady: Boolean(quickStartImage()),
+    imageBusy: quickStartAction === 'download' || imageDownloadBusy || imageDownloadActive(),
+    imagePercent: total > 0 ? Math.max(0, Number(imageDownloadState.received_bytes) || 0) / total * 100 : NaN,
+    imageError: imageDownloadState?.status === 'Failed' ? `Download failed: ${imageDownloadState.error || 'Unknown error'}. Try again.` : '',
+    catalogError: imageCatalogState?.status === 'Failed' ? `Cannot reach the Waydroid image server: ${imageCatalogState.error || 'Unknown error'}.` : '',
+    hasDevice: managedLibrary.length > 0,
+    deviceBusy: quickStartAction === 'create' || controllerMutation || libraryStarts.size > 0 ||
+      managedLibrary.some(record => record.job?.status === 'Running' || ['Starting', 'Provisioning'].includes(record.state)),
+    deviceRunning: managedLibrary.some(record => libraryRuntimeRunning(record.id)),
+  };
+}
+function quickStartMarkup() {
+  if (!quickStartLoaded) {
+    quickStartLoaded = true;
+    refreshImageDownload().finally(renderQuickStart);
+    controllerRequest({op:'requirements'}).then(setup => { if (typeof setup?.can_prepare === 'boolean') controllerRequirements = setup; }).catch(() => {}).finally(renderQuickStart);
+  }
+  return AnvilQuickStart.render(quickStartState(), escapeHtml);
+}
+function renderQuickStart() {
+  const slot = document.querySelector?.('#apps-grid .quick-start');
+  if (!slot) return;
+  appsGrid._appMarkup = null;
+  renderApps(allApps);
+  clearTimeout(quickStartTimer);
+  const state = quickStartState();
+  if (state.imageBusy || state.deviceBusy) quickStartTimer = setTimeout(renderQuickStart, 500);
+}
+async function runQuickStart(action) {
+  if (quickStartAction) return;
+  if (action === 'setup') { navigatePage('runtime'); setRuntimeSetupVisible(true); return; }
+  if (action === 'install') { btnInstallApk.click(); return; }
+  if (action === 'start') { startLibraryRuntime(managedLibrary[0]?.id); return; }
+  quickStartAction = action;
+  renderQuickStart();
+  try {
+    if (action === 'download') {
+      if (imageCatalogState?.status !== 'Ready') await checkOfficialImages(false);
+      const variants = imageCatalogState?.report?.variants || [];
+      const variant = variants.find(item => item.flavor === 'VANILLA' && item.matching_versions) || variants.find(item => item.matching_versions);
+      if (!variant) throw new Error(imageCatalogState?.error || 'No compatible official image was found');
+      await startImageDownload(variant.flavor);
+      if (imageDownloadState?.status === 'Failed') throw new Error(imageDownloadState.error || 'Download failed');
+    } else if (action === 'create') {
+      const image = quickStartImage();
+      if (!image) throw new Error('Download Android first');
+      await mutateController({op:'create_image', name:'My Android', flavor:image.flavor, system_sha256:image.images.system.sha256, vendor_sha256:image.images.vendor.sha256});
+      await refreshApps();
+    }
+  } catch (error) {
+    showAppToast(`${action === 'download' ? 'Cannot download Android' : 'Cannot create the device'}: ${error.message || error}`, 'error');
+  } finally {
+    quickStartAction = null;
+    renderQuickStart();
+  }
+}
+
 appsGrid.addEventListener('click', event => {
   const button = event.target.closest('button');
   if (!button || button.disabled) return;
-  if (button.dataset.libraryStart) startLibraryRuntime(button.dataset.libraryStart);
+  if (button.dataset.quickStart) runQuickStart(button.dataset.quickStart);
+  else if (button.dataset.libraryStart) startLibraryRuntime(button.dataset.libraryStart);
   else if (button.dataset.libraryManage) {
     openRuntimeSettings(button.dataset.libraryManage);
   } else if ('libraryRefresh' in button.dataset) refreshApps();
+});
+
+document.getElementById('library-runtime-status').addEventListener('click', event => {
+  const button = event.target.closest?.('[data-library-start]');
+  if (button && !button.disabled) startLibraryRuntime(button.dataset.libraryStart);
 });
 
 async function startLibraryRuntime(id) {
@@ -1013,7 +1116,7 @@ async function pollLibraryStart(id, attempts = 0) {
       libraryStarts.delete(id);
       await refreshApps();
     } else if (['Failed', 'Error', 'NotInstalled', 'SessionLost'].includes(state) || attempts >= 60 || Date.now() - libraryStarts.get(id) > 120000) {
-      throw new Error('Runtime did not start. Check Runtime settings, then retry.');
+      throw new Error('Device did not start. Open its settings on the Devices page, then retry.');
     } else {
       setTimeout(() => pollLibraryStart(id, attempts + 1), 2000);
     }
@@ -2104,7 +2207,7 @@ function renderImageDownload(state) {
       cancel: state.can_cancel && state.status !== 'Cancelling' ? cancelImageDownload : null,
     });
   } else clearProgressToast('image-download');
-  if (wasActive && state.status === 'Ready') showAppToast(`${imageLabel} is ready. Use Create runtime in Images to start it.`, 'success');
+  if (wasActive && state.status === 'Ready') showAppToast(`${imageLabel} is ready. Create a device from it to start Android.`, 'success');
   else if (wasActive && state.status === 'Failed') showAppToast(`${imageLabel} failed: ${state.error || 'Unknown error'}`, 'error');
   else if (wasActive && state.status === 'Cancelled') showAppToast(`${imageLabel} download cancelled.`, 'info');
   renderImageSourceOptions();
@@ -2445,7 +2548,7 @@ async function refreshCustomImageUrlStatus() {
       customUrlState = null;
       clearProgressToast('custom-url');
       document.getElementById('btn-cancel-custom-url').hidden = true;
-      showAppToast(`${result.custom_name || 'Custom image'} is ready. Use Create runtime in Images to start it.`, 'success');
+      showAppToast(`${result.custom_name || 'Custom image'} is ready. Create a device from it to start Android.`, 'success');
       renderImageDownload(result);
       document.getElementById('custom-image-url').readOnly = false;
       document.getElementById('btn-import-runtime-url').textContent = 'Download custom image';
@@ -2792,7 +2895,7 @@ function renderController() {
     const storagePhase = ({copy: 'Copying runtime data…', verify: 'Verifying the copied data…', switch: 'Activating the new location…', cleanup: 'Removing the retained copy…'})[record.storage?.job?.phase];
     const title = runtimeBatchRestarting.has(record.id) ? 'Restarting…' : RuntimeWindow.isPending(record.id) ? 'Opening Waydroid…' : pending ? waiting : appWorking ? (record.appJob.action === 'delete' ? 'Deleting runtime…' : record.appJob.action === 'install' ? 'Installing APK…' : record.appJob.action === 'full_ui' ? 'Opening Waydroid…' : record.appJob.action === 'launch' ? 'Launching desktop app…' : 'Force-stopping app…') : storageMoving ? storagePhase || 'Moving runtime data…' : record.deletion_pending ? 'Deletion incomplete' : labels[record.state] || record.state;
     const status = runtimeOperations.get(record.id) === 'restart' ? 'Restarting' : pending?.op === 'reinstall' && phase === 'stopping' ? 'Stopping' : pending?.op === 'reinstall' && phase === 'applying' ? 'Reinstalling' : runtimeBatchRestarting.has(record.id) || pending && pending.op !== 'reinstall' && ['stopping', 'starting'].includes(phase) ? 'Restarting' : labels[record.state] || record.state;
-    const button = (op, label, allowed, style = '') => `<button class="btn ${style}" data-controller-op="${op}" data-controller-id="${escapeHtml(record.id)}" ${busy || !allowed || (record.deletion_pending && op !== 'delete') ? 'disabled' : ''} ${op === 'delete' && !canDelete ? 'title="Stop this runtime before deleting it"' : ''}>${label}</button>`;
+    const button = (op, label, allowed, style = '') => `<button class="btn ${style}" data-controller-op="${op}" data-controller-id="${escapeHtml(record.id)}" ${busy || !allowed || (record.deletion_pending && op !== 'delete') ? 'disabled' : ''} ${op === 'delete' && !canDelete ? 'title="Stop this device before deleting it"' : ''}>${label}</button>`;
     const actionIcons = {
       start: '<path d="m8 5 11 7-11 7z"/>',
       stop: '<rect x="6" y="6" width="12" height="12" rx="1"/>',
@@ -3305,8 +3408,8 @@ function cancelReinstall() {
   reinstallTargetId = null;
   document.getElementById('controller-name').readOnly = false;
   document.getElementById('controller-name').value = '';
-  document.querySelector('#runtime-create-panel > summary').textContent = 'New runtime';
-  document.getElementById('controller-create-button').textContent = 'Create runtime';
+  document.querySelector('#runtime-create-panel > summary').textContent = '+ New device';
+  document.getElementById('controller-create-button').textContent = 'Create device';
   document.getElementById('controller-reinstall-cancel').hidden = true;
 }
 document.getElementById('controller-reinstall-cancel').addEventListener('click', cancelReinstall);
@@ -4060,7 +4163,11 @@ function renderManagedLibraryStatus() {
     (managedLibraryError ? `<p>${escapeHtml(managedLibraryError)}</p>` : '') + records.map(record => {
       const count = managedSnapshots.get(record.id)?.length;
       const note = record.error || (!['Running', 'Frozen'].includes(record.state) ? 'Select this runtime to start it.' : `${count ?? 0} apps`);
-      return `<p><strong>${escapeHtml(record.name)}</strong> · ${escapeHtml(record.state)} · ${escapeHtml(note)}${managedPreferenceErrors.has(record.id) ? ` · ${escapeHtml(managedPreferenceErrors.get(record.id))}` : ''}</p>`;
+      const starting = libraryStarts.has(record.id);
+      const canStart = !record.error && ['Stopped', 'Ready', 'Frozen'].includes(record.state) && record.import_status !== 'pending';
+      const button = starting ? '<button type="button" class="btn" disabled>Starting…</button>'
+        : canStart ? `<button type="button" class="btn btn-primary" data-library-start="${escapeHtml(record.id)}">Start</button>` : '';
+      return `<div class="device-chip" data-state="${escapeHtml(String(record.error ? 'error' : record.state).toLowerCase())}"><p><strong>${escapeHtml(record.name)}</strong> · ${escapeHtml(record.state)} · ${escapeHtml(note)}${managedPreferenceErrors.has(record.id) ? ` · ${escapeHtml(managedPreferenceErrors.get(record.id))}` : ''}</p>${button}</div>`;
     }).join('');
   const target = document.getElementById('library-runtime-status');
   if (target.innerHTML !== markup) target.innerHTML = markup;
@@ -4107,6 +4214,7 @@ async function refreshManagedLibrary({poll = false} = {}) {
       }
     }));
     managedLibrary = results;
+    managedLibraryLoaded = true;
     managedLibraryError = '';
     if (libraryRuntimeSelection !== null) libraryRuntimeSelection = new Set([...libraryRuntimeSelection].filter(id => id === 'default' || results.some(record => record.id === id)));
     renderRuntimeFilter();

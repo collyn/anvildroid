@@ -98,7 +98,8 @@ test_*.py
 
 # Local agent configuration, credentials and scratch data
 /.agents/
-/.claude/
+/.claude/*
+!/.claude/skills/
 /.codex/
 /.aws/
 /.g-*/
@@ -108,3 +109,4 @@ test_*.py
 node_modules/
 *.p12
 *.keystore
+.codegraph
