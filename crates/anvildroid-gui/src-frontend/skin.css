@@ -172,7 +172,9 @@ html:where([data-skin="hud"]), :where([data-skin="hud"]) body {
 /* Apps grid: fills the width, aligned with the filter bar, one block per device. */
 :where([data-skin="hud"]) #page-apps.active .apps-grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; padding: 2px 0 24px; justify-content: stretch; }
 :where([data-skin="hud"]) #page-apps.active .apps-grid.list-view { grid-template-columns: 1fr; }
-:where([data-skin="hud"]) #page-apps.active .apps-grid .app-card { aspect-ratio: auto; min-height: 140px; }
+/* Cards fill their column: shell.css fixes them at 152px, which is wider than
+   a 140px column and made neighbours touch and the last column overflow. */
+:where([data-skin="hud"]) #page-apps.active .apps-grid .app-card { width: auto; min-width: 0; height: auto; aspect-ratio: auto; min-height: 140px; }
 :where([data-skin="hud"]) .app-group-heading { grid-column: 1 / -1; display: flex; align-items: baseline; gap: 10px; margin-top: 10px; padding: 6px 0; border-bottom: 1px solid var(--border); }
 :where([data-skin="hud"]) .app-group-heading:first-child { margin-top: 0; }
 :where([data-skin="hud"]) .app-group-heading strong { color: var(--text-primary); font-size: var(--font-md); letter-spacing: .08em; text-transform: uppercase; }
