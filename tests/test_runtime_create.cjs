@@ -91,7 +91,7 @@ test('invalid creation, Desktop reply or submitted job never triggers a later st
   for (const record of [null,{...initial(),id:'default'},{...initial(),id:'bad'},
       {...initial(),state:'Running'},{...initial(),job:{id:'existing'}}]) {
     let calls=0;
-    await assert.rejects(initialize(record,{send:async()=>{calls++;}}),/Invalid newly created runtime/);
+    await assert.rejects(initialize(record,{send:async()=>{calls++;}}),/Invalid newly created device/);
     assert.equal(calls,0);
   }
   for (const bad of ['desktop','identity','operation','job']) {

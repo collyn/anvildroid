@@ -4,6 +4,10 @@
    case); skin.css restyles the same parts for the HUD theme. Colours come only
    from theme.css tokens. */
 
+/* `hidden` always wins: theme rules set display on buttons, rows and grids
+   and must never reveal something the app hid (e.g. Cancel reinstall). */
+[hidden] { display: none !important; }
+
 /* Sub-tabs under the Devices title (Devices · Android images · ADB). */
 .subtabs { display: inline-flex; overflow: hidden; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-surface); }
 .subtab { min-height: 32px; padding: 0 14px; border: 0; background: transparent; color: var(--text-secondary); font: inherit; font-size: var(--font-md); font-weight: 600; cursor: pointer; }

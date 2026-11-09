@@ -96,7 +96,7 @@ test('uninitialized System Waydroid is hidden and any runtime can become default
   assert.equal(vm.runInContext('defaultRuntimeId()',context),two);
   vm.runInContext('renderController()',context);
   html=element('controller-runtimes').innerHTML;
-  assert.ok(html.indexOf('Second')<html.indexOf('First'),'default runtime is listed first');
+  assert.ok(html.indexOf('Second')<html.indexOf('First'),'default device is listed first');
   assert.match(html,/Second <span class="runtime-default-badge"/);
   assert.doesNotMatch(html,/First <span class="runtime-default-badge"/);
 });
@@ -174,7 +174,7 @@ test('per-app labels never infer process state from Running runtime', () => {
   assert.equal(label({...base,execution_state:'foreground',status_checked_at:1}),'Status unknown');
   assert.equal(label({...base,execution_state:'foreground',available:false}),'Status unknown');
   assert.equal(label({...base,execution_state:'foreground',runtime_state:'Stopped'}),'Not running');
-  assert.equal(label({...base,desktop_entry:true}),'Runtime launcher');
+  assert.equal(label({...base,desktop_entry:true}),'Device launcher');
 });
 
 test('app status poll is runtime scoped, does not fetch icons and clears failed samples', async () => {
@@ -246,7 +246,7 @@ test('Settings distinguishes configured values from unmeasured limits and escape
   const html = element('settings-runtime').innerHTML;
   assert.match(html, /&lt;runtime&gt;/);
   assert.match(html, /Renderer \(configured\)/);
-  assert.match(html, /inspect active limits under Runtime &gt; System Waydroid/);
+  assert.match(html, /inspect active limits under Device &gt; System Waydroid/);
   assert.match(html, /Not available yet/);
   assert.equal(element('btn-refresh-settings').disabled, false);
 });
@@ -1495,7 +1495,7 @@ test('delete runtime requires its exact name and keeps its target after selectio
   await tick();calls.length=0;
   context.fixture=record;
   vm.runInContext("controllerRecords=[fixture];openRuntimeStorage('r-two','delete')",context);
-  assert.match(element('runtime-storage-description').textContent,/Permanently delete runtime "Second"/);
+  assert.match(element('runtime-storage-description').textContent,/Permanently delete device "Second"/);
   assert.match(element('runtime-storage-description').textContent,/cannot be undone/);
   element('runtime-storage-confirm-name').value='wrong';
   await vm.runInContext('saveRuntimeStorage()',context);
@@ -1976,7 +1976,7 @@ test('runtime summary shows RAM CPU and disk usage without opening details',asyn
  assert.match(html,/aria-label="Memory"[^>]*aria-valuenow="50.0"/);
  assert.match(html,/runtime-usage-label">CPU/);
  assert.match(html,/1\.0 \/ 10\.0 GiB/);
- assert.match(html,/Runtime allocated data and private images/);
+ assert.match(html,/Device allocated data and private images/);
 });
 
 test('runtime summary labels configured and unavailable resource states',async()=>{
@@ -2186,7 +2186,7 @@ test('library runtime status reports observed states and escapes failures', () =
   const {context, element} = gui(async () => undefined, undefined, '?view=controls');
   vm.runInContext("managedLibrary=[{id:'r-one',name:'One',state:'Running'},{id:'r-two',name:'Two',state:'Starting'},{id:'r-three',name:'<Three>',state:'Running',error:'<offline>'}];managedSnapshots.set('r-one',[{package:'com.example',launchable:true}]);renderManagedLibraryStatus()", context);
   const html=element('library-runtime-status').innerHTML;
-  assert.match(html,/<strong>One<\/strong> · Running · 2 apps/);
+  assert.match(html,/<strong>One<\/strong> · Running · 1 app</);
   assert.match(html,/<strong>Two<\/strong> · Starting · Apps appear when it is running/);
   assert.match(html,/&lt;Three&gt;.*&lt;offline&gt;/);
   vm.runInContext("managedLibraryError='Cannot load <registry>';renderManagedLibraryStatus()",context);
@@ -2232,7 +2232,7 @@ test('runtime usage computes CPU delta, falls back to host memory and pauses whi
   await vm.runInContext('refreshRuntimeUsage()',context);
   assert.deepEqual(calls.map(r=>r.op),['resources_info','storage_info']);
   assert.match(cell.innerHTML,/1.0 \/ 16.0 GiB/);
-  assert.match(cell.innerHTML,/Runtime memory \/ host RAM/);
+  assert.match(cell.innerHTML,/Device memory \/ host RAM/);
   hostMemory=undefined;
   await vm.runInContext('refreshRuntimeUsage()',context);
   assert.match(cell.innerHTML,/runtime-usage-value">1.0 GiB/);
@@ -2812,7 +2812,7 @@ test('library runtime multi-select separates duplicate app names and preserves p
   assert.match(html,/data-runtime-id="default"/);
   assert.match(html,/data-runtime-id="r-two"/);
   assert.doesNotMatch(html,/data-runtime-id="r-one"/);
-  assert.equal(element('runtime-filter-label').textContent,'2 runtimes');
+  assert.equal(element('runtime-filter-label').textContent,'2 devices');
   assert.doesNotMatch(element('library-runtime-status').innerHTML,/One &lt;Android&gt;/);
   vm.runInContext("setLibraryRuntimeFilter(['r-one'])",context);
   assert.equal(element('runtime-filter-label').textContent,'One <Android>');
@@ -2969,7 +2969,7 @@ test('boot save rejects another runtime response and restores previous value',as
  await context.refreshRuntimeStartupPreferences();
  await context.changeRuntimeStartupPreference({target:{dataset:{runtimeStartup:id},checked:true}});
  assert.doesNotMatch(element('runtime-startup-list').innerHTML,/checked/);
- assert.match(banner.textContent,/Invalid runtime startup response/);
+ assert.match(banner.textContent,/Invalid device startup response/);
 });
 
 test('boot preferences recover after failed refresh and suppress refresh while saving',async()=>{

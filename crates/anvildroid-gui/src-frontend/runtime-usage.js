@@ -24,9 +24,9 @@ const RuntimeUsage = (() => {
     const diskMax = positive(record.storage?.limit_bytes) ? record.storage.limit_bytes : number(disk) && number(record.storage?.free_bytes) ? disk + record.storage.free_bytes : null;
     const metric = (name, value, max, text, hint) => ({name, text, hint, percent:value != null && positive(max) ? Math.min(100, Math.max(0, value / max * 100)) : null});
     return [
-      metric('Memory', memory, memoryMax, memory == null ? '—' : `${gib(memory)}${positive(memoryMax) ? ' / ' + gib(memoryMax) : ''} GiB`, actual?.memory_max_bytes != null ? 'Runtime memory / RAM limit' : 'Runtime memory / host RAM (no runtime limit)'),
+      metric('Memory', memory, memoryMax, memory == null ? '—' : `${gib(memory)}${positive(memoryMax) ? ' / ' + gib(memoryMax) : ''} GiB`, actual?.memory_max_bytes != null ? 'Device memory / RAM limit' : 'Device memory / host RAM (no device limit)'),
       metric('CPU', cpu, 100, cpu == null ? '—' : `${cpu.toFixed(1)}%`, 'CPU usage / ' + (actual?.cpu_quota_count || data?.host?.cpu_count || 'available') + ' CPUs; sampled between refreshes'),
-      metric('Disk', disk, diskMax, disk == null ? '—' : `${gib(disk)}${positive(record.storage?.limit_bytes) ? ' / ' + gib(record.storage.limit_bytes) : ''} GiB`, 'Runtime allocated data and private images (cached); bar compares runtime usage with remaining disk space'),
+      metric('Disk', disk, diskMax, disk == null ? '—' : `${gib(disk)}${positive(record.storage?.limit_bytes) ? ' / ' + gib(record.storage.limit_bytes) : ''} GiB`, 'Device allocated data and private images (cached); bar compares device usage with remaining disk space'),
     ];
   }
   function retain(ids) { for (const id of samples.keys()) if (!ids.has(id)) samples.delete(id); }

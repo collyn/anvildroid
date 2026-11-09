@@ -229,7 +229,7 @@ test('Settings distinguishes source variants and warns about an Android target m
   assert.match(markup,/value="c{64}"[^>]*>Brya 38795/);
   assert.match(markup,/Octopus 39598/);
   assert.match(markup,/Compatibility patch bytes and output checksum/);
-  assert.match(markup,/arm-target-warning.*this runtime is Android SDK 33/);
+  assert.match(markup,/arm-target-warning.*this device is Android SDK 33/);
   f.drafts.set('test',{engine:'libhoudini',sha256:'d'.repeat(64)});
   assert.doesNotMatch(f.context.renderRuntimeArm(f.record,false),/arm-target-warning/);
 });
@@ -271,5 +271,5 @@ test('a failed automatic start says the images are already prepared', async () =
 
 test('prepare-and-start rejects a response for a different operation', async () => {
   const {options} = prepareFixture();
-  await assert.rejects(prepareAndStart({id:ID, job:{id:'x', operation:'start'}}, options), /Invalid runtime operation response/);
+  await assert.rejects(prepareAndStart({id:ID, job:{id:'x', operation:'start'}}, options), /Invalid device operation response/);
 });

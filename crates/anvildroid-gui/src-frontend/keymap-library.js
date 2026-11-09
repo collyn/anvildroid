@@ -298,7 +298,7 @@
           for(const r of managed.value)if(r&&typeof r.id==='string'&&r.id!=='default')nextRecords.set(r.id,{...r,name:r.name||r.id});
         }else{
           for(const [id,r] of nextRecords)if(id!=='default')nextRecords.set(id,{...r,state:'Unavailable'});
-          nextFailures.push(`Runtimes: ${managed.reason?.message||managed.reason||'Invalid runtime list'}`);
+          nextFailures.push(`Devices: ${managed.reason?.message||managed.reason||'Invalid device list'}`);
         }
         if(existing.status==='fulfilled'&&existing.value?.id==='default'){if(existing.value.state==='Uninitialized')nextRecords.delete('default');else nextRecords.set('default',{...existing.value,name:'System Waydroid'});}
         else{nextRecords.set('default',{id:'default',name:'System Waydroid',state:'Unavailable'});nextFailures.push(`System Waydroid: ${existing.reason?.message||existing.reason||'Unavailable'}`);}

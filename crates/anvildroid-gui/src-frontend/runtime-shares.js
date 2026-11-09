@@ -6,7 +6,7 @@
     const title = document.createElement('h4'); title.textContent = 'Shared folders';
     const note = document.createElement('p');
     note.className = 'hint';
-    note.textContent = 'Stop this runtime before changing shares. Choose a non-sensitive folder inside your home. Android receives access to everything in that folder. Shares appear under /sdcard/AnvilDroid after the next start.';
+    note.textContent = 'Stop this device before changing shares. Choose a non-sensitive folder inside your home. Android receives access to everything in that folder. Shares appear under /sdcard/AnvilDroid after the next start.';
     const list = document.createElement('div');
     const form = document.createElement('form');
     const name = document.createElement('input'); name.placeholder = 'Share name'; name.required = true; name.pattern = '[A-Za-z0-9][A-Za-z0-9_-]{0,47}'; name.setAttribute('aria-label', 'Share name');
@@ -30,7 +30,7 @@
       editable = false; view++; list.replaceChildren(); removeButtons = [];
     }
     function validate(value, runtime) {
-      const bad = () => { throw new Error('Invalid shared-folder response or another runtime; refresh before retrying.'); };
+      const bad = () => { throw new Error('Invalid shared-folder response or another device; refresh before retrying.'); };
       if (!value || value.runtime_id !== runtime.id || typeof value.editable !== 'boolean' ||
           !Array.isArray(value.shares) || value.shares.length > 16 ||
           (value.unsupported_reason !== undefined && typeof value.unsupported_reason !== 'string')) bad();
@@ -63,8 +63,8 @@
       }
       if (!value.shares.length) list.textContent = 'No folders shared.';
       notice.textContent = value.unsupported_reason || (editable ?
-        'Changes require a stopped runtime and take effect on its next start.' :
-        'Changes are unavailable. Stop the runtime completely, then refresh.');
+        'Changes require a stopped device and take effect on its next start.' :
+        'Changes are unavailable. Stop the device completely, then refresh.');
     }
     async function load(operation = 'shares_get', payload = {}) {
       if (!identity || busy || (operation !== 'shares_get' && !editable)) return;
