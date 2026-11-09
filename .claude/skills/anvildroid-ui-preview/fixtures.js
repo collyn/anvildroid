@@ -57,6 +57,8 @@
         { runtime: args.id, package: 'net.minetest.minetest', bindings: [{ evdev: 17, kind: 'tap', nx: 30000, ny: 40000 }, { evdev: 57, kind: 'hold', nx: 50000, ny: 50000 }] },
         { runtime: args.id, package: 'com.example.unlisted', bindings: [] },
       ] }),
+      'controller:keymap_scheme': args => ({ runtime_id: args.id, package: args.package, revision: 'a'.repeat(64), selected: 'default',
+        schemes: [{ id: 'default', name: 'Default', binding_count: 2, reference: null }, { id: 's-' + '0'.repeat(32), name: 'PvP', binding_count: 5, reference: null }] }),
       'controller:requirements': { can_prepare: true, can_start: true, checks: [] },
       'controller:arm_sources': { sources: [] },
       'controller:app_states': args => ({ runtime_id: args.id, state: 'Running', states: {} }),

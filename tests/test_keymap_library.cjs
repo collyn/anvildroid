@@ -158,8 +158,10 @@ test('Schemes live in existing app library row and load only when expanded',asyn
   const detail=descendants(el('keymap-saved-list'),'details').find(d=>d.children.some(c=>c.textContent==='Schemes'));
   assert.ok(detail);detail.open=true;detail.events.toggle();await new Promise(resolve=>setImmediate(resolve));
   assert.ok(calls.some(r=>r.op==='keymap_scheme'&&r.action==='list'));
-  for(const label of ['Use','New','Clone','Rename','Reset','Remove','Export'])assert.ok(detail.textContent.includes(label));
-  assert.match(detail.textContent,/Save or cancel the open app editor/);
+  const tools=descendants(el('keymap-saved-list'),'tr').find(r=>r.className==='controls-scheme-row');
+  assert.equal(tools.hidden,false);
+  for(const label of ['Use','New','Clone','Rename','Reset','Remove','Export','Import…'])assert.ok(tools.textContent.includes(label));
+  assert.match(tools.textContent,/Save or cancel the open app editor/);
 });
 
 test('Scheme names share the backend 48 Unicode code point bound in responses and authoring',async()=>{
@@ -172,9 +174,10 @@ test('Scheme names share the backend 48 Unicode code point bound in responses an
   await api.refresh();
   const detail=descendants(el('keymap-saved-list'),'details').find(d=>d.children.some(c=>c.textContent==='Schemes'));
   detail.open=true;detail.events.toggle();await new Promise(resolve=>setImmediate(resolve));
-  const input=descendants(detail,'input').find(e=>e.type==='text');assert.equal(input.maxLength,96);
+  const tools=descendants(el('keymap-saved-list'),'tr').find(r=>r.className==='controls-scheme-row');
+  const input=descendants(tools,'input').find(e=>e.type==='text');assert.equal(input.maxLength,96);
   input.value='🎮'.repeat(48);
-  await descendants(detail,'button').find(b=>b.textContent==='Rename').events.click();
+  await descendants(tools,'button').find(b=>b.textContent==='Rename').events.click();
   assert.equal(calls.at(-1).name,'🎮'.repeat(48));
   const sent=calls.length;
   await assert.rejects(api.schemeRequest(p,'rename','default','🎮'.repeat(49)),/at most 48 characters/);
@@ -206,14 +209,15 @@ test('Export uses native Save dialog and bounded Rust file command; cancel and e
   states.schemes={runtime_id:'default',package:'com.test.game',revision:'a'.repeat(64),selected:'default',schemes:[{id:'default',name:'Default',binding_count:1,reference:null}]};
   await api.refresh();const detail=descendants(el('keymap-saved-list'),'details').find(d=>d.children.some(c=>c.textContent==='Schemes'));
   detail.open=true;detail.events.toggle();await new Promise(resolve=>setImmediate(resolve));
-  const save=descendants(detail,'button').find(b=>b.textContent==='Export');
-  await save.events.click();assert.equal(exports.length,0);assert.match(detail.textContent,/Export cancelled/);
+  const tools=descendants(el('keymap-saved-list'),'tr').find(r=>r.className==='controls-scheme-row');
+  const save=descendants(tools,'button').find(b=>b.textContent==='Export');
+  await save.events.click();assert.equal(exports.length,0);assert.match(tools.textContent,/Export cancelled/);
   assert.match(dialogs[0].defaultPath,/com.test.game-default.anvildroid.json$/);
   states.exportPath='/tmp/my-controls.json';await save.events.click();assert.equal(exports.length,1);
   assert.deepEqual(JSON.parse(JSON.stringify(exports[0])),{id:'default',package:'com.test.game',schemeId:'default',revision:'a'.repeat(64),path:states.exportPath});
-  assert.match(detail.textContent,/Scheme file saved/);
+  assert.match(tools.textContent,/Scheme file saved/);
   states.exportError=new Error('Choose a new scheme export filename');await save.events.click();
-  assert.match(detail.textContent,/Choose a new scheme export filename/);assert.doesNotMatch(detail.textContent,/Scheme file saved/);
+  assert.match(tools.textContent,/Choose a new scheme export filename/);assert.doesNotMatch(tools.textContent,/Scheme file saved/);
   assert.doesNotMatch(source,/createObjectURL|revokeObjectURL|link.download/);
   const rust=fs.readFileSync('crates/anvildroid-gui/src/main.rs','utf8');
   assert.match(rust,/async fn export_keymap_scheme/);assert.match(rust,/export_runtime_diagnostics,\s*export_keymap_scheme,/);

@@ -125,7 +125,7 @@
   function schemeControls(p,updated){
     const details=node('details',undefined,'controls-schemes'),summary=node('summary','Schemes');details.appendChild(summary);
     const body=node('div',undefined,'controls-scheme-body'),status=node('p','Open to load schemes.','hint');status.setAttribute('role','status');
-    details.appendChild(body);body.appendChild(status);
+    body.appendChild(status); // shown in its own full-width row under the app (render)
     let result=null,busy=false,loaded=false;
     const showError=error=>{status.textContent=error.message||String(error);};
     async function run(action,scheme='',name='',content=''){
@@ -157,23 +157,32 @@
       for(const s of result.schemes){const o=node('option',`${s.name}${s.id===result.selected?' · active':''} · ${s.binding_count} controls`);o.value=s.id;select.appendChild(o);}
       select.value=result.selected;
       const name=node('input');name.type='text';name.maxLength=96;name.placeholder='Scheme name';name.setAttribute('aria-label','Scheme name');
-      const tools=node('div',undefined,'controls-scheme-tools');tools.appendChild(select);tools.appendChild(name);
-      function button(label,action,tip){const b=node('button',label,'btn');b.type='button';b.title=tip||label;b.disabled=!available(records.get(p.runtime));
-        b.addEventListener('click',()=>run(action,action==='create'?'':select.value,['create','clone','rename'].includes(action)?name.value:''));tools.appendChild(b);buttons.push(b);return b;}
-      button('Use','select','Save or cancel the app editor before switching schemes');
-      button('New','create','Create an empty scheme; enter a name first');button('Clone','clone','Copy the selected scheme; enter a name first');
-      button('Rename','rename','Rename the selected scheme');button('Reset','reset','Clear all controls in the selected scheme');
-      button('Remove','remove','Remove an inactive custom scheme');button('Export','export','Download the selected scheme as AnvilDroid JSON');
-      const file=node('input');file.type='file';file.accept='.json,application/json';file.setAttribute('aria-label','Import AnvilDroid scheme JSON');
+      // Three groups: pick the active scheme · name-based actions · scheme file.
+      const tools=node('div',undefined,'controls-scheme-tools');
+      const group=label=>{const g=node('div',undefined,'controls-scheme-group');g.appendChild(node('span',label,'controls-scheme-label'));
+        const row=node('div',undefined,'controls-scheme-row-tools');g.appendChild(row);tools.appendChild(g);return row;};
+      const pick=group('Scheme'),naming=group('New name'),files=group('Manage');
+      pick.appendChild(select);naming.appendChild(name);
+      function button(label,action,tip,where){const b=node('button',label,'btn');b.type='button';b.title=tip||label;b.disabled=!available(records.get(p.runtime));
+        b.addEventListener('click',()=>run(action,action==='create'?'':select.value,['create','clone','rename'].includes(action)?name.value:''));where.appendChild(b);buttons.push(b);return b;}
+      button('Use','select','Save or cancel the app editor before switching schemes',pick).className+=' btn-primary';
+      button('New','create','Create an empty scheme; enter a name first',naming);button('Clone','clone','Copy the selected scheme; enter a name first',naming);
+      button('Rename','rename','Rename the selected scheme',naming);
+      button('Export','export','Download the selected scheme as AnvilDroid JSON',files);
+      const file=node('input');file.type='file';file.accept='.json,application/json';file.hidden=true;file.setAttribute('aria-label','Import AnvilDroid scheme JSON');
+      const importButton=node('button','Import…','btn');importButton.type='button';importButton.title='Import an AnvilDroid scheme JSON file (uses the name above if set)';
+      importButton.disabled=!available(records.get(p.runtime));importButton.addEventListener('click',()=>file.click());files.appendChild(importButton);
       file.addEventListener('change',async()=>{const source=file.files?.[0];if(!source)return;
         if(source.size>24576){showError(new Error('Scheme file exceeds 24 KiB'));return;}
         try{await run('import','',name.value,await source.text());}catch(error){showError(error);}finally{file.value='';}});
-      tools.appendChild(file);buttons.push(file,select,name);body.appendChild(tools);
+      button('Reset','reset','Clear all controls in the selected scheme',files).className+=' btn-warning';
+      button('Remove','remove','Remove an inactive custom scheme',files).className+=' btn-danger';
+      files.appendChild(file);buttons.push(file,importButton,select,name);body.appendChild(tools);
       body.appendChild(node('p','Save or cancel the open app editor before changing schemes. Import supports AnvilDroid scheme JSON v1. Reset clears the selected scheme.','hint'));
       status.textContent='';body.appendChild(status);
     }
-    details.addEventListener('toggle',()=>{if(details.open&&!loaded)run('list');});
-    return details;
+    details.addEventListener('toggle',()=>{details.onSchemesToggle?.(details.open);if(details.open&&!loaded)run('list');});
+    return {details,body};
   }
   // Icon + app name, package underneath. Icons that fail to load fall back to
   // the app's initial; names are set with textContent (they come from Android).
@@ -232,7 +241,7 @@
         const chips=node('div',undefined,'controls-key-chips');
         const updateKeys=()=>{chips.replaceChildren();for(const b of p.bindings){const chip=node('kbd',physicalLabel(b.evdev,b.input_source));chip.title=bindingTitle(b);chips.appendChild(chip);}
           if(!p.bindings.length)chips.appendChild(node('span','—','hint'));};
-        updateKeys();app.appendChild(schemeControls(p,updateKeys));
+        const scheme=schemeControls(p,updateKeys);updateKeys();app.appendChild(scheme.details);
         keys.appendChild(chips);
         const edit=node('button',undefined,'btn runtime-action-icon');edit.type='button';
         edit.title=available(r)?'Edit keymap in an open app':'Start this device to edit';edit.setAttribute('aria-label',`Edit keymap · ${p.package} · ${r?.name||p.runtime}`);
@@ -240,6 +249,11 @@
         edit.disabled=!available(r);
         edit.addEventListener('click',async()=>{if(edit.disabled)return;edit.disabled=true;try{await window.AnvilKeymapActions?.open(p.runtime,p.package);}finally{edit.disabled=!available(records.get(p.runtime));}});
         actions.appendChild(edit);for(const cell of [app,runtime,keys,actions])row.appendChild(cell);body.appendChild(row);
+        // Scheme tools span the whole table width under their app, while "Schemes" is open.
+        const schemeRow=node('tr',undefined,'controls-scheme-row'),schemeCell=node('td');schemeCell.colSpan=4;
+        schemeCell.appendChild(scheme.body);schemeRow.appendChild(schemeCell);schemeRow.hidden=true;row.className='controls-app-row';
+        scheme.details.onSchemesToggle=open=>{schemeRow.hidden=!open;row.className=open?'controls-app-row schemes-open':'controls-app-row';};
+        body.appendChild(schemeRow);
       }
       table.appendChild(body);wrapper.appendChild(table);content.appendChild(wrapper);
     }
