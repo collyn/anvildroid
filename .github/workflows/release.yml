@@ -416,6 +416,7 @@ jobs:
             *) exit 2;;
           esac
           docker run --rm -e ANVILDROID_REQUIRE_NO_WESTON=1 \
+            -e ANVILDROID_APT_MIRROR=http://azure.archive.ubuntu.com/ubuntu \
             -v "$PWD/scripts/verify-package.py:/work/scripts/verify-package.py:ro" \
             -v "$PWD/scripts/verify-package-install.sh:/work/scripts/verify-package-install.sh:ro" \
             -v "$PWD/target/releases/$file:/packages/$file:ro" "$IMAGE" \

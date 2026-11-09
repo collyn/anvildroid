@@ -40,6 +40,13 @@ case "$FORMAT" in
     # dpkg can preserve permissions of an existing directory. Exercise the
     # legacy 0775 install on both first installation and reinstallation.
     install -d -o root -g root -m 0775 /usr/local/lib/anvildroid-controller
+    # CI runners reach Ubuntu's archive through their own mirror more
+    # reliably than archive.ubuntu.com; retry transient fetch failures.
+    if [ -n "${ANVILDROID_APT_MIRROR:-}" ]; then
+      sed -i "s#http://archive.ubuntu.com/ubuntu#${ANVILDROID_APT_MIRROR}#g" \
+        /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list 2>/dev/null || true
+    fi
+    echo 'Acquire::Retries "5";' > /etc/apt/apt.conf.d/80-anvildroid-retries
     if [ "${ANVILDROID_APT_UPDATE:-1}" != 0 ]; then apt-get update; fi
     apt-get install -y --no-install-recommends "$PACKAGE_FILE" xvfb xauth dbus-x11
     test "$(stat -c %a /usr/local/lib/anvildroid-controller)" = 755
