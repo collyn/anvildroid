@@ -196,8 +196,8 @@ simultaneous contacts, blur cancellation and held-key refocus.
 
 | Guest backend | Private input transport | Result and retained evidence |
 | --- | --- | --- |
-| Wayland | XTest → Xvfb → Weston X11 backend → Wayland seat → production bridge/scrcpy | 10/10 PASS; [summary](../../target/feature-verification-20261017/live-controls-wayland-verified/summary.json), [cleanup](../../target/feature-verification-20261017/live-controls-wayland-verified/stopped.json). Scene capture completed in 4 ms within its five-second bound. |
-| Native X11 | XTest → authenticated Xvfb app window → production bridge/scrcpy | 10/10 PASS; [summary](../../target/feature-verification-20261017/live-controls-x11-focus-verified/summary.json), [cleanup](../../target/feature-verification-20261017/live-controls-x11-focus-verified/stopped.json). |
+| Wayland | XTest → Xvfb → Weston X11 backend → Wayland seat → production bridge/scrcpy | 10/10 PASS; summary, cleanup. Scene capture completed in 4 ms within its five-second bound. |
+| Native X11 | XTest → authenticated Xvfb app window → production bridge/scrcpy | 10/10 PASS; summary, cleanup. |
 
 Each run used a separate disposable managed runtime with actual Android 13
 x86_64 Vanilla, fresh userdata, the TouchProbe observer and a harness-written
@@ -236,8 +236,8 @@ subset now passes alongside V3 finger gestures and capture lifecycle.
 
 | Guest backend | Final evidence | Complete cleanup |
 | --- | --- | --- |
-| Wayland | [25/25 summary](../../target/keymap-v3-verification/controls-wayland-v3-final/summary.json); [scoped protocol trace](../../target/keymap-v3-verification/controls-wayland-v3-final/v3-capture-protocol.log) | [Stopped, empty scope/processes/mounts](../../target/keymap-v3-verification/retired-fixtures/anvil-live-kv3-wl-v4.json) |
-| Native X11 | [25/25 summary](../../target/keymap-v3-verification/controls-x11-v3/summary.json), including physical capture confinement | [Stopped, empty scope/processes/mounts](../../target/keymap-v3-verification/retired-fixtures/anvil-live-kv3-x11-v3.json) |
+| Wayland | 25/25 summary; scoped protocol trace | Stopped, empty scope/processes/mounts |
+| Native X11 | 25/25 summary, including physical capture confinement | Stopped, empty scope/processes/mounts |
 
 These runs use actual Android 13 Vanilla with software rendering, private
 networking and fresh desktop processes. All disposable roots were removed
@@ -259,8 +259,8 @@ Its patched scrcpy JAR SHA256 is
 
 | Guest backend | Final lifecycle evidence | Cleanup before fresh isolation desktops |
 | --- | --- | --- |
-| Native X11 | [45/45 summary](../../target/editor-lifecycle-20261019/recovery-x11-v2/summary.json) | [Stopped and quiescent](../../target/editor-lifecycle-20261019/cleanup-before-isolation-x11.json) |
-| Wayland | [45/45 summary](../../target/editor-lifecycle-20261019/recovery-wayland-v5/summary.json) | [Stopped and quiescent](../../target/editor-lifecycle-20261019/cleanup-before-isolation-wl.json) |
+| Native X11 | 45/45 summary | Stopped and quiescent |
+| Wayland | 45/45 summary | Stopped and quiescent |
 
 For simultaneous-runtime isolation, first complete the normal probe on two
 different disposable stores so the observer is installed in each guest. Stop
@@ -278,11 +278,11 @@ real mapped input and checks own-profile DOWN coordinates within four pixels.
 It then edits/rebinds/Saves each through the visible editor while playing the
 peer, requiring no leaked contact or peer saved-byte change. The final mixed
 native-X11/Wayland run passes **8/8**, with actual DOWN x=109/334 matching the
-two authored positions. See [isolation summary](../../target/editor-lifecycle-20261019/isolation-v2/summary.json).
+two authored positions. See isolation summary.
 Both final generations reached Stopped/cleanup_complete and quiescence, with
 empty scopes, no owned worker/display processes and no host fixture mounts:
-[X11 cleanup](../../target/editor-lifecycle-20261019/cleanup-final-x11.json),
-[Wayland cleanup](../../target/editor-lifecycle-20261019/cleanup-final-wl.json).
+X11 cleanup,
+Wayland cleanup.
 Their disposable roots were removed after preserving metadata and evidence.
 
 These results close the managed graphical editor lifecycle and same-package
@@ -432,7 +432,13 @@ actual ARM code execution, not representative ARM game compatibility.
 
 `probe-luanti-game.py` uses the official unmodified Luanti 5.17.0 x86_64 APK
 and Minetest Game 5.8.0 in a managed disposable Android guest. Obtain the two
-release files from the pinned sources in [game acceptance](../../docs/GAME-ACCEPTANCE.md).
+release files from these pinned sources:
+
+| File | Source | SHA256 |
+| --- | --- | --- |
+| Luanti APK | [5.17.0 x86_64 release](https://github.com/luanti-org/luanti/releases/download/5.17.0/luanti-5.17.0-x86_64.apk) | `d0e8bea52462d7e743d411e79c9eaa6b55f382f88ab1644d6ef727b320fae148` |
+| Minetest Game | [5.8.0 archive](https://github.com/luanti-org/minetest_game/archive/refs/tags/5.8.0.tar.gz) | `33a3bb43b08497a0bdb2f49f140a2829e582d5c16c0ad52be1595c803f706912` |
+
 The helper checks their SHA256 before installation. It downloads nothing and
 uses the same worker/generation/namespace and private display guards as the
 two-runtime controls probe. It never connects to the installed controller.
@@ -475,7 +481,7 @@ then remove only the exact disposable stores. Retain evidence outside them.
 The final Android 13 Vanilla/GAPPS matrix passes 45+9 cases on each managed
 backend and 22 cases on each Default backend, within the fixture conditions
 below. Exact hashes, per-row evidence, cleanup and remaining gates are in
-[the controls matrix report](../../docs/CONTROLS-MATRIX.md).
+the controls matrix report kept with the local acceptance evidence.
 
 These tests use private displays and copied userdata; they do not target
 installed personal runtimes or the host desktop.

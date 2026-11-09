@@ -40,9 +40,11 @@ test_*.py
 /scripts/benchmark-*
 # Release-gating feature checks are maintained source, not local experiments.
 !/scripts/test-runtime-features.sh
+!/scripts/test-native-x11-session.py
 !/tests/
 /tests/*
 !/tests/test_runtime_tools.cjs
+!/tests/hwc-display.cpp
 !/tests/test_runtime_worker.py
 !/tests/test_runtime_default_desktop.py
 !/tests/test_runtime_arm.py

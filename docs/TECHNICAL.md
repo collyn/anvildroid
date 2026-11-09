@@ -332,7 +332,9 @@ cargo test --workspace --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 node --test tests/*.cjs                 # GUI/frontend
 sh scripts/test-runtime-features.sh     # backend, frontend and native feature checks
-sh scripts/test-native.sh               # native bridge
+sh native/bridge/test-window-state.sh   # native bridge window state
+sh native/bridge/test-android-window.sh # bridge window lifecycle (--live uses your compositor)
+python3 native/x11/build-host.py        # build the X11 adapter test binaries
 python3 native/x11/host-check.py        # X11 adapter (add --software-x11 for Xvfb)
 ```
 
