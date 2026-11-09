@@ -111,7 +111,7 @@ function harness(records = [record('one'), record('two')]) {
   await m.context.executeBatchOperation(record('one','Running'),'stop');assert.equal(waits[1].expected,'Stopped');
   await m.context.executeBatchOperation(record('one'),'reinstall',{flavor:'installed'});assert.equal(sent[2].confirmed_name,'one');assert.equal(waits[2].expected,'Prepared');
   m.context.controllerRequest=async()=>({id:'wrong',job:{id:'wrong'}});
-  await assert.rejects(m.context.executeBatchOperation(record('one'),'start'),/Invalid runtime/);
+  await assert.rejects(m.context.executeBatchOperation(record('one'),'start'),/Invalid device/);
 
   // Delete completes by disappearance, including the list/app_job race; failed jobs remain failures.
   for(const race of [false,true]){

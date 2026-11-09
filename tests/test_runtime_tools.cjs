@@ -221,7 +221,7 @@ test('managed ARM retains metadata, compatibility notes and lifecycle gating',()
   const f=armFixture(),arm=f.record.arm;
   const html=f.api.renderRuntimeArm(f.record,false);assert.match(html,/Compatibility notes/);assert.match(html,/Android 13 only/);
   assert.match(html,/SHA-256/);assert.ok(html.includes(DIGEST));assert.match(html,/Cached archive/);
-  assert.match(html,/checksum verified on installation/);assert.match(html,/saved runtime configuration/);
+  assert.match(html,/checksum verified on installation/);assert.match(html,/saved device configuration/);
   arm.provider='<img src=x onerror=steal()>';assert.doesNotMatch(f.api.renderRuntimeArm(f.record,false),/<img/);
   assert.match(f.api.renderRuntimeArm({...f.record,state:'Starting'},false),/data-arm-engine="[^"]+" disabled/);
   assert.match(f.api.renderRuntimeArm({...f.record,state:'Running'},false),/restart/);

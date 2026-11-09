@@ -1,6 +1,10 @@
 /* Game skin: square, flat, high-contrast HUD look. Loaded last so it wins over
    the older stylesheets; colours still come only from theme.css tokens. */
 
+/* `hidden` always wins: skin rules below set display on buttons, rows and
+   grids, and must never reveal something the app hid. */
+[hidden] { display: none !important; }
+
 /* Square everything, no soft depth. */
 *, *::before, *::after { border-radius: 0 !important; box-shadow: none !important; }
 :where(.btn, .nav-item, .app-card, .runtime-quick-chip):hover { transform: none !important; }

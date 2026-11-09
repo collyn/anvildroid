@@ -176,12 +176,12 @@
     return details;
   }
   function updateSelectors(){
-    const selected=filter.value||'all';filter.replaceChildren(node('option','All runtimes'));filter.children[0].value='all';
+    const selected=filter.value||'all';filter.replaceChildren(node('option','All devices'));filter.children[0].value='all';
     for(const r of records.values()){const option=node('option',r.name);option.value=r.id;filter.appendChild(option);}
     filter.value=records.has(selected)?selected:'all';
     const probe=document.getElementById('probe-runtime');
     if(probe&&!probe.disabled){
-      const previous=probe.value;probe.replaceChildren(node('option','Select runtime'));probe.children[0].value='';
+      const previous=probe.value;probe.replaceChildren(node('option','Select device'));probe.children[0].value='';
       for(const r of records.values())if(available(r)){const option=node('option',`${r.name} · ${r.state}`);option.value=r.id;probe.appendChild(option);}
       probe.value=available(records.get(previous))?previous:'';
       updateDiagnostics();
@@ -201,12 +201,12 @@
       const empty=node('div',undefined,'controls-empty');empty.appendChild(node('p','No saved keymaps'));
       empty.appendChild(node('span','Open an app → header menu → Edit keymap, or press F2.','hint'));
       const scoped=selected==='all'?[...records.values()]:[records.get(selected)];
-      if(scoped.some(r=>r&&!available(r)))empty.appendChild(node('span','Start a runtime to load its keymaps.','hint'));
+      if(scoped.some(r=>r&&!available(r)))empty.appendChild(node('span','Start a device to load its keymaps.','hint'));
       content.appendChild(empty);
     }else{
       const wrapper=node('div',undefined,'runtime-table-scroll controls-table-scroll'),table=node('table',undefined,'runtime-table controls-table');
       const head=node('thead'),header=node('tr');
-      for(const title of ['App','Runtime','Keys','Actions'])header.appendChild(node('th',title));
+      for(const title of ['App','Device','Keys','Actions'])header.appendChild(node('th',title));
       head.appendChild(header);table.appendChild(head);
       const body=node('tbody');
       for(const p of rows){
@@ -221,7 +221,7 @@
         updateKeys();app.appendChild(schemeControls(p,updateKeys));
         keys.appendChild(chips);
         const edit=node('button',undefined,'btn runtime-action-icon');edit.type='button';
-        edit.title=available(r)?'Edit keymap in an open app':'Start this runtime to edit';edit.setAttribute('aria-label',`Edit keymap · ${p.package} · ${r?.name||p.runtime}`);
+        edit.title=available(r)?'Edit keymap in an open app':'Start this device to edit';edit.setAttribute('aria-label',`Edit keymap · ${p.package} · ${r?.name||p.runtime}`);
         edit.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m16 3 5 5-12 12-6 1 1-6Z"/><path d="m14 5 5 5"/></svg>';
         edit.disabled=!available(r);
         edit.addEventListener('click',async()=>{if(edit.disabled)return;edit.disabled=true;try{await window.AnvilKeymapActions?.open(p.runtime,p.package);}finally{edit.disabled=!available(records.get(p.runtime));}});
@@ -262,7 +262,7 @@
           for(const r of managed.value)if(r&&typeof r.id==='string'&&r.id!=='default')nextRecords.set(r.id,{...r,name:r.name||r.id});
         }else{
           for(const [id,r] of nextRecords)if(id!=='default')nextRecords.set(id,{...r,state:'Unavailable'});
-          nextFailures.push(`Runtimes: ${managed.reason?.message||managed.reason||'Invalid runtime list'}`);
+          nextFailures.push(`Devices: ${managed.reason?.message||managed.reason||'Invalid device list'}`);
         }
         if(existing.status==='fulfilled'&&existing.value?.id==='default'){if(existing.value.state==='Uninitialized')nextRecords.delete('default');else nextRecords.set('default',{...existing.value,name:'System Waydroid'});}
         else{nextRecords.set('default',{id:'default',name:'System Waydroid',state:'Unavailable'});nextFailures.push(`System Waydroid: ${existing.reason?.message||existing.reason||'Unavailable'}`);}

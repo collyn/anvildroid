@@ -5,7 +5,7 @@ const RuntimeSettings = (() => {
   async function apply(request, {send, transition, progress = () => {}}) {
     if (!bootOptions.has(request.op)) return {result: await send(request), restarted: false};
     const record = await send({op:'refresh', id:request.id});
-    if (record.id !== request.id) throw new Error('Runtime identity changed; refresh and retry.');
+    if (record.id !== request.id) throw new Error('Device identity changed; refresh and retry.');
     if (!['Running', 'Frozen'].includes(record.state)) return {result: await send(request), restarted: false};
     progress('stopping');
     await transition('stop', request.id);
@@ -18,19 +18,19 @@ const RuntimeSettings = (() => {
     progress('starting');
     try { await transition('start', request.id); }
     catch (error) {
-      throw new Error(`${applyError ? `Setting failed: ${applyError}.` : 'Setting saved.'} Restart failed: ${error}. Check runtime status before retrying.`);
+      throw new Error(`${applyError ? `Setting failed: ${applyError}.` : 'Setting saved.'} Restart failed: ${error}. Check device status before retrying.`);
     }
-    if (applyError) throw new Error(`Setting failed: ${applyError}. Runtime restarted with its current configuration.`);
+    if (applyError) throw new Error(`Setting failed: ${applyError}. Device restarted with its current configuration.`);
     return {result, restarted:true};
   }
   async function prepareReinstall(request, {send, transition, progress = () => {}}) {
     const inspect = async () => {
       const record = await send({op:'refresh', id:request.id});
       if (record?.id !== request.id || record.name !== request.confirmed_name)
-        throw new Error('Runtime identity or name changed; review reinstall again.');
+        throw new Error('Device identity or name changed; review reinstall again.');
       if (record.deletion_pending || record.unavailable || record.managed === false ||
           record.job?.status === 'Running' || record.appJob?.status === 'Running' || record.storage?.job?.status === 'Running')
-        throw new Error('Runtime is busy or unavailable; refresh and retry.');
+        throw new Error('Device is busy or unavailable; refresh and retry.');
       return record;
     };
     let record = await inspect();
@@ -38,15 +38,15 @@ const RuntimeSettings = (() => {
       progress('stopping');
       await transition('stop', request.id);
       record = await inspect();
-      if (record.state !== 'Stopped') throw new Error('Runtime did not stop; reinstall cancelled.');
+      if (record.state !== 'Stopped') throw new Error('Device did not stop; reinstall cancelled.');
     }
     const allowed = request.id === 'default' ? ['Stopped'] : ['Allocated', 'Prepared', 'Stopped', 'Error'];
-    if (!allowed.includes(record.state)) throw new Error('Runtime is not ready for reinstall.');
+    if (!allowed.includes(record.state)) throw new Error('Device is not ready for reinstall.');
     progress('applying');
   }
   async function initialize(record, {send, progress = () => {}, update = () => {}, waitOptions = {}}) {
     if (!/^r-[a-f0-9]{32}$/.test(record?.id) || record.state !== 'Allocated' || record.job)
-      throw new Error('Invalid newly created runtime; refresh before retrying.');
+      throw new Error('Invalid newly created device; refresh before retrying.');
     const id = record.id;
     let current = {...record}, phase = 'desktop setup';
     const publish = updated => { current = {...current, ...updated}; update(current); };
@@ -60,7 +60,7 @@ const RuntimeSettings = (() => {
         progress(op === 'prepare' ? 'preparing' : 'booting');
         const submitted = await send({op, id});
         if (submitted?.id !== id || !submitted.job?.id || submitted.job.operation !== op)
-          throw new Error('Invalid runtime operation response.');
+          throw new Error('Invalid device operation response.');
         publish(submitted);
         await wait(send, id, submitted.job.id, expected, {timeout, ...waitOptions, update:publish});
       }
@@ -69,21 +69,21 @@ const RuntimeSettings = (() => {
       const recovery = phase === 'desktop setup' ? 'Check Desktop mode in this runtime’s settings.'
         : phase === 'image preparation' ? 'Check its status, then retry Prepare when idle.'
         : 'Check its status, then retry Start when idle.';
-      throw new Error(`Runtime ${record.name} was created, but ${phase} failed: ${error}. ${recovery}`);
+      throw new Error(`Device ${record.name} was created, but ${phase} failed: ${error}. ${recovery}`);
     }
   }
   // A manual Prepare continues straight into Start, like a newly created runtime.
   async function prepareAndStart(submitted, {send, progress = () => {}, update = () => {}, waitOptions = {}}) {
     const id = submitted?.id;
     if (!/^r-[a-f0-9]{32}$/.test(id) || !submitted.job?.id || submitted.job.operation !== 'prepare')
-      throw new Error('Invalid runtime operation response.');
+      throw new Error('Invalid device operation response.');
     progress('preparing');
     let current = await wait(send, id, submitted.job.id, 'Prepared', {timeout:1800000, ...waitOptions, update});
     try {
       progress('booting');
       const started = await send({op:'start', id});
       if (started?.id !== id || !started.job?.id || started.job.operation !== 'start')
-        throw new Error('Invalid runtime operation response.');
+        throw new Error('Invalid device operation response.');
       update(started);
       current = await wait(send, id, started.job.id, 'Running', {timeout:360000, ...waitOptions, update});
     } catch (error) {
@@ -95,13 +95,13 @@ const RuntimeSettings = (() => {
     const deadline = now() + timeout;
     while (now() < deadline) {
       const record = await send({op:'refresh', id});
-      if (record?.id !== id || record.job?.id !== jobId) throw new Error('Runtime operation changed; automatic sequence cancelled.');
+      if (record?.id !== id || record.job?.id !== jobId) throw new Error('Device operation changed; automatic sequence cancelled.');
       update(record);
-      if (record.state === 'Error' || record.job.status === 'Failed') throw new Error(record.job.error || 'Runtime transition failed.');
+      if (record.state === 'Error' || record.job.status === 'Failed') throw new Error(record.job.error || 'Device transition failed.');
       if (record.state === expected && record.job.status === 'Succeeded') return record;
       await sleep(500);
     }
-    throw new Error(`Timed out waiting for runtime to become ${expected}.`);
+    throw new Error(`Timed out waiting for device to become ${expected}.`);
   }
   return {apply, wait, prepareReinstall, initialize, prepareAndStart};
 })();
