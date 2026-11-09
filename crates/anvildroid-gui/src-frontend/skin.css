@@ -1,0 +1,292 @@
+/* Game skin: square, flat, high-contrast HUD look. Loaded last so it wins over
+   the older stylesheets; colours still come only from theme.css tokens. */
+
+/* Square everything, no soft depth. */
+*, *::before, *::after { border-radius: 0 !important; box-shadow: none !important; }
+:where(.btn, .nav-item, .app-card, .runtime-quick-chip):hover { transform: none !important; }
+
+html, body {
+  background:
+    linear-gradient(color-mix(in srgb, var(--border-subtle) 35%, transparent) 1px, transparent 1px) 0 0 / 32px 32px,
+    linear-gradient(90deg, color-mix(in srgb, var(--border-subtle) 35%, transparent) 1px, transparent 1px) 0 0 / 32px 32px,
+    var(--bg-app);
+}
+.sidebar { background: var(--bg-sidebar); border-right: 1px solid var(--border); }
+.sidebar-brand h2 { letter-spacing: .02em; text-transform: uppercase; font-weight: 800; }
+.brand-mark { filter: none; }
+
+/* Navigation: flat rows with an accent edge when active. */
+.nav-item {
+  min-height: 44px; margin: 2px 0; padding: 10px 16px;
+  border: 1px solid transparent; font-size: var(--font-md); font-weight: 700;
+  letter-spacing: .08em; text-transform: uppercase; color: var(--text-secondary);
+}
+.nav-item:hover { background: var(--bg-hover); color: var(--text-primary); }
+.nav-item.active, :root[data-theme="light"] .nav-item.active {
+  background: var(--accent-bg); color: var(--accent-text); border-color: var(--accent-strong);
+  box-shadow: inset 4px 0 var(--accent) !important;
+}
+:root[data-theme="light"] .nav-item.active { background: var(--bg-selected); }
+.nav-item.active .nav-icon { color: var(--accent); }
+
+/* Headings read like HUD labels. */
+.page-title { text-transform: uppercase; letter-spacing: .06em; font-weight: 800; display: inline-flex; align-items: center; gap: 10px; }
+.page-title::before { content: ""; width: 6px; height: 1em; background: var(--accent); flex: 0 0 6px; }
+.settings-section h2, .runtime-settings-group h3, summary strong, .library-heading h2 {
+  text-transform: uppercase; letter-spacing: .06em;
+}
+th { letter-spacing: .1em; }
+
+/* Buttons: square, uppercase, solid fills. */
+.btn {
+  min-height: 36px; padding: 0 14px; border: 1px solid var(--border-strong);
+  background: var(--bg-raised); color: var(--text-primary);
+  font-size: var(--font-sm); font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
+}
+.btn:hover:not(:disabled) { border-color: var(--accent); background: var(--bg-hover); color: var(--accent-text); }
+.btn:active:not(:disabled) { background: var(--bg-selected); }
+.btn-primary, .app-open-button,
+:root[data-theme="light"] .btn-primary, :root[data-theme="light"] .app-open-button {
+  background: var(--accent); border-color: var(--accent); color: var(--on-accent);
+}
+.btn-primary:hover:not(:disabled), .app-open-button:hover,
+:root[data-theme="light"] .btn-primary:hover:not(:disabled), :root[data-theme="light"] .app-open-button:hover {
+  background: var(--accent-text); border-color: var(--accent-text); color: var(--on-accent);
+}
+:root[data-theme="light"] .btn-primary:hover:not(:disabled) { background: var(--accent-strong); border-color: var(--accent-strong); color: var(--on-accent); }
+.btn-quiet { background: transparent; }
+.btn:disabled { opacity: .45; }
+
+/* Panels and cards: flat surfaces with crisp borders. */
+.app-card { background: var(--bg-panel); border: 1px solid var(--border); }
+.app-card:hover, .app-card:focus-visible { border-color: var(--accent); background: var(--bg-surface); }
+.app-card .app-icon > span, .app-icon-placeholder { background: var(--bg-raised); }
+.view-button.active, :root[data-theme="light"] .view-button.active { background: var(--accent-bg); color: var(--accent-text); }
+:root[data-theme="light"] .view-button.active { background: var(--bg-selected); }
+.theme-choice button[aria-pressed="true"], :root[data-theme="light"] .theme-choice button[aria-pressed="true"] {
+  background: var(--accent); color: var(--on-accent);
+}
+
+/* Inputs. */
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]), select, textarea, .global-search {
+  background: var(--bg-surface); border-color: var(--border);
+}
+input:not([type="checkbox"]):not([type="radio"]):focus, select:focus, textarea:focus, .global-search:focus-within { border-color: var(--accent); }
+input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
+
+/* Status labels: square tags. */
+.runtime-status, .status-badge { text-transform: uppercase; letter-spacing: .06em; font-size: var(--font-xs); font-weight: 700; }
+
+/* Progress: solid bars. */
+progress { appearance: none; height: 6px; background: var(--bg-raised); border: 0; }
+progress::-webkit-progress-bar { background: var(--bg-raised); }
+progress::-webkit-progress-value { background: var(--accent); }
+progress::-moz-progress-bar { background: var(--accent); }
+
+/* Dialogs and menus: hard edge instead of shadow. */
+dialog, .select-menu, .ctx-menu, .app-toast, .progress-toast { border: 1px solid var(--border-strong); }
+dialog::backdrop { background: color-mix(in srgb, var(--bg-app) 75%, transparent); }
+
+/* Thin square scrollbars. */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: var(--bg-app); }
+::-webkit-scrollbar-thumb { background: var(--border); border: 2px solid var(--bg-app); }
+::-webkit-scrollbar-thumb:hover { background: var(--border-strong); }
+
+/* Sub-tabs under the Devices title (Devices · Android images · ADB). */
+.subtabs { display: inline-flex; margin-left: 16px; border: 1px solid var(--border); background: var(--bg-surface); }
+.subtab { min-height: 32px; padding: 0 14px; border: 0; background: transparent; color: var(--text-secondary); font: inherit; font-size: var(--font-sm); font-weight: 700; letter-spacing: .06em; text-transform: uppercase; cursor: pointer; }
+.subtab + .subtab { border-left: 1px solid var(--border); }
+.subtab:hover { color: var(--text-primary); background: var(--bg-hover); }
+.subtab[aria-selected="true"] { background: var(--accent); color: var(--on-accent); }
+.page-header:has(.subtabs) { flex-wrap: wrap; gap: 10px; }
+.page-header:has(.subtabs) > .page-title { flex: 0 0 auto; }
+.page-header:has(.subtabs) > .subtabs { margin-left: 0; margin-right: auto; }
+
+/* Apps page: first-run guide. */
+.apps-grid > .quick-start { grid-column: 1 / -1; }
+.quick-start { padding: 24px; border: 1px solid var(--border); border-top: 3px solid var(--accent); background: var(--bg-panel); }
+.quick-start > h2 { font-size: var(--font-xl); text-transform: uppercase; letter-spacing: .06em; }
+.quick-start > .hint { margin: 4px 0 18px; }
+.quick-start-steps { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.quick-start-step { display: grid; grid-template-columns: 44px 1fr auto; align-items: center; gap: 16px; padding: 14px 16px; border: 1px solid var(--border-subtle); background: var(--bg-surface); }
+.quick-start-number { display: grid; place-items: center; width: 44px; height: 44px; border: 2px solid var(--border-strong); color: var(--text-secondary); font-size: var(--font-lg); font-weight: 800; }
+.quick-start-body h3 { display: flex; align-items: center; gap: 10px; font-size: var(--font-lg); }
+.quick-start-body p { margin-top: 4px; color: var(--text-secondary); font-size: var(--font-md); }
+.quick-start-tag { padding: 2px 6px; border: 1px solid var(--border); color: var(--text-muted); font-size: var(--font-xs); font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.quick-start-step .btn { min-width: 170px; min-height: 42px; }
+.quick-start-step[data-status="todo"], .quick-start-step[data-status="ready"] { border-color: var(--accent-strong); }
+.quick-start-step[data-status="todo"] .quick-start-number, .quick-start-step[data-status="ready"] .quick-start-number { border-color: var(--accent); background: var(--accent); color: var(--on-accent); }
+.quick-start-step[data-status="todo"] .quick-start-tag, .quick-start-step[data-status="ready"] .quick-start-tag { border-color: var(--accent); color: var(--accent-text); }
+.quick-start-step[data-status="busy"] .quick-start-number { border-color: var(--warning); color: var(--warning); }
+.quick-start-step[data-status="busy"] .quick-start-tag { border-color: var(--warning-border); color: var(--warning); }
+.quick-start-step[data-status="done"] .quick-start-number { border-color: var(--success); background: var(--success-bg); color: var(--success); }
+.quick-start-step[data-status="done"] .quick-start-tag { border-color: var(--success-border); color: var(--success-text); }
+.quick-start-step[data-status="locked"] { opacity: .55; }
+.quick-start-step [role="alert"] { color: var(--danger); }
+.quick-start-body progress { display: block; width: 100%; max-width: 420px; margin-top: 8px; }
+
+/* Apps page: one chip per device with its own Start button. */
+#library-runtime-status:has(.device-chip) { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+.device-chip { display: flex; align-items: center; gap: 12px; min-height: 44px; padding: 6px 8px 6px 12px; border: 1px solid var(--border); border-left: 4px solid var(--border-strong); background: var(--bg-panel); color: var(--text-secondary); }
+.device-chip p { margin: 0; }
+.device-chip strong { color: var(--text-primary); }
+.device-chip .btn { min-height: 30px; }
+.device-chip[data-state="running"] { border-left-color: var(--success); }
+.device-chip[data-state="frozen"], .device-chip[data-state="starting"], .device-chip[data-state="provisioning"] { border-left-color: var(--warning); }
+.device-chip[data-state="error"] { border-left-color: var(--danger); }
+
+/* Devices table: main actions carry a text label; usage only when running. */
+#runtime-table .runtime-action-icon { width: auto; min-width: 34px; gap: 6px; }
+#runtime-table .runtime-action-icon:is(.btn-primary, .btn-danger, .btn-warning):not(.is-working)::after,
+#runtime-table .runtime-action-icon[data-controller-op="settings"]:not(.is-working)::after {
+  content: attr(title); font-size: var(--font-xs); font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
+}
+#runtime-table .runtime-action-icon:is(.btn-primary, .btn-danger, .btn-warning) { padding: 0 12px; }
+#runtime-table .runtime-action-icon[data-controller-op="settings"] { padding: 0 10px; }
+.runtime-table tr.runtime-summary:not(:has(.runtime-status.success)) .runtime-usage-cell > * { display: none; }
+.runtime-table tr.runtime-summary:not(:has(.runtime-status.success)) .runtime-usage-cell::before { content: "—  Off"; color: var(--text-muted); font-size: var(--font-sm); }
+.setup-panel-actions { margin-bottom: 12px; }
+
+/* Narrow windows (down to the 900px minimum): keep names and actions readable. */
+@media (max-width: 1150px) {
+  :root { --sidebar-width: 210px; }
+  #runtime-table .runtime-usage-heading, #runtime-table .runtime-usage-cell { display: none; }
+  #runtime-table .runtime-action-icon[data-controller-op="settings"]:not(.is-working)::after { content: none; }
+  .sidebar-brand h2 { font-size: 18px; }
+  .sidebar-brand p { white-space: normal; }
+  .nav-item { letter-spacing: .04em; padding: 10px 12px; }
+  #runtime-table .runtime-action-icon[data-controller-op="settings"] { padding: 0; width: 34px; }
+  #runtime-table td:nth-child(2) { min-width: 150px; }
+  .page-header:has(.subtabs) .subtab { padding: 0 10px; }
+}
+
+/* While the first-run guide shows, it owns the page: full width, and the
+   header's Install APK steps back (step 3 offers it when it can work). */
+.apps-grid:has(> .quick-start) { display: block; padding-inline: 0; }
+#page-apps:has(.quick-start) #btn-install-apk { background: var(--bg-raised); border-color: var(--border-strong); color: var(--text-primary); }
+
+/* Apps grid: fills the width, aligned with the filter bar, one block per device. */
+#page-apps.active .apps-grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; padding: 2px 0 24px; justify-content: stretch; }
+#page-apps.active .apps-grid.list-view { grid-template-columns: 1fr; }
+#page-apps.active .apps-grid .app-card { aspect-ratio: auto; min-height: 140px; }
+.app-group-heading { grid-column: 1 / -1; display: flex; align-items: baseline; gap: 10px; margin-top: 10px; padding: 6px 0; border-bottom: 1px solid var(--border); }
+.app-group-heading:first-child { margin-top: 0; }
+.app-group-heading strong { color: var(--text-primary); font-size: var(--font-md); letter-spacing: .08em; text-transform: uppercase; }
+.app-group-heading span { color: var(--text-muted); font-size: var(--font-sm); }
+.apps-grid:has(.app-group-heading) .app-runtime-name { display: none; }
+.app-initial { display: grid; place-items: center; width: 100%; height: 100%; background: var(--accent-bg); color: var(--accent-text); font-size: 26px; font-weight: 800; }
+:root[data-theme="light"] .app-initial { background: var(--bg-selected); }
+
+/* Sidebar brand: always one compact row. */
+.sidebar-brand { flex-direction: row !important; align-items: center !important; gap: 10px; padding: 8px 10px 18px !important; }
+.sidebar-brand .brand-mark { width: 40px; height: 40px; }
+.sidebar-brand h2 { font-size: 19px !important; }
+.sidebar-brand p { font-size: 10px; white-space: normal; }
+@media (max-width: 1150px) { .sidebar-brand h2 { font-size: 16px !important; letter-spacing: 0; } .sidebar-brand .brand-mark { width: 34px; height: 34px; } }
+
+/* Button variants share one shape; colour carries the meaning. */
+.btn-quiet { font-weight: 700; }
+.btn-warning { background: transparent; border-color: var(--warning-border); color: var(--warning); }
+.btn-warning:hover:not(:disabled) { background: var(--warning-bg); border-color: var(--warning); color: var(--warning); }
+.btn-danger, .btn-danger:not(:disabled) { background: transparent; border-color: var(--danger-border); color: var(--danger); }
+.btn-danger:hover:not(:disabled) { background: var(--danger-bg); border-color: var(--danger); color: var(--danger); }
+#runtime-table .runtime-action-icon.btn-danger { background: var(--bg-raised); }
+
+/* Device settings: every collapsible section reads the same. */
+#page-runtime-settings details > summary { text-transform: uppercase; letter-spacing: .06em; font-size: var(--font-md); font-weight: 700; color: var(--text-primary); }
+#page-runtime-settings details > summary :is(strong, span, small) { text-transform: inherit; }
+#page-runtime-settings .runtime-config-eyebrow { text-transform: uppercase; letter-spacing: .08em; font-size: var(--font-xs); color: var(--text-muted); }
+
+/* Disabled always looks disabled (e.g. Delete while the device runs). */
+.btn:disabled, .btn:disabled:hover, .managed-runtime .btn:disabled { opacity: .45; background: var(--bg-raised); border-color: var(--border); color: var(--text-muted); cursor: not-allowed; }
+.runtime-actions .btn { font-weight: 700; font-size: var(--font-sm); }
+
+/* Slight rounding: 4px controls, 6px surfaces. Everything else stays square
+   (bars, markers, table cells). The global reset above keeps old radii out. */
+:is(.btn, button.subtab, input:not([type="checkbox"]):not([type="radio"]):not([type="range"]), select, textarea,
+  .global-search, .select-control, .runtime-status, .status-badge, .quick-start-tag, .device-chip, .nav-item,
+  .theme-choice, .subtabs, .library-view, .search-shortcut, kbd, .runtime-quick-chip, .app-favorite-button) { border-radius: var(--radius-sm) !important; }
+:is(.app-card, .app-icon, .app-icon img, .app-initial, .quick-start, .quick-start-step, .quick-start-number,
+  .settings-section, .runtime-card, .runtime-table-scroll, .create-panel, details.runtime-settings-group,
+  #page-runtime-settings details, dialog, .select-menu, .ctx-menu, .app-toast, .progress-toast,
+  .library-filters, .runtime-feedback, .library-empty-panel) { border-radius: var(--radius) !important; }
+input[type="checkbox"] { border-radius: 3px !important; }
+/* Segmented groups: the frame is rounded, the inner buttons stay square. */
+:is(.theme-choice, .subtabs, .library-view) { overflow: hidden; }
+:is(.theme-choice, .subtabs, .library-view) > button { border-radius: 0 !important; }
+
+/* One size for every button that shares a row. */
+:is(.runtime-actions, .page-header, .dialog-actions, .runtime-card) > .btn,
+.managed-runtime .runtime-actions .btn { min-height: 36px; height: 36px; padding: 0 14px; line-height: 1; display: inline-flex; align-items: center; justify-content: center; }
+
+/* Device settings: game-style menu. Top bar (actions, image) · categories left ·
+   one category right. Narrow windows put the categories in a tab row on top. */
+#page-runtime-settings { container: settings / inline-size; }
+.tabbed-settings { display: grid !important; grid-template-columns: 210px minmax(0, 1fr); gap: 14px 20px; align-items: start;
+  padding: 0 !important; border: 0 !important; background: none !important; }
+.tabbed-settings .tabs-passthrough { display: contents !important; }
+.tabbed-settings[hidden], .tabbed-settings .tabs-passthrough[hidden] { display: none !important; } /* the grid rule must never un-hide a hidden block */
+.tabbed-settings .tabs-bar-item { grid-column: 1 / -1; order: -1; margin: 0; }
+.tabbed-settings > .runtime-actions.tabs-bar-item { grid-row: 1; justify-self: end; }
+.tabbed-settings > .runtime-image-details.tabs-bar-item { grid-row: 1; justify-self: start; align-self: center; }
+.settings-tabs-nav { grid-column: 1; position: sticky; top: 0; display: flex; flex-direction: column; gap: 2px; padding: 6px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-panel); }
+.settings-tabs-nav button { min-height: 38px; padding: 0 12px; border: 0; border-left: 3px solid transparent; border-radius: var(--radius-sm); background: transparent; color: var(--text-secondary); font: inherit; font-size: var(--font-sm); font-weight: 700; letter-spacing: .06em; text-align: left; text-transform: uppercase; cursor: pointer; }
+.settings-tabs-nav button:hover { background: var(--bg-hover); color: var(--text-primary); }
+.settings-tabs-nav button[aria-current="true"] { background: var(--accent-bg); border-left-color: var(--accent); color: var(--accent-text); }
+:root[data-theme="light"] .settings-tabs-nav button[aria-current="true"] { background: var(--bg-selected); }
+#page-runtime-settings.settings-simple .settings-tabs-nav [data-level="advanced"] { display: none !important; }
+.tabbed-settings .settings-tab-hidden { display: none !important; }
+.tabbed-settings .settings-tab-active { grid-column: 2; margin: 0 !important; padding: 18px 20px !important; border: 1px solid var(--border) !important; background: var(--bg-panel) !important; }
+.tabbed-settings .settings-tab-active > summary { pointer-events: none; list-style: none; margin-bottom: 12px; padding: 0 0 10px !important; border-bottom: 1px solid var(--border-subtle); font-size: var(--font-lg) !important; }
+.tabbed-settings .settings-tab-active > summary::-webkit-details-marker { display: none; }
+.tabbed-settings .settings-tab-active > summary::before, .tabbed-settings .settings-tab-active > summary::after { display: none !important; }
+@container settings (max-width: 760px) {
+  .tabbed-settings { grid-template-columns: minmax(0, 1fr); }
+  .tabbed-settings > .runtime-actions.tabs-bar-item, .tabbed-settings > .runtime-image-details.tabs-bar-item { grid-row: auto; justify-self: start; }
+  .settings-tabs-nav { position: static; flex-direction: row; flex-wrap: wrap; }
+  .settings-tabs-nav button { min-height: 32px; border-left: 0; border-bottom: 3px solid transparent; }
+  .settings-tabs-nav button[aria-current="true"] { border-bottom-color: var(--accent); }
+  .tabbed-settings .settings-tab-active { grid-column: 1; }
+}
+/* Narrow: spend the height on content. The active tab already names the section. */
+@container settings (max-width: 760px) {
+  .settings-tabs-nav { gap: 0; padding: 4px; }
+  .settings-tabs-nav button { min-height: 30px; padding: 0 9px; font-size: var(--font-xs); }
+  .tabbed-settings .settings-tab-active { padding: 14px 16px !important; }
+  .tabbed-settings .settings-tab-active > summary { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); margin: 0; padding: 0 !important; border: 0; }
+  .tabbed-settings { gap: 10px; }
+}
+
+/* Vertical rhythm: a button (or button row) that follows text in a stacked
+   block always gets breathing room. Side-by-side rows are untouched because
+   their items are not adjacent to text blocks. */
+:where(#page-runtime-settings, #page-settings, #page-images, #page-adb, #page-controls, dialog)
+  :where(p, label, .hint, small, ul, ol, pre, progress, h3, h4, .runtime-feedback) + :is(.btn, .runtime-actions) { margin-top: 12px; }
+/* …but never inside a horizontal row: there the items sit side by side and
+   must stay centred on one line. */
+:is(.runtime-actions, .settings-inline, .dialog-actions, .page-header, .notification-master) > :is(.btn, p, .hint, span, label) { margin-top: 0 !important; margin-bottom: 0 !important; }
+:is(.runtime-actions, .settings-inline, .dialog-actions) { align-items: center; }
+#page-runtime-settings .tabbed-settings { margin-top: 12px !important; }
+.arm-provider-fields + .btn, .arm-provider-fields + .arm-source-actions { margin-top: 12px; }
+/* An opened <details> never lets its first control touch the summary. */
+:is(#page-controls, #page-settings, #page-images, #page-adb, #page-runtime) details[open] > summary { margin-bottom: 10px; }
+/* In menu mode the summary is the panel heading; the body's old accordion
+   spacing and top rule would double it. */
+.tabbed-settings .settings-tab-active > summary + * { margin-top: 0 !important; padding-top: 0 !important; border-top: 0 !important; }
+
+/* Settings header: small label stacked above the device name, block centred
+   on the back button instead of sitting on the title's baseline. */
+#page-runtime-settings .runtime-config-header { align-items: center; }
+#page-runtime-settings .runtime-config-header > div:not(.theme-choice) { display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: 2px; }
+#page-runtime-settings .runtime-config-eyebrow { margin: 0; line-height: 1.2; }
+#page-runtime-settings .runtime-config-header .page-title { line-height: 1.1; }
+
+/* Settings → Appearance: accent picker. */
+.settings-subheading { margin: 18px 0 8px; font-size: var(--font-sm); letter-spacing: .08em; text-transform: uppercase; color: var(--text-secondary); }
+.accent-choice { display: flex; flex-wrap: wrap; gap: 8px; }
+.accent-option { display: inline-flex; align-items: center; gap: 8px; min-height: 36px; padding: 0 14px 0 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-surface); color: var(--text-secondary); font: inherit; font-size: var(--font-sm); font-weight: 700; letter-spacing: .06em; text-transform: uppercase; cursor: pointer; }
+.accent-option:hover { border-color: var(--border-strong); color: var(--text-primary); }
+.accent-option[aria-pressed="true"] { border-color: var(--accent); color: var(--text-primary); box-shadow: inset 0 0 0 1px var(--accent) !important; }
+.accent-swatch { width: 16px; height: 16px; border-radius: 3px; flex: 0 0 16px; }
+.accent-option { border-radius: var(--radius-sm) !important; } .accent-swatch { border-radius: 3px !important; }
