@@ -1879,7 +1879,7 @@ test('a failed runtime poll also preserves the focused native GPU popup', async 
   assert.match(element('controller-message').textContent,/Controller offline/);
   context.document.activeElement=null;
   vm.runInContext('renderController()',context);
-  assert.match(panel.innerHTML,/No additional runtimes/);
+  assert.match(panel.innerHTML,/No other devices yet/);
 });
 
 test('GPU verification separates observed compositor usage from saved configuration', async()=>{

@@ -2988,7 +2988,7 @@ function renderController() {
       </article>`;
     if (runtimeSettingsId === record.id) settingsMarkup = detail;
     return summary;
-  }).join('') : '<tr><td colspan="5" class="hint">No additional runtimes for this user. Create one to begin.</td></tr>';
+  }).join('') : '<tr><td colspan="5" class="hint">No other devices yet. Use + New device to create one.</td></tr>';
   const settingsPanel = document.getElementById('runtime-settings-content');
   const nextSettings = runtimeSettingsId === 'default' ? '' : settingsMarkup || (runtimeSettingsId ? '<p class="runtime-blocked">This runtime is no longer available.</p>' : '');
   if (settingsPanel._runtimeMarkup !== nextSettings) {

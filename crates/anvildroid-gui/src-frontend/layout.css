@@ -15,6 +15,12 @@
 .page-header:has(.subtabs) > .subtabs { margin-right: auto; }
 .setup-panel-actions { margin-bottom: 12px; }
 
+/* Device name and its Default tag: side by side when they fit; in a narrow
+   column the tag wraps under the name, aligned with it (no stray indent). */
+.runtime-select { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.runtime-select .runtime-default-badge { margin-left: 0; }
+.runtime-select .hint { flex-basis: 100%; }
+
 /* Apps page: first-run guide. It owns the page while it shows. */
 .apps-grid > .quick-start { grid-column: 1 / -1; }
 .apps-grid:has(> .quick-start) { display: block; padding-inline: 0; }
