@@ -174,7 +174,13 @@ html:where([data-skin="hud"]), :where([data-skin="hud"]) body {
 :where([data-skin="hud"]) #page-apps.active .apps-grid.list-view { grid-template-columns: 1fr; }
 /* Cards fill their column: shell.css fixes them at 152px, which is wider than
    a 140px column and made neighbours touch and the last column overflow. */
-:where([data-skin="hud"]) #page-apps.active .apps-grid .app-card { width: auto; min-width: 0; height: auto; aspect-ratio: auto; min-height: 140px; }
+:where([data-skin="hud"]) #page-apps.active .apps-grid:not(.list-view) .app-card { width: auto; min-width: 0; height: auto; aspect-ratio: auto; min-height: 140px; }
+/* List view: compact rows, as many columns as fit (one on narrow windows). */
+:where([data-skin="hud"]) #page-apps.active .apps-grid.list-view { grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 6px 10px; }
+:where([data-skin="hud"]) #page-apps.active .apps-grid.list-view .app-card { width: auto; min-width: 0; height: 56px; min-height: 56px; padding: 8px 12px; gap: 12px; }
+:where([data-skin="hud"]) #page-apps.active .apps-grid.list-view .app-card > .app-icon { width: 40px; height: 40px; }
+:where([data-skin="hud"]) #page-apps.active .apps-grid.list-view .app-initial { font-size: 18px; }
+:where([data-skin="hud"]) #page-apps.active .apps-grid.list-view .app-name { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 :where([data-skin="hud"]) .app-group-heading { grid-column: 1 / -1; display: flex; align-items: baseline; gap: 10px; margin-top: 10px; padding: 6px 0; border-bottom: 1px solid var(--border); }
 :where([data-skin="hud"]) .app-group-heading:first-child { margin-top: 0; }
 :where([data-skin="hud"]) .app-group-heading strong { color: var(--text-primary); font-size: var(--font-md); letter-spacing: .08em; text-transform: uppercase; }
@@ -300,3 +306,4 @@ html:where([data-skin="hud"]), :where([data-skin="hud"]) body {
 :where([data-skin="hud"]) .skin-option { border-radius: var(--radius-sm) !important; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
 :where([data-skin="hud"]) .skin-option small { letter-spacing: 0; text-transform: none; }
 :where([data-skin="hud"]) .settings-subheading { letter-spacing: .08em; text-transform: uppercase; font-size: var(--font-sm); }
+:where([data-skin="hud"]) #page-apps.active .apps-grid.list-view .app-caption { min-width: 0; }
