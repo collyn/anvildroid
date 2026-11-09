@@ -52,8 +52,9 @@ test('Default Frozen profiles load alongside managed profiles, with scoped editi
   el('probe-runtime').value='default';el('probe-runtime').events.change();assert.equal(el('install-touch-probe').disabled,false);
   el('keymap-runtime-filter').value='default';el('keymap-runtime-filter').events.change();
   assert.doesNotMatch(el('keymap-saved-list').textContent,/Gaming/);
-  const edit=descendants(el('keymap-saved-list'),'button')[0];await edit.events.click();
-  assert.deepEqual(edits,[['default','com.test.game']]);
+  // Editing happens in the app window (F2); the list offers no edit button.
+  assert.ok(!descendants(el('keymap-saved-list'),'button').some(b=>/Edit keymap/.test(b.attributes['aria-label']||'')));
+  assert.match(el('keymap-saved-list').textContent,/press F2/);assert.equal(edits.length,0);
 });
 test('Managed inventory failure does not block Default, failed refresh retains profiles',async()=>{
   const {api,el,states}=setup();states.failList=true;states.profiles.set('default',report('default'));
@@ -68,7 +69,7 @@ test('Cached stopped profiles remain visible, but editing is disabled',async()=>
   const {api,el,states}=setup();states.profiles.set('default',report('default'));await api.refresh();
   states.default.state='Stopped';await api.refresh();
   assert.match(el('keymap-saved-list').textContent,/com.test.game/);
-  assert.equal(descendants(el('keymap-saved-list'),'button')[0].disabled,true);
+  assert.match(el('keymap-saved-list').textContent,/Stopped/);
   assert.equal(el('install-touch-probe').disabled,true);
 });
 test('Invalid native scope, duplicate packages or bindings never replace cached profiles',async()=>{
@@ -158,8 +159,10 @@ test('Schemes live in existing app library row and load only when expanded',asyn
   const detail=descendants(el('keymap-saved-list'),'details').find(d=>d.children.some(c=>c.textContent==='Schemes'));
   assert.ok(detail);detail.open=true;detail.events.toggle();await new Promise(resolve=>setImmediate(resolve));
   assert.ok(calls.some(r=>r.op==='keymap_scheme'&&r.action==='list'));
-  for(const label of ['Use','New','Clone','Rename','Reset','Remove','Export'])assert.ok(detail.textContent.includes(label));
-  assert.match(detail.textContent,/Save or cancel the open app editor/);
+  const tools=descendants(el('keymap-saved-list'),'tr').find(r=>r.className==='controls-scheme-row');
+  assert.equal(tools.hidden,false);
+  for(const label of ['Use','New','Clone','Rename','Reset','Remove','Export','Import…'])assert.ok(tools.textContent.includes(label));
+  assert.match(tools.textContent,/Save or cancel the open app editor/);
 });
 
 test('Scheme names share the backend 48 Unicode code point bound in responses and authoring',async()=>{
@@ -172,9 +175,10 @@ test('Scheme names share the backend 48 Unicode code point bound in responses an
   await api.refresh();
   const detail=descendants(el('keymap-saved-list'),'details').find(d=>d.children.some(c=>c.textContent==='Schemes'));
   detail.open=true;detail.events.toggle();await new Promise(resolve=>setImmediate(resolve));
-  const input=descendants(detail,'input').find(e=>e.type==='text');assert.equal(input.maxLength,96);
+  const tools=descendants(el('keymap-saved-list'),'tr').find(r=>r.className==='controls-scheme-row');
+  const input=descendants(tools,'input').find(e=>e.type==='text');assert.equal(input.maxLength,96);
   input.value='🎮'.repeat(48);
-  await descendants(detail,'button').find(b=>b.textContent==='Rename').events.click();
+  await descendants(tools,'button').find(b=>b.textContent==='Rename').events.click();
   assert.equal(calls.at(-1).name,'🎮'.repeat(48));
   const sent=calls.length;
   await assert.rejects(api.schemeRequest(p,'rename','default','🎮'.repeat(49)),/at most 48 characters/);
@@ -206,14 +210,15 @@ test('Export uses native Save dialog and bounded Rust file command; cancel and e
   states.schemes={runtime_id:'default',package:'com.test.game',revision:'a'.repeat(64),selected:'default',schemes:[{id:'default',name:'Default',binding_count:1,reference:null}]};
   await api.refresh();const detail=descendants(el('keymap-saved-list'),'details').find(d=>d.children.some(c=>c.textContent==='Schemes'));
   detail.open=true;detail.events.toggle();await new Promise(resolve=>setImmediate(resolve));
-  const save=descendants(detail,'button').find(b=>b.textContent==='Export');
-  await save.events.click();assert.equal(exports.length,0);assert.match(detail.textContent,/Export cancelled/);
+  const tools=descendants(el('keymap-saved-list'),'tr').find(r=>r.className==='controls-scheme-row');
+  const save=descendants(tools,'button').find(b=>b.textContent==='Export');
+  await save.events.click();assert.equal(exports.length,0);assert.match(tools.textContent,/Export cancelled/);
   assert.match(dialogs[0].defaultPath,/com.test.game-default.anvildroid.json$/);
   states.exportPath='/tmp/my-controls.json';await save.events.click();assert.equal(exports.length,1);
   assert.deepEqual(JSON.parse(JSON.stringify(exports[0])),{id:'default',package:'com.test.game',schemeId:'default',revision:'a'.repeat(64),path:states.exportPath});
-  assert.match(detail.textContent,/Scheme file saved/);
+  assert.match(tools.textContent,/Scheme file saved/);
   states.exportError=new Error('Choose a new scheme export filename');await save.events.click();
-  assert.match(detail.textContent,/Choose a new scheme export filename/);assert.doesNotMatch(detail.textContent,/Scheme file saved/);
+  assert.match(tools.textContent,/Choose a new scheme export filename/);assert.doesNotMatch(tools.textContent,/Scheme file saved/);
   assert.doesNotMatch(source,/createObjectURL|revokeObjectURL|link.download/);
   const rust=fs.readFileSync('crates/anvildroid-gui/src/main.rs','utf8');
   assert.match(rust,/async fn export_keymap_scheme/);assert.match(rust,/export_runtime_diagnostics,\s*export_keymap_scheme,/);
@@ -234,4 +239,20 @@ test('Automatic FPS camera inventory keeps F5 and Alt, rejects auto on other con
   bad.profiles[0].bindings[0].kind='swipe';bad.profiles[0].bindings[0].suspend_key=0;
   states.profiles.set('default',bad);await api.refresh();
   assert.doesNotMatch(el('keymap-saved-list').textContent,/com.bad.auto/);
+});
+test('Remove is disabled for Default and the active scheme, enabled for an inactive one',async()=>{
+  const {api,states,el,calls}=setup();states.profiles.set('default',report('default'));
+  const custom='s-'+'1'.repeat(32);
+  states.schemes={runtime_id:'default',package:'com.test.game',revision:'a'.repeat(64),selected:'default',
+    schemes:[{id:'default',name:'Default',binding_count:1,reference:null},{id:custom,name:'PvP',binding_count:0,reference:null}]};
+  await api.refresh();
+  const detail=descendants(el('keymap-saved-list'),'details').find(d=>d.children.some(c=>c.textContent==='Schemes'));
+  detail.open=true;detail.events.toggle();await new Promise(resolve=>setImmediate(resolve));
+  const tools=descendants(el('keymap-saved-list'),'tr').find(r=>r.className==='controls-scheme-row');
+  const remove=descendants(tools,'button').find(b=>b.textContent==='Remove'),select=descendants(tools,'select')[0];
+  assert.equal(remove.disabled,true);assert.match(remove.title,/Default scheme cannot be removed/);
+  select.value=custom;select.events.change();
+  assert.equal(remove.disabled,false);
+  await remove.events.click();
+  assert.deepEqual([calls.at(-1).action,calls.at(-1).scheme_id],['remove',custom]);
 });

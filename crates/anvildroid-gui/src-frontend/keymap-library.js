@@ -125,11 +125,18 @@
   function schemeControls(p,updated){
     const details=node('details',undefined,'controls-schemes'),summary=node('summary','Schemes');details.appendChild(summary);
     const body=node('div',undefined,'controls-scheme-body'),status=node('p','Open to load schemes.','hint');status.setAttribute('role','status');
-    details.appendChild(body);body.appendChild(status);
+    body.appendChild(status); // shown in its own full-width row under the app (render)
     let result=null,busy=false,loaded=false;
-    const showError=error=>{status.textContent=error.message||String(error);};
+    // Errors also raise a toast: the status line sits at the bottom of the panel.
+    const showError=error=>{const message=error.message||String(error);status.textContent=message;
+      if(typeof showAppToast==='function')showAppToast(`Scheme: ${message}`,'error');};
+    let syncButtons=()=>{};
     async function run(action,scheme='',name='',content=''){
       if(busy||!available(records.get(p.runtime)))return;
+      if(action==='remove'&&typeof AppDialog!=='undefined'){
+        const label=result?.schemes.find(s=>s.id===scheme)?.name||'this scheme';
+        if(!await AppDialog.confirm(`Remove the scheme “${label}” from ${p.package}? Its controls are deleted.`,{title:'Remove scheme',kind:'warning'}))return;
+      }
       busy=true;body.setAttribute('aria-busy','true');
       for(const b of buttons)b.disabled=true;
       try{
@@ -145,10 +152,10 @@
           result=await schemeRequest(p,action,scheme,name,content);loaded=true;
           if(result.bindings){p.bindings=result.bindings;updated();}
           draw();
-          if(action!=='list')status.textContent=action==='select'?'Scheme selected. Focus the app to play.':'Scheme saved.';
+          if(action!=='list')status.textContent=({select:'Scheme selected. Focus the app to play.',remove:'Scheme removed.',reset:'Scheme cleared.',rename:'Scheme renamed.'})[action]||'Scheme saved.';
         }
       }catch(error){showError(error);}
-      finally{busy=false;body.setAttribute('aria-busy','false');for(const b of buttons)b.disabled=!available(records.get(p.runtime));}
+      finally{busy=false;body.setAttribute('aria-busy','false');for(const b of buttons)b.disabled=!available(records.get(p.runtime));syncButtons();}
     }
     let buttons=[];
     function draw(){
@@ -157,31 +164,58 @@
       for(const s of result.schemes){const o=node('option',`${s.name}${s.id===result.selected?' · active':''} · ${s.binding_count} controls`);o.value=s.id;select.appendChild(o);}
       select.value=result.selected;
       const name=node('input');name.type='text';name.maxLength=96;name.placeholder='Scheme name';name.setAttribute('aria-label','Scheme name');
-      const tools=node('div',undefined,'controls-scheme-tools');tools.appendChild(select);tools.appendChild(name);
-      function button(label,action,tip){const b=node('button',label,'btn');b.type='button';b.title=tip||label;b.disabled=!available(records.get(p.runtime));
-        b.addEventListener('click',()=>run(action,action==='create'?'':select.value,['create','clone','rename'].includes(action)?name.value:''));tools.appendChild(b);buttons.push(b);return b;}
-      button('Use','select','Save or cancel the app editor before switching schemes');
-      button('New','create','Create an empty scheme; enter a name first');button('Clone','clone','Copy the selected scheme; enter a name first');
-      button('Rename','rename','Rename the selected scheme');button('Reset','reset','Clear all controls in the selected scheme');
-      button('Remove','remove','Remove an inactive custom scheme');button('Export','export','Download the selected scheme as AnvilDroid JSON');
-      const file=node('input');file.type='file';file.accept='.json,application/json';file.setAttribute('aria-label','Import AnvilDroid scheme JSON');
+      // Three groups: pick the active scheme · name-based actions · scheme file.
+      const tools=node('div',undefined,'controls-scheme-tools');
+      const group=label=>{const g=node('div',undefined,'controls-scheme-group');g.appendChild(node('span',label,'controls-scheme-label'));
+        const row=node('div',undefined,'controls-scheme-row-tools');g.appendChild(row);tools.appendChild(g);return row;};
+      const pick=group('Scheme'),naming=group('New name'),files=group('Manage');
+      pick.appendChild(select);naming.appendChild(name);
+      function button(label,action,tip,where){const b=node('button',label,'btn');b.type='button';b.title=tip||label;b.disabled=!available(records.get(p.runtime));
+        b.addEventListener('click',()=>run(action,action==='create'?'':select.value,['create','clone','rename'].includes(action)?name.value:''));where.appendChild(b);buttons.push(b);return b;}
+      button('Use','select','Save or cancel the app editor before switching schemes',pick).className+=' btn-primary';
+      button('New','create','Create an empty scheme; enter a name first',naming);button('Clone','clone','Copy the selected scheme; enter a name first',naming);
+      button('Rename','rename','Rename the selected scheme',naming);
+      button('Export','export','Download the selected scheme as AnvilDroid JSON',files);
+      const file=node('input');file.type='file';file.accept='.json,application/json';file.hidden=true;file.setAttribute('aria-label','Import AnvilDroid scheme JSON');
+      const importButton=node('button','Import…','btn');importButton.type='button';importButton.title='Import an AnvilDroid scheme JSON file (uses the name above if set)';
+      importButton.disabled=!available(records.get(p.runtime));importButton.addEventListener('click',()=>file.click());files.appendChild(importButton);
       file.addEventListener('change',async()=>{const source=file.files?.[0];if(!source)return;
         if(source.size>24576){showError(new Error('Scheme file exceeds 24 KiB'));return;}
         try{await run('import','',name.value,await source.text());}catch(error){showError(error);}finally{file.value='';}});
-      tools.appendChild(file);buttons.push(file,select,name);body.appendChild(tools);
+      button('Reset','reset','Clear all controls in the selected scheme',files).className+=' btn-warning';
+      const remove=button('Remove','remove','Remove this scheme',files);remove.className+=' btn-danger';
+      // Default and the active scheme cannot be removed: say why instead of failing.
+      syncButtons=()=>{const id=select.value,reason=id==='default'?'The Default scheme cannot be removed':id===result.selected?'Use another scheme first, then remove this one':'';
+        remove.disabled=Boolean(reason)||busy||!available(records.get(p.runtime));remove.title=reason||'Remove this scheme';};
+      select.addEventListener('change',syncButtons);
+      files.appendChild(file);buttons.push(file,importButton,select,name);body.appendChild(tools);
       body.appendChild(node('p','Save or cancel the open app editor before changing schemes. Import supports AnvilDroid scheme JSON v1. Reset clears the selected scheme.','hint'));
-      status.textContent='';body.appendChild(status);
+      status.textContent='';body.appendChild(status);syncButtons();
     }
-    details.addEventListener('toggle',()=>{if(details.open&&!loaded)run('list');});
-    return details;
+    details.addEventListener('toggle',()=>{details.onSchemesToggle?.(details.open);if(details.open&&!loaded)run('list');});
+    return {details,body};
+  }
+  // Icon + app name, package underneath. Icons that fail to load fall back to
+  // the app's initial; names are set with textContent (they come from Android).
+  function appHeader(p){
+    const info=window.AnvilAppIdentity?.(p.runtime,p.package)||{label:'',icon:null};
+    const head=node('div',undefined,'controls-app'),frame=node('span',undefined,'controls-app-icon');
+    const initial=()=>node('span',String(info.label||p.package.split('.').pop()||'?').charAt(0).toUpperCase(),'app-initial');
+    if(info.icon){const img=node('img');img.alt='';img.loading='lazy';img.decoding='async';img.src=info.icon;
+      img.addEventListener('error',()=>img.replaceWith(initial()),{once:true});frame.appendChild(img);}
+    else frame.appendChild(initial());
+    const text=node('span',undefined,'controls-app-text');
+    if(info.label){text.appendChild(node('strong',info.label,'controls-app-name'));text.appendChild(node('span',p.package,'controls-package hint'));}
+    else text.appendChild(node('span',p.package,'controls-package'));
+    head.appendChild(frame);head.appendChild(text);return head;
   }
   function updateSelectors(){
-    const selected=filter.value||'all';filter.replaceChildren(node('option','All runtimes'));filter.children[0].value='all';
+    const selected=filter.value||'all';filter.replaceChildren(node('option','All devices'));filter.children[0].value='all';
     for(const r of records.values()){const option=node('option',r.name);option.value=r.id;filter.appendChild(option);}
     filter.value=records.has(selected)?selected:'all';
     const probe=document.getElementById('probe-runtime');
     if(probe&&!probe.disabled){
-      const previous=probe.value;probe.replaceChildren(node('option','Select runtime'));probe.children[0].value='';
+      const previous=probe.value;probe.replaceChildren(node('option','Select device'));probe.children[0].value='';
       for(const r of records.values())if(available(r)){const option=node('option',`${r.name} · ${r.state}`);option.value=r.id;probe.appendChild(option);}
       probe.value=available(records.get(previous))?previous:'';
       updateDiagnostics();
@@ -201,33 +235,35 @@
       const empty=node('div',undefined,'controls-empty');empty.appendChild(node('p','No saved keymaps'));
       empty.appendChild(node('span','Open an app → header menu → Edit keymap, or press F2.','hint'));
       const scoped=selected==='all'?[...records.values()]:[records.get(selected)];
-      if(scoped.some(r=>r&&!available(r)))empty.appendChild(node('span','Start a runtime to load its keymaps.','hint'));
+      if(scoped.some(r=>r&&!available(r)))empty.appendChild(node('span','Start a device to load its keymaps.','hint'));
       content.appendChild(empty);
     }else{
       const wrapper=node('div',undefined,'runtime-table-scroll controls-table-scroll'),table=node('table',undefined,'runtime-table controls-table');
       const head=node('thead'),header=node('tr');
-      for(const title of ['App','Runtime','Keys','Actions'])header.appendChild(node('th',title));
+      for(const title of ['App','Device','Keys'])header.appendChild(node('th',title));
       head.appendChild(header);table.appendChild(head);
       const body=node('tbody');
       for(const p of rows){
-        const r=records.get(p.runtime),row=node('tr'),app=node('td'),runtime=node('td'),keys=node('td'),actions=node('td');
-        app.appendChild(node('span',p.package,'controls-package'));
+        const r=records.get(p.runtime),row=node('tr'),app=node('td'),runtime=node('td'),keys=node('td');
+        app.appendChild(appHeader(p));
         runtime.appendChild(node('span',r?.name||p.runtime,'controls-runtime-name'));
         runtime.appendChild(node('span',r?.state||'Unavailable','controls-runtime-state'));
         if(r?.state!=='Running'&&r?.state!=='Frozen')runtime.title='Last loaded keymaps';
         const chips=node('div',undefined,'controls-key-chips');
         const updateKeys=()=>{chips.replaceChildren();for(const b of p.bindings){const chip=node('kbd',physicalLabel(b.evdev,b.input_source));chip.title=bindingTitle(b);chips.appendChild(chip);}
           if(!p.bindings.length)chips.appendChild(node('span','—','hint'));};
-        updateKeys();app.appendChild(schemeControls(p,updateKeys));
+        const scheme=schemeControls(p,updateKeys);updateKeys();app.appendChild(scheme.details);
         keys.appendChild(chips);
-        const edit=node('button',undefined,'btn runtime-action-icon');edit.type='button';
-        edit.title=available(r)?'Edit keymap in an open app':'Start this runtime to edit';edit.setAttribute('aria-label',`Edit keymap · ${p.package} · ${r?.name||p.runtime}`);
-        edit.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m16 3 5 5-12 12-6 1 1-6Z"/><path d="m14 5 5 5"/></svg>';
-        edit.disabled=!available(r);
-        edit.addEventListener('click',async()=>{if(edit.disabled)return;edit.disabled=true;try{await window.AnvilKeymapActions?.open(p.runtime,p.package);}finally{edit.disabled=!available(records.get(p.runtime));}});
-        actions.appendChild(edit);for(const cell of [app,runtime,keys,actions])row.appendChild(cell);body.appendChild(row);
+        for(const cell of [app,runtime,keys])row.appendChild(cell);body.appendChild(row);
+        // Scheme tools span the whole table width under their app, while "Schemes" is open.
+        const schemeRow=node('tr',undefined,'controls-scheme-row'),schemeCell=node('td');schemeCell.colSpan=3;
+        schemeCell.appendChild(scheme.body);schemeRow.appendChild(schemeCell);schemeRow.hidden=true;row.className='controls-app-row';
+        scheme.details.onSchemesToggle=open=>{schemeRow.hidden=!open;row.className=open?'controls-app-row schemes-open':'controls-app-row';};
+        body.appendChild(schemeRow);
       }
       table.appendChild(body);wrapper.appendChild(table);content.appendChild(wrapper);
+      // Keymaps are edited in the app's own window, where the overlay can see the game.
+      content.appendChild(node('p','To change controls, open the app and press F2 (or its header menu → Edit keymap).','hint controls-edit-hint'));
     }
     const legacy=drafts.filter(p=>selected==='all'||p.runtime===selected);
     if(legacy.length){
@@ -262,7 +298,7 @@
           for(const r of managed.value)if(r&&typeof r.id==='string'&&r.id!=='default')nextRecords.set(r.id,{...r,name:r.name||r.id});
         }else{
           for(const [id,r] of nextRecords)if(id!=='default')nextRecords.set(id,{...r,state:'Unavailable'});
-          nextFailures.push(`Runtimes: ${managed.reason?.message||managed.reason||'Invalid runtime list'}`);
+          nextFailures.push(`Devices: ${managed.reason?.message||managed.reason||'Invalid device list'}`);
         }
         if(existing.status==='fulfilled'&&existing.value?.id==='default'){if(existing.value.state==='Uninitialized')nextRecords.delete('default');else nextRecords.set('default',{...existing.value,name:'System Waydroid'});}
         else{nextRecords.set('default',{id:'default',name:'System Waydroid',state:'Unavailable'});nextFailures.push(`System Waydroid: ${existing.reason?.message||existing.reason||'Unavailable'}`);}

@@ -52,7 +52,7 @@
           !value.settings || keys.some(key => !value.settings[key] ||
             ['explicit','inherited','effective'].some(field => typeof value.settings[key][field] !== 'boolean') ||
             value.settings[key].effective !== (value.settings[key].explicit || value.settings[key].inherited)))
-        throw new Error('Runtime or compatibility response changed; refresh and retry.');
+        throw new Error('Device or compatibility response changed; refresh and retry.');
       return value;
     }
     function render(value) {

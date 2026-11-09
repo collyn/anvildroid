@@ -20,8 +20,8 @@ const RuntimeBatch = (() => {
       progress(snapshot, index, records.length);
       try {
         const record = await refresh(snapshot.id);
-        if (record.id !== snapshot.id) throw new Error('Runtime identity changed.');
-        if (['delete', 'reinstall'].includes(op) && record.name !== snapshot.name) throw new Error('Runtime name changed; review confirmation again.');
+        if (record.id !== snapshot.id) throw new Error('Device identity changed.');
+        if (['delete', 'reinstall'].includes(op) && record.name !== snapshot.name) throw new Error('Device name changed; review confirmation again.');
         if (!eligible(record, op, requirements)) { return {id: snapshot.id, name: snapshot.name, status: 'skipped', detail: 'State changed or action unavailable.'}; }
         let result;
         if (op === 'restart') {

@@ -65,7 +65,7 @@ test('variable source and error text cannot become markup',async()=>{
 test('server editable false locks every mutation control and guards forged callbacks',async()=>{
   const f=fixture({request:args=>report(args.id,{editable:false})});await f.mount();
   for(const element of [f.button('Save share'),f.button('Choose folder'),f.button('Remove'),f.name(),f.source(),f.ro()])assert.equal(element.disabled,true);
-  assert.equal(f.button('Refresh').disabled,false);assert.match(f.notice().textContent,/Stop the runtime/);
+  assert.equal(f.button('Refresh').disabled,false);assert.match(f.notice().textContent,/Stop the device/);
   f.name().value='Injected';f.source().value='/home/user/injected';
   await f.form().fire('submit');await f.button('Remove').fire('click',true);await f.button('Choose folder').fire('click',true);
   assert.equal(f.calls.length,1);assert.equal(f.choices.length,0);

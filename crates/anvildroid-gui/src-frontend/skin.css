@@ -1,0 +1,309 @@
+/* HUD theme (Settings → Appearance → Theme): square, flat, high-contrast
+   game look. Every rule is scoped with :where([data-skin="hud"]) so it adds no
+   specificity and does nothing in the Classic theme. Layout shared by all
+   themes lives in layout.css; colours still come only from theme.css tokens. */
+
+
+/* Square everything, no soft depth. */
+:where([data-skin="hud"]) *, :where([data-skin="hud"]) *::before, :where([data-skin="hud"]) *::after { border-radius: 0 !important; box-shadow: none !important; }
+:where([data-skin="hud"]) :where(.btn, .nav-item, .app-card, .runtime-quick-chip):hover { transform: none !important; }
+
+html:where([data-skin="hud"]), :where([data-skin="hud"]) body {
+  background:
+    linear-gradient(color-mix(in srgb, var(--border-subtle) 35%, transparent) 1px, transparent 1px) 0 0 / 32px 32px,
+    linear-gradient(90deg, color-mix(in srgb, var(--border-subtle) 35%, transparent) 1px, transparent 1px) 0 0 / 32px 32px,
+    var(--bg-app);
+}
+:where([data-skin="hud"]) .sidebar { background: var(--bg-sidebar); border-right: 1px solid var(--border); }
+:where([data-skin="hud"]) .sidebar-brand h2 { letter-spacing: .02em; text-transform: uppercase; font-weight: 800; }
+:where([data-skin="hud"]) .brand-mark { filter: none; }
+
+/* Navigation: flat rows with an accent edge when active. */
+:where([data-skin="hud"]) .nav-item {
+  min-height: 44px; margin: 2px 0; padding: 10px 16px;
+  border: 1px solid transparent; font-size: var(--font-md); font-weight: 700;
+  letter-spacing: .08em; text-transform: uppercase; color: var(--text-secondary);
+}
+:where([data-skin="hud"]) .nav-item:hover { background: var(--bg-hover); color: var(--text-primary); }
+:where([data-skin="hud"]) .nav-item.active, :root:where([data-skin="hud"])[data-theme="light"] .nav-item.active {
+  background: var(--accent-bg); color: var(--accent-text); border-color: var(--accent-strong);
+  box-shadow: inset 4px 0 var(--accent) !important;
+}
+:root:where([data-skin="hud"])[data-theme="light"] .nav-item.active { background: var(--bg-selected); }
+:where([data-skin="hud"]) .nav-item.active .nav-icon { color: var(--accent); }
+
+/* Headings read like HUD labels. */
+:where([data-skin="hud"]) .page-title { text-transform: uppercase; letter-spacing: .06em; font-weight: 800; display: inline-flex; align-items: center; gap: 10px; }
+:where([data-skin="hud"]) .page-title::before { content: ""; width: 6px; height: 1em; background: var(--accent); flex: 0 0 6px; }
+:where([data-skin="hud"]) .settings-section h2, :where([data-skin="hud"]) .runtime-settings-group h3, :where([data-skin="hud"]) summary strong, :where([data-skin="hud"]) .library-heading h2 {
+  text-transform: uppercase; letter-spacing: .06em;
+}
+:where([data-skin="hud"]) th { letter-spacing: .1em; }
+
+/* Buttons: square, uppercase, solid fills. */
+:where([data-skin="hud"]) .btn {
+  min-height: 36px; padding: 0 14px; border: 1px solid var(--border-strong);
+  background: var(--bg-raised); color: var(--text-primary);
+  font-size: var(--font-sm); font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
+}
+:where([data-skin="hud"]) .btn:hover:not(:disabled) { border-color: var(--accent); background: var(--bg-hover); color: var(--accent-text); }
+:where([data-skin="hud"]) .btn:active:not(:disabled) { background: var(--bg-selected); }
+:where([data-skin="hud"]) .btn-primary, :where([data-skin="hud"]) .app-open-button,
+:root:where([data-skin="hud"])[data-theme="light"] .btn-primary, :root:where([data-skin="hud"])[data-theme="light"] .app-open-button {
+  background: var(--accent); border-color: var(--accent); color: var(--on-accent);
+}
+:where([data-skin="hud"]) .btn-primary:hover:not(:disabled), :where([data-skin="hud"]) .app-open-button:hover,
+:root:where([data-skin="hud"])[data-theme="light"] .btn-primary:hover:not(:disabled), :root:where([data-skin="hud"])[data-theme="light"] .app-open-button:hover {
+  background: var(--accent-text); border-color: var(--accent-text); color: var(--on-accent);
+}
+:root:where([data-skin="hud"])[data-theme="light"] .btn-primary:hover:not(:disabled) { background: var(--accent-strong); border-color: var(--accent-strong); color: var(--on-accent); }
+:where([data-skin="hud"]) .btn-quiet { background: transparent; }
+:where([data-skin="hud"]) .btn:disabled { opacity: .45; }
+
+/* Panels and cards: flat surfaces with crisp borders. */
+:where([data-skin="hud"]) .app-card { background: var(--bg-panel); border: 1px solid var(--border); }
+:where([data-skin="hud"]) .app-card:hover, :where([data-skin="hud"]) .app-card:focus-visible { border-color: var(--accent); background: var(--bg-surface); }
+:where([data-skin="hud"]) .app-card .app-icon > span, :where([data-skin="hud"]) .app-icon-placeholder { background: var(--bg-raised); }
+:where([data-skin="hud"]) .view-button.active, :root:where([data-skin="hud"])[data-theme="light"] .view-button.active { background: var(--accent-bg); color: var(--accent-text); }
+:root:where([data-skin="hud"])[data-theme="light"] .view-button.active { background: var(--bg-selected); }
+:where([data-skin="hud"]) .theme-choice button[aria-pressed="true"], :root:where([data-skin="hud"])[data-theme="light"] .theme-choice button[aria-pressed="true"] {
+  background: var(--accent); color: var(--on-accent);
+}
+
+/* Inputs. */
+:where([data-skin="hud"]) input:not([type="checkbox"]):not([type="radio"]):not([type="range"]), :where([data-skin="hud"]) select, :where([data-skin="hud"]) textarea, :where([data-skin="hud"]) .global-search {
+  background: var(--bg-surface); border-color: var(--border);
+}
+:where([data-skin="hud"]) input:not([type="checkbox"]):not([type="radio"]):focus, :where([data-skin="hud"]) select:focus, :where([data-skin="hud"]) textarea:focus, :where([data-skin="hud"]) .global-search:focus-within { border-color: var(--accent); }
+:where([data-skin="hud"]) input[type="checkbox"], :where([data-skin="hud"]) input[type="radio"] { accent-color: var(--accent); }
+
+/* Status labels: square tags. */
+:where([data-skin="hud"]) .runtime-status, :where([data-skin="hud"]) .status-badge { text-transform: uppercase; letter-spacing: .06em; font-size: var(--font-xs); font-weight: 700; }
+
+/* Progress: solid bars. */
+:where([data-skin="hud"]) progress { appearance: none; height: 6px; background: var(--bg-raised); border: 0; }
+:where([data-skin="hud"]) progress::-webkit-progress-bar { background: var(--bg-raised); }
+:where([data-skin="hud"]) progress::-webkit-progress-value { background: var(--accent); }
+:where([data-skin="hud"]) progress::-moz-progress-bar { background: var(--accent); }
+
+/* Dialogs and menus: hard edge instead of shadow. */
+:where([data-skin="hud"]) dialog, :where([data-skin="hud"]) .select-menu, :where([data-skin="hud"]) .ctx-menu, :where([data-skin="hud"]) .app-toast, :where([data-skin="hud"]) .progress-toast { border: 1px solid var(--border-strong); }
+:where([data-skin="hud"]) dialog::backdrop { background: color-mix(in srgb, var(--bg-app) 75%, transparent); }
+
+/* Thin square scrollbars. */
+:where([data-skin="hud"]) ::-webkit-scrollbar { width: 10px; height: 10px; }
+:where([data-skin="hud"]) ::-webkit-scrollbar-track { background: var(--bg-app); }
+:where([data-skin="hud"]) ::-webkit-scrollbar-thumb { background: var(--border); border: 2px solid var(--bg-app); }
+:where([data-skin="hud"]) ::-webkit-scrollbar-thumb:hover { background: var(--border-strong); }
+
+/* Sub-tabs under the Devices title (Devices · Android images · ADB). */
+:where([data-skin="hud"]) .subtabs { display: inline-flex; margin-left: 16px; border: 1px solid var(--border); background: var(--bg-surface); }
+:where([data-skin="hud"]) .subtab { min-height: 32px; padding: 0 14px; border: 0; background: transparent; color: var(--text-secondary); font: inherit; font-size: var(--font-sm); font-weight: 700; letter-spacing: .06em; text-transform: uppercase; cursor: pointer; }
+:where([data-skin="hud"]) .subtab + .subtab { border-left: 1px solid var(--border); }
+:where([data-skin="hud"]) .subtab:hover { color: var(--text-primary); background: var(--bg-hover); }
+:where([data-skin="hud"]) .subtab[aria-selected="true"] { background: var(--accent); color: var(--on-accent); }
+:where([data-skin="hud"]) .page-header:has(.subtabs) { flex-wrap: wrap; gap: 10px; }
+:where([data-skin="hud"]) .page-header:has(.subtabs) > .page-title { flex: 0 0 auto; }
+:where([data-skin="hud"]) .page-header:has(.subtabs) > .subtabs { margin-left: 0; margin-right: auto; }
+
+/* Apps page: first-run guide. */
+:where([data-skin="hud"]) .apps-grid > .quick-start { grid-column: 1 / -1; }
+:where([data-skin="hud"]) .quick-start { padding: 24px; border: 1px solid var(--border); border-top: 3px solid var(--accent); background: var(--bg-panel); }
+:where([data-skin="hud"]) .quick-start > h2 { font-size: var(--font-xl); text-transform: uppercase; letter-spacing: .06em; }
+:where([data-skin="hud"]) .quick-start > .hint { margin: 4px 0 18px; }
+:where([data-skin="hud"]) .quick-start-steps { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+:where([data-skin="hud"]) .quick-start-step { display: grid; grid-template-columns: 44px 1fr auto; align-items: center; gap: 16px; padding: 14px 16px; border: 1px solid var(--border-subtle); background: var(--bg-surface); }
+:where([data-skin="hud"]) .quick-start-number { display: grid; place-items: center; width: 44px; height: 44px; border: 2px solid var(--border-strong); color: var(--text-secondary); font-size: var(--font-lg); font-weight: 800; }
+:where([data-skin="hud"]) .quick-start-body h3 { display: flex; align-items: center; gap: 10px; font-size: var(--font-lg); }
+:where([data-skin="hud"]) .quick-start-body p { margin-top: 4px; color: var(--text-secondary); font-size: var(--font-md); }
+:where([data-skin="hud"]) .quick-start-tag { padding: 2px 6px; border: 1px solid var(--border); color: var(--text-muted); font-size: var(--font-xs); font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+:where([data-skin="hud"]) .quick-start-step .btn { min-width: 170px; min-height: 42px; }
+:where([data-skin="hud"]) .quick-start-step[data-status="todo"], :where([data-skin="hud"]) .quick-start-step[data-status="ready"] { border-color: var(--accent-strong); }
+:where([data-skin="hud"]) .quick-start-step[data-status="todo"] .quick-start-number, :where([data-skin="hud"]) .quick-start-step[data-status="ready"] .quick-start-number { border-color: var(--accent); background: var(--accent); color: var(--on-accent); }
+:where([data-skin="hud"]) .quick-start-step[data-status="todo"] .quick-start-tag, :where([data-skin="hud"]) .quick-start-step[data-status="ready"] .quick-start-tag { border-color: var(--accent); color: var(--accent-text); }
+:where([data-skin="hud"]) .quick-start-step[data-status="busy"] .quick-start-number { border-color: var(--warning); color: var(--warning); }
+:where([data-skin="hud"]) .quick-start-step[data-status="busy"] .quick-start-tag { border-color: var(--warning-border); color: var(--warning); }
+:where([data-skin="hud"]) .quick-start-step[data-status="done"] .quick-start-number { border-color: var(--success); background: var(--success-bg); color: var(--success); }
+:where([data-skin="hud"]) .quick-start-step[data-status="done"] .quick-start-tag { border-color: var(--success-border); color: var(--success-text); }
+:where([data-skin="hud"]) .quick-start-step[data-status="locked"] { opacity: .55; }
+:where([data-skin="hud"]) .quick-start-step [role="alert"] { color: var(--danger); }
+:where([data-skin="hud"]) .quick-start-body progress { display: block; width: 100%; max-width: 420px; margin-top: 8px; }
+
+/* Apps page: one chip per device with its own Start button. */
+:where([data-skin="hud"]) #library-runtime-status:has(.device-chip) { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+:where([data-skin="hud"]) .device-chip { display: flex; align-items: center; gap: 12px; min-height: 44px; padding: 6px 8px 6px 12px; border: 1px solid var(--border); border-left: 4px solid var(--border-strong); background: var(--bg-panel); color: var(--text-secondary); }
+:where([data-skin="hud"]) .device-chip p { margin: 0; }
+:where([data-skin="hud"]) .device-chip strong { color: var(--text-primary); }
+:where([data-skin="hud"]) .device-chip .btn { min-height: 30px; }
+:where([data-skin="hud"]) .device-chip[data-state="running"] { border-left-color: var(--success); }
+:where([data-skin="hud"]) .device-chip[data-state="frozen"], :where([data-skin="hud"]) .device-chip[data-state="starting"], :where([data-skin="hud"]) .device-chip[data-state="provisioning"] { border-left-color: var(--warning); }
+:where([data-skin="hud"]) .device-chip[data-state="error"] { border-left-color: var(--danger); }
+
+/* Devices table: main actions carry a text label; usage only when running. */
+:where([data-skin="hud"]) #runtime-table .runtime-action-icon { width: auto; min-width: 34px; gap: 6px; }
+:where([data-skin="hud"]) #runtime-table .runtime-action-icon:is(.btn-primary, .btn-danger, .btn-warning):not(.is-working)::after,
+:where([data-skin="hud"]) #runtime-table .runtime-action-icon[data-controller-op="settings"]:not(.is-working)::after {
+  content: attr(title); font-size: var(--font-xs); font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
+}
+:where([data-skin="hud"]) #runtime-table .runtime-action-icon:is(.btn-primary, .btn-danger, .btn-warning) { padding: 0 12px; }
+:where([data-skin="hud"]) #runtime-table .runtime-action-icon[data-controller-op="settings"] { padding: 0 10px; }
+:where([data-skin="hud"]) .runtime-table tr.runtime-summary:not(:has(.runtime-status.success)) .runtime-usage-cell > * { display: none; }
+:where([data-skin="hud"]) .runtime-table tr.runtime-summary:not(:has(.runtime-status.success)) .runtime-usage-cell::before { content: "—  Off"; color: var(--text-muted); font-size: var(--font-sm); }
+:where([data-skin="hud"]) .setup-panel-actions { margin-bottom: 12px; }
+
+/* Narrow windows (down to the 900px minimum): keep names and actions readable. */
+@media (max-width: 1150px) {
+  :root:where([data-skin="hud"]) { --sidebar-width: 210px; }
+  :where([data-skin="hud"]) #runtime-table .runtime-usage-heading, :where([data-skin="hud"]) #runtime-table .runtime-usage-cell { display: none; }
+  :where([data-skin="hud"]) #runtime-table .runtime-action-icon[data-controller-op="settings"]:not(.is-working)::after { content: none; }
+  :where([data-skin="hud"]) .sidebar-brand h2 { font-size: 18px; }
+  :where([data-skin="hud"]) .sidebar-brand p { white-space: normal; }
+  :where([data-skin="hud"]) .nav-item { letter-spacing: .04em; padding: 10px 12px; }
+  :where([data-skin="hud"]) #runtime-table .runtime-action-icon[data-controller-op="settings"] { padding: 0; width: 34px; }
+  :where([data-skin="hud"]) #runtime-table td:nth-child(2) { min-width: 150px; }
+  :where([data-skin="hud"]) .page-header:has(.subtabs) .subtab { padding: 0 10px; }
+}
+
+/* While the first-run guide shows, it owns the page: full width, and the
+   header's Install APK steps back (step 3 offers it when it can work). */
+:where([data-skin="hud"]) .apps-grid:has(> .quick-start) { display: block; padding-inline: 0; }
+:where([data-skin="hud"]) #page-apps:has(.quick-start) #btn-install-apk { background: var(--bg-raised); border-color: var(--border-strong); color: var(--text-primary); }
+
+/* Apps grid: fills the width, aligned with the filter bar, one block per device. */
+:where([data-skin="hud"]) #page-apps.active .apps-grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; padding: 2px 0 24px; justify-content: stretch; }
+:where([data-skin="hud"]) #page-apps.active .apps-grid.list-view { grid-template-columns: 1fr; }
+/* Cards fill their column: shell.css fixes them at 152px, which is wider than
+   a 140px column and made neighbours touch and the last column overflow. */
+:where([data-skin="hud"]) #page-apps.active .apps-grid:not(.list-view) .app-card { width: auto; min-width: 0; height: auto; aspect-ratio: auto; min-height: 140px; }
+/* List view: compact rows, as many columns as fit (one on narrow windows). */
+:where([data-skin="hud"]) #page-apps.active .apps-grid.list-view { grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 6px 10px; }
+:where([data-skin="hud"]) #page-apps.active .apps-grid.list-view .app-card { width: auto; min-width: 0; height: 56px; min-height: 56px; padding: 8px 12px; gap: 12px; }
+:where([data-skin="hud"]) #page-apps.active .apps-grid.list-view .app-card > .app-icon { width: 40px; height: 40px; }
+:where([data-skin="hud"]) #page-apps.active .apps-grid.list-view .app-initial { font-size: 18px; }
+:where([data-skin="hud"]) #page-apps.active .apps-grid.list-view .app-name { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+:where([data-skin="hud"]) .app-group-heading { grid-column: 1 / -1; display: flex; align-items: baseline; gap: 10px; margin-top: 10px; padding: 6px 0; border-bottom: 1px solid var(--border); }
+:where([data-skin="hud"]) .app-group-heading:first-child { margin-top: 0; }
+:where([data-skin="hud"]) .app-group-heading strong { color: var(--text-primary); font-size: var(--font-md); letter-spacing: .08em; text-transform: uppercase; }
+:where([data-skin="hud"]) .app-group-heading span { color: var(--text-muted); font-size: var(--font-sm); }
+:where([data-skin="hud"]) .apps-grid:has(.app-group-heading) .app-runtime-name { display: none; }
+:where([data-skin="hud"]) .app-initial { display: grid; place-items: center; width: 100%; height: 100%; background: var(--accent-bg); color: var(--accent-text); font-size: 26px; font-weight: 800; }
+:root:where([data-skin="hud"])[data-theme="light"] .app-initial { background: var(--bg-selected); }
+
+/* Sidebar brand: always one compact row. */
+:where([data-skin="hud"]) .sidebar-brand { flex-direction: row !important; align-items: center !important; gap: 10px; padding: 8px 10px 18px !important; }
+:where([data-skin="hud"]) .sidebar-brand .brand-mark { width: 40px; height: 40px; }
+:where([data-skin="hud"]) .sidebar-brand h2 { font-size: 19px !important; }
+:where([data-skin="hud"]) .sidebar-brand p { font-size: 10px; white-space: normal; }
+@media (max-width: 1150px) { :where([data-skin="hud"]) .sidebar-brand h2 { font-size: 16px !important; letter-spacing: 0; } :where([data-skin="hud"]) .sidebar-brand .brand-mark { width: 34px; height: 34px; } }
+
+/* Button variants share one shape; colour carries the meaning. */
+:where([data-skin="hud"]) .btn-quiet { font-weight: 700; }
+:where([data-skin="hud"]) .btn-warning { background: transparent; border-color: var(--warning-border); color: var(--warning); }
+:where([data-skin="hud"]) .btn-warning:hover:not(:disabled) { background: var(--warning-bg); border-color: var(--warning); color: var(--warning); }
+:where([data-skin="hud"]) .btn-danger, :where([data-skin="hud"]) .btn-danger:not(:disabled) { background: transparent; border-color: var(--danger-border); color: var(--danger); }
+:where([data-skin="hud"]) .btn-danger:hover:not(:disabled) { background: var(--danger-bg); border-color: var(--danger); color: var(--danger); }
+:where([data-skin="hud"]) #runtime-table .runtime-action-icon.btn-danger { background: var(--bg-raised); }
+
+/* Device settings: every collapsible section reads the same. */
+:where([data-skin="hud"]) #page-runtime-settings details > summary { text-transform: uppercase; letter-spacing: .06em; font-size: var(--font-md); font-weight: 700; color: var(--text-primary); }
+:where([data-skin="hud"]) #page-runtime-settings details > summary :is(strong, span, small) { text-transform: inherit; }
+:where([data-skin="hud"]) #page-runtime-settings .runtime-config-eyebrow { text-transform: uppercase; letter-spacing: .08em; font-size: var(--font-xs); color: var(--text-muted); }
+
+/* Disabled always looks disabled (e.g. Delete while the device runs). */
+:where([data-skin="hud"]) .btn:disabled, :where([data-skin="hud"]) .btn:disabled:hover, :where([data-skin="hud"]) .managed-runtime .btn:disabled { opacity: .45; background: var(--bg-raised); border-color: var(--border); color: var(--text-muted); cursor: not-allowed; }
+:where([data-skin="hud"]) .runtime-actions .btn { font-weight: 700; font-size: var(--font-sm); }
+
+/* Slight rounding: 4px controls, 6px surfaces. Everything else stays square
+   (bars, markers, table cells). The global reset above keeps old radii out. */
+:where([data-skin="hud"]) :is(.btn, button.subtab, input:not([type="checkbox"]):not([type="radio"]):not([type="range"]), select, textarea,
+  .global-search, .select-control, .runtime-status, .status-badge, .quick-start-tag, .device-chip, .nav-item,
+  .theme-choice, .subtabs, .library-view, .search-shortcut, kbd, .runtime-quick-chip, .app-favorite-button) { border-radius: var(--radius-sm) !important; }
+:where([data-skin="hud"]) :is(.app-card, .app-icon, .app-icon img, .app-initial, .quick-start, .quick-start-step, .quick-start-number,
+  .settings-section, .runtime-card, .runtime-table-scroll, .create-panel, details.runtime-settings-group,
+  #page-runtime-settings details, dialog, .select-menu, .ctx-menu, .app-toast, .progress-toast,
+  .library-filters, .runtime-feedback, .library-empty-panel) { border-radius: var(--radius) !important; }
+:where([data-skin="hud"]) input[type="checkbox"] { border-radius: 3px !important; }
+/* Segmented groups: the frame is rounded, the inner buttons stay square. */
+:where([data-skin="hud"]) :is(.theme-choice, .subtabs, .library-view) { overflow: hidden; }
+:where([data-skin="hud"]) :is(.theme-choice, .subtabs, .library-view) > button { border-radius: 0 !important; }
+
+/* One size for every button that shares a row. */
+:where([data-skin="hud"]) :is(.runtime-actions, .page-header, .dialog-actions, .runtime-card) > .btn,
+:where([data-skin="hud"]) .managed-runtime .runtime-actions .btn { min-height: 36px; height: 36px; padding: 0 14px; line-height: 1; display: inline-flex; align-items: center; justify-content: center; }
+
+/* Device settings: game-style menu. Top bar (actions, image) · categories left ·
+   one category right. Narrow windows put the categories in a tab row on top. */
+:where([data-skin="hud"]) #page-runtime-settings { container: settings / inline-size; }
+:where([data-skin="hud"]) .tabbed-settings { display: grid !important; grid-template-columns: 210px minmax(0, 1fr); gap: 14px 20px; align-items: start;
+  padding: 0 !important; border: 0 !important; background: none !important; }
+:where([data-skin="hud"]) .tabbed-settings .tabs-passthrough { display: contents !important; }
+:where([data-skin="hud"]) .tabbed-settings[hidden], :where([data-skin="hud"]) .tabbed-settings .tabs-passthrough[hidden] { display: none !important; } /* the grid rule must never un-hide a hidden block */
+:where([data-skin="hud"]) .tabbed-settings .tabs-bar-item { grid-column: 1 / -1; order: -1; margin: 0; }
+:where([data-skin="hud"]) .tabbed-settings > .runtime-actions.tabs-bar-item { grid-row: 1; justify-self: end; }
+:where([data-skin="hud"]) .tabbed-settings > .runtime-image-details.tabs-bar-item { grid-row: 1; justify-self: start; align-self: center; }
+:where([data-skin="hud"]) .settings-tabs-nav { grid-column: 1; position: sticky; top: 0; display: flex; flex-direction: column; gap: 2px; padding: 6px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-panel); }
+:where([data-skin="hud"]) .settings-tabs-nav button { min-height: 38px; padding: 0 12px; border: 0; border-left: 3px solid transparent; border-radius: var(--radius-sm); background: transparent; color: var(--text-secondary); font: inherit; font-size: var(--font-sm); font-weight: 700; letter-spacing: .06em; text-align: left; text-transform: uppercase; cursor: pointer; }
+:where([data-skin="hud"]) .settings-tabs-nav button:hover { background: var(--bg-hover); color: var(--text-primary); }
+:where([data-skin="hud"]) .settings-tabs-nav button[aria-current="true"] { background: var(--accent-bg); border-left-color: var(--accent); color: var(--accent-text); }
+:root:where([data-skin="hud"])[data-theme="light"] .settings-tabs-nav button[aria-current="true"] { background: var(--bg-selected); }
+:where([data-skin="hud"]) #page-runtime-settings.settings-simple .settings-tabs-nav [data-level="advanced"] { display: none !important; }
+:where([data-skin="hud"]) .tabbed-settings .settings-tab-hidden { display: none !important; }
+:where([data-skin="hud"]) .tabbed-settings .settings-tab-active { grid-column: 2; margin: 0 !important; padding: 18px 20px !important; border: 1px solid var(--border) !important; background: var(--bg-panel) !important; }
+:where([data-skin="hud"]) .tabbed-settings .settings-tab-active > summary { pointer-events: none; list-style: none; margin-bottom: 12px; padding: 0 0 10px !important; border-bottom: 1px solid var(--border-subtle); font-size: var(--font-lg) !important; }
+:where([data-skin="hud"]) .tabbed-settings .settings-tab-active > summary::-webkit-details-marker { display: none; }
+:where([data-skin="hud"]) .tabbed-settings .settings-tab-active > summary::before, :where([data-skin="hud"]) .tabbed-settings .settings-tab-active > summary::after { display: none !important; }
+@container settings (max-width: 760px) {
+  :where([data-skin="hud"]) .tabbed-settings { grid-template-columns: minmax(0, 1fr); }
+  :where([data-skin="hud"]) .tabbed-settings > .runtime-actions.tabs-bar-item, :where([data-skin="hud"]) .tabbed-settings > .runtime-image-details.tabs-bar-item { grid-row: auto; justify-self: start; }
+  :where([data-skin="hud"]) .settings-tabs-nav { position: static; flex-direction: row; flex-wrap: wrap; }
+  :where([data-skin="hud"]) .settings-tabs-nav button { min-height: 32px; border-left: 0; border-bottom: 3px solid transparent; }
+  :where([data-skin="hud"]) .settings-tabs-nav button[aria-current="true"] { border-bottom-color: var(--accent); }
+  :where([data-skin="hud"]) .tabbed-settings .settings-tab-active { grid-column: 1; }
+}
+/* Narrow: spend the height on content. The active tab already names the section. */
+@container settings (max-width: 760px) {
+  :where([data-skin="hud"]) .settings-tabs-nav { gap: 0; padding: 4px; }
+  :where([data-skin="hud"]) .settings-tabs-nav button { min-height: 30px; padding: 0 9px; font-size: var(--font-xs); }
+  :where([data-skin="hud"]) .tabbed-settings .settings-tab-active { padding: 14px 16px !important; }
+  :where([data-skin="hud"]) .tabbed-settings .settings-tab-active > summary { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); margin: 0; padding: 0 !important; border: 0; }
+  :where([data-skin="hud"]) .tabbed-settings { gap: 10px; }
+}
+
+/* Vertical rhythm: a button (or button row) that follows text in a stacked
+   block always gets breathing room. Side-by-side rows are untouched because
+   their items are not adjacent to text blocks. */
+:where([data-skin="hud"]) :where(#page-runtime-settings, #page-settings, #page-images, #page-adb, #page-controls, dialog)
+  :where(p, label, .hint, small, ul, ol, pre, progress, h3, h4, .runtime-feedback) + :is(.btn, .runtime-actions) { margin-top: 12px; }
+/* …but never inside a horizontal row: there the items sit side by side and
+   must stay centred on one line. */
+:where([data-skin="hud"]) :is(.runtime-actions, .settings-inline, .dialog-actions, .page-header, .notification-master) > :is(.btn, p, .hint, span, label) { margin-top: 0 !important; margin-bottom: 0 !important; }
+:where([data-skin="hud"]) :is(.runtime-actions, .settings-inline, .dialog-actions) { align-items: center; }
+:where([data-skin="hud"]) #page-runtime-settings .tabbed-settings { margin-top: 12px !important; }
+:where([data-skin="hud"]) .arm-provider-fields + .btn, :where([data-skin="hud"]) .arm-provider-fields + .arm-source-actions { margin-top: 12px; }
+/* An opened <details> never lets its first control touch the summary. */
+:where([data-skin="hud"]) :is(#page-controls, #page-settings, #page-images, #page-adb, #page-runtime) details[open] > summary { margin-bottom: 10px; }
+/* In menu mode the summary is the panel heading; the body's old accordion
+   spacing and top rule would double it. */
+:where([data-skin="hud"]) .tabbed-settings .settings-tab-active > summary + * { margin-top: 0 !important; padding-top: 0 !important; border-top: 0 !important; }
+
+/* Settings header: small label stacked above the device name, block centred
+   on the back button instead of sitting on the title's baseline. */
+:where([data-skin="hud"]) #page-runtime-settings .runtime-config-header { align-items: center; }
+:where([data-skin="hud"]) #page-runtime-settings .runtime-config-header > div:not(.theme-choice) { display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: 2px; }
+:where([data-skin="hud"]) #page-runtime-settings .runtime-config-eyebrow { margin: 0; line-height: 1.2; }
+:where([data-skin="hud"]) #page-runtime-settings .runtime-config-header .page-title { line-height: 1.1; }
+
+/* Settings → Appearance: accent picker. */
+:where([data-skin="hud"]) .settings-subheading { margin: 18px 0 8px; font-size: var(--font-sm); letter-spacing: .08em; text-transform: uppercase; color: var(--text-secondary); }
+:where([data-skin="hud"]) .accent-choice { display: flex; flex-wrap: wrap; gap: 8px; }
+:where([data-skin="hud"]) .accent-option { display: inline-flex; align-items: center; gap: 8px; min-height: 36px; padding: 0 14px 0 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-surface); color: var(--text-secondary); font: inherit; font-size: var(--font-sm); font-weight: 700; letter-spacing: .06em; text-transform: uppercase; cursor: pointer; }
+:where([data-skin="hud"]) .accent-option:hover { border-color: var(--border-strong); color: var(--text-primary); }
+:where([data-skin="hud"]) .accent-option[aria-pressed="true"] { border-color: var(--accent); color: var(--text-primary); box-shadow: inset 0 0 0 1px var(--accent) !important; }
+:where([data-skin="hud"]) .accent-swatch { width: 16px; height: 16px; border-radius: 3px; flex: 0 0 16px; }
+:where([data-skin="hud"]) .accent-option { border-radius: var(--radius-sm) !important; } :where([data-skin="hud"]) .accent-swatch { border-radius: 3px !important; }
+
+/* Settings → Appearance: theme picker in the HUD look. */
+:where([data-skin="hud"]) .skin-option { border-radius: var(--radius-sm) !important; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+:where([data-skin="hud"]) .skin-option small { letter-spacing: 0; text-transform: none; }
+:where([data-skin="hud"]) .settings-subheading { letter-spacing: .08em; text-transform: uppercase; font-size: var(--font-sm); }
+:where([data-skin="hud"]) #page-apps.active .apps-grid.list-view .app-caption { min-width: 0; }

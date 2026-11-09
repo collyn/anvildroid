@@ -12,7 +12,7 @@
     element('p', 'Save a local JSON report with host, image, GPU, runtime and health details. Nothing is uploaded.', panel).className = 'hint';
     const label = element('label', undefined, panel);
     const logs = element('input', undefined, label); logs.type = 'checkbox'; logs.checked = false;
-    label.append(document.createTextNode(' Include recent runtime logs (redacted where recognized; review before sharing)'));
+    label.append(document.createTextNode(' Include recent device logs (redacted where recognized; review before sharing)'));
     const notice = element('p', '', panel); notice.setAttribute('role', 'status'); notice.setAttribute('aria-live', 'polite');
     const save = element('button', 'Save report…', panel); save.type = 'button'; save.className = 'btn btn-primary';
     let runtime = null, epoch = 0, exporting = false;
@@ -25,7 +25,7 @@
         if (!path || current !== epoch) return;
         notice.textContent = 'Collecting diagnostics…';
         const result = await invoke('export_runtime_diagnostics', {id, path, includeLogs});
-        if (result?.runtime_id !== id || !Number.isSafeInteger(result.bytes) || result.bytes <= 0) throw new Error('Diagnostic export did not confirm this runtime');
+        if (result?.runtime_id !== id || !Number.isSafeInteger(result.bytes) || result.bytes <= 0) throw new Error('Diagnostic export did not confirm this device');
         if (current === epoch) { notice.textContent = 'Report saved. Existing files are preserved.'; toast('Diagnostic report saved.', 'success'); }
       } catch (error) { if (current === epoch) notice.textContent = String(error.message || error); }
       finally { if (current === epoch) { exporting = false; save.disabled = logs.disabled = false; } }

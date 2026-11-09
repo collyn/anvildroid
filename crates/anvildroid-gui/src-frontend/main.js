@@ -34,7 +34,7 @@ function navigatePage(target, refresh = true) {
   libraryPage = target === 'apps';
   clearTimeout(appStatesTimer);
   navItems.forEach(n => {
-    const selected = n.dataset.page === (target === 'runtime-settings' ? 'runtime' : target);
+    const selected = n.dataset.page === (['runtime-settings', 'images', 'adb'].includes(target) ? 'runtime' : target);
     n.classList.toggle('active', selected);
     if (selected) n.setAttribute('aria-current', 'page');
     else n.removeAttribute('aria-current');
@@ -86,6 +86,11 @@ navItems.forEach(item => {
     }
   });
 });
+// Devices, Android images and ADB share one sidebar entry; sub-tabs switch between them.
+document.addEventListener('click', event => {
+  const tab = event.target.closest?.('[data-subtab]');
+  if (tab) navigatePage(tab.dataset.subtab);
+});
 document.getElementById('btn-refresh-runtimes').addEventListener('click', refreshRuntimePage);
 document.getElementById('btn-refresh-images').addEventListener('click', refreshImagesPage);
 document.getElementById('btn-refresh-adb').addEventListener('click', () => { if (!adbPage) navigatePage('adb'); });
@@ -124,7 +129,7 @@ async function restartRuntimeController() {
   let locked = false;
   try {
     const confirmed = await AppDialog.confirm(
-      'Restart the controller service? Running managed runtimes and their windows may stop. You can start them again after reconnecting.',
+      'Restart the controller service? Running managed devices and their windows may stop. You can start them again after reconnecting.',
       {title:'Restart controller', kind:'warning', okLabel:'Restart', cancelLabel:'Cancel'});
     if (!confirmed || controllerRestartBlocked()) return;
     controllerMutation = true;
@@ -144,7 +149,7 @@ async function restartRuntimeController() {
     for (let attempt = 0; attempt < 30; attempt++) {
       try {
         const records = await controllerRequest({op:'list'});
-        if (!Array.isArray(records)) throw new Error('Invalid runtime list');
+        if (!Array.isArray(records)) throw new Error('Invalid device list');
         reachable = true;
         break;
       } catch (error) {
@@ -392,6 +397,7 @@ let currentCategory = 'all';
 let allApps = [];
 let currentSort = 'name-asc';
 let managedLibrary = [];
+let managedLibraryLoaded = false; // true after the first successful device list
 let managedLibraryLoading = false;
 let managedLibraryError = '';
 let libraryDefaultState = 'Unknown';
@@ -432,11 +438,11 @@ function defaultRuntimeId() {
   return ids[0] || null;
 }
 function setDefaultRuntimeButton(id, disabled = false) {
-  if (defaultRuntimeId() === id) return '<span class="runtime-default-badge runtime-default-current">Default runtime</span>';
+  if (defaultRuntimeId() === id) return '<span class="runtime-default-badge runtime-default-current">Default device</span>';
   return `<button type="button" class="btn btn-quiet" data-set-default-runtime="${escapeHtml(id)}" ${disabled || defaultRuntimeSaving ? 'disabled' : ''}>Set as default</button>`;
 }
 const defaultRuntimeFirst = records => [...records].sort((a, b) => (b.id === defaultRuntimeId()) - (a.id === defaultRuntimeId()));
-const defaultRuntimeBadge = id => id === defaultRuntimeId() ? ' <span class="runtime-default-badge" title="Default runtime">Default</span>' : '';
+const defaultRuntimeBadge = id => id === defaultRuntimeId() ? ' <span class="runtime-default-badge" title="Default device">Default</span>' : '';
 function renderSystemRuntimeChange() {
   renderRuntimeFilter();
   renderManagedLibraryStatus();
@@ -458,9 +464,9 @@ async function setDefaultRuntime(id) {
     const prefs = await tauriInvoke('set_default_runtime', {id});
     preferredDefaultRuntime = typeof prefs?.default_runtime === 'string' ? prefs.default_runtime : null;
     const record = runtimeRecord(id) || managedLibrary.find(item => item.id === id);
-    showAppToast(`${record?.name || 'Runtime'} is now the default runtime.`, 'success');
+    showAppToast(`${record?.name || 'Device'} is now the default runtime.`, 'success');
   } catch (error) {
-    showAppToast(`Cannot save default runtime: ${error.message || error}`, 'error');
+    showAppToast(`Cannot save default device: ${error.message || error}`, 'error');
   } finally {
     defaultRuntimeSaving = false;
     renderSystemRuntimeChange();
@@ -487,13 +493,13 @@ function renderRuntimeFilter() {
   const records = defaultRuntimeFirst([...systemRuntimeRecords(), ...managedLibrary]);
   const label = document.getElementById('runtime-filter-label');
   const selected = records.filter(record => libraryRuntimeSelected(record.id));
-  label.textContent = libraryRuntimeSelection === null ? 'All runtimes'
-    : selected.length === 1 ? selected[0].name : `${selected.length} runtimes`;
-  label.title = libraryRuntimeSelection === null ? 'All runtimes' : selected.map(record => record.name).join(', ') || 'No runtimes selected';
+  label.textContent = libraryRuntimeSelection === null ? 'All devices'
+    : selected.length === 1 ? selected[0].name : `${selected.length} devices`;
+  label.title = libraryRuntimeSelection === null ? 'All devices' : selected.map(record => record.name).join(', ') || 'No devices selected';
   const panel = document.getElementById('runtime-filter-options');
   const structure = JSON.stringify(records.map(record => [record.id, record.name]));
   if (panel._runtimeStructure !== structure) {
-    panel.innerHTML = `<label class="runtime-filter-option runtime-filter-all"><input type="checkbox" data-library-runtime="all">All runtimes</label>` + records.map(record => `<label class="runtime-filter-option"><input type="checkbox" data-library-runtime="${escapeHtml(record.id)}"><span title="${escapeHtml(record.name)}">${escapeHtml(record.name)}</span></label>`).join('');
+    panel.innerHTML = `<label class="runtime-filter-option runtime-filter-all"><input type="checkbox" data-library-runtime="all">All devices</label>` + records.map(record => `<label class="runtime-filter-option"><input type="checkbox" data-library-runtime="${escapeHtml(record.id)}"><span title="${escapeHtml(record.name)}">${escapeHtml(record.name)}</span></label>`).join('');
     panel._runtimeStructure = structure;
   }
   panel.querySelectorAll('input[data-library-runtime]').forEach(input => {
@@ -600,7 +606,7 @@ function trackRuntimeTransition(work) {
 
 var probeInstallBusy = false;
 async function openWaydroid(runtimeId) {
-  if (controllerMutation || runtimeBatchBusy) { showAppToast('Wait for the current runtime operation to finish.', 'info'); return; }
+  if (controllerMutation || runtimeBatchBusy) { showAppToast('Wait for the current device operation to finish.', 'info'); return; }
   if(probeInstallBusy){showAppToast('Installation is pending. Review the Android verification window; Waydroid can be opened when this operation finishes.','info');return;}
   if (pendingWaydroidRuntime !== null) {
     showAppToast('Waydroid is already opening. Please wait for the current request to finish.', 'info');
@@ -648,6 +654,19 @@ function iconUrl(pkg) {
   return `appicon://localhost/${activeRuntimeId}/${encodeURIComponent(pkg)}.png`;
 }
 
+// Name and icon of an installed app on one device, for pages outside the
+// library (Game Controls). Unknown apps get no label; the caller shows the
+// package name. System Waydroid icons come from its icon folder by package.
+function appIdentity(runtimeId, pkg) {
+  const managed = runtimeId && runtimeId !== 'default';
+  const app = managed ? (managedSnapshots.get(runtimeId) || []).find(item => item.package === pkg)
+    : allApps.find(item => item.package === pkg && (item.runtime_id || 'default') === 'default');
+  const label = typeof app?.label === 'string' && app.label.trim() ? app.label.trim() : '';
+  const icon = managed ? (app ? libraryIconUrl({...app, runtime_id: runtimeId}) : null) : iconUrl(pkg);
+  return {label, icon};
+}
+window.AnvilAppIdentity = appIdentity;
+
 function libraryIconUrl(app) {
   if(app.desktop_entry)return 'waydroid.png';
   if (app.runtime_id && app.runtime_id !== 'default') {
@@ -687,7 +706,7 @@ function sortApps(apps, method) {
 }
 
 function appExecutionLabel(app) {
-  if (app.desktop_entry) return 'Runtime launcher';
+  if (app.desktop_entry) return 'Device launcher';
   if (app.runtime_state && ['Stopped','Prepared','Allocated'].includes(app.runtime_state)) return 'Not running';
   if (app.available === false || (app.runtime_state && app.runtime_state !== 'Running')) return 'Status unknown';
   const age = Date.now()/1000 - Number(app.status_checked_at);
@@ -697,7 +716,7 @@ function appExecutionLabel(app) {
 
 function appAccessibleLabel(app) {
   const name = app.label || app.package.split('.').pop();
-  const runtime = app.runtime_name || (app.runtime_id === 'default' ? 'System Waydroid' : 'Runtime');
+  const runtime = app.runtime_name || (app.runtime_id === 'default' ? 'System Waydroid' : 'Device');
   const execution = appExecutionLabel(app);
   return `${name} · ${runtime} · ${execution}`;
 }
@@ -722,10 +741,10 @@ async function refreshAppStates() {
       let report;
       try {
         report = await controllerRequest({op:'app_states',id:record.id});
-        if (report?.runtime_id !== record.id) throw new Error('Wrong runtime');
+        if (report?.runtime_id !== record.id) throw new Error('Wrong device');
       } catch (error) {
         if (controllerBusy(error)) return;
-        report = null; record.error = 'Cannot verify runtime status. Refresh to retry.';
+        report = null; record.error = 'Cannot verify device status. Refresh to retry.';
       }
       const states = report?.state === 'Running' && report.states && typeof report.states === 'object' ? report.states : null;
       if (report?.state && report.state !== 'Running') record.state = report.state;
@@ -745,6 +764,12 @@ document.addEventListener('visibilitychange', () => {
   if(!document.hidden&&libraryPage)refreshAppStates();
 });
 
+// The Waydroid launcher tile is added per device; it is not an installed app.
+function isLauncherTile(app) { return Boolean(app.desktop_entry) || app.package === 'org.anvildroid.desktop'; }
+function deviceAppCount(id) {
+  const apps = id === 'default' ? allApps : (managedSnapshots.get(id) || []);
+  return apps.filter(app => !isLauncherTile(app)).length;
+}
 function renderApps(apps) {
   renderGoogleNotices();
   const globalQuery = document.getElementById('search-apps')?.value || '';
@@ -780,17 +805,34 @@ function renderApps(apps) {
     return;
   }
 
-  const sorted = sortApps(apps, currentSort);
+  // Keep the chosen sort inside each device, but show one block per device so
+  // the same app from two devices never sits side by side.
+  const deviceOrder = id => id === 'default' ? -1 : managedLibrary.findIndex(record => record.id === id);
+  const sorted = sortApps(apps, currentSort).sort((a, b) => deviceOrder(a.runtime_id || 'default') - deviceOrder(b.runtime_id || 'default'));
+  const grouped = new Set(sorted.map(app => app.runtime_id || 'default')).size > 1;
+  // Counts match the device chips: real apps only, never the Waydroid launcher
+  // tile; a filtered view says how many of the device's apps it shows.
+  const groupCounts = new Map();
+  sorted.forEach(app => { if (isLauncherTile(app)) return; const id = app.runtime_id || 'default'; groupCounts.set(id, (groupCounts.get(id) || 0) + 1); });
+  const groupHeading = (app, index) => {
+    const id = app.runtime_id || 'default';
+    if (!grouped || (index > 0 && (sorted[index - 1].runtime_id || 'default') === id)) return '';
+    const shown = groupCounts.get(id) || 0;
+    const total = deviceAppCount(id);
+    const label = shown === total ? `${total} ${total === 1 ? 'app' : 'apps'}` : `${shown} of ${total} apps`;
+    return `<div class="app-group-heading"><strong>${escapeHtml(app.runtime_name || 'System Waydroid')}</strong><span>${label}</span></div>`;
+  };
+  const appInitial = app => escapeHtml(String(app.label || app.package.split('.').pop() || '?').trim().charAt(0).toUpperCase() || '?');
   const structure = JSON.stringify(sorted.map(app => [app.runtime_id || 'default', app.package, app.label, app.runtime_name, libraryIconUrl(app), isFavorite(app), pendingWaydroidRuntime === (app.runtime_id || 'default') && !!app.desktop_entry]));
-  const markup = sorted.map(app => `
-    <div class="app-card${pendingWaydroidRuntime === (app.runtime_id || 'default') && app.desktop_entry ? ' processing' : ''}" tabindex="${pendingWaydroidRuntime === (app.runtime_id || 'default') && app.desktop_entry ? '-1' : '0'}" role="button" aria-disabled="${pendingWaydroidRuntime === (app.runtime_id || 'default') && app.desktop_entry ? 'true' : 'false'}" data-package="${escapeHtml(app.package)}" data-runtime-id="${escapeHtml(app.runtime_id || 'default')}" data-app-status="${escapeHtml(appExecutionLabel(app))}" aria-label="${escapeHtml(appAccessibleLabel(app))}" title="${escapeHtml(`${app.package} · ${app.runtime_name || (app.runtime_id === 'default' ? 'System Waydroid' : 'Runtime')}`)}">
+  const markup = sorted.map((app, index) => `${groupHeading(app, index)}
+    <div class="app-card${pendingWaydroidRuntime === (app.runtime_id || 'default') && app.desktop_entry ? ' processing' : ''}" tabindex="${pendingWaydroidRuntime === (app.runtime_id || 'default') && app.desktop_entry ? '-1' : '0'}" role="button" aria-disabled="${pendingWaydroidRuntime === (app.runtime_id || 'default') && app.desktop_entry ? 'true' : 'false'}" data-package="${escapeHtml(app.package)}" data-runtime-id="${escapeHtml(app.runtime_id || 'default')}" data-app-status="${escapeHtml(appExecutionLabel(app))}" aria-label="${escapeHtml(appAccessibleLabel(app))}" title="${escapeHtml(`${app.package} · ${app.runtime_name || (app.runtime_id === 'default' ? 'System Waydroid' : 'Device')}`)}">
       <button type="button" class="app-favorite-button favorite-mark${isFavorite(app) ? ' active' : ''}" aria-label="${isFavorite(app) ? 'Remove favorite' : 'Add favorite'}">♡</button>
       <div class="app-icon">
         ${pendingWaydroidRuntime === (app.runtime_id || 'default') && app.desktop_entry
           ? '<span class="app-processing" role="status" aria-label="Processing">Processing…</span>'
           : libraryIconUrl(app)
-            ? `<img src="${libraryIconUrl(app)}" alt="" loading="lazy" decoding="async" onerror="this.parentElement.innerHTML='App'">`
-            : 'App'}
+            ? `<img src="${libraryIconUrl(app)}" alt="" loading="lazy" decoding="async" data-initial="${appInitial(app)}" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'app-initial',textContent:this.dataset.initial}))">`
+            : `<span class="app-initial">${appInitial(app)}</span>`}
       </div>
       <div class="app-caption"><div class="app-name">${pendingWaydroidRuntime === (app.runtime_id || 'default') && app.desktop_entry ? 'Processing…' : escapeHtml(app.label || app.package.split('.').pop())}</div><div class="app-runtime-name" title="${escapeHtml(app.runtime_name || 'System Waydroid')}">${escapeHtml(app.runtime_name || 'System Waydroid')}</div></div>
       <span class="app-status-dot ${appExecutionLabel(app) === 'Foreground' || appExecutionLabel(app) === 'Background process' ? 'running' : ''}" aria-label="${escapeHtml(appExecutionLabel(app))}"></span>
@@ -944,10 +986,11 @@ function renderLibraryEmpty() {
     const busy = libraryStarts.has(record.id) || ['Starting', 'Stopping', 'Provisioning'].includes(record.state);
     const canStart = !record.error && ['Stopped', 'Ready', 'Frozen'].includes(record.state) && record.import_status !== 'pending';
     const error = libraryStartErrors.get(record.id) || record.error;
-    const note = error || (busy ? 'Please wait. Apps will appear automatically when this runtime is running.' : canStart ? 'Start this runtime to see and open its apps.' : 'Open runtime settings to check its status and finish setup.');
-    return `<section class="library-runtime-empty"><h3>${escapeHtml(record.name || record.id)}</h3><span class="hint">${escapeHtml(busy ? 'Starting / updating' : record.state)}</span><p ${error ? 'role="alert"' : ''}>${escapeHtml(note)}</p><div class="runtime-actions">${canStart || busy ? `<button class="btn btn-primary" data-library-start="${escapeHtml(record.id)}" ${busy ? 'disabled' : ''}>${busy ? 'Please wait...' : 'Start runtime'}</button>` : ''}<button class="btn btn-quiet" data-library-manage="${escapeHtml(record.id)}">Runtime settings</button><button class="btn btn-quiet" data-library-refresh>Refresh</button></div></section>`;
+    const note = error || (busy ? 'Please wait. Apps will appear automatically when this device is running.' : canStart ? 'Start this device to see and open its apps.' : 'Open device settings to check its status and finish setup.');
+    return `<section class="library-runtime-empty"><h3>${escapeHtml(record.name || record.id)}</h3><span class="hint">${escapeHtml(busy ? 'Starting / updating' : record.state)}</span><p ${error ? 'role="alert"' : ''}>${escapeHtml(note)}</p><div class="runtime-actions">${canStart || busy ? `<button class="btn btn-primary" data-library-start="${escapeHtml(record.id)}" ${busy ? 'disabled' : ''}>${busy ? 'Please wait...' : 'Start device'}</button>` : ''}<button class="btn btn-quiet" data-library-manage="${escapeHtml(record.id)}">Device settings</button><button class="btn btn-quiet" data-library-refresh>Refresh</button></div></section>`;
   }).join('');
-  const markup = `<div class="library-empty-panel" role="status"><h2>${libraryRuntimeSelection?.size === 0 ? 'Select runtimes to view apps' : 'Start a runtime to view apps'}</h2><p class="hint">Only apps from running runtimes appear here.</p>${panels || '<p>Choose runtimes in the filter above.</p>'}</div>`;
+  const guide = quickStartVisible() ? quickStartMarkup() : '';
+  const markup = guide ? guide : `<div class="library-empty-panel" role="status"><h2>${libraryRuntimeSelection?.size === 0 ? 'Select devices to view apps' : 'Start a device to view apps'}</h2><p class="hint">Only apps from running devices appear here.</p>${panels || '<p>Choose devices in the filter above.</p>'}</div>`;
   appsGrid.setAttribute('aria-busy', String(libraryStarts.size > 0));
   if (appsGrid._appMarkup === markup) return;
   appsGrid._appMarkup = markup;
@@ -955,13 +998,96 @@ function renderLibraryEmpty() {
   appsGrid.innerHTML = markup;
 }
 
+// --- Quick start: first-run guide shown on the Apps page while no device exists ---
+let quickStartLoaded = false, quickStartTimer = null, quickStartAction = null;
+// Shown until the first device runs: no device yet, or a single new one that is
+// still being set up. Existing System Waydroid users get the normal panels.
+function quickStartVisible() {
+  // Wait for both the device list and System Waydroid's state, so existing
+  // users never see the guide flash while the app is still loading.
+  return typeof AnvilQuickStart !== 'undefined' && libraryRuntimeSelection === null &&
+    managedLibraryLoaded && libraryDefaultState !== 'Unknown' &&
+    managedLibrary.length <= 1 && !managedLibrary.some(record => libraryRuntimeRunning(record.id)) &&
+    !['Running', 'Frozen', 'Stopped', 'Ready'].includes(libraryDefaultState);
+}
+function quickStartImage() {
+  const ready = (imageDownloadState?.available_images || []).find(item => item?.images?.system?.sha256 && item?.images?.vendor?.sha256);
+  return ready || (imageDownloadState?.status === 'Ready' && imageDownloadState.images ? imageDownloadState : null);
+}
+function quickStartState() {
+  const total = Number(imageDownloadState?.download_bytes) || 0;
+  return {
+    setupMissing: controllerRequirements ? !controllerRequirements.can_prepare : false,
+    imageReady: Boolean(quickStartImage()),
+    imageBusy: quickStartAction === 'download' || imageDownloadBusy || imageDownloadActive(),
+    imagePercent: total > 0 ? Math.max(0, Number(imageDownloadState.received_bytes) || 0) / total * 100 : NaN,
+    imageError: imageDownloadState?.status === 'Failed' ? `Download failed: ${imageDownloadState.error || 'Unknown error'}. Try again.` : '',
+    catalogError: imageCatalogState?.status === 'Failed' ? `Cannot reach the Waydroid image server: ${imageCatalogState.error || 'Unknown error'}.` : '',
+    hasDevice: managedLibrary.length > 0,
+    deviceBusy: quickStartAction === 'create' || controllerMutation || libraryStarts.size > 0 ||
+      managedLibrary.some(record => record.job?.status === 'Running' || ['Starting', 'Provisioning'].includes(record.state)),
+    deviceRunning: managedLibrary.some(record => libraryRuntimeRunning(record.id)),
+  };
+}
+function quickStartMarkup() {
+  if (!quickStartLoaded) {
+    quickStartLoaded = true;
+    refreshImageDownload().finally(renderQuickStart);
+    controllerRequest({op:'requirements'}).then(setup => { if (typeof setup?.can_prepare === 'boolean') controllerRequirements = setup; }).catch(() => {}).finally(renderQuickStart);
+  }
+  return AnvilQuickStart.render(quickStartState(), escapeHtml);
+}
+function renderQuickStart() {
+  const slot = document.querySelector?.('#apps-grid .quick-start');
+  if (!slot) return;
+  appsGrid._appMarkup = null;
+  renderApps(allApps);
+  clearTimeout(quickStartTimer);
+  const state = quickStartState();
+  if (state.imageBusy || state.deviceBusy) quickStartTimer = setTimeout(renderQuickStart, 500);
+}
+async function runQuickStart(action) {
+  if (quickStartAction) return;
+  if (action === 'setup') { navigatePage('runtime'); setRuntimeSetupVisible(true); return; }
+  if (action === 'install') { btnInstallApk.click(); return; }
+  if (action === 'start') { startLibraryRuntime(managedLibrary[0]?.id); return; }
+  quickStartAction = action;
+  renderQuickStart();
+  try {
+    if (action === 'download') {
+      if (imageCatalogState?.status !== 'Ready') await checkOfficialImages(false);
+      const variants = imageCatalogState?.report?.variants || [];
+      const variant = variants.find(item => item.flavor === 'VANILLA' && item.matching_versions) || variants.find(item => item.matching_versions);
+      if (!variant) throw new Error(imageCatalogState?.error || 'No compatible official image was found');
+      await startImageDownload(variant.flavor);
+      if (imageDownloadState?.status === 'Failed') throw new Error(imageDownloadState.error || 'Download failed');
+    } else if (action === 'create') {
+      const image = quickStartImage();
+      if (!image) throw new Error('Download Android first');
+      await mutateController({op:'create_image', name:'My Android', flavor:image.flavor, system_sha256:image.images.system.sha256, vendor_sha256:image.images.vendor.sha256});
+      await refreshApps();
+    }
+  } catch (error) {
+    showAppToast(`${action === 'download' ? 'Cannot download Android' : 'Cannot create the device'}: ${error.message || error}`, 'error');
+  } finally {
+    quickStartAction = null;
+    renderQuickStart();
+  }
+}
+
 appsGrid.addEventListener('click', event => {
   const button = event.target.closest('button');
   if (!button || button.disabled) return;
-  if (button.dataset.libraryStart) startLibraryRuntime(button.dataset.libraryStart);
+  if (button.dataset.quickStart) runQuickStart(button.dataset.quickStart);
+  else if (button.dataset.libraryStart) startLibraryRuntime(button.dataset.libraryStart);
   else if (button.dataset.libraryManage) {
     openRuntimeSettings(button.dataset.libraryManage);
   } else if ('libraryRefresh' in button.dataset) refreshApps();
+});
+
+document.getElementById('library-runtime-status').addEventListener('click', event => {
+  const button = event.target.closest?.('[data-library-start]');
+  if (button && !button.disabled) startLibraryRuntime(button.dataset.libraryStart);
 });
 
 async function startLibraryRuntime(id) {
@@ -982,15 +1108,15 @@ async function startLibraryRuntime(id) {
   try {
     if (id === 'default') {
       const result = await trackRuntimeTransition(() => invoke('start_runtime'));
-      if (!result?.success) throw new Error(result?.message || 'Cannot start runtime');
+      if (!result?.success) throw new Error(result?.message || 'Cannot start device');
     } else {
       const result = await controllerRequest({op:'start', id});
-      if (result?.id !== id) throw new Error('Invalid runtime response');
+      if (result?.id !== id) throw new Error('Invalid device response');
     }
     await pollLibraryStart(id, 0);
   } catch (error) {
     libraryStarts.delete(id);
-    libraryStartErrors.set(id, `Cannot start runtime: ${error.message || error}`);
+    libraryStartErrors.set(id, `Cannot start device: ${error.message || error}`);
     renderManagedLibraryStatus();
     renderApps(allApps);
   }
@@ -1004,7 +1130,7 @@ async function pollLibraryStart(id, attempts = 0) {
       state = libraryDefaultState;
     } else {
       const current = await controllerRequest({op:'refresh', id});
-      if (current?.id !== id) throw new Error('Cannot verify runtime status');
+      if (current?.id !== id) throw new Error('Cannot verify device status');
       managedLibrary = managedLibrary.map(record => record.id === id ? current : record);
       state = current.state;
       if (current.job?.status === 'Failed') throw new Error(current.job.error || 'Startup failed');
@@ -1013,7 +1139,7 @@ async function pollLibraryStart(id, attempts = 0) {
       libraryStarts.delete(id);
       await refreshApps();
     } else if (['Failed', 'Error', 'NotInstalled', 'SessionLost'].includes(state) || attempts >= 60 || Date.now() - libraryStarts.get(id) > 120000) {
-      throw new Error('Runtime did not start. Check Runtime settings, then retry.');
+      throw new Error('Device did not start. Open its settings on the Devices page, then retry.');
     } else {
       setTimeout(() => pollLibraryStart(id, attempts + 1), 2000);
     }
@@ -1156,7 +1282,7 @@ function showContextMenu(e, pkg, label, runtimeId = 'default') {
   const menu = document.createElement('div');
   menu.className = 'context-menu';
   menu.setAttribute('role', 'menu');
-  const options = pkg === 'org.anvildroid.desktop' ? [['launch', 'Open Waydroid'], ['details', 'Runtime details'], ['favorite', library.favorites.includes(pkg) ? 'Remove favorite' : 'Add favorite']] : [
+  const options = pkg === 'org.anvildroid.desktop' ? [['launch', 'Open Waydroid'], ['details', 'Device details'], ['favorite', library.favorites.includes(pkg) ? 'Remove favorite' : 'Add favorite']] : [
     ['launch', 'Open app'],
     ['details', 'App details'],
     ['favorite', library.favorites.includes(pkg) ? 'Remove favorite' : 'Add favorite'],
@@ -1213,7 +1339,7 @@ function removeContextMenu() {
 }
 async function openKeymapOverlay(runtimeId,pkg){
   if(pendingAppAction||pendingLaunch)return;
-  if(runtimeId!=='default'&&!/^r-[0-9a-f]{32}$/.test(runtimeId)){showAppToast('Select a desktop runtime to edit keymaps.','info');return;}
+  if(runtimeId!=='default'&&!/^r-[0-9a-f]{32}$/.test(runtimeId)){showAppToast('Select a desktop device to edit keymaps.','info');return;}
   pendingAppAction=true;
   try{
     showAppToast('Opening keymap overlay on the running app…','info');
@@ -1375,8 +1501,8 @@ function chooseApkTargets(records) {
   // Preselect the library filter; with all runtimes shown, the default runtime.
   const preferred = libraryRuntimeSelection || new Set([defaultRuntimeId()]);
   records = defaultRuntimeFirst(records);
-  targets.innerHTML = `<table class="apk-runtime-table"><thead><tr><th scope="col"><input id="apk-install-all" type="checkbox" aria-label="Select all available runtimes" title="Select all"></th><th scope="col">Runtime</th><th scope="col">Image</th></tr></thead><tbody>${records.map(record => `<tr><td><input id="apk-target-${escapeHtml(record.id)}" type="checkbox" aria-label="Select ${escapeHtml(record.name)}" value="${escapeHtml(record.id)}" ${!apkTargetAvailable(record) ? 'disabled' : preferred?.has(record.id) || records.filter(apkTargetAvailable).length === 1 ? 'checked' : ''}></td><td><label for="apk-target-${escapeHtml(record.id)}">${escapeHtml(record.name)}</label><small id="apk-target-state-${escapeHtml(record.id)}" class="apk-target-state ${record.state === 'Running' ? 'running' : 'idle'}">${escapeHtml(record.state || 'Unavailable')}</small></td><td>${escapeHtml(apkRuntimeImageLabel(record))}</td></tr>`).join('') || '<tr><td colspan="3" class="hint">No runtimes available.</td></tr>'}</tbody></table>`;
-  error.textContent = records.some(apkTargetAvailable) ? '' : 'Start a runtime to install an APK.';
+  targets.innerHTML = `<table class="apk-runtime-table"><thead><tr><th scope="col"><input id="apk-install-all" type="checkbox" aria-label="Select all available devices" title="Select all"></th><th scope="col">Device</th><th scope="col">Image</th></tr></thead><tbody>${records.map(record => `<tr><td><input id="apk-target-${escapeHtml(record.id)}" type="checkbox" aria-label="Select ${escapeHtml(record.name)}" value="${escapeHtml(record.id)}" ${!apkTargetAvailable(record) ? 'disabled' : preferred?.has(record.id) || records.filter(apkTargetAvailable).length === 1 ? 'checked' : ''}></td><td><label for="apk-target-${escapeHtml(record.id)}">${escapeHtml(record.name)}</label><small id="apk-target-state-${escapeHtml(record.id)}" class="apk-target-state ${record.state === 'Running' ? 'running' : 'idle'}">${escapeHtml(record.state || 'Unavailable')}</small></td><td>${escapeHtml(apkRuntimeImageLabel(record))}</td></tr>`).join('') || '<tr><td colspan="3" class="hint">No devices available.</td></tr>'}</tbody></table>`;
+  error.textContent = records.some(apkTargetAvailable) ? '' : 'Start a device to install an APK.';
   const selected = () => Array.from(targets.querySelectorAll('tbody input:checked')).filter(input => !input.disabled).map(input => input.value);
   const selectAll = document.getElementById('apk-install-all');
   const update = () => {
@@ -1433,7 +1559,7 @@ function updateApkProgress(results, total, active = null) {
   bar.className = active ? 'is-installing' : '';
   if (active) bar.removeAttribute('value');
   document.getElementById('apk-install-progress-label').textContent = active
-    ? `Installing ${results.length + 1}/${total} · ${active.name}` : `${results.length}/${total} runtimes processed`;
+    ? `Installing ${results.length + 1}/${total} · ${active.name}` : `${results.length}/${total} devices processed`;
   if (active) {
     const state = document.getElementById(`apk-target-state-${active.id}`);
     state.textContent = 'Installing…'; state.className = 'apk-target-state installing';
@@ -1445,7 +1571,7 @@ function updateApkProgress(results, total, active = null) {
     state.title = result.message;
     if (result.status === 'failed') state.textContent += ` · ${apkInstallErrorSummary(result.message)}`;
   });
-  document.getElementById('apk-install-error-details').innerHTML = results.filter(result => result.status !== 'completed').map(result => `<details class="apk-install-error-detail"><summary>${escapeHtml(result.name)} · ${escapeHtml(result.status === 'failed' ? apkInstallErrorSummary(result.message) : 'Skipped')}</summary>${/not enough space|insufficient.storage|ENOSPC|no space left/i.test(result.message) ? '<p>Free space on the runtime data disk, then retry.</p>' : ''}<pre>${escapeHtml(result.message)}</pre></details>`).join('');
+  document.getElementById('apk-install-error-details').innerHTML = results.filter(result => result.status !== 'completed').map(result => `<details class="apk-install-error-detail"><summary>${escapeHtml(result.name)} · ${escapeHtml(result.status === 'failed' ? apkInstallErrorSummary(result.message) : 'Skipped')}</summary>${/not enough space|insufficient.storage|ENOSPC|no space left/i.test(result.message) ? '<p>Free space on the device data disk, then retry.</p>' : ''}<pre>${escapeHtml(result.message)}</pre></details>`).join('');
 
 }
 async function runApkInstall(records, ids, path) {
@@ -1458,7 +1584,7 @@ async function runApkInstall(records, ids, path) {
       const current = await refreshBatchRecord(id, 'install');
       if (!apkTargetAvailable(current) || current.name !== target.name ||
           (target.generation != null && current.generation !== target.generation)) {
-        results.push({id, name:target.name, status:'skipped', message:'Runtime changed or is no longer available'});
+        results.push({id, name:target.name, status:'skipped', message:'Device changed or is no longer available'});
       } else {
         const result = await tauriInvoke('install_apk', {runtimeId:id, path});
         results.push({id, name:target.name, status:result?.success ? 'completed' : 'failed', message:result?.message || 'Installation failed'});
@@ -1480,13 +1606,13 @@ async function installApk() {
   const submit = document.getElementById('apk-install-submit');
   const form = document.getElementById('apk-install-form');
   document.getElementById('apk-install-file').textContent = 'No APK selected';
-  document.getElementById('apk-install-targets').textContent = 'Loading runtimes…';
+  document.getElementById('apk-install-targets').textContent = 'Loading devices…';
   document.getElementById('apk-install-error').textContent = '';
   document.getElementById('apk-install-error-details').innerHTML = '';
   document.getElementById('apk-install-progress').hidden = true;
   document.getElementById('apk-install-config').hidden = false;
   document.getElementById('apk-install-pick').hidden = false;
-  document.getElementById('apk-install-target-hint').textContent = 'Choose runtimes';
+  document.getElementById('apk-install-target-hint').textContent = 'Choose devices';
   document.getElementById('apk-install-pick').disabled = true;
   submit.hidden = false; submit.disabled = true;
   cancel.disabled = false; cancel.textContent = 'Cancel'; cancel.onclick = () => dialog.close();
@@ -1497,7 +1623,7 @@ async function installApk() {
     const choice = await chooseApkTargets(records);
     if (!choice) return;
     document.getElementById('apk-install-pick').hidden = true;
-    document.getElementById('apk-install-target-hint').textContent = 'Target runtimes';
+    document.getElementById('apk-install-target-hint').textContent = 'Target devices';
     document.getElementById('apk-install-targets').querySelectorAll('input').forEach(input => { input.disabled = true; });
     choice.ids.forEach(id => { document.getElementById(`apk-target-state-${id}`).textContent = 'Waiting…'; });
     submit.hidden = true; cancel.disabled = true;
@@ -1612,7 +1738,7 @@ async function installUpdate() {
   const restartsRuntimes = updateInfo.kind !== 'appimage';
   if (!await AppDialog.confirm(
     `Download AnvilDroid ${updateInfo.latest} (${updateInfo.asset}), verify its checksum and install it?` +
-    (restartsRuntimes ? ' Administrator approval is required, and running Android runtimes restart when the controller is updated.' : ''),
+    (restartsRuntimes ? ' Administrator approval is required, and running Android devices restart when the controller is updated.' : ''),
     {title:'Update AnvilDroid', kind:'info', okLabel:'Install', cancelLabel:'Cancel'})) return;
   try { updateJob = await tauriInvoke('install_update'); renderUpdate(); pollUpdate(); }
   catch (error) { updateJob = {status:'Failed', error:String(error)}; renderUpdate(); }
@@ -1648,16 +1774,16 @@ async function refreshSettings() {
     const selected = report.registry.runtimes.find(r => r.id === report.registry.default_runtime_id);
     if (selected?.id === 'default') { runtimeStartupDefaultName = selected.name || 'System Waydroid'; renderRuntimeStartupPreferences(); }
     const settings = report.configured.settings;
-    const rows = [['Runtime', selected.name], ['Runtime ID', selected.id],
+    const rows = [['Device', selected.name], ['Device ID', selected.id],
       ['Image type (configured)', settings.image_kind], ['Renderer (configured)', settings.renderer],
       ['GPU device (configured)', settings.gpu_device || 'Auto / not explicitly set'],
       ['ARM translation (configured)', report.configured.native_bridge || 'Not configured'], ['Android data', selected.data_dir], ['Images', report.configured.images_dir],
-      ['System runtime resources', 'Manage GPU, RAM/CPU, ARM and inspect active limits under Runtime > System Waydroid.'],
+      ['System device resources', 'Manage GPU, RAM/CPU, ARM and inspect active limits under Device > System Waydroid.'],
       ['Last settings apply', selected.last_applied ? 'Recorded' : 'No settings applied by AnvilDroid'],
-      ['Concurrent runtimes', report.concurrent_supported ? 'Supported' : 'Not available yet']];
+      ['Concurrent devices', report.concurrent_supported ? 'Supported' : 'Not available yet']];
     panel.innerHTML = rows.map(([k,v]) => `<div class="status-row"><span class="status-label">${escapeHtml(k)}</span><span class="status-value">${escapeHtml(v)}</span></div>`).join('') +
       `<p class="hint">${escapeHtml(report.management_note)}</p><p class="hint">Configured GPU/renderer values do not verify hardware acceleration.</p>`;
-  } catch (e) { panel.textContent = `Cannot load runtime configuration: ${e}`; }
+  } catch (e) { panel.textContent = `Cannot load device configuration: ${e}`; }
   finally { await armRefresh; button.disabled = false; }
 }
 document.getElementById('btn-refresh-settings').addEventListener('click', refreshSettings);
@@ -1740,8 +1866,8 @@ function renderRuntimeStartupPreferences() {
     const busy = runtimeStartupLoading || runtimeStartupSaving.size > 0 || record.deletion_pending || ['Provisioning', 'Starting', 'Stopping'].includes(record.state) || record.job?.status === 'Running';
     return `<tr class="runtime-summary"><td><span class="runtime-startup-name">${escapeHtml(record.name)}</span></td><td><label class="shortcut-preference"><input type="checkbox" data-runtime-startup="${escapeHtml(record.id)}" aria-label="Start ${escapeHtml(record.name)} at login" ${record.start_on_boot ? 'checked' : ''} ${busy ? 'disabled' : ''}></label></td></tr>`;
   }).join('');
-  const message = runtimeStartupError || (runtimeStartupLoading && !runtimeStartupRecords.length ? 'Loading runtimes…' : '');
-  const markup = `<div class="runtime-table-scroll"><table class="runtime-table runtime-startup-table"><thead><tr><th>Runtime</th><th>Start at login</th></tr></thead><tbody>${defaultRow}${rows}</tbody></table></div>${message ? `<p class="hint" role="status">${escapeHtml(message)}</p>` : ''}`;
+  const message = runtimeStartupError || (runtimeStartupLoading && !runtimeStartupRecords.length ? 'Loading devices…' : '');
+  const markup = `<div class="runtime-table-scroll"><table class="runtime-table runtime-startup-table"><thead><tr><th>Device</th><th>Start at login</th></tr></thead><tbody>${defaultRow}${rows}</tbody></table></div>${message ? `<p class="hint" role="status">${escapeHtml(message)}</p>` : ''}`;
   update(markup);
 }
 async function refreshRuntimeStartupPreferences() {
@@ -1750,10 +1876,10 @@ async function refreshRuntimeStartupPreferences() {
   renderRuntimeStartupPreferences();
   try {
     const records = await controllerRequest({op:'list'});
-    if (!Array.isArray(records) || records.some(record => !/^r-[a-f0-9]{32}$/.test(record.id) || typeof record.start_on_boot !== 'boolean')) throw new Error('Invalid runtime startup inventory');
+    if (!Array.isArray(records) || records.some(record => !/^r-[a-f0-9]{32}$/.test(record.id) || typeof record.start_on_boot !== 'boolean')) throw new Error('Invalid device startup inventory');
     runtimeStartupRecords = records;
     syncLoginStart(records);
-  } catch (error) { runtimeStartupRecords = []; runtimeStartupError = `Cannot load runtimes: ${error.message || error}`; }
+  } catch (error) { runtimeStartupRecords = []; runtimeStartupError = `Cannot load devices: ${error.message || error}`; }
   finally { runtimeStartupLoading = false; renderRuntimeStartupPreferences(); }
 }
 async function changeRuntimeStartupPreference(event) {
@@ -1768,7 +1894,7 @@ async function changeRuntimeStartupPreference(event) {
   renderRuntimeStartupPreferences();
   try {
     const result = await controllerRequest({op:'start_on_boot', id, enabled});
-    if (result?.id !== id || result.start_on_boot !== enabled) throw new Error('Invalid runtime startup response');
+    if (result?.id !== id || result.start_on_boot !== enabled) throw new Error('Invalid device startup response');
     Object.assign(record, result);
     const cached = runtimeRecord(id);
     if (cached) cached.start_on_boot = enabled;
@@ -1781,7 +1907,7 @@ async function changeRuntimeStartupPreference(event) {
 }
 document.getElementById('runtime-startup-list').addEventListener('change', changeRuntimeStartupPreference);
 // The controller only runs on demand, so "start at login" needs a login entry
-// in this user's session; keep it present exactly while a runtime wants it.
+// in this user's session; keep it present exactly while a device wants it.
 let loginStartSynced = null;
 function syncLoginStart(records) {
   if (!Array.isArray(records)) return;
@@ -1873,7 +1999,7 @@ function renderGoogleRegistrationDialog() {
   const record = googleRegistrationRecord(googleRegistrationTarget);
   document.getElementById('google-registration-content').innerHTML = record
     ? `<h3>${escapeHtml(record.name)}</h3>${renderRuntimeGoogle(record)}`
-    : '<p role="status">Runtime unavailable. Close this dialog and refresh Apps.</p>';
+    : '<p role="status">Device unavailable. Close this dialog and refresh Apps.</p>';
 }
 
 document.getElementById('library-google-notices').addEventListener('click', async event => {
@@ -1993,7 +2119,7 @@ function renderExistingRuntime() {
   document.querySelectorAll('#legacy-runtime-row .runtime-action-icon').forEach(button => button.setAttribute('aria-label', button.title + ' · ' + record.name));
   const busy = runtimeOperationBusy('default') || apkInstallBusy || !record.managed || record.unavailable || record.detailsLoading;
   const button = (op,label,disabled=false) => `<button class="btn btn-quiet" data-controller-op="${op}" data-controller-id="default" ${disabled ? 'disabled' : ''}>${label}</button>`;
-  const markup = `${existingRuntimeError ? `<p class="runtime-blocked">${escapeHtml(existingRuntimeError)}</p>` : ''}<div class="runtime-actions runtime-settings-actions">${setDefaultRuntimeButton('default')}${!record.managed ? `<p class="hint">Start System Waydroid, then enable management once to keep its settings available after stopping. App data stays in place.</p>${button('existing_claim','Enable management',controllerMutation || record.unavailable || record.state !== 'Running')}` : `${button('rename','Rename…',controllerMutation || record.unavailable)}${button('reinstall','Reinstall runtime…',busy || !['Stopped','Running','Frozen'].includes(record.state))}`}</div>
+  const markup = `${existingRuntimeError ? `<p class="runtime-blocked">${escapeHtml(existingRuntimeError)}</p>` : ''}<div class="runtime-actions runtime-settings-actions">${setDefaultRuntimeButton('default')}${!record.managed ? `<p class="hint">Start System Waydroid, then enable management once to keep its settings available after stopping. App data stays in place.</p>${button('existing_claim','Enable management',controllerMutation || record.unavailable || record.state !== 'Running')}` : `${button('rename','Rename…',controllerMutation || record.unavailable)}${button('reinstall','Reinstall device…',busy || !['Stopped','Running','Frozen'].includes(record.state))}`}</div>
     <details class="runtime-settings-group" data-settings-key="${escapeHtml(record.id)}:gpu" ${runtimeSettingsOpen.has(record.id + ':gpu') ? 'open' : ''}><summary>Graphics</summary><div class="runtime-gpu-panel runtime-primary-setting" id="runtime-gpu-default">${renderGpuControls(record,busy)}<div class="runtime-actions" data-level="advanced">${button('gpu_check','Check GPU',controllerMutation)}</div><div data-level="advanced">${renderRuntimeGraphics('default')}</div></div></details>
     <div class="runtime-config-grid">
       <details class="runtime-settings-group" data-level="advanced" data-settings-key="${escapeHtml(record.id)}:storage" ${runtimeSettingsOpen.has(record.id + ':storage') ? 'open' : ''}><summary>Storage</summary><div class="runtime-storage-panel"><p class="runtime-storage-path">${escapeHtml(record.storage?.path || record.storageError || 'Unavailable')}</p>${record.storage ? `<p>Disk free: ${(record.storage.free_bytes / 1024**3).toFixed(2)} / ${(record.storage.total_bytes / 1024**3).toFixed(2)} GiB</p>` : ''}<p class="hint">Shared filesystem; no disk quota.</p><div data-runtime-shares="default"></div></div></details>
@@ -2003,7 +2129,7 @@ function renderExistingRuntime() {
         <details class="runtime-setting-row" data-settings-key="${escapeHtml(record.id)}:resources" ${runtimeSettingsOpen.has(record.id + ':resources') ? 'open' : ''}><summary><span><strong>Performance</strong><small>RAM and CPU limits</small></span></summary><div class="runtime-setting-body"><div class="runtime-resources-panel">${renderResourceControls(record,busy)}</div></div></details>
         <details class="runtime-setting-row" data-settings-key="${escapeHtml(record.id)}:google" ${runtimeSettingsOpen.has(record.id + ':google') ? 'open' : ''}><summary><span><strong>Google Play</strong></span></summary><div class="runtime-setting-body"><div class="runtime-google-panel">${renderRuntimeGoogle(record)}</div></div></details>
         <details class="runtime-setting-row" data-level="advanced" data-settings-key="${escapeHtml(record.id)}:health" ${runtimeSettingsOpen.has(record.id + ':health') ? 'open' : ''}><summary><span><strong>Diagnostics</strong></span></summary><div class="runtime-setting-body"><div class="runtime-health-panel">${button('health','Check health',controllerMutation)}${renderRuntimeHealth('default')}</div><div data-runtime-diagnostics="default"></div></div></details>
-        <details class="runtime-setting-row" data-level="advanced" data-settings-key="${escapeHtml(record.id)}:import" ${runtimeSettingsOpen.has(record.id + ':import') ? 'open' : ''}><summary><span><strong>Managed copy</strong><small>Import existing Android data</small></span></summary><div class="runtime-setting-body"><div class="runtime-import-panel"><h4>Full isolated management</h4><p class="hint">Copy images, apps and data to a separate runtime. Stop this runtime first; the original is kept.</p>${button('existing_import','Import managed copy…',busy || record.state !== 'Stopped')}</div></div></details>
+        <details class="runtime-setting-row" data-level="advanced" data-settings-key="${escapeHtml(record.id)}:import" ${runtimeSettingsOpen.has(record.id + ':import') ? 'open' : ''}><summary><span><strong>Managed copy</strong><small>Import existing Android data</small></span></summary><div class="runtime-setting-body"><div class="runtime-import-panel"><h4>Full isolated management</h4><p class="hint">Copy images, apps and data to a separate runtime. Stop this device first; the original is kept.</p>${button('existing_import','Import managed copy…',busy || record.state !== 'Stopped')}</div></div></details>
       </div>
     </div>`;
   if (panel._runtimeMarkup !== markup) { panel.innerHTML = markup; panel._runtimeMarkup = markup; }
@@ -2104,7 +2230,7 @@ function renderImageDownload(state) {
       cancel: state.can_cancel && state.status !== 'Cancelling' ? cancelImageDownload : null,
     });
   } else clearProgressToast('image-download');
-  if (wasActive && state.status === 'Ready') showAppToast(`${imageLabel} is ready. Use Create runtime in Images to start it.`, 'success');
+  if (wasActive && state.status === 'Ready') showAppToast(`${imageLabel} is ready. Create a device from it to start Android.`, 'success');
   else if (wasActive && state.status === 'Failed') showAppToast(`${imageLabel} failed: ${state.error || 'Unknown error'}`, 'error');
   else if (wasActive && state.status === 'Cancelled') showAppToast(`${imageLabel} download cancelled.`, 'info');
   renderImageSourceOptions();
@@ -2119,13 +2245,13 @@ function renderImageDownload(state) {
   if (state.status !== 'Idle') {
     message += `<p><strong>${escapeHtml(state.flavor)} · ${state.status === 'Ready' ? 'Ready' : escapeHtml(state.status)}</strong></p>`;
     if (imageDownloadActive()) message += `<p>${escapeHtml(state.phase)}</p>${progress}<p class="hint">${percent}${gib(state.received_bytes)} / ${gib(state.download_bytes)} GiB downloaded</p>`;
-    if (state.status === 'Ready') message += `<p class="setup-ready">System and vendor archives downloaded and SHA-256 verified.</p><p class="hint">Unpacked images: ${gib(state.image_bytes)} GiB, plus runtime data and preparation space. Create a runtime from it; images are prepared and Android starts automatically. New compatible runtimes enable ARM translation during preparation.</p>`;
+    if (state.status === 'Ready') message += `<p class="setup-ready">System and vendor archives downloaded and SHA-256 verified.</p><p class="hint">Unpacked images: ${gib(state.image_bytes)} GiB, plus device data and preparation space. Create a device from it; images are prepared and Android starts automatically. New compatible devices enable ARM translation during preparation.</p>`;
     if (state.error) message += `<p class="runtime-feedback ${state.status === 'Failed' ? 'error' : 'warning'}">${escapeHtml(state.error)}</p><p class="hint">Completed archives stay cached. Download again to verify and reuse them; partial files are removed.</p>`;
   }
   if (state.flavor === 'CUSTOM') {
     message = `<p><strong>Custom image import · ${escapeHtml(state.status)}</strong></p><p>${escapeHtml(state.error || state.phase || '')}</p>`;
     if (imageDownloadActive()) message += `${progress}<p class="hint">${percent}${gib(received)} GiB processed</p>`;
-    if (state.status === 'Ready') message += '<p class="hint">Local ZIP inspected and SHA-256 recorded, not official source verification. Create a runtime from it; images are prepared and Android starts automatically.</p>';
+    if (state.status === 'Ready') message += '<p class="hint">Local ZIP inspected and SHA-256 recorded, not official source verification. Create a device from it; images are prepared and Android starts automatically.</p>';
   }
   if (imageDownloadActive()) message += '<p class="hint">Image actions become available when this download or import finishes.</p>';
   panel.innerHTML = ['Downloading', 'Verifying', 'Cancelling', 'Failed'].includes(state.status) || state.error ? message : '';
@@ -2198,7 +2324,7 @@ function renderAvailableImages() {
       return `<tr class="image-not-cached"><td><strong>Waydroid ${escapeHtml(variant.flavor)}</strong><br><span class="hint">${escapeHtml(variant.system.version)} · ${escapeHtml(imageCatalogState.report.architecture)}</span></td><td>Official<br><span class="hint">Not downloaded</span></td><td>${(variant.download_bytes / 1024**3).toFixed(2)} GiB</td><td>${imageActionButton('Download Waydroid ' + variant.flavor, `data-download-flavor="${escapeHtml(variant.flavor)}"`, 'download', busy || imageDownloadBusy || imageDownloadActive() || !variant.matching_versions, true)}</td></tr>`;
     }
     const label = item.flavor === 'CUSTOM' ? (item.custom_name || 'Custom image ' + item.library_id.slice(0, 8)) : 'Waydroid ' + item.flavor;
-    return `<tr><td><strong>${escapeHtml(label)}</strong><details><summary>Image details</summary>${['system', 'vendor'].map(kind => `<p class="hint">${kind}: ${escapeHtml(item.images[kind].filename)}<br>SHA-256: <code>${escapeHtml(item.images[kind].sha256)}</code></p>`).join('')}</details></td><td>${item.flavor === 'CUSTOM' ? 'Imported' : 'Official'}</td><td>${(item.image_bytes / 1024**3).toFixed(2)} GiB</td><td><div class="runtime-actions">${imageActionButton('Create runtime · ' + label, `data-image-use="${escapeHtml(item.library_id)}"`, 'create', busy, true)}${imageActionButton(canReinstall ? 'Reinstall ' + target.name + ' · ' + label : 'Select a stopped runtime to reinstall', `data-image-reinstall="${escapeHtml(item.library_id)}"`, 'reinstall', busy || !canReinstall)}${item.flavor === 'CUSTOM' ? imageActionButton('Rename · ' + label, `data-image-rename="${escapeHtml(item.library_id)}"`, 'rename', busy) : ''}</div></td></tr>`;
+    return `<tr><td><strong>${escapeHtml(label)}</strong><details><summary>Image details</summary>${['system', 'vendor'].map(kind => `<p class="hint">${kind}: ${escapeHtml(item.images[kind].filename)}<br>SHA-256: <code>${escapeHtml(item.images[kind].sha256)}</code></p>`).join('')}</details></td><td>${item.flavor === 'CUSTOM' ? 'Imported' : 'Official'}</td><td>${(item.image_bytes / 1024**3).toFixed(2)} GiB</td><td><div class="runtime-actions">${imageActionButton('Create device · ' + label, `data-image-use="${escapeHtml(item.library_id)}"`, 'create', busy, true)}${imageActionButton(canReinstall ? 'Reinstall ' + target.name + ' · ' + label : 'Select a stopped device to reinstall', `data-image-reinstall="${escapeHtml(item.library_id)}"`, 'reinstall', busy || !canReinstall)}${item.flavor === 'CUSTOM' ? imageActionButton('Rename · ' + label, `data-image-rename="${escapeHtml(item.library_id)}"`, 'rename', busy) : ''}</div></td></tr>`;
   }).join('')}</tbody></table></div>`;
 }
 document.getElementById('available-runtime-images').addEventListener('click', async event => {
@@ -2275,7 +2401,7 @@ async function importArmSource(kind, version = '') {
     if (!result?.sha256) throw new Error('Controller returned an invalid ARM source record');
     armSourceState.sources = [result, ...(armSourceState.sources || []).filter(item => item.sha256 !== result.sha256)];
     armSourceState.error = '';
-    showAppToast('ARM source ready. Select it in a stopped runtime, then save ARM translation.', 'success');
+    showAppToast('ARM source ready. Select it in a stopped device, then save ARM translation.', 'success');
     await refreshController();
   } catch (error) { armSourceState.error = `ARM source import failed: ${error}`; }
   finally { armSourceState.busy = false; renderArmSources(true); }
@@ -2326,16 +2452,16 @@ function renderCreateImageHint() {
     const custom = state?.flavor === 'CUSTOM';
     const ready = custom && (selectedImage ? true : state.status === 'Ready');
     panel.textContent = ready ? 'Custom image · Experimental compatibility. ARM translation must be configured separately.' : 'Import both system.img and vendor.img from a folder or ZIP before creating this runtime.';
-    if (ready && !reinstallTargetId) panel.textContent += ' Creating a runtime automatically prepares its images and starts Android.';
+    if (ready && !reinstallTargetId) panel.textContent += ' Creating a device automatically prepares its images and starts Android.';
     return;
   }
-  if (flavor === 'installed') { panel.textContent = 'Creates a separate runtime from the installed image.' + (reinstallTargetId ? '' : ' Images are prepared and Android starts automatically.'); return; }
+  if (flavor === 'installed') { panel.textContent = 'Creates a separate device from the installed image.' + (reinstallTargetId ? '' : ' Images are prepared and Android starts automatically.'); return; }
   const state = selectedImage || imageDownloadState;
   if (state?.status !== 'Ready' || state.flavor !== flavor) {
-    panel.textContent = `Waydroid ${flavor}: ${IMAGE_FLAVOR_NOTE(flavor)} Download & verify this image in the Images tab first. It will be used for a new runtime; existing runtimes are kept.`;
+    panel.textContent = `Waydroid ${flavor}: ${IMAGE_FLAVOR_NOTE(flavor)} Download & verify this image in the Images tab first. It will be used for a new runtime; existing devices are kept.`;
     return;
   }
-  panel.textContent = `Waydroid ${flavor} · ${(state.image_bytes / 1024**3).toFixed(2)} GiB + runtime data. ${IMAGE_FLAVOR_NOTE(flavor)}${flavor === 'GAPPS' ? ' Google sign-in requires device registration.' : ''}`;
+  panel.textContent = `Waydroid ${flavor} · ${(state.image_bytes / 1024**3).toFixed(2)} GiB + device data. ${IMAGE_FLAVOR_NOTE(flavor)}${flavor === 'GAPPS' ? ' Google sign-in requires device registration.' : ''}`;
   if (!reinstallTargetId) panel.textContent += ' Images are prepared and Android starts automatically.';
 }
 document.getElementById('controller-image').addEventListener('change', event => {
@@ -2445,7 +2571,7 @@ async function refreshCustomImageUrlStatus() {
       customUrlState = null;
       clearProgressToast('custom-url');
       document.getElementById('btn-cancel-custom-url').hidden = true;
-      showAppToast(`${result.custom_name || 'Custom image'} is ready. Use Create runtime in Images to start it.`, 'success');
+      showAppToast(`${result.custom_name || 'Custom image'} is ready. Create a device from it to start Android.`, 'success');
       renderImageDownload(result);
       document.getElementById('custom-image-url').readOnly = false;
       document.getElementById('btn-import-runtime-url').textContent = 'Download custom image';
@@ -2597,8 +2723,8 @@ function renderWaydroidInitStatus(status) {
   const line = document.getElementById('waydroid-init-status');
   if (!status) { line.textContent = ''; return; }
   if (status.state === 'installing' || status.state === 'initializing') line.textContent = status.detail || 'Working…';
-  else if (status.state === 'failed') line.textContent = `Runtime setup failed: ${status.error || status.detail || 'Unknown error'}`;
-  else if (status.state === 'timeout') line.textContent = 'Runtime setup is still running in the background. Refresh to re-check.';
+  else if (status.state === 'failed') line.textContent = `Device setup failed: ${status.error || status.detail || 'Unknown error'}`;
+  else if (status.state === 'timeout') line.textContent = 'Device setup is still running in the background. Refresh to re-check.';
   else line.textContent = '';
 }
 async function pollJob({ poll, intervalMs, deadlineMs, predicate, onUpdate, onDone }) {
@@ -2658,7 +2784,7 @@ async function initializeWaydroid() {
       }
     } catch (_) { /* No existing setup job; continue. */ }
     const confirmed = await AppDialog.confirm(
-      'Install or repair the host tools needed for Android runtimes?\n\nPackages may need a download. Your administrator password is required.',
+      'Install or repair the host tools needed for Android devices?\n\nPackages may need a download. Your administrator password is required.',
       { title: 'Install runtime tools', kind: 'warning', okLabel: 'Install / repair', cancelLabel: 'Cancel' });
     if (!confirmed) return;
     line.textContent = 'Requesting administrator access…';
@@ -2749,7 +2875,7 @@ function renderController() {
   if (selectedRuntimeId !== 'default' && !controllerRecords.some(record => record.id === selectedRuntimeId)) selectedRuntimeId = null;
   document.getElementById('legacy-runtime-detail').hidden = runtimeSettingsId !== 'default';
   const settingsRecord = runtimeRecord(runtimeSettingsId);
-  document.getElementById('runtime-settings-title').textContent = settingsRecord?.name || 'Runtime unavailable';
+  document.getElementById('runtime-settings-title').textContent = settingsRecord?.name || 'Device unavailable';
   let settingsMarkup = '';
   document.getElementById('legacy-runtime-row').hidden = !systemRuntimeVisible();
   if (!systemRuntimeVisible() && selectedRuntimeId === 'default') selectedRuntimeId = null;
@@ -2788,11 +2914,11 @@ function renderController() {
       Error: 'The last operation failed. Review the error below before retrying.'
     };
     const phase = pending?.phase;
-    const waiting = ({stopping:'Stopping Android to apply settings…', applying:'Applying settings…', starting:'Restarting Android…', configuring:'Setting up runtime…', preparing:record.prepare_phase || 'Preparing images…', booting:'Starting Android…'})[phase] || (phase === 'confirm' ? 'Waiting for confirmation…' : phase === 'send' ? 'Sending request…' : 'Waiting for current refresh…');
-    const storagePhase = ({copy: 'Copying runtime data…', verify: 'Verifying the copied data…', switch: 'Activating the new location…', cleanup: 'Removing the retained copy…'})[record.storage?.job?.phase];
-    const title = runtimeBatchRestarting.has(record.id) ? 'Restarting…' : RuntimeWindow.isPending(record.id) ? 'Opening Waydroid…' : pending ? waiting : appWorking ? (record.appJob.action === 'delete' ? 'Deleting runtime…' : record.appJob.action === 'install' ? 'Installing APK…' : record.appJob.action === 'full_ui' ? 'Opening Waydroid…' : record.appJob.action === 'launch' ? 'Launching desktop app…' : 'Force-stopping app…') : storageMoving ? storagePhase || 'Moving runtime data…' : record.deletion_pending ? 'Deletion incomplete' : labels[record.state] || record.state;
+    const waiting = ({stopping:'Stopping Android to apply settings…', applying:'Applying settings…', starting:'Restarting Android…', configuring:'Setting up device…', preparing:record.prepare_phase || 'Preparing images…', booting:'Starting Android…'})[phase] || (phase === 'confirm' ? 'Waiting for confirmation…' : phase === 'send' ? 'Sending request…' : 'Waiting for current refresh…');
+    const storagePhase = ({copy: 'Copying device data…', verify: 'Verifying the copied data…', switch: 'Activating the new location…', cleanup: 'Removing the retained copy…'})[record.storage?.job?.phase];
+    const title = runtimeBatchRestarting.has(record.id) ? 'Restarting…' : RuntimeWindow.isPending(record.id) ? 'Opening Waydroid…' : pending ? waiting : appWorking ? (record.appJob.action === 'delete' ? 'Deleting device…' : record.appJob.action === 'install' ? 'Installing APK…' : record.appJob.action === 'full_ui' ? 'Opening Waydroid…' : record.appJob.action === 'launch' ? 'Launching desktop app…' : 'Force-stopping app…') : storageMoving ? storagePhase || 'Moving device data…' : record.deletion_pending ? 'Deletion incomplete' : labels[record.state] || record.state;
     const status = runtimeOperations.get(record.id) === 'restart' ? 'Restarting' : pending?.op === 'reinstall' && phase === 'stopping' ? 'Stopping' : pending?.op === 'reinstall' && phase === 'applying' ? 'Reinstalling' : runtimeBatchRestarting.has(record.id) || pending && pending.op !== 'reinstall' && ['stopping', 'starting'].includes(phase) ? 'Restarting' : labels[record.state] || record.state;
-    const button = (op, label, allowed, style = '') => `<button class="btn ${style}" data-controller-op="${op}" data-controller-id="${escapeHtml(record.id)}" ${busy || !allowed || (record.deletion_pending && op !== 'delete') ? 'disabled' : ''} ${op === 'delete' && !canDelete ? 'title="Stop this runtime before deleting it"' : ''}>${label}</button>`;
+    const button = (op, label, allowed, style = '') => `<button class="btn ${style}" data-controller-op="${op}" data-controller-id="${escapeHtml(record.id)}" ${busy || !allowed || (record.deletion_pending && op !== 'delete') ? 'disabled' : ''} ${op === 'delete' && !canDelete ? 'title="Stop this device before deleting it"' : ''}>${label}</button>`;
     const actionIcons = {
       start: '<path d="m8 5 11 7-11 7z"/>',
       stop: '<rect x="6" y="6" width="12" height="12" rx="1"/>',
@@ -2831,12 +2957,12 @@ function renderController() {
     }
     const kind = runtimeBatchRestarting.has(record.id) ? 'info' : failed || record.appJob?.status === 'Failed' ? 'error' : record.state === 'Stopped' && record.shutdown_warning ? 'warning' : runtimeBadgeKind(record.state);
     const showDetailFeedback = Boolean(pending || active || failed || record.shutdown_warning || storageMoving || record.appJob?.status === 'Failed');
-    const detailFeedback = showDetailFeedback ? `<div class="runtime-feedback ${kind}" role="status">${pending || active ? '<span class="runtime-spinner" aria-hidden="true"></span>' : ''}<strong>${escapeHtml(title)}</strong><p>${escapeHtml(appWorking ? (record.appJob.action === 'delete' ? 'Removing runtime data. This may take a few minutes.' : record.appJob.action === 'install' ? 'Waiting for Android to finish verification and app optimization. A confirmation dialog is not always required.' : record.appJob.package) : storageMoving ? (record.storage?.job?.phase === 'cleanup' ? 'Removing only the retained copy. The active runtime data is kept.' : 'Keep both disks connected. The original data remains available until the copy is verified.') : descriptions[record.state] || '')}</p></div>` : '';
+    const detailFeedback = showDetailFeedback ? `<div class="runtime-feedback ${kind}" role="status">${pending || active ? '<span class="runtime-spinner" aria-hidden="true"></span>' : ''}<strong>${escapeHtml(title)}</strong><p>${escapeHtml(appWorking ? (record.appJob.action === 'delete' ? 'Removing device data. This may take a few minutes.' : record.appJob.action === 'install' ? 'Waiting for Android to finish verification and app optimization. A confirmation dialog is not always required.' : record.appJob.package) : storageMoving ? (record.storage?.job?.phase === 'cleanup' ? 'Removing only the retained copy. The active device data is kept.' : 'Keep both disks connected. The original data remains available until the copy is verified.') : descriptions[record.state] || '')}</p></div>` : '';
     const summary = `<tr class="runtime-summary ${selected ? 'selected' : ''}" data-runtime-select="${escapeHtml(record.id)}" aria-busy="${Boolean(runtimeOperations.has(record.id) || runtimeBatchRestarting.has(record.id) || pending || active)}"><td class="runtime-checkbox-cell"><input type="checkbox" data-runtime-check="${escapeHtml(record.id)}" aria-label="Select ${escapeHtml(record.name)}" ${runtimeBatchSelection.has(record.id) ? 'checked' : ''} ${runtimeBatchBusy ? 'disabled' : ''}></td><td>${nameCell}${renderQuickSettings(record, busy)}</td><td><span class="runtime-status ${kind}" role="status">${escapeHtml(status)}</span></td><td class="runtime-usage-cell" data-runtime-usage="${escapeHtml(record.id)}">${renderRuntimeUsage(record)}</td><td><div class="runtime-actions">${actions}${record.deletion_pending ? deleteAction : ''}</div></td></tr>`;
     const detail = `<article class="runtime-card managed-runtime">
       <div class="runtime-actions">${setDefaultRuntimeButton(record.id, record.deletion_pending)}${button('rename', 'Rename…', true, 'btn-quiet')}${!record.deletion_pending ? button('reinstall', 'Reinstall…', canReinstall, 'btn-warning') + deleteAction : ''}</div>
       ${detailFeedback}
-      ${pending || active ? '<div class="runtime-progress runtime-progress-indeterminate" role="progressbar" aria-label="Runtime operation in progress"><span></span></div>' : ''}
+      ${pending || active ? '<div class="runtime-progress runtime-progress-indeterminate" role="progressbar" aria-label="Device operation in progress"><span></span></div>' : ''}
       ${record.image_selection ? (() => {
         const image = record.image_selection;
         const systemSha = image.images?.system?.sha256 || '';
@@ -2850,18 +2976,18 @@ function renderController() {
       })() : ''}
       ${record.job?.error ? `<div class="runtime-feedback error" role="alert"><strong>Could not ${escapeHtml(record.job.operation)}</strong><p>${escapeHtml(record.job.error)}</p></div>` : ''}
       ${blocked ? `<p class="runtime-blocked">Prepare / Start is unavailable — ${escapeHtml(blockedReasons.join(' · '))}</p>` : ''}
-      ${record.appJob && !(record.appJob.action === 'launch' && record.appJob.status === 'Succeeded') ? `<div class="runtime-feedback ${record.appJob.status === 'Failed' ? 'error' : 'info'}" role="status"><strong>${escapeHtml(record.appJob.action)} · ${escapeHtml(record.appJob.status)}</strong><p>${escapeHtml(record.appJob.package || (record.appJob.action === 'delete' ? 'Runtime deletion' : record.appJob.action === 'install' ? 'APK installation' : ''))}</p><p>${escapeHtml(record.appJob.error || record.appJob.result?.message || 'Waiting for the Android result…')}</p></div>` : ''}
+      ${record.appJob && !(record.appJob.action === 'launch' && record.appJob.status === 'Succeeded') ? `<div class="runtime-feedback ${record.appJob.status === 'Failed' ? 'error' : 'info'}" role="status"><strong>${escapeHtml(record.appJob.action)} · ${escapeHtml(record.appJob.status)}</strong><p>${escapeHtml(record.appJob.package || (record.appJob.action === 'delete' ? 'Device deletion' : record.appJob.action === 'install' ? 'APK installation' : ''))}</p><p>${escapeHtml(record.appJob.error || record.appJob.result?.message || 'Waiting for the Android result…')}</p></div>` : ''}
       <details class="runtime-settings-group" data-settings-key="${escapeHtml(record.id)}:gpu" ${runtimeSettingsOpen.has(record.id + ':gpu') ? 'open' : ''}><summary>Graphics</summary><div class="runtime-gpu-panel runtime-primary-setting" id="runtime-gpu-${escapeHtml(record.id)}">${renderGpuControls(record, busy)}<div class="runtime-actions" data-level="advanced">${button('gpu_check', runtimeGraphics.get(record.id)?.loading ? 'Checking GPU…' : 'Check GPU', !runtimeGraphics.get(record.id)?.loading, 'btn-quiet')}</div><div data-level="advanced">${renderRuntimeGraphics(record.id)}</div></div></details>
       <div class="runtime-config-grid"><details class="runtime-settings-group" data-level="advanced" data-settings-key="${escapeHtml(record.id)}:storage" ${runtimeSettingsOpen.has(record.id + ':storage') ? 'open' : ''}><summary>Storage</summary><div class="runtime-storage-panel">
         <p class="runtime-storage-path">${escapeHtml(record.storage?.path || record.storageLoadError || 'Loading storage location…')}</p>
-        ${record.storage?.total_bytes != null ? `<p class="hint">Runtime used: ${record.storage.used_bytes == null ? 'Measuring…' : (record.storage.used_bytes / 1024 ** 3).toFixed(2) + ' GiB'} · free: ${(record.storage.free_bytes / 1024 ** 3).toFixed(2)} GiB / ${(record.storage.total_bytes / 1024 ** 3).toFixed(2)} GiB.</p>` : ''}
+        ${record.storage?.total_bytes != null ? `<p class="hint">Device used: ${record.storage.used_bytes == null ? 'Measuring…' : (record.storage.used_bytes / 1024 ** 3).toFixed(2) + ' GiB'} · free: ${(record.storage.free_bytes / 1024 ** 3).toFixed(2)} GiB / ${(record.storage.total_bytes / 1024 ** 3).toFixed(2)} GiB.</p>` : ''}
         ${record.storage?.limit_status === 'unavailable' ? '<p class="hint">Disk quota unavailable.</p>' : ''}
         <div class="runtime-actions">${button('move', 'Change location…', Boolean(record.storage) && !record.storage.error && !record.storage.previous_path && canMoveState, 'btn-quiet')}
         ${record.storage?.previous_path ? button('discard_previous', 'Remove retained copy…', !record.storage.error, 'btn-quiet') : ''}</div>
         ${!canMoveState && !storageMoving ? '<p class="hint">Stop Android before changing its storage location.</p>' : ''}
         ${record.storage?.path?.split('/').pop().startsWith('.anvildroid-') ? '<p class="hint">Hidden folder: Ctrl+H to show. Administrator access required.</p>' : ''}
         ${needsImages && canMoveState ? '<p class="hint">Choose a storage location before Prepare.</p>' : ''}
-        ${record.storage?.previous_path ? `<p class="hint">Retained copy: ${escapeHtml(record.storage.previous_path)}. Verify the runtime at its new location before removing this copy to reclaim space. Moving alone does not free space on the original disk.</p>` : ''}
+        ${record.storage?.previous_path ? `<p class="hint">Retained copy: ${escapeHtml(record.storage.previous_path)}. Verify the device at its new location before removing this copy to reclaim space. Moving alone does not free space on the original disk.</p>` : ''}
         ${record.storage?.job?.error || record.storage?.error ? `<p class="runtime-feedback error" role="alert">${escapeHtml(record.storage.error || record.storage.job.error)}</p>` : ''}
         <div data-runtime-shares="${escapeHtml(record.id)}"></div>
       </div></details>
@@ -2881,13 +3007,13 @@ function renderController() {
 
       <details class="runtime-setting-row" data-settings-key="${escapeHtml(record.id)}:resources" ${runtimeSettingsOpen.has(record.id + ':resources') ? 'open' : ''}><summary><span><strong>Performance</strong><small>RAM and CPU limits</small></span></summary><div class="runtime-setting-body"><div class="runtime-resources-panel">${renderResourceControls(record, busy)}</div></div></details>
       <details class="runtime-setting-row" data-level="advanced" data-settings-key="${escapeHtml(record.id)}:health" ${runtimeSettingsOpen.has(record.id + ':health') ? 'open' : ''}><summary><span><strong>Diagnostics</strong></span></summary><div class="runtime-setting-body"><div class="runtime-health-panel"><div class="runtime-actions">${button('health', runtimeHealth.get(record.id)?.loading ? 'Checking health…' : 'Check health', !runtimeHealth.get(record.id)?.loading, 'btn-quiet')}</div>${renderRuntimeHealth(record.id)}</div><div data-runtime-diagnostics="${escapeHtml(record.id)}"></div></div></details>
-      </div></div>${record.compatibility?.status === 'experimental' ? `<p class="runtime-feedback warning">Android SDK ${escapeHtml(String(record.compatibility.sdk))} · Experimental compatibility. Verify boot, app controls and desktop behavior with this image.</p>` : ''}<details class="runtime-details" data-level="advanced"><summary>Runtime details</summary><p>ID: ${escapeHtml(record.id)}</p>${record.compatibility?.caption_detail ? `<p>${escapeHtml(record.compatibility.caption_detail)}</p>` : ''}${record.job ? `<p>Last operation: ${escapeHtml(record.job.operation)} · ${escapeHtml(record.job.status)}</p><p>Job: ${escapeHtml(record.job.id || '')}</p>` : ''}</details>
+      </div></div>${record.compatibility?.status === 'experimental' ? `<p class="runtime-feedback warning">Android SDK ${escapeHtml(String(record.compatibility.sdk))} · Experimental compatibility. Verify boot, app controls and desktop behavior with this image.</p>` : ''}<details class="runtime-details" data-level="advanced"><summary>Device details</summary><p>ID: ${escapeHtml(record.id)}</p>${record.compatibility?.caption_detail ? `<p>${escapeHtml(record.compatibility.caption_detail)}</p>` : ''}${record.job ? `<p>Last operation: ${escapeHtml(record.job.operation)} · ${escapeHtml(record.job.status)}</p><p>Job: ${escapeHtml(record.job.id || '')}</p>` : ''}</details>
       </article>`;
     if (runtimeSettingsId === record.id) settingsMarkup = detail;
     return summary;
-  }).join('') : '<tr><td colspan="5" class="hint">No additional runtimes for this user. Create one to begin.</td></tr>';
+  }).join('') : '<tr><td colspan="5" class="hint">No other devices yet. Use + New device to create one.</td></tr>';
   const settingsPanel = document.getElementById('runtime-settings-content');
-  const nextSettings = runtimeSettingsId === 'default' ? '' : settingsMarkup || (runtimeSettingsId ? '<p class="runtime-blocked">This runtime is no longer available.</p>' : '');
+  const nextSettings = runtimeSettingsId === 'default' ? '' : settingsMarkup || (runtimeSettingsId ? '<p class="runtime-blocked">This device is no longer available.</p>' : '');
   if (settingsPanel._runtimeMarkup !== nextSettings) {
     settingsPanel._runtimeMarkup = nextSettings;
     settingsPanel.innerHTML = nextSettings;
@@ -2930,7 +3056,7 @@ document.addEventListener('visibilitychange', () => {
   if (!document.hidden && (controllerHasActiveWork() || document.getElementById('page-runtime').classList.contains('active') || document.getElementById('page-images').classList.contains('active') || document.getElementById('page-runtime-settings').classList.contains('active'))) refreshController();
 });
 // Event-driven runtime state: the controller answers this long-poll when the
-// caller's runtimes change (start/stop, idle freeze, another client), so the
+// caller's devices change (start/stop, idle freeze, another client), so the
 // visible list stays current without re-reading it on a timer.
 let controllerWatchToken = null, controllerWatchRunning = false, controllerWatchUnsupported = false;
 function controllerWatchWanted() {
@@ -2968,15 +3094,15 @@ async function refreshController({light = false} = {}) {
   let defaultRefresh = null;
   try {
     const records = await controllerRequest({ op: 'list' });
-    if (!Array.isArray(records)) throw new Error('Invalid runtime list');
+    if (!Array.isArray(records)) throw new Error('Invalid device list');
     syncLoginStart(records);
     const deleted = controllerRecords.filter(record => record.deletion_pending && !records.some(current => current.id === record.id));
-    if (deleted.length) showAppToast(`Deleted runtime: ${deleted.map(record => record.name).join(', ')}.`, 'success');
+    if (deleted.length) showAppToast(`Deleted device: ${deleted.map(record => record.name).join(', ')}.`, 'success');
     const previousRecords = controllerRecords;
     const states = await Promise.all(records.map(async record => {
       try {
         const current = await controllerRequest({op:'refresh', id:record.id});
-        if (current?.id !== record.id) throw new Error('Runtime response does not match the requested ID');
+        if (current?.id !== record.id) throw new Error('Device response does not match the requested ID');
         return current;
       } catch (error) { return {...record, refreshError:String(error)}; }
     }));
@@ -3107,24 +3233,24 @@ async function mutateController(request) {
     if (request.op === 'prepare' && !await AppDialog.confirm(
       runtimeRecord(request.id)?.image_selection
         ? 'Extract the selected downloaded images and build compatible Android support? This uses several GB at this runtime’s storage location. Android starts automatically when preparation finishes.'
-        : 'Copy the installed Android images into this runtime? This uses several GB of disk space. Android starts automatically when preparation finishes.',
-      { title: 'Prepare runtime images', kind: 'info' })) return;
+        : 'Copy the installed Android images into this device? This uses several GB of disk space. Android starts automatically when preparation finishes.',
+      { title: 'Prepare device images', kind: 'info' })) return;
     if (request.op === 'stop' && !await AppDialog.confirm(
-      'Stop this Android runtime? Its apps will close; saved data will be retained.',
-      { title: 'Stop runtime', kind: 'warning' })) return;
+      'Stop this Android device? Its apps will close; saved data will be retained.',
+      { title: 'Stop device', kind: 'warning' })) return;
     if (request.op === 'existing_import' && !await AppDialog.confirm(
-      'Copy System Waydroid images, apps and Android data into a new managed runtime? This requires extra disk space. Keep System Waydroid stopped until copying and verification finish. The original is retained. App logins and device-bound credentials may require signing in again.',
+      'Copy System Waydroid images, apps and Android data into a new managed device? This requires extra disk space. Keep System Waydroid stopped until copying and verification finish. The original is retained. App logins and device-bound credentials may require signing in again.',
       {title:'Import System Waydroid',kind:'info'})) return;
     if (request.op === 'reinstall' && !await AppDialog.confirm(
-      `Reinstall this runtime with ${imageForRequest(request)?.custom_name || (request.flavor === 'installed' ? 'Existing Waydroid image' : 'Waydroid ' + request.flavor)}?\nSystem SHA-256: ${request.system_sha256 || 'installed source'}\n\nAndroid will stop first if running. All apps, data and settings will be erased. This cannot be undone.`,
-      {title:'Reinstall runtime',kind:'warning'})) return;
+      `Reinstall this device with ${imageForRequest(request)?.custom_name || (request.flavor === 'installed' ? 'Existing Waydroid image' : 'Waydroid ' + request.flavor)}?\nSystem SHA-256: ${request.system_sha256 || 'installed source'}\n\nAndroid will stop first if running. All apps, data and settings will be erased. This cannot be undone.`,
+      {title:'Reinstall device',kind:'warning'})) return;
     if (request.op === 'app_action') {
       controllerPending.phase = 'confirm'; renderController();
       const name = runtimeRecord(request.id)?.name || request.id;
       const prompt = request.action === 'launch'
-        ? `Open ${request.package} from runtime ${name} on your desktop?`
+        ? `Open ${request.package} from device ${name} on your desktop?`
         : `Force-stop ${request.package} in runtime ${name}? Unsaved app work may be lost.`;
-      if (!await AppDialog.confirm(prompt, { title: 'Runtime app action', kind: request.action === 'launch' ? 'info' : 'warning' })) return;
+      if (!await AppDialog.confirm(prompt, { title: 'Device app action', kind: request.action === 'launch' ? 'info' : 'warning' })) return;
     }
     controllerPending.phase = 'send';
     renderController();
@@ -3153,7 +3279,7 @@ async function mutateController(request) {
             return;
           }
           const job = await controllerRequest({op, id});
-          if (job?.id !== id || !job.job?.id) throw new Error('Invalid runtime transition response');
+          if (job?.id !== id || !job.job?.id) throw new Error('Invalid device transition response');
           const updated = await RuntimeSettings.wait(controllerRequest, id, job.job.id, op === 'stop' ? 'Stopped' : 'Running');
           Object.assign(runtimeRecord(id), updated);
         },
@@ -3183,7 +3309,7 @@ async function mutateController(request) {
     }
     if (['create', 'create_image'].includes(request.op)) {
       if (!/^r-[a-f0-9]{32}$/.test(result?.id) || result.state !== 'Allocated' || result.job ||
-          controllerRecords.some(record => record.id === result.id)) throw new Error('Invalid newly created runtime; refresh before retrying.');
+          controllerRecords.some(record => record.id === result.id)) throw new Error('Invalid newly created device; refresh before retrying.');
       selectedRuntimeId = result.id;
       controllerRecords.push(result);
       controllerPending.id = result.id;
@@ -3194,11 +3320,11 @@ async function mutateController(request) {
         send:controllerRequest,
         progress:phase => {
           controllerPending.phase = phase;
-          message.textContent = ({configuring:'Setting up the new runtime…', preparing:'Preparing images for the new runtime…', booting:'Starting the new Android runtime…'})[phase] + ' Keep AnvilDroid open until this finishes.';
+          message.textContent = ({configuring:'Setting up the new runtime…', preparing:'Preparing images for the new runtime…', booting:'Starting the new Android device…'})[phase] + ' Keep AnvilDroid open until this finishes.';
           const step = ['configuring', 'preparing', 'booting'].indexOf(phase);
           showProgressToast('runtime-create', {
             title: `Creating ${request.name}`,
-            detail: `Step ${step + 1} of 3 · ${({configuring:'Setting up the runtime', preparing:'Preparing Android images', booting:'Starting Android'})[phase] || phase}. Keep AnvilDroid open.`,
+            detail: `Step ${step + 1} of 3 · ${({configuring:'Setting up the device', preparing:'Preparing Android images', booting:'Starting Android'})[phase] || phase}. Keep AnvilDroid open.`,
             percent: null,
           });
           renderController();
@@ -3245,7 +3371,7 @@ async function mutateController(request) {
       else controllerRecords[position] = result;
     }
     controllerPending = null;
-    completionNotice = ({camera_set:'Camera settings saved. Start this runtime to apply them.', device_set:'Device identity saved. Start Android to apply it.', resources_set: 'RAM and CPU limits saved. Start this runtime to apply them.', gpu_set: 'GPU saved. Start this runtime to apply it.', arm_set: `ARM translation ${request.enabled ? 'installed' : 'disabled'}. Start this runtime to apply it.`, delete: 'Deletion accepted. The runtime will disappear when its data has been removed.', display_set: 'Display mode saved. Start Android to apply it.', backend_set: 'Display backend saved. Start Android to apply it.', app_action: 'App action accepted. Watch its job result below.', create: 'Runtime created. Android is running.', create_image: 'Runtime created. Android is running.', rename: 'Runtime name saved.', prepare: 'Images prepared. Android is running.', start: 'Start request accepted. The runtime card below shows boot progress and the result.', stop: 'Stop request accepted. The runtime card below shows progress and the result.', move: 'Storage move accepted. Keep both disks connected until verification completes.', discard_previous: 'Removal accepted. Watch storage status below; active runtime data is kept.', existing_import: 'Import started. Keep System Waydroid stopped until preparation succeeds.'})[request.op] || 'Request accepted.';
+    completionNotice = ({camera_set:'Camera settings saved. Start this device to apply them.', device_set:'Device identity saved. Start Android to apply it.', resources_set: 'RAM and CPU limits saved. Start this device to apply them.', gpu_set: 'GPU saved. Start this device to apply it.', arm_set: `ARM translation ${request.enabled ? 'installed' : 'disabled'}. Start this device to apply it.`, delete: 'Deletion accepted. The device will disappear when its data has been removed.', display_set: 'Display mode saved. Start Android to apply it.', backend_set: 'Display backend saved. Start Android to apply it.', app_action: 'App action accepted. Watch its job result below.', create: 'Device created. Android is running.', create_image: 'Device created. Android is running.', rename: 'Device name saved.', prepare: 'Images prepared. Android is running.', start: 'Start request accepted. The device card below shows boot progress and the result.', stop: 'Stop request accepted. The device card below shows progress and the result.', move: 'Storage move accepted. Keep both disks connected until verification completes.', discard_previous: 'Removal accepted. Watch storage status below; active device data is kept.', existing_import: 'Import started. Keep System Waydroid stopped until preparation succeeds.'})[request.op] || 'Request accepted.';
     if (restarted) {
       completionNotice = 'Settings applied. Android restarted successfully.';
     }
@@ -3253,7 +3379,7 @@ async function mutateController(request) {
     if (request.op === 'reinstall') {
       cancelReinstall();
       document.getElementById('runtime-create-panel').open = false;
-      completionNotice = 'Runtime reinstall started. Wait for image preparation to finish before starting it.';
+      completionNotice = 'Device reinstall started. Wait for image preparation to finish before starting it.';
     }
   } catch (error) { failure = String(error); }
   finally {
@@ -3266,7 +3392,7 @@ async function mutateController(request) {
     message.textContent = '';
     await refreshController();
     if (failure) {
-      controllerError = `Runtime operation failed: ${failure}`;
+      controllerError = `Device operation failed: ${failure}`;
       // Dialogs keep their own actionable errors beside the fields.
       if (!document.getElementById('runtime-rename-dialog').open && !document.getElementById('runtime-storage-dialog').open) showAppToast(controllerError, 'error');
     } else if (completionNotice) showAppToast(completionNotice, 'success');
@@ -3305,8 +3431,8 @@ function cancelReinstall() {
   reinstallTargetId = null;
   document.getElementById('controller-name').readOnly = false;
   document.getElementById('controller-name').value = '';
-  document.querySelector('#runtime-create-panel > summary').textContent = 'New runtime';
-  document.getElementById('controller-create-button').textContent = 'Create runtime';
+  document.querySelector('#runtime-create-panel > summary').textContent = '+ New device';
+  document.getElementById('controller-create-button').textContent = 'Create device';
   document.getElementById('controller-reinstall-cancel').hidden = true;
 }
 document.getElementById('controller-reinstall-cancel').addEventListener('click', cancelReinstall);
@@ -3497,21 +3623,21 @@ function openRuntimeStorage(id, operation) {
   const removing = deleting || operation === 'discard_previous';
   document.getElementById('runtime-storage-title').textContent = deleting ? `Delete ${record.name}` : removing ? 'Remove retained copy' : `Move ${record.name}`;
   document.getElementById('runtime-storage-description').textContent = deleting
-    ? `Permanently delete runtime "${record.name}" (${record.id}) and all its apps, app data, images and retained storage copies? This cannot be undone. Storage: ${record.storage?.path || 'This runtime’s storage'}. Type the runtime name to confirm.`
+    ? `Permanently delete device "${record.name}" (${record.id}) and all its apps, app data, images and retained storage copies? This cannot be undone. Storage: ${record.storage?.path || 'This runtime’s storage'}. Type the device name to confirm.`
     : removing
-    ? `Only this retained copy will be deleted: ${record.storage.previous_path}. The active runtime at ${record.storage.path} will be kept.`
+    ? `Only this retained copy will be deleted: ${record.storage.previous_path}. The active device at ${record.storage.path} will be kept.`
     : `Current location: ${record.storage.path}. Choose a permanent local Linux folder owned by your account. Data, images and settings will be copied and verified. The old copy is retained until you remove it. Android must be stopped.`;
   document.getElementById('runtime-storage-path').value = '';
   document.getElementById('runtime-storage-confirm-name').value = '';
   document.getElementById('runtime-storage-error').textContent = '';
   document.getElementById('runtime-storage-picker').style.display = removing ? 'none' : 'flex';
   document.getElementById('runtime-storage-confirmation').style.display = removing ? 'block' : 'none';
-  document.getElementById('runtime-storage-save').textContent = deleting ? 'Delete runtime' : removing ? 'Delete retained copy' : 'Move data';
+  document.getElementById('runtime-storage-save').textContent = deleting ? 'Delete device' : removing ? 'Delete retained copy' : 'Move data';
   document.getElementById('runtime-storage-dialog').showModal();
 }
 document.getElementById('runtime-storage-browse').addEventListener('click', async () => {
   try {
-    const selected = await window.__TAURI__.dialog.open({ directory: true, multiple: false, title: 'Choose runtime storage folder' });
+    const selected = await window.__TAURI__.dialog.open({ directory: true, multiple: false, title: 'Choose device storage folder' });
     if (typeof selected === 'string') document.getElementById('runtime-storage-path').value = selected;
   } catch (error) {
     document.getElementById('runtime-storage-error').textContent = `Could not open folder picker: ${error}`;
@@ -3563,10 +3689,10 @@ function renderRuntimeGoogle(record) {
   if (entry?.loading) text += '<p role="status">Checking Google services…</p>';
   if (entry?.error) text += `<p class="runtime-feedback error" role="alert">${escapeHtml(entry.error)}</p>`;
   if (packages) {
-    text += `<p class="hint">Last check: ${escapeHtml(new Date(report.checked_at * 1000).toLocaleTimeString())}${running ? '' : ' · saved result; runtime is not running'}</p>`;
+    text += `<p class="hint">Last check: ${escapeHtml(new Date(report.checked_at * 1000).toLocaleTimeString())}${running ? '' : ' · saved result; device is not running'}</p>`;
     text += Object.entries(names).map(([pkg,name]) => `<p>${name}: <strong>${packages[pkg] ? 'Installed' : 'Not installed'}</strong></p>`).join('');
     if (present === 3 && !acknowledged) {
-      text += `<details class="play-certification-help" role="note"><summary>Device registration</summary><p>New GAPPS runtimes may show “This device isn’t Play Protect certified”. Register this runtime once:</p><ol><li>Copy the GSF Android ID shown here.</li><li>Click Open Google registration, sign in to Google, paste this ID and submit.</li><li>Wait a few minutes, then restart this runtime and open Play Store again.</li></ol><p class="hint">Registration is tied to this Android runtime. Repeat it after creating a new runtime.</p></details>`;
+      text += `<details class="play-certification-help" role="note"><summary>Device registration</summary><p>New GAPPS devices may show “This device isn’t Play Protect certified”. Register this device once:</p><ol><li>Copy the GSF Android ID shown here.</li><li>Click Open Google registration, sign in to Google, paste this ID and submit.</li><li>Wait a few minutes, then restart this device and open Play Store again.</li></ol><p class="hint">Registration is tied to this Android runtime. Repeat it after creating a new runtime.</p></details>`;
     } else if (present !== 3) {
       text += `<p class="hint">${present ? 'Google components are incomplete. Installing only the Play Store APK does not provide a complete Google services setup.' : 'No Google components detected. A compatible GAPPS image is required for Google Play.'}</p>`;
     }
@@ -3574,7 +3700,7 @@ function renderRuntimeGoogle(record) {
   const gsfId = typeof report?.gsf_android_id === 'string' && /^[0-9]{1,20}$/.test(report.gsf_android_id) ? report.gsf_android_id : null;
   text += `<div class="android-id-copy"><span>GSF Android ID</span><code>${gsfId ? escapeHtml(gsfId) : 'Not available yet'}</code>${button('copy_android_id', 'Copy Android ID', !gsfId || !running || !!entry?.error || !!entry?.loading)}</div>`;
   if (!gsfId && report?.gsf_id_error) text += `<p class="runtime-feedback warning" role="status">${escapeHtml(report.gsf_id_error)}</p>`;
-  if (!gsfId) text += `<p class="hint">${!running ? 'Start this runtime, then click Check Google services.' : !packages ? 'Click Check Google services to read the registration ID.' : packages['com.google.android.gsf'] ? 'Open Play Store, wait a few minutes, then check again. After updating AnvilDroid, stop and start this runtime to load the new worker.' : 'Google Services Framework is required. Use a GAPPS runtime.'}</p>`;
+  if (!gsfId) text += `<p class="hint">${!running ? 'Start this device, then click Check Google services.' : !packages ? 'Click Check Google services to read the registration ID.' : packages['com.google.android.gsf'] ? 'Open Play Store, wait a few minutes, then check again. After updating AnvilDroid, stop and start this device to load the new worker.' : 'Google Services Framework is required. Use a GAPPS runtime.'}</p>`;
   const desktop = (record.display?.effective_mode || record.display?.mode) === 'desktop';
   const canOpen = running && packages?.['com.android.vending'] && !entry?.error && !entry?.loading && desktop && !busy;
   text += '<div class="runtime-actions">' + button('google_services', entry?.loading ? 'Checking…' : 'Check Google services', !running || busy || entry?.loading);
@@ -3582,11 +3708,11 @@ function renderRuntimeGoogle(record) {
   text += button('google_register', 'Open Google registration', false);
   text += button(acknowledged ? 'google_remind' : 'google_working', acknowledged ? 'Show setup reminder again' : 'Google Play works — hide reminder', false);
   text += button('google_guide', 'Certification guide', false) + '</div>';
-  if (acknowledged) text += '<p role="status">Google Play marked as working by you. Setup reminder hidden for this runtime; this is not a certification check.</p>';
+  if (acknowledged) text += '<p role="status">Google Play marked as working by you. Setup reminder hidden for this device; this is not a certification check.</p>';
   if (entry?.result && !entry.loading) text += `<div class="google-check-result" role="status" aria-live="polite"><strong>Check complete</strong><p>${escapeHtml(entry.result)}</p><p>This checks installed components and the GSF ID only. Google registration status cannot be verified by AnvilDroid.</p></div>`;
-  if (!acknowledged) text += '<details class="play-certification-help"><summary>Already registered?</summary><p>Allow time for Google to process your registration. Save your work, stop and start this runtime, then open Play Store and try signing in or downloading an app.</p><p class="hint">To inspect Play Protect certification, open Play Store &gt; profile icon &gt; Settings &gt; About. Registering a GSF ID does not guarantee a certified label or compatibility with every app. Repeating this check does not submit or verify your registration.</p></details>';
-  if (packages && present === 0) text += '<p class="runtime-feedback warning">Google services are not installed in this runtime. A downloaded GAPPS image is not applied to existing runtimes.</p>' + button('create_gapps', 'Create GAPPS runtime…', busy);
-  if (running && packages?.['com.android.vending'] && !desktop) text += '<p class="hint">Restart this runtime from your desktop session to open Play Store.</p>';
+  if (!acknowledged) text += '<details class="play-certification-help"><summary>Already registered?</summary><p>Allow time for Google to process your registration. Save your work, stop and start this device, then open Play Store and try signing in or downloading an app.</p><p class="hint">To inspect Play Protect certification, open Play Store &gt; profile icon &gt; Settings &gt; About. Registering a GSF ID does not guarantee a certified label or compatibility with every app. Repeating this check does not submit or verify your registration.</p></details>';
+  if (packages && present === 0) text += '<p class="runtime-feedback warning">Google services are not installed in this runtime. A downloaded GAPPS image is not applied to existing runtimes.</p>' + button('create_gapps', 'Create GAPPS device…', busy);
+  if (running && packages?.['com.android.vending'] && !desktop) text += '<p class="hint">Restart this device from your desktop session to open Play Store.</p>';
   return text;
 }
 async function checkRuntimeGoogle(id) {
@@ -3710,11 +3836,11 @@ function renderRuntimeNotifications(record, busy) {
     const icon = libraryIconUrl({...app, runtime_id: record.id, desktop_entry: false});
     return `<label class="notification-app"><span class="notification-app-name">${icon ? `<img src="${icon}" alt="" width="24" height="24">` : '<span class="notification-app-placeholder" aria-hidden="true"></span>'}<span>${escapeHtml(app.label || app.package)}<small>${escapeHtml(app.package)}</small></span></span><input type="checkbox" data-notifications-runtime="${id}" data-notifications-app="${escapeHtml(app.package)}" ${app.allowed ? 'checked' : ''} ${disabled || !data.enabled ? 'disabled' : ''} aria-label="Notifications from ${escapeHtml(app.label || app.package)}"></label>`;
   }).join('');
-  return heading + `<label class="notification-master"><input type="checkbox" data-notifications-runtime="${id}" data-notifications-master ${data.enabled ? 'checked' : ''} ${disabled}> Show notifications from this runtime</label>
+  return heading + `<label class="notification-master"><input type="checkbox" data-notifications-runtime="${id}" data-notifications-master ${data.enabled ? 'checked' : ''} ${disabled}> Show notifications from this device</label>
     <p class="hint">Like ChromeOS, Android keeps running in the background while this is on so apps can deliver notifications. Turn it off to let the runtime suspend when no app window is open.</p>
     <p class="hint" role="status">Status: ${escapeHtml(status)}${data.status?.error && data.enabled && running && data.status?.state !== 'Connected' ? ` · ${escapeHtml(data.status.error)}` : ''}</p>
     <h4>Apps</h4>
-    ${rows ? `<div class="notification-apps">${rows}</div>` : `<p class="hint">${running ? 'No apps found yet. Refresh the app list.' : 'Start this runtime to list its apps. New apps are allowed by default.'}</p>`}
+    ${rows ? `<div class="notification-apps">${rows}</div>` : `<p class="hint">${running ? 'No apps found yet. Refresh the app list.' : 'Start this device to list its apps. New apps are allowed by default.'}</p>`}
     </div></div></details>`;
 }
 const notificationSaving = new Set();
@@ -3888,7 +4014,7 @@ function changeQuickSetting(select) {
   if (!record || select.value === saved) return;
   if (runtimeOperations.size || controllerMutation || apkInstallBusy || runtimeBatchBusy || runtimeOperationBusy(id)) {
     select.value = saved;
-    showAppToast('Wait for the current runtime operation to finish.', 'error');
+    showAppToast('Wait for the current device operation to finish.', 'error');
     return;
   }
   if (select.dataset.quickDevice) {
@@ -3959,7 +4085,7 @@ function renderResourceControls(record, busy) {
     <p class="hint" title="CPU limits total CPU time. RAM limits disable swap; exhausting RAM may stop Android. Resources are shared, not reserved.">0 = unlimited · RAM minimum: 1024 MiB</p>
     <button class="btn btn-quiet" data-controller-op="resources_set" data-controller-id="${escapeHtml(record.id)}" ${disabled ? 'disabled' : ''}>${['Running', 'Frozen'].includes(record.state) ? 'Save & restart' : 'Save limits'}</button>
     <p class="hint">Saved: RAM ${data.configured.memory_mib || 'unlimited'}${data.configured.memory_mib ? ' MiB' : ''} · CPU ${data.configured.cpu_count || 'unlimited'}. ${['Running', 'Frozen'].includes(record.state) ? 'Saving restarts Android; apps will close.' : 'Applies on next start.'}</p>
-    ${disabled ? `<p class="hint">${escapeHtml(host.reason || 'Stop the runtime to change limits.')}</p>` : ''}
+    ${disabled ? `<p class="hint">${escapeHtml(host.reason || 'Stop the device to change limits.')}</p>` : ''}
     <div id="resource-budget-${escapeHtml(record.id)}">${resourceBudgetHtml(data, draft)}</div><details class="runtime-resource-diagnostics"><summary>Active limits</summary>
     ${data.effective ? `<div class="runtime-graphics"><strong>Active limits · kernel readback</strong><p>RAM: ${memory(data.effective.memory_current_bytes)} used / ${memory(data.effective.memory_max_bytes)}</p><p>CPU quota: ${data.effective.cpu_quota_count ?? 'No explicit quota'} · throttled: ${(data.effective.cpu_throttled_usec / 1000000).toFixed(2)} s</p><p>Swap: ${memory(data.effective.swap_current_bytes)} used / ${memory(data.effective.swap_max_bytes)} · OOM kills: ${data.effective.oom_kills}</p><p class="hint">Host or parent limits may be tighter. Values refresh automatically.</p></div>` : `<p class="hint">${escapeHtml(data.error || 'Active limits are measured after Start.')}</p>`}</details>`;
 }
@@ -3985,7 +4111,7 @@ function renderGpuControls(record, busy) {
   </select></label><button class="btn btn-quiet" data-controller-op="gpu_set" data-controller-id="${escapeHtml(record.id)}" ${busy || !canConfigure ? 'disabled' : ''}>${['Running', 'Frozen'].includes(record.state) ? 'Save & restart' : 'Save graphics'}</button></div>
   ${record.gpu.software_supported ? `<p class="hint">${escapeHtml('Selects compatible hardware automatically.')}</p>` : ''}
   ${record.gpu.nvidia ? `<details class="runtime-graphics"><summary>NVIDIA compatibility</summary><p class="hint">${escapeHtml(record.gpu.nvidia.detail)}</p><ul>${record.gpu.nvidia.checks.map(c => `<li>${escapeHtml(c.status)}: ${escapeHtml(c.detail)}</li>`).join('')}</ul></details>` : ''}
-  <p class="hint">${['Running', 'Frozen'].includes(record.state) ? 'Saving restarts Android.' : stopped ? 'Applies on next start.' : 'Prepare runtime to change GPU.'}</p>`;;
+  <p class="hint">${['Running', 'Frozen'].includes(record.state) ? 'Saving restarts Android.' : stopped ? 'Applies on next start.' : 'Prepare device to change GPU.'}</p>`;;
 }
 
 async function checkRuntimeGraphics(id) {
@@ -4018,7 +4144,7 @@ function renderRuntimeGraphics(id) {
   const verification = report.gpu_verification;
   const label = {verified:'GPU verified · Android compositor', mismatch:'GPU mismatch', software:'Software rendering · CPU', unknown:'GPU usage not verified'}[verification?.status] || 'GPU usage not verified';
   const statusClass = verification?.status === 'verified' ? 'setup-ready' : 'runtime-blocked';
-  return `<div class="runtime-graphics"><p class="${statusClass}"><strong>${label}</strong></p><p class="hint">${escapeHtml(verification?.detail || 'Check again after starting this runtime with the latest worker.')}</p>${report.gpu_selection ? `<p>Saved selection: ${escapeHtml(report.gpu_selection)}</p>` : ''}${report.graphics?.android_node ? `<p>Android GBM device: ${escapeHtml(report.graphics.android_node)}</p>` : ''}${report.graphics?.compositor_nodes?.length ? `<p>Opened by compositor: ${report.graphics.compositor_nodes.map(escapeHtml).join(', ')}</p>` : ''}<strong>Graphics</strong>${report.gpu_node ? `<p>Active render node: ${escapeHtml(report.gpu_node)}</p>` : ''}<p>${report.graphics?.gles ? escapeHtml(report.graphics.gles) : 'Runtime renderer not measured.'}</p>
+  return `<div class="runtime-graphics"><p class="${statusClass}"><strong>${label}</strong></p><p class="hint">${escapeHtml(verification?.detail || 'Check again after starting this device with the latest worker.')}</p>${report.gpu_selection ? `<p>Saved selection: ${escapeHtml(report.gpu_selection)}</p>` : ''}${report.graphics?.android_node ? `<p>Android GBM device: ${escapeHtml(report.graphics.android_node)}</p>` : ''}${report.graphics?.compositor_nodes?.length ? `<p>Opened by compositor: ${report.graphics.compositor_nodes.map(escapeHtml).join(', ')}</p>` : ''}<strong>Graphics</strong>${report.gpu_node ? `<p>Active render node: ${escapeHtml(report.gpu_node)}</p>` : ''}<p>${report.graphics?.gles ? escapeHtml(report.graphics.gles) : 'Device renderer not measured.'}</p>
     ${report.graphics ? `<p class="hint">${escapeHtml(report.graphics.scope || '')}${report.graphics.renderer_kind === 'software' ? ' Software renderer detected.' : ''}</p>` : ''}
     ${(report.gpu_devices || []).map(device => `<p>${escapeHtml(device.node)} · ${escapeHtml(device.driver || 'Unknown driver')} · ${escapeHtml(device.vendor_id || '?')}:${escapeHtml(device.device_id || '?')}${device.available ? '' : ' · Unavailable'}</p>`).join('') || '<p class="hint">No host render nodes detected.</p>'}
     <p class="hint">Host devices are an inventory, not proof of which GPU a game uses.</p></div>` +
@@ -4054,13 +4180,17 @@ async function checkRuntimeHealth(id) {
 
 function renderManagedLibraryStatus() {
   btnInstallApk.disabled = pendingAppAction || pendingLaunch || runtimeTransition || controllerMutation || runtimeBatchBusy || Boolean(probeInstallBusy);
-  btnInstallApk.title = 'Choose APK and runtimes';
+  btnInstallApk.title = 'Choose APK and devices';
   const records = managedLibrary.filter(record => libraryRuntimeSelected(record.id));
   const markup =
     (managedLibraryError ? `<p>${escapeHtml(managedLibraryError)}</p>` : '') + records.map(record => {
-      const count = managedSnapshots.get(record.id)?.length;
-      const note = record.error || (!['Running', 'Frozen'].includes(record.state) ? 'Select this runtime to start it.' : `${count ?? 0} apps`);
-      return `<p><strong>${escapeHtml(record.name)}</strong> · ${escapeHtml(record.state)} · ${escapeHtml(note)}${managedPreferenceErrors.has(record.id) ? ` · ${escapeHtml(managedPreferenceErrors.get(record.id))}` : ''}</p>`;
+      const count = deviceAppCount(record.id);
+      const starting = libraryStarts.has(record.id);
+      const canStart = !record.error && ['Stopped', 'Ready', 'Frozen'].includes(record.state) && record.import_status !== 'pending';
+      const note = record.error || (!['Running', 'Frozen'].includes(record.state) ? (canStart ? 'Start it to see its apps.' : ['Starting', 'Provisioning'].includes(record.state) ? 'Apps appear when it is running.' : 'Open it on the Devices page to finish setup.') : `${count} ${count === 1 ? 'app' : 'apps'}`);
+      const button = starting ? '<button type="button" class="btn" disabled>Starting…</button>'
+        : canStart ? `<button type="button" class="btn btn-primary" data-library-start="${escapeHtml(record.id)}">Start</button>` : '';
+      return `<div class="device-chip" data-state="${escapeHtml(String(record.error ? 'error' : record.state).toLowerCase())}"><p><strong>${escapeHtml(record.name)}</strong> · ${escapeHtml(record.state)} · ${escapeHtml(note)}${managedPreferenceErrors.has(record.id) ? ` · ${escapeHtml(managedPreferenceErrors.get(record.id))}` : ''}</p>${button}</div>`;
     }).join('');
   const target = document.getElementById('library-runtime-status');
   if (target.innerHTML !== markup) target.innerHTML = markup;
@@ -4070,12 +4200,12 @@ async function refreshManagedLibrary({poll = false} = {}) {
   managedLibraryLoading = true;
   try {
     const records = await controllerRequest({op:'list'});
-    if (!Array.isArray(records)) throw new Error('Invalid runtime list');
+    if (!Array.isArray(records)) throw new Error('Invalid device list');
     const results = await Promise.all(records.map(async record => {
       let current = record;
       try {
         current = await controllerRequest({op:'refresh', id:record.id});
-        if (current?.id !== record.id) throw new Error('Invalid runtime state');
+        if (current?.id !== record.id) throw new Error('Invalid device state');
         if (!preferenceBusy && !pendingAppAction) {
           const version = managedPreferenceVersions.get(record.id) || 0;
           try {
@@ -4094,7 +4224,7 @@ async function refreshManagedLibrary({poll = false} = {}) {
         if (['Running', 'Frozen'].includes(current.state) && !pendingAppAction && !pendingLaunch && (!poll || !managedSnapshots.has(record.id) || Date.now() - (managedInventoryChecked.get(record.id) || 0) >= 60000 || managedLibrary.find(r => r.id === record.id)?.state !== current.state)) {
           const report = await controllerRequest({op:'apps', id:record.id});
           if (report?.runtime_id !== record.id || !Array.isArray(report.apps)) throw new Error('Invalid app inventory');
-          if (!report.apps.every(app => typeof app.package === 'string' && app.launchable === true)) throw new Error('Stop and start on the Runtime page to update launcher filtering.');
+          if (!report.apps.every(app => typeof app.package === 'string' && app.launchable === true)) throw new Error('Stop and start on the Device page to update launcher filtering.');
           managedSnapshots.set(record.id, report.apps);
           managedInventoryChecked.set(record.id, Date.now());
           try { localStorage.setItem(`anvildroid_managed_apps:${record.id}`, JSON.stringify(report.apps)); } catch (_) {}
@@ -4107,11 +4237,12 @@ async function refreshManagedLibrary({poll = false} = {}) {
       }
     }));
     managedLibrary = results;
+    managedLibraryLoaded = true;
     managedLibraryError = '';
     if (libraryRuntimeSelection !== null) libraryRuntimeSelection = new Set([...libraryRuntimeSelection].filter(id => id === 'default' || results.some(record => record.id === id)));
     renderRuntimeFilter();
   } catch (error) {
-    managedLibraryError = `Cannot load managed runtimes: ${error}. Refresh to retry.`;
+    managedLibraryError = `Cannot load managed devices: ${error}. Refresh to retry.`;
     managedLibrary = managedLibrary.map(record => ({...record,error:managedLibraryError}));
   } finally {
     managedLibraryLoading = false;
@@ -4143,12 +4274,12 @@ async function runManagedAppAction(action, pkg, runtimeId) {
   const notify = showAppToast;
   const appName = (managedSnapshots.get(runtimeId) || []).find(app => app.package === pkg)?.label || pkg;
   try {
-    if (!record || !['Running', 'Frozen'].includes(record.state) || record.error) throw new Error('Start this runtime on the Runtime page, then refresh its apps.');
+    if (!record || !['Running', 'Frozen'].includes(record.state) || record.error) throw new Error('Start this device on the Devices page, then refresh its apps.');
     if (!(managedSnapshots.get(runtimeId) || []).some(app => app.package === pkg && app.launchable === true)) throw new Error('Refresh the app list before retrying.');
-    if (action === 'uninstall' && !await AppDialog.confirm(`Uninstall ${appName} (${pkg}) from runtime ${record.name}? This removes its data in this runtime.`, {title:'Uninstall app',kind:'warning'})) return;
+    if (action === 'uninstall' && !await AppDialog.confirm(`Uninstall ${appName} (${pkg}) from device ${record.name}? This removes its data in this runtime.`, {title:'Uninstall app',kind:'warning'})) return;
     if (action === 'force_stop' && !await AppDialog.confirm(`Force-stop ${pkg} in runtime ${record.name}? Unsaved app work may be lost.`, {title:'Force-stop app',kind:'warning'})) return;
     const display = await controllerRequest({op:'display_info',id:runtimeId});
-    if (action === 'launch' && (display.effective_mode || display.mode) !== 'desktop') throw new Error('Restart this runtime from your desktop session to open app windows.');
+    if (action === 'launch' && (display.effective_mode || display.mode) !== 'desktop') throw new Error('Restart this device from your desktop session to open app windows.');
     notify(`${action === 'launch' ? 'Opening' : action === 'uninstall' ? 'Uninstalling' : 'Stopping'} ${appName} · ${record.name}…`, 'info');
     let job = await controllerRequest({op:'app_action',id:runtimeId,action,package:pkg});
     const jobId = job?.id;
@@ -4156,9 +4287,9 @@ async function runManagedAppAction(action, pkg, runtimeId) {
     for (let attempt = 0; job.status === 'Running' && attempt < 90; attempt++) {
       await new Promise(resolve => setTimeout(resolve, 500));
       job = await controllerRequest({op:'app_job',id:runtimeId});
-      if (job?.id !== jobId || job.runtime_id !== runtimeId || job.package !== pkg || job.action !== action) throw new Error('App job changed; check this runtime on the Runtime page.');
+      if (job?.id !== jobId || job.runtime_id !== runtimeId || job.package !== pkg || job.action !== action) throw new Error('App job changed; check this device on the Device page.');
     }
-    if (job.status !== 'Succeeded') throw new Error(job.error || 'App action is still pending. Check its result on the Runtime page.');
+    if (job.status !== 'Succeeded') throw new Error(job.error || 'App action is still pending. Check its result on the Device page.');
     if (action === 'uninstall') {
       const remaining = (managedSnapshots.get(runtimeId) || []).filter(app => app.package !== pkg);
       managedSnapshots.set(runtimeId, remaining);
@@ -4195,7 +4326,7 @@ async function toggleManagedFavorite(pkg, runtimeId) {
     saveManagedPreferences(runtimeId, await tauriInvoke('set_favorite', {runtimeId,package:pkg,enabled:!prefs.favorites.includes(pkg)}));
     renderApps(allApps);
     renderManagedLibraryStatus();
-  } catch (error) { showAppToast(`Cannot save favorite for this runtime: ${error}`, 'error'); }
+  } catch (error) { showAppToast(`Cannot save favorite for this device: ${error}`, 'error'); }
   finally { preferenceBusy = false; }
 }
 
@@ -4235,11 +4366,11 @@ function renderRuntimeArm(record, busy) {
       ${draft.engine === 'none' ? '<option value="none">No translation</option>' : versions.map(source => `<option value="${escapeHtml(source.sha256)}" ${source === selected ? 'selected' : ''}>${escapeHtml(source.version || source.label)}</option>`).join('')}
     </select></label></div>
     ${draft.engine !== 'none' && selected ? `<p class="hint arm-package-details">Selected version: ${escapeHtml(selected.version || selected.label || 'unknown')} · x86_64 host${selected.android ? ` · ${escapeHtml(selected.android)}` : ''}<br>SHA-256: <code>${escapeHtml(selected.sha256)}</code><br>${needsDownload ? 'Download required' : 'Cached archive'}; checksum verified on installation.${selected.variant ? ' Compatibility patch bytes and output checksum are also verified.' : ''} Enabling this provider replaces the other ARM provider.</p>` : ''}
-    ${draft.engine !== 'none' && targetMismatch ? `<p class="hint arm-target-warning" role="status">This package targets ${escapeHtml(selected.android)}; this runtime is Android SDK ${escapeHtml(arm.android_sdk)}. Compatibility is unverified. Prefer a package matching the runtime image.</p>` : ''}
+    ${draft.engine !== 'none' && targetMismatch ? `<p class="hint arm-target-warning" role="status">This package targets ${escapeHtml(selected.android)}; this device is Android SDK ${escapeHtml(arm.android_sdk)}. Compatibility is unverified. Prefer a package matching the device image.</p>` : ''}
     <div class="runtime-actions"><button class="btn btn-primary" data-controller-op="arm_set" data-controller-id="${escapeHtml(record.id)}" ${disabled || (draft.engine !== 'none' && !selected) ? 'disabled' : ''}>${armInstallBusy === record.id ? 'Installing…' : draft.engine === 'none' ? 'Disable translation' : needsDownload ? 'Download & install' : 'Install selected version'}${['Running', 'Frozen'].includes(record.state) ? ' & restart' : ''}</button>
     <button class="btn btn-quiet" data-controller-op="arm_sources" data-controller-id="${escapeHtml(record.id)}">Import another version…</button></div>
-    <p class="hint">${!arm.supported ? escapeHtml(arm.detail || 'Prepare an x86_64 Android image first.') : ['Running', 'Frozen'].includes(record.state) ? 'Applying restarts Android; apps will close.' : !stopped ? 'Stop this runtime before changing ARM support.' : 'Applies on next start.'}</p>
-    <p class="hint">Cached archives are separate from saved runtime configuration. Verify ARM app compatibility after starting Android.</p>
+    <p class="hint">${!arm.supported ? escapeHtml(arm.detail || 'Prepare an x86_64 Android image first.') : ['Running', 'Frozen'].includes(record.state) ? 'Applying restarts Android; apps will close.' : !stopped ? 'Stop this device before changing ARM support.' : 'Applies on next start.'}</p>
+    <p class="hint">Cached archives are separate from saved device configuration. Verify ARM app compatibility after starting Android.</p>
     ${selected?.android ? `<details class="arm-compatibility"><summary>Compatibility notes</summary><p class="hint">${escapeHtml(selected.android)}. Compatibility with other Android versions and individual apps is unverified.</p></details>` : ''}
     ${!arm.available && !(arm.sources || []).some(source => source.installed) ? '<p class="hint">No ARM archive is cached. Download a version to continue.</p>' : ''}
     `;
@@ -4341,7 +4472,7 @@ function renderRuntimeBatchSelection() {
     const count = selected.filter(record => !runtimeOperationBusy(record.id) && RuntimeBatch.eligible(record, op, controllerRequirements || {})).length;
     button.textContent = `${op === 'open' ? 'Open Waydroid windows' : op[0].toUpperCase() + op.slice(1)} (${count})`;
     button.disabled = runtimePlanBlocked(op, selected) || imageDownloadBusy || imageDownloadActive() || !count;
-    button.title = `${count} of ${selected.length} selected runtimes can ${op}`;
+    button.title = `${count} of ${selected.length} selected devices can ${op}`;
   });
   document.getElementById('runtime-batch-clear').disabled = runtimeBatchBusy;
 }
@@ -4377,8 +4508,8 @@ function showRuntimeBatchDialog(op, selected, label) {
   const destructive = ['delete', 'reinstall'].includes(op);
   document.getElementById('runtime-batch-title').textContent = `${label} ${targets.length} ${targets.length === 1 ? 'runtime' : 'runtimes'}`;
   document.getElementById('runtime-batch-description').textContent = (destructive
-    ? op === 'delete' ? 'Permanently remove these runtimes, apps, data and retained storage copies. This cannot be undone.' : 'Replace these runtimes with the selected image. All existing apps, data and settings will be erased. This cannot be undone.'
-    : op === 'open' ? 'Open a Waydroid window for each running Desktop runtime below.' : op === 'start' ? 'Start these runtimes in order.' : 'Apps will close; saved data is retained. Runtimes are processed in order.') +
+    ? op === 'delete' ? 'Permanently remove these devices, apps, data and retained storage copies. This cannot be undone.' : 'Replace these devices with the selected image. All existing apps, data and settings will be erased. This cannot be undone.'
+    : op === 'open' ? 'Open a Waydroid window for each running Desktop device below.' : op === 'start' ? 'Start these devices in order.' : 'Apps will close; saved data is retained. Devices are processed in order.') +
     (runtimeBatchPlan.skipped ? ` ${runtimeBatchPlan.skipped} unavailable runtime(s) will be skipped.` : '');
   document.getElementById('runtime-batch-targets').innerHTML = targets.map(record => `<li>${escapeHtml(record.name)}</li>`).join('');
   document.getElementById('runtime-batch-confirm-field').hidden = !destructive;
@@ -4396,7 +4527,7 @@ document.getElementById('runtime-batch-cancel').addEventListener('click', () => 
 document.getElementById('runtime-batch-dialog').addEventListener('close', () => { runtimeBatchPlan = null; });
 async function refreshBatchRecord(id, operation) {
   const record = await controllerRequest({op:'refresh', id});
-  if (record?.id !== id) throw new Error('Invalid runtime response.');
+  if (record?.id !== id) throw new Error('Invalid device response.');
   if (id !== 'default') record.appJob = await controllerRequest({op:'app_job', id});
   if (id !== 'default') {
     if (operation !== 'open') record.storage = await controllerRequest({op:'storage_info', id});
@@ -4417,7 +4548,7 @@ async function executeBatchOperation(record, op, imageRequest, activationToken) 
   if (id === 'default' && ['start', 'stop'].includes(op)) {
     if (op === 'start' && controllerRecords.some(item => item.import_status === 'pending' && item.state === 'Provisioning')) throw new Error('Wait for System Waydroid import to finish.');
     const result = await tauriInvoke(op === 'start' ? 'start_runtime' : 'stop_runtime', {runtimeId:'default'});
-    if (!result?.success) throw new Error(result?.message || 'Runtime action failed.');
+    if (!result?.success) throw new Error(result?.message || 'Device action failed.');
     const deadline = Date.now() + 360000;
     while (Date.now() < deadline) {
       const updated = await refreshBatchRecord(id);
@@ -4435,7 +4566,7 @@ async function executeBatchOperation(record, op, imageRequest, activationToken) 
     const deadline = Date.now() + 360000;
     while (Date.now() < deadline) {
       const records = await controllerRequest({op:'list'});
-      if (!Array.isArray(records)) throw new Error('Invalid runtime list response.');
+      if (!Array.isArray(records)) throw new Error('Invalid device list response.');
       if (!records.some(item => item.id === id)) return;
       let job;
       try { job = await controllerRequest({op:'app_job', id}); }
@@ -4453,7 +4584,7 @@ async function executeBatchOperation(record, op, imageRequest, activationToken) 
   } else if (op === 'reinstall' && id === 'default') {
     if (result?.id !== id || result.state !== 'Stopped') throw new Error('Could not verify System Waydroid reinstall.');
   } else {
-    if (result?.id !== id || !result.job?.id) throw new Error('Invalid runtime operation response.');
+    if (result?.id !== id || !result.job?.id) throw new Error('Invalid device operation response.');
     Object.assign(runtimeRecord(id), result);
     renderController();
     const updated = await RuntimeSettings.wait(controllerRequest, id, result.job.id, op === 'start' ? 'Running' : op === 'stop' ? 'Stopped' : 'Prepared');
@@ -4567,7 +4698,7 @@ async function launchRuntimeWaydroidWindow(record, activationToken) {
   });
 }
 async function requestRuntimeWaydroidWindow(record, stage = () => {}, activationToken = null) {
-  if (!RuntimeBatch.eligible(record, 'open')) throw new Error('Start this runtime in Desktop mode first.');
+  if (!RuntimeBatch.eligible(record, 'open')) throw new Error('Start this device in Desktop mode first.');
   if (record.id === 'default') {
     stage('sending');
     let result;

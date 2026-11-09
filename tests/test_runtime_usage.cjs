@@ -34,7 +34,7 @@ test('memory and runtime disk bars have correct ratios and readable values', () 
   const metrics=Usage.metrics(record());
   assert.equal(metrics[0].percent,25);assert.equal(metrics[0].text,'1.0 / 4.0 GiB');
   assert.equal(metrics[2].percent,25);assert.equal(metrics[2].text,'25.0 GiB');
-  assert.match(metrics[2].hint,/Runtime allocated/);
+  assert.match(metrics[2].hint,/Device allocated/);
   const unlimited=record();unlimited.resources.effective.memory_max_bytes=null;
   assert.equal(Usage.metrics(unlimited)[0].percent,6.25);
 });
