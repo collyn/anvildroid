@@ -240,3 +240,19 @@ test('Automatic FPS camera inventory keeps F5 and Alt, rejects auto on other con
   states.profiles.set('default',bad);await api.refresh();
   assert.doesNotMatch(el('keymap-saved-list').textContent,/com.bad.auto/);
 });
+test('Remove is disabled for Default and the active scheme, enabled for an inactive one',async()=>{
+  const {api,states,el,calls}=setup();states.profiles.set('default',report('default'));
+  const custom='s-'+'1'.repeat(32);
+  states.schemes={runtime_id:'default',package:'com.test.game',revision:'a'.repeat(64),selected:'default',
+    schemes:[{id:'default',name:'Default',binding_count:1,reference:null},{id:custom,name:'PvP',binding_count:0,reference:null}]};
+  await api.refresh();
+  const detail=descendants(el('keymap-saved-list'),'details').find(d=>d.children.some(c=>c.textContent==='Schemes'));
+  detail.open=true;detail.events.toggle();await new Promise(resolve=>setImmediate(resolve));
+  const tools=descendants(el('keymap-saved-list'),'tr').find(r=>r.className==='controls-scheme-row');
+  const remove=descendants(tools,'button').find(b=>b.textContent==='Remove'),select=descendants(tools,'select')[0];
+  assert.equal(remove.disabled,true);assert.match(remove.title,/Default scheme cannot be removed/);
+  select.value=custom;select.events.change();
+  assert.equal(remove.disabled,false);
+  await remove.events.click();
+  assert.deepEqual([calls.at(-1).action,calls.at(-1).scheme_id],['remove',custom]);
+});

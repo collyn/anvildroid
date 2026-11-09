@@ -127,9 +127,16 @@
     const body=node('div',undefined,'controls-scheme-body'),status=node('p','Open to load schemes.','hint');status.setAttribute('role','status');
     body.appendChild(status); // shown in its own full-width row under the app (render)
     let result=null,busy=false,loaded=false;
-    const showError=error=>{status.textContent=error.message||String(error);};
+    // Errors also raise a toast: the status line sits at the bottom of the panel.
+    const showError=error=>{const message=error.message||String(error);status.textContent=message;
+      if(typeof showAppToast==='function')showAppToast(`Scheme: ${message}`,'error');};
+    let syncButtons=()=>{};
     async function run(action,scheme='',name='',content=''){
       if(busy||!available(records.get(p.runtime)))return;
+      if(action==='remove'&&typeof AppDialog!=='undefined'){
+        const label=result?.schemes.find(s=>s.id===scheme)?.name||'this scheme';
+        if(!await AppDialog.confirm(`Remove the scheme “${label}” from ${p.package}? Its controls are deleted.`,{title:'Remove scheme',kind:'warning'}))return;
+      }
       busy=true;body.setAttribute('aria-busy','true');
       for(const b of buttons)b.disabled=true;
       try{
@@ -145,10 +152,10 @@
           result=await schemeRequest(p,action,scheme,name,content);loaded=true;
           if(result.bindings){p.bindings=result.bindings;updated();}
           draw();
-          if(action!=='list')status.textContent=action==='select'?'Scheme selected. Focus the app to play.':'Scheme saved.';
+          if(action!=='list')status.textContent=({select:'Scheme selected. Focus the app to play.',remove:'Scheme removed.',reset:'Scheme cleared.',rename:'Scheme renamed.'})[action]||'Scheme saved.';
         }
       }catch(error){showError(error);}
-      finally{busy=false;body.setAttribute('aria-busy','false');for(const b of buttons)b.disabled=!available(records.get(p.runtime));}
+      finally{busy=false;body.setAttribute('aria-busy','false');for(const b of buttons)b.disabled=!available(records.get(p.runtime));syncButtons();}
     }
     let buttons=[];
     function draw(){
@@ -176,10 +183,14 @@
         if(source.size>24576){showError(new Error('Scheme file exceeds 24 KiB'));return;}
         try{await run('import','',name.value,await source.text());}catch(error){showError(error);}finally{file.value='';}});
       button('Reset','reset','Clear all controls in the selected scheme',files).className+=' btn-warning';
-      button('Remove','remove','Remove an inactive custom scheme',files).className+=' btn-danger';
+      const remove=button('Remove','remove','Remove this scheme',files);remove.className+=' btn-danger';
+      // Default and the active scheme cannot be removed: say why instead of failing.
+      syncButtons=()=>{const id=select.value,reason=id==='default'?'The Default scheme cannot be removed':id===result.selected?'Use another scheme first, then remove this one':'';
+        remove.disabled=Boolean(reason)||busy||!available(records.get(p.runtime));remove.title=reason||'Remove this scheme';};
+      select.addEventListener('change',syncButtons);
       files.appendChild(file);buttons.push(file,importButton,select,name);body.appendChild(tools);
       body.appendChild(node('p','Save or cancel the open app editor before changing schemes. Import supports AnvilDroid scheme JSON v1. Reset clears the selected scheme.','hint'));
-      status.textContent='';body.appendChild(status);
+      status.textContent='';body.appendChild(status);syncButtons();
     }
     details.addEventListener('toggle',()=>{details.onSchemesToggle?.(details.open);if(details.open&&!loaded)run('list');});
     return {details,body};
