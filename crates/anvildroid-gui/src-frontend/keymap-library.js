@@ -229,11 +229,11 @@
     }else{
       const wrapper=node('div',undefined,'runtime-table-scroll controls-table-scroll'),table=node('table',undefined,'runtime-table controls-table');
       const head=node('thead'),header=node('tr');
-      for(const title of ['App','Device','Keys','Actions'])header.appendChild(node('th',title));
+      for(const title of ['App','Device','Keys'])header.appendChild(node('th',title));
       head.appendChild(header);table.appendChild(head);
       const body=node('tbody');
       for(const p of rows){
-        const r=records.get(p.runtime),row=node('tr'),app=node('td'),runtime=node('td'),keys=node('td'),actions=node('td');
+        const r=records.get(p.runtime),row=node('tr'),app=node('td'),runtime=node('td'),keys=node('td');
         app.appendChild(appHeader(p));
         runtime.appendChild(node('span',r?.name||p.runtime,'controls-runtime-name'));
         runtime.appendChild(node('span',r?.state||'Unavailable','controls-runtime-state'));
@@ -243,19 +243,16 @@
           if(!p.bindings.length)chips.appendChild(node('span','—','hint'));};
         const scheme=schemeControls(p,updateKeys);updateKeys();app.appendChild(scheme.details);
         keys.appendChild(chips);
-        const edit=node('button',undefined,'btn runtime-action-icon');edit.type='button';
-        edit.title=available(r)?'Edit keymap in an open app':'Start this device to edit';edit.setAttribute('aria-label',`Edit keymap · ${p.package} · ${r?.name||p.runtime}`);
-        edit.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m16 3 5 5-12 12-6 1 1-6Z"/><path d="m14 5 5 5"/></svg>';
-        edit.disabled=!available(r);
-        edit.addEventListener('click',async()=>{if(edit.disabled)return;edit.disabled=true;try{await window.AnvilKeymapActions?.open(p.runtime,p.package);}finally{edit.disabled=!available(records.get(p.runtime));}});
-        actions.appendChild(edit);for(const cell of [app,runtime,keys,actions])row.appendChild(cell);body.appendChild(row);
+        for(const cell of [app,runtime,keys])row.appendChild(cell);body.appendChild(row);
         // Scheme tools span the whole table width under their app, while "Schemes" is open.
-        const schemeRow=node('tr',undefined,'controls-scheme-row'),schemeCell=node('td');schemeCell.colSpan=4;
+        const schemeRow=node('tr',undefined,'controls-scheme-row'),schemeCell=node('td');schemeCell.colSpan=3;
         schemeCell.appendChild(scheme.body);schemeRow.appendChild(schemeCell);schemeRow.hidden=true;row.className='controls-app-row';
         scheme.details.onSchemesToggle=open=>{schemeRow.hidden=!open;row.className=open?'controls-app-row schemes-open':'controls-app-row';};
         body.appendChild(schemeRow);
       }
       table.appendChild(body);wrapper.appendChild(table);content.appendChild(wrapper);
+      // Keymaps are edited in the app's own window, where the overlay can see the game.
+      content.appendChild(node('p','To change controls, open the app and press F2 (or its header menu → Edit keymap).','hint controls-edit-hint'));
     }
     const legacy=drafts.filter(p=>selected==='all'||p.runtime===selected);
     if(legacy.length){

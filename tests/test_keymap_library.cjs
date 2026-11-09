@@ -52,8 +52,9 @@ test('Default Frozen profiles load alongside managed profiles, with scoped editi
   el('probe-runtime').value='default';el('probe-runtime').events.change();assert.equal(el('install-touch-probe').disabled,false);
   el('keymap-runtime-filter').value='default';el('keymap-runtime-filter').events.change();
   assert.doesNotMatch(el('keymap-saved-list').textContent,/Gaming/);
-  const edit=descendants(el('keymap-saved-list'),'button')[0];await edit.events.click();
-  assert.deepEqual(edits,[['default','com.test.game']]);
+  // Editing happens in the app window (F2); the list offers no edit button.
+  assert.ok(!descendants(el('keymap-saved-list'),'button').some(b=>/Edit keymap/.test(b.attributes['aria-label']||'')));
+  assert.match(el('keymap-saved-list').textContent,/press F2/);assert.equal(edits.length,0);
 });
 test('Managed inventory failure does not block Default, failed refresh retains profiles',async()=>{
   const {api,el,states}=setup();states.failList=true;states.profiles.set('default',report('default'));
@@ -68,7 +69,7 @@ test('Cached stopped profiles remain visible, but editing is disabled',async()=>
   const {api,el,states}=setup();states.profiles.set('default',report('default'));await api.refresh();
   states.default.state='Stopped';await api.refresh();
   assert.match(el('keymap-saved-list').textContent,/com.test.game/);
-  assert.equal(descendants(el('keymap-saved-list'),'button')[0].disabled,true);
+  assert.match(el('keymap-saved-list').textContent,/Stopped/);
   assert.equal(el('install-touch-probe').disabled,true);
 });
 test('Invalid native scope, duplicate packages or bindings never replace cached profiles',async()=>{

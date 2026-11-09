@@ -151,3 +151,9 @@
 #page-controls .controls-scheme-row-tools input[type=text] { width: 180px; padding-inline: 10px !important; }
 #page-controls .controls-scheme-row-tools .btn { min-height: 32px; height: 32px; padding: 0 12px; font-size: var(--font-sm); }
 #page-controls .controls-scheme-body .hint { margin: 12px 0 0; }
+/* Three columns (no Actions): Keys takes the rest and reads left to right. */
+#page-controls .controls-table th:first-child { width: 40%; }
+#page-controls .controls-table th:nth-child(2) { width: 30%; }
+#page-controls .controls-table th:last-child { width: auto; text-align: left; }
+#page-controls .controls-table td:last-child { text-align: left; }
+#page-controls .controls-edit-hint { margin: 10px 2px 0; }
