@@ -137,9 +137,10 @@
 .controls-app-text .controls-package.hint { font-size: var(--font-sm); }
 
 /* Game Controls: scheme tools open in a full-width row under their app. */
-#page-controls .controls-table tr.schemes-open > td { border-bottom-color: transparent; }
+#page-controls .controls-table tr.schemes-open > td { padding-bottom: 12px !important; }
 #page-controls .controls-scheme-row[hidden] { display: none; }
-#page-controls .controls-scheme-row > td { padding: 0 16px 16px !important; text-align: left !important; }
+/* The panel belongs to the app row above: no rule between them, room on both sides. */
+#page-controls .controls-scheme-row > td { padding: 4px 16px 18px !important; border-top: 0 !important; text-align: left !important; }
 #page-controls .controls-scheme-body { margin: 0; padding: 14px 16px; border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); background: var(--bg-surface); }
 #page-controls .controls-scheme-tools { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px 28px; }
 #page-controls .controls-scheme-group { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
