@@ -126,3 +126,12 @@
 .accent-swatch { width: 16px; height: 16px; flex: 0 0 16px; border-radius: 50%; }
 .skin-option { flex-direction: column; align-items: flex-start; gap: 2px; padding: 8px 14px; }
 .skin-option small { color: var(--text-muted); font-size: var(--font-sm); font-weight: 400; }
+
+/* Game Controls: app icon and name in front of the package. */
+.controls-app { display: flex; align-items: center; gap: 12px; min-width: 0; margin-bottom: 6px; }
+.controls-app-icon { display: grid; place-items: center; flex: 0 0 40px; width: 40px; height: 40px; overflow: hidden; border-radius: var(--radius-sm); }
+.controls-app-icon img { width: 100%; height: 100%; object-fit: contain; }
+.controls-app-icon .app-initial { font-size: 18px; }
+.controls-app-text { display: flex; flex-direction: column; min-width: 0; }
+.controls-app-name { color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.controls-app-text .controls-package.hint { font-size: var(--font-sm); }

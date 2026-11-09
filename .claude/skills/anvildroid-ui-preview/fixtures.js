@@ -52,6 +52,11 @@
       },
       'controller:list': [managed, stopped],
       'controller:refresh': args => args.id === 'default' ? system : [managed, stopped].find(r => r.id === args.id),
+      // Game Controls: saved keymaps per device (one app unknown to the library).
+      'controller:keymaps': args => ({ runtime_id: args.id, invalid_count: 0, profiles: [
+        { runtime: args.id, package: 'net.minetest.minetest', bindings: [{ evdev: 17, kind: 'tap', nx: 30000, ny: 40000 }, { evdev: 57, kind: 'hold', nx: 50000, ny: 50000 }] },
+        { runtime: args.id, package: 'com.example.unlisted', bindings: [] },
+      ] }),
       'controller:requirements': { can_prepare: true, can_start: true, checks: [] },
       'controller:arm_sources': { sources: [] },
       'controller:app_states': args => ({ runtime_id: args.id, state: 'Running', states: {} }),

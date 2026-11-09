@@ -175,13 +175,27 @@
     details.addEventListener('toggle',()=>{if(details.open&&!loaded)run('list');});
     return details;
   }
+  // Icon + app name, package underneath. Icons that fail to load fall back to
+  // the app's initial; names are set with textContent (they come from Android).
+  function appHeader(p){
+    const info=window.AnvilAppIdentity?.(p.runtime,p.package)||{label:'',icon:null};
+    const head=node('div',undefined,'controls-app'),frame=node('span',undefined,'controls-app-icon');
+    const initial=()=>node('span',String(info.label||p.package.split('.').pop()||'?').charAt(0).toUpperCase(),'app-initial');
+    if(info.icon){const img=node('img');img.alt='';img.loading='lazy';img.decoding='async';img.src=info.icon;
+      img.addEventListener('error',()=>img.replaceWith(initial()),{once:true});frame.appendChild(img);}
+    else frame.appendChild(initial());
+    const text=node('span',undefined,'controls-app-text');
+    if(info.label){text.appendChild(node('strong',info.label,'controls-app-name'));text.appendChild(node('span',p.package,'controls-package hint'));}
+    else text.appendChild(node('span',p.package,'controls-package'));
+    head.appendChild(frame);head.appendChild(text);return head;
+  }
   function updateSelectors(){
-    const selected=filter.value||'all';filter.replaceChildren(node('option','All runtimes'));filter.children[0].value='all';
+    const selected=filter.value||'all';filter.replaceChildren(node('option','All devices'));filter.children[0].value='all';
     for(const r of records.values()){const option=node('option',r.name);option.value=r.id;filter.appendChild(option);}
     filter.value=records.has(selected)?selected:'all';
     const probe=document.getElementById('probe-runtime');
     if(probe&&!probe.disabled){
-      const previous=probe.value;probe.replaceChildren(node('option','Select runtime'));probe.children[0].value='';
+      const previous=probe.value;probe.replaceChildren(node('option','Select device'));probe.children[0].value='';
       for(const r of records.values())if(available(r)){const option=node('option',`${r.name} · ${r.state}`);option.value=r.id;probe.appendChild(option);}
       probe.value=available(records.get(previous))?previous:'';
       updateDiagnostics();
@@ -201,17 +215,17 @@
       const empty=node('div',undefined,'controls-empty');empty.appendChild(node('p','No saved keymaps'));
       empty.appendChild(node('span','Open an app → header menu → Edit keymap, or press F2.','hint'));
       const scoped=selected==='all'?[...records.values()]:[records.get(selected)];
-      if(scoped.some(r=>r&&!available(r)))empty.appendChild(node('span','Start a runtime to load its keymaps.','hint'));
+      if(scoped.some(r=>r&&!available(r)))empty.appendChild(node('span','Start a device to load its keymaps.','hint'));
       content.appendChild(empty);
     }else{
       const wrapper=node('div',undefined,'runtime-table-scroll controls-table-scroll'),table=node('table',undefined,'runtime-table controls-table');
       const head=node('thead'),header=node('tr');
-      for(const title of ['App','Runtime','Keys','Actions'])header.appendChild(node('th',title));
+      for(const title of ['App','Device','Keys','Actions'])header.appendChild(node('th',title));
       head.appendChild(header);table.appendChild(head);
       const body=node('tbody');
       for(const p of rows){
         const r=records.get(p.runtime),row=node('tr'),app=node('td'),runtime=node('td'),keys=node('td'),actions=node('td');
-        app.appendChild(node('span',p.package,'controls-package'));
+        app.appendChild(appHeader(p));
         runtime.appendChild(node('span',r?.name||p.runtime,'controls-runtime-name'));
         runtime.appendChild(node('span',r?.state||'Unavailable','controls-runtime-state'));
         if(r?.state!=='Running'&&r?.state!=='Frozen')runtime.title='Last loaded keymaps';
@@ -221,7 +235,7 @@
         updateKeys();app.appendChild(schemeControls(p,updateKeys));
         keys.appendChild(chips);
         const edit=node('button',undefined,'btn runtime-action-icon');edit.type='button';
-        edit.title=available(r)?'Edit keymap in an open app':'Start this runtime to edit';edit.setAttribute('aria-label',`Edit keymap · ${p.package} · ${r?.name||p.runtime}`);
+        edit.title=available(r)?'Edit keymap in an open app':'Start this device to edit';edit.setAttribute('aria-label',`Edit keymap · ${p.package} · ${r?.name||p.runtime}`);
         edit.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m16 3 5 5-12 12-6 1 1-6Z"/><path d="m14 5 5 5"/></svg>';
         edit.disabled=!available(r);
         edit.addEventListener('click',async()=>{if(edit.disabled)return;edit.disabled=true;try{await window.AnvilKeymapActions?.open(p.runtime,p.package);}finally{edit.disabled=!available(records.get(p.runtime));}});

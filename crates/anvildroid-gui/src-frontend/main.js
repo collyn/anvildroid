@@ -654,6 +654,19 @@ function iconUrl(pkg) {
   return `appicon://localhost/${activeRuntimeId}/${encodeURIComponent(pkg)}.png`;
 }
 
+// Name and icon of an installed app on one device, for pages outside the
+// library (Game Controls). Unknown apps get no label; the caller shows the
+// package name. System Waydroid icons come from its icon folder by package.
+function appIdentity(runtimeId, pkg) {
+  const managed = runtimeId && runtimeId !== 'default';
+  const app = managed ? (managedSnapshots.get(runtimeId) || []).find(item => item.package === pkg)
+    : allApps.find(item => item.package === pkg && (item.runtime_id || 'default') === 'default');
+  const label = typeof app?.label === 'string' && app.label.trim() ? app.label.trim() : '';
+  const icon = managed ? (app ? libraryIconUrl({...app, runtime_id: runtimeId}) : null) : iconUrl(pkg);
+  return {label, icon};
+}
+window.AnvilAppIdentity = appIdentity;
+
 function libraryIconUrl(app) {
   if(app.desktop_entry)return 'waydroid.png';
   if (app.runtime_id && app.runtime_id !== 'default') {
