@@ -158,8 +158,8 @@ and end when the device or controller stops.
 
 ![Appearance settings with themes and accent colours](images/appearance.png)
 
-- **Theme:** **Classic** (rounded, calm) or **HUD** (square, high-contrast game
-  look). Both have the same pages and controls.
+- **Theme:** **HUD** (square, high-contrast game look; the default) or
+  **Classic** (rounded, calm). Both have the same pages and controls.
 - **Light or dark:** System follows your desktop, or pick one.
 - **Accent colour:** Blue, Forge, Toxic, Crimson, Synthwave or Ice.
 - **Updates:** **Check for updates** downloads the right package for your

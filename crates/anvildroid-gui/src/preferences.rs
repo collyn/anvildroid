@@ -172,7 +172,9 @@ fn recreate_main(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String>
         .map_err(|e| e.to_string())?;
     #[cfg(target_os = "linux")]
     crate::titlebar::install_window(&window).map_err(|e| e.to_string())?;
-    if let Some(geometry) = *RELEASED.lock().unwrap_or_else(|e| e.into_inner()) {
+    let released = *RELEASED.lock().unwrap_or_else(|e| e.into_inner());
+    if released.is_none() { fit_to_monitor(&window); }
+    if let Some(geometry) = released {
         let _ = window.set_size(geometry.size);
         let _ = window.set_position(geometry.position);
         if geometry.maximized { let _ = window.maximize(); }
@@ -277,10 +279,25 @@ fn startup_visibility(
     }
 }
 
+/// The default size (tauri.conf.json) suits a 1080p desktop. On a smaller
+/// screen, keep the window inside the work area; the configured minimum
+/// size still applies.
+fn fit_to_monitor(window: &tauri::WebviewWindow) {
+    let (Ok(Some(monitor)), Ok(size)) = (window.current_monitor(), window.inner_size()) else { return };
+    let area = monitor.work_area().size;
+    let width = size.width.min(area.width.saturating_mul(95) / 100);
+    let height = size.height.min(area.height.saturating_mul(92) / 100);
+    if (width, height) != (size.width, size.height) {
+        let _ = window.set_size(tauri::PhysicalSize::new(width, height));
+        let _ = window.center();
+    }
+}
+
 pub fn show_at_startup(app: &tauri::AppHandle, explicit_view: bool) -> tauri::Result<()> {
     let state = app.state::<ApplicationPreferences>();
     let prefs = state.preferences.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(window) = app.get_webview_window("main") {
+        fit_to_monitor(&window);
         match startup_visibility(&prefs, minimize_to_panel(app), explicit_view) {
             StartupVisibility::Show => window.show()?,
             StartupVisibility::Hide => {

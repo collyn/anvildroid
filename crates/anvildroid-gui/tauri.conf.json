@@ -10,8 +10,8 @@
     "windows": [
       {
         "title": "AnvilDroid",
-        "width": 1200,
-        "height": 800,
+        "width": 1380,
+        "height": 820,
         "resizable": true,
         "decorations": true,
         "visible": false,

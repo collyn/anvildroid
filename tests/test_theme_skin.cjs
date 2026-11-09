@@ -20,24 +20,24 @@ function load(stored = {}) {
   return {theme: window.AnvilTheme, root, store};
 }
 
-test('Classic is the default theme and is applied before paint', () => {
+test('HUD is the default theme and is applied before paint', () => {
   const {theme, root} = load();
-  assert.equal(theme.skin(), 'classic');
-  assert.equal(root.dataset.skin, 'classic');
+  assert.equal(theme.skin(), 'hud');
+  assert.equal(root.dataset.skin, 'hud');
 });
 
-test('a saved theme is restored; unknown values fall back to Classic', () => {
-  assert.equal(load({'anvildroid.skin': 'hud'}).root.dataset.skin, 'hud');
-  assert.equal(load({'anvildroid.skin': '"><img>'}).root.dataset.skin, 'classic');
+test('a saved theme is restored; unknown values fall back to HUD', () => {
+  assert.equal(load({'anvildroid.skin': 'classic'}).root.dataset.skin, 'classic');
+  assert.equal(load({'anvildroid.skin': '"><img>'}).root.dataset.skin, 'hud');
 });
 
 test('setSkin saves known themes and ignores others', () => {
   const {theme, root, store} = load();
-  theme.setSkin('hud');
-  assert.equal(root.dataset.skin, 'hud');
-  assert.equal(store['anvildroid.skin'], 'hud');
+  theme.setSkin('classic');
+  assert.equal(root.dataset.skin, 'classic');
+  assert.equal(store['anvildroid.skin'], 'classic');
   theme.setSkin('neon');
-  assert.equal(root.dataset.skin, 'hud');
+  assert.equal(root.dataset.skin, 'classic');
 });
 
 test('every HUD rule is scoped so Classic is untouched', () => {

@@ -29,12 +29,12 @@
       button.setAttribute('aria-pressed', String(button.dataset.accentChoice === accent)));
   }
   // Themes change the look only (skin.css is scoped to data-skin="hud");
-  // navigation and layout are the same in every theme. Classic is the default.
+  // navigation and layout are the same in every theme. HUD is the default.
   const SKIN_KEY = 'anvildroid.skin';
   const SKINS = ['classic', 'hud'];
   function savedSkin() {
-    try { const value = localStorage.getItem(SKIN_KEY); return SKINS.includes(value) ? value : 'classic'; }
-    catch (_) { return 'classic'; }
+    try { const value = localStorage.getItem(SKIN_KEY); return SKINS.includes(value) ? value : 'hud'; }
+    catch (_) { return 'hud'; }
   }
   function applySkin(skin) {
     document.documentElement.dataset.skin = skin;

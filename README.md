@@ -115,7 +115,7 @@ devices, images, device settings, game controls, ADB, themes and updates.
 - ARM translation (libndk_translation, libhoudini), device identity profiles,
   Google Play registration help
 - ADB for Android Studio, diagnostics export
-- Classic and HUD themes, light or dark, six accent colours
+- HUD and Classic themes, light or dark, six accent colours
 
 ## Known limitations
 
