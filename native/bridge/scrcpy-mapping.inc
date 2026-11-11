@@ -486,11 +486,52 @@ static int map_pointer_xy(struct object *o,int32_t x,int32_t y,int *nx,int *ny) 
   int py=(int)(((int64_t)y+256LL*sy)*hwc_scale_120/(256*120))+s->frame_origin_y;
   *nx=keymap_normalize(px-tx,w);*ny=keymap_normalize(py-ty,h);return 1;
 }
+/* App compatibility "Mouse as touch" (persist.waydroid.fake_touch). Waydroid
+ * only relabels the event source inside ViewRootImpl, so engines that read the
+ * tool type or native input still see a mouse. Listed apps instead get the same
+ * bridge-level free finger as a keymap "Mouse touch" control. */
+static int map_fake_touch_listed(const char *package) {
+  char value[128]={0};
+  if(!package||!__system_property_get||__system_property_get("persist.waydroid.fake_touch",value)<=0)return 0;
+  size_t length=strlen(package);
+  for(const char *token=value;*token;) {
+    const char *end=strchr(token,',');size_t size=end?(size_t)(end-token):strlen(token);
+    if((size==1&&*token=='*')||(size==length&&!memcmp(token,package,length)))return 1;
+    if(!end)break;
+    token=end+1;
+  }
+  return 0;
+}
+static struct keymap_overlay map_fake_touch_hints;
+static struct keymap_overlay *map_fake_touch_overlay(struct object *s) {
+  const char *package=keymap_package(s);int task=keymap_task_owner(s);
+  if(!package||strlen(package)>240||!task||!map_fake_touch_listed(package))return 0;
+  struct keymap_overlay *h=&map_fake_touch_hints;
+  if(h->task!=task||strcmp(h->package,package)) {
+    memset(h,0,sizeof(*h));
+    h->passive=1;h->task=task;memcpy(h->package,package,strlen(package)+1);
+    h->model.count=1;
+    h->model.points[0]=(struct keymap_point){.kind=KEYMAP_MOUSE_TOUCH,.source=KEYMAP_SOURCE_POINTER,
+      .nx=32768,.ny=32768,.duration=250,.repeats=3};
+  }
+  return h;
+}
+/* An authored profile keeps its own left button: a mouse binding, aim fire or
+ * camera (whose free touch already turns M1 into a finger). */
+static int map_profile_owns_left(const struct keymap_overlay *h) {
+  for(int i=0;i<h->model.count;++i) {
+    const struct keymap_point *p=&h->model.points[i];
+    if(p->kind==KEYMAP_MOUSE_TOUCH||p->kind==KEYMAP_AIM||p->kind==KEYMAP_LOOK||
+       (p->source==KEYMAP_SOURCE_MOUSE&&p->key==272))return 1;
+  }
+  return 0;
+}
 static struct keymap_overlay *map_pointer_hints_raw(struct object *o,struct object **owner) {
   struct object *s=game_fit_owner(find(o->pointer_surface));*owner=s;
   if(!s||s->keymap_disabled||s->resize.dragging||(s->overlay&&!s->overlay->testing))return 0;
   struct keymap_overlay *h=s->overlay&&s->overlay->testing?s->overlay:s->hints;
-  if(!h||(!h->testing&&h->passive!=1))return 0;
+  if(!h||(!h->testing&&h->passive!=1))h=map_fake_touch_overlay(s);
+  if(!h)return 0;
   for(struct object *keyboard=objects;keyboard;keyboard=keyboard->next)
     if(keyboard->display==o->display&&keyboard->keyboard_focus&&
        (keyboard->keyboard_focus!=s||keyboard->keymap_panel_focus))return 0;
@@ -549,6 +590,7 @@ static void map_auto_capture_poll(void) {
 static int map_pointer_profile(struct object *o) {
   struct object *s;struct keymap_overlay *h=map_pointer_hints(o,&s);
   if(h)for(int i=0;i<h->model.count;++i)if(h->model.points[i].kind==KEYMAP_MOUSE_TOUCH)return 1;
+  if(h&&!map_profile_owns_left(h)&&map_fake_touch_overlay(s))return 1;
   h=map_pointer_hints_raw(o,&s);
   if(map_camera_free_touch(h,s))return 1;
   for(int i=0;i<10;++i)if(map_advanced[i].owner==s&&s&&map_advanced[i].point.kind==KEYMAP_LOOK&&!map_advanced[i].suspended)return 1;
@@ -694,6 +736,10 @@ static int map_advanced_button(struct object *o,uint32_t button,uint32_t state) 
     int index=-1;
     for(int i=0;i<h->model.count;++i)if(h->model.points[i].source==1&&h->model.points[i].key==(int)button){index=i;break;}
     if(index<0&&button==272)for(int i=0;i<h->model.count;++i)if(h->model.points[i].kind==KEYMAP_MOUSE_TOUCH){index=i;break;}
+    if(index<0&&button==272&&!map_profile_owns_left(h)) {
+      struct keymap_overlay *fake=map_fake_touch_overlay(target);
+      if(fake){h=fake;index=0;}
+    }
     if(index>=0){
       if(state&&!map_mouse_latched[bi]){
         map_mouse_latched[bi]=1;

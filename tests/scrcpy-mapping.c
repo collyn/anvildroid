@@ -11,7 +11,9 @@ static unsigned char last[32];
 static unsigned char sequence[4096][32];
 static int sequence_count;
 int __android_log_print(int l,const char*t,const char*f,...){(void)l;(void)t;(void)f;return 0;}
+static const char *test_fake_touch="";
 int __system_property_get(const char *key,char *value) {
+  if(strstr(key,"fake_touch"))return snprintf(value,92,"%s",test_fake_touch);
   return snprintf(value,128,"%d",strstr(key,"width")?1984:1164);
 }
 int test_socket(int domain,int type,int protocol){(void)domain;(void)type;(void)protocol;return 999;}

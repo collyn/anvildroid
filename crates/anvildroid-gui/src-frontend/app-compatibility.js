@@ -13,7 +13,7 @@
     notice.setAttribute('role', 'status');
     notice.setAttribute('aria-live', 'polite');
     const note = document.createElement('p');
-    note.textContent = 'These settings use Waydroid image properties. Image support varies; saved values do not verify app behavior. After a change, stop and reopen the app. Reset removes only this app’s entries; global settings still apply.';
+    note.textContent = 'These settings use Waydroid image properties. Image support varies; saved values do not verify app behavior. Mouse as touch also makes the left mouse button act as a finger in this app’s windows, like a Mouse touch keymap control. After a change, stop and reopen the app. Reset removes only this app’s entries; global settings still apply.';
     const fields = {};
     form.append(title, subtitle, note);
     for (const [key, labelText] of [['fake_wifi', 'Fake Wi-Fi'], ['mouse_as_touch', 'Mouse as touch']]) {

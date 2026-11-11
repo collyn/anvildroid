@@ -3,9 +3,13 @@
  * Source bounds come from the task; host windows have a separate fit transform.
  * Real Wayland child buffers remain owned by HWC (no screenshots/copies).
  */
+/* bars[0..3] letterbox the content; bars[4] is an opaque backdrop stacked
+ * below the HWC parent so translucent app buffers never show the desktop. */
+#define GAME_FIT_PIECES 5
+#define GAME_FIT_BACKDROP 4
 struct game_fit_state {
-  struct csd_piece bars[4];
-  struct proxy *viewports[4];
+  struct csd_piece bars[GAME_FIT_PIECES];
+  struct proxy *viewports[GAME_FIT_PIECES];
   int applied, x, y, sw, sh, w, h, csd, fullscreen, rx, ry, rw, rh, rotation;
   struct proxy *above;
 };
@@ -110,14 +114,14 @@ static int32_t game_fit_input(struct proxy *p,int32_t value,int axis) {
 }
 static struct object *game_fit_bar_owner(struct proxy *p) {
   if(p)for(struct object *s=objects;s;s=s->next)if(s->fit)
-    for(int i=0;i<4;++i)if(s->fit->bars[i].surface==p)return s;
+    for(int i=0;i<GAME_FIT_PIECES;++i)if(s->fit->bars[i].surface==p)return s;
   return 0;
 }
 static int game_fit_bar(struct proxy *p) {return game_fit_bar_owner(p)!=0;}
 static void game_fit_destroy(struct object *s) {
   if(!s||!s->fit)return;
   struct game_fit_state *f=s->fit;s->fit=0;
-  for(int i=0;i<4;++i) {
+  for(int i=0;i<GAME_FIT_PIECES;++i) {
     if(f->viewports[i]){wayland_send(f->viewports[i],0,0);real_destroy(f->viewports[i]);}
     if(f->bars[i].subsurface){wayland_send(f->bars[i].subsurface,0,0);real_destroy(f->bars[i].subsurface);}
     if(f->bars[i].surface){wayland_send(f->bars[i].surface,0,0);real_destroy(f->bars[i].surface);}
@@ -133,7 +137,7 @@ static int game_fit_create(struct object *s) {
   const struct interface *vi=porter->protocol_interface->methods[1].types[0];
   if(!vi)return 0;
   s->fit=calloc(1,sizeof(*s->fit));if(!s->fit)return 0;
-  for(int i=0;i<4;++i) {
+  for(int i=0;i<GAME_FIT_PIECES;++i) {
     union argument id={.o=0};
     struct csd_piece *b=&s->fit->bars[i];
     b->surface=real_marshal(csd_compositor,0,&id,csd_surface_i,1);
@@ -145,6 +149,9 @@ static int game_fit_create(struct object *s) {
     s->fit->viewports[i]=real_marshal(porter->p,1,vp,vi,1);
     if(!s->fit->viewports[i])goto failed;
   }
+  /* Takes effect with the parent's next commit; content stays above it. */
+  union argument parent={.o=s->p};
+  wayland_send(s->fit->bars[GAME_FIT_BACKDROP].subsurface,3,&parent);
   return 1;
 failed:
   game_fit_destroy(s);return 0;
@@ -265,14 +272,15 @@ static int game_fit_geometry(struct object *s,int x,int y,int sw,int sh) {
   }
   /* Opaque bars cover both empty space and any Android shadows outside the
    * source task. 1x1 buffers + viewports keep allocation constant while dragging. */
-  struct game_fit_rect bars[4]={{0,0,s->fit_w,r.y},
+  struct game_fit_rect bars[GAME_FIT_PIECES]={{0,0,s->fit_w,r.y},
     {0,r.y+r.height,s->fit_w,s->fit_h-r.y-r.height},
-    {0,r.y,r.x,r.height},{r.x+r.width,r.y,s->fit_w-r.x-r.width,r.height}};
+    {0,r.y,r.x,r.height},{r.x+r.width,r.y,s->fit_w-r.x-r.width,r.height},
+    {0,0,s->fit_w,s->fit_h}};
   int painted=1;
-  if(changed||above!=f->above)for(int i=0;i<4;++i) {
+  if(changed||above!=f->above)for(int i=0;i<GAME_FIT_PIECES;++i) {
     struct csd_piece *b=&s->fit->bars[i];struct game_fit_rect q=bars[i];
     union argument pos[2]={{.i=q.x},{.i=q.y}};wayland_send(b->subsurface,1,pos);
-    if(above){union argument sibling={.o=above};wayland_send(b->subsurface,2,&sibling);}
+    if(above&&i!=GAME_FIT_BACKDROP){union argument sibling={.o=above};wayland_send(b->subsurface,2,&sibling);}
     if(q.width>0&&q.height>0) {
       if(!b->width||!b->height){
         struct proxy *buffer=csd_paint(5,1,1,0);if(!buffer){painted=0;continue;}

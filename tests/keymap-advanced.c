@@ -151,6 +151,30 @@ int main(void) {
   absolute_pointer_button(&pointer,272,1);scrcpy_mapping_cancel();before=packets;
   absolute_pointer_button(&pointer,272,1);assert(packets==before); /* held, cancelled */
   assert(absolute_pointer_button(&pointer,272,0));assert(packets==before);
+  /* App compatibility "Mouse as touch" behaves like a Mouse touch control,
+   * without any keymap profile, and never steals an authored left button. */
+  setup(&s,&h,KEYMAP_DPAD);s.p=&root;s.viewport=&s;s.hints=0;absolute_pointer_enabled=0;
+  memset(&map_fake_touch_hints,0,sizeof(map_fake_touch_hints));
+  test_fake_touch="com.other.app";before=packets;
+  assert(!absolute_pointer_update(&pointer,860*256,354*256,1));
+  assert(!absolute_pointer_button(&pointer,272,1)&&packets==before);
+  absolute_pointer_button(&pointer,272,0);
+  test_fake_touch="com.other.app,org.test";before=packets;
+  assert(absolute_pointer_update(&pointer,860*256,354*256,1)&&packets==before);
+  assert(absolute_pointer_button(&pointer,272,1)&&map_count==1&&last[1]==0);
+  assert(absolute_pointer_update(&pointer,870*256,364*256,1)&&last[1]==2);
+  assert(absolute_pointer_button(&pointer,272,0)&&!map_count&&last[1]==1);
+  test_fake_touch="*";
+  assert(absolute_pointer_button(&pointer,272,1)&&map_count==1);
+  assert(absolute_pointer_button(&pointer,272,0)&&!map_count);
+  /* A key-only profile gains the finger; a mouse-bound M1 keeps its binding. */
+  s.hints=&h;test_fake_touch="org.test";
+  assert(absolute_pointer_button(&pointer,272,1)&&map_count==1&&map_advanced[0].point.kind==KEYMAP_MOUSE_TOUCH);
+  assert(absolute_pointer_button(&pointer,272,0)&&!map_count);
+  h.model.points[0]=(struct keymap_point){.key=272,.kind=KEYMAP_BASIC,.source=KEYMAP_SOURCE_MOUSE,.nx=60000,.ny=60000,.end_mode=KEYMAP_END_HOLD};
+  assert(absolute_pointer_button(&pointer,272,1)&&map_count==1&&map_advanced[0].lx==60000);
+  assert(absolute_pointer_button(&pointer,272,0)&&!map_count);
+  test_fake_touch="";
   /* Relative hold look seeds its first event and lifts before recentering. */
   setup(&s,&h,KEYMAP_LOOK);s.p=&root;s.viewport=&s;s.hints=&h;
   h.model.points[0].look_width=1000;h.model.points[0].look_height=1000;
