@@ -199,8 +199,11 @@ class ControllerDataLocationTest(unittest.TestCase):
 
     def test_unavailable_data_folder_fails_create_without_a_record(self):
         self.store.dispatch({'op': 'data_location_set', 'path': str(self.disk)}, 0)
-        self.disk.rmdir()
-        self.disk.mkdir(mode=0o755)  # same path, different folder: never adopted
+        # Same path, different folder: never adopted. Keep the original alive
+        # while creating the replacement; rmdir+mkdir may reuse its inode on
+        # some filesystems (CI), making the replacement indistinguishable.
+        self.disk.rename(self.disk.with_name(self.disk.name + '-unmounted'))
+        self.disk.mkdir(mode=0o755)
         with self.assertRaises(Exception) as failure:
             self.store.dispatch({'op': 'create', 'name': 'Phone'}, 0)
         self.assertEqual(failure.exception.code, 'STORAGE')
