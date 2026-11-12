@@ -4,7 +4,8 @@ int __android_log_print(int l,const char *t,const char *f,...) {
   (void)l;(void)t;(void)f;return 0;
 }
 static const struct interface pool_i={.name="wl_shm_pool"},buffer_i={.name="wl_buffer"},
-  region_i={.name="wl_region"};
+  region_i={.name="wl_region"},viewport_i={.name="wp_viewport"};
+static struct proxy canvas_viewport={.interface=&viewport_i};
 static struct proxy pool,buffer,region,shm,parent,xdg_proxy,chrome[4],sub[4];
 static int window_geometry[4];
 static int px[4],py[4],attached[4],empty_input[4],normal_input[4],transparent_buffers,black_strip;
@@ -14,10 +15,13 @@ static int listen_buffer(struct proxy *p,void (**f)(void),void *data) {
   (void)p;(void)f;(void)data;return 0;
 }
 static int last_region_nonempty;
+/* Canvas commits that carried a geometry older than the last configure. */
+static int geometry_sent,stale_canvas_commits;
 static struct proxy *record(struct proxy *p,uint32_t op,union argument *a,
                             const struct interface *i,uint32_t v) {
   (void)v;
-  if(p==&xdg_proxy&&op==3)for(int n=0;n<4;++n)window_geometry[n]=a[n].i;
+  if(p==&xdg_proxy&&op==3){for(int n=0;n<4;++n)window_geometry[n]=a[n].i;geometry_sent=1;}
+  if(p==&parent&&op==6&&!geometry_sent)++stale_canvas_commits;
   if(i==&pool_i) {
     int size=a[2].i;uint32_t *pixels=calloc(1,size);assert(pixels);
     assert(read(a[1].i,pixels,size)==size);
@@ -94,6 +98,9 @@ int main(void) {
   /* The Waydroid canvas uses the same frame but its own configure path.
    * Verify fitted content, thin xdg bounds and removal/restoration of grips. */
   struct object xdg={.p=&xdg_proxy};s.xdg=&xdg;s.app=0;
+  /* The real canvas is scaled through its own wp_viewport. */
+  struct object viewport={.p=&canvas_viewport,.surface=&s,.width=1600,.height=900,.next=objects};
+  objects=&viewport;
   s.full_canvas_w=1600;s.full_canvas_h=900;s.full_w=s.full_h=0;
   uint32_t state=0;
   struct {size_t size,alloc;uint32_t *data;} states={.data=&state};
@@ -104,7 +111,12 @@ int main(void) {
          window_geometry[2]==802&&window_geometry[3]==484);
   state=1;states.size=sizeof(state);
   configure(&top,0,1200+2*CSD_BORDER,800+CSD_HEADER+CSD_BORDER,&states);
+  /* KWin latches the first canvas commit after a maximize configure; it must
+   * already carry the maximized geometry, or the window is centred by its
+   * old size and pushed off-screen. */
+  geometry_sent=stale_canvas_commits=0;
   full_ui_apply(&s);
+  assert(geometry_sent&&!stale_canvas_commits);
   assert(f.maximized&&!f.fullscreen&&f.pieces[2].width==5);
   assert(window_geometry[2]==1202&&window_geometry[3]==834);
   state=2;configure(&top,0,1200,800,&states);full_ui_apply(&s);
@@ -113,6 +125,12 @@ int main(void) {
   for(int n=0;n<4;++n)assert(!attached[n]&&!f.pieces[n].width);
   states.size=0;configure(&top,0,802,484,&states);full_ui_apply(&s);
   assert(!f.fullscreen&&!f.maximized&&s.full_w==800&&s.full_h==450);
+  /* Weston unmaximizes with 0x0 ("client chooses"): restore the prior size. */
+  state=1;states.size=sizeof(state);
+  configure(&top,0,1200+2*CSD_BORDER,800+CSD_HEADER+CSD_BORDER,&states);full_ui_apply(&s);
+  assert(f.maximized&&s.full_w==1200);
+  states.size=0;configure(&top,0,0,0,&states);full_ui_apply(&s);
+  assert(!f.maximized&&s.full_w==800&&s.full_h==450&&window_geometry[2]==802);
   for(int n=0;n<4;++n)assert(attached[n]);
   assert(f.pieces[1].width==5&&f.pieces[3].height==5&&window_geometry[2]==802);
   /* Repaint even if a maximize/restore changes only state, not dimensions. */

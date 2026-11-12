@@ -138,6 +138,8 @@ struct object {
   uint32_t focus_blocked_button;
   struct custom_size custom_size;
   int full_ui, full_w, full_h, full_canvas_w, full_canvas_h;
+  /* Full UI content size before maximize/fullscreen; a 0x0 restore uses it. */
+  int full_constrained, full_restore_w, full_restore_h;
   int full_clip_x,full_clip_y;
   int boot_geometry_w, boot_geometry_h;
   int window_configured, window_content, window_activated;
@@ -675,6 +677,12 @@ static void configure(void *data, struct proxy *p, int32_t w, int32_t h,
       if (a->data[i] == 2) fullscreen = 1;
       if (a->data[i] == 3) resizing = 1;
     }
+    struct object *s = o->surface;
+    int constrained = maximized || fullscreen;
+    if (constrained && !s->full_constrained && s->full_w > 0 && s->full_h > 0) {
+      s->full_restore_w = s->full_w;
+      s->full_restore_h = s->full_h;
+    }
     struct csd_frame *f = o->surface->csd;
     if (f) {
       int changed = f->maximized != maximized || f->fullscreen != fullscreen;
@@ -690,6 +698,14 @@ static void configure(void *data, struct proxy *p, int32_t w, int32_t h,
       if (w>0) w=w>2*CSD_BORDER?w-2*CSD_BORDER:1;
       if (h>0) h=h>CSD_HEADER+CSD_BORDER?h-CSD_HEADER-CSD_BORDER:1;
     }
+    /* Leaving maximize/fullscreen with 0x0 (Weston) lets the client choose:
+     * return to the pre-maximize size rather than keeping the work area. */
+    if (!constrained && s->full_constrained && w < 1 && h < 1 &&
+        s->full_restore_w > 0 && s->full_restore_h > 0) {
+      w = s->full_restore_w;
+      h = s->full_restore_h;
+    }
+    s->full_constrained = constrained;
     if(o->surface->custom_size.enabled) {
       if(w>0&&h>0){o->surface->full_w=w;o->surface->full_h=h;}
       custom_size_queue(&o->surface->custom_size,w,h,resizing);

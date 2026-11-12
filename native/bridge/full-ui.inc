@@ -92,7 +92,11 @@ static void full_ui_apply(struct object *s) {
       union argument a[2]={{.i=full_ui_scaled(s,o->width,0,1)},{.i=full_ui_scaled(s,o->height,1,1)}};
       if(o->surface==s){a[0].i=s->full_w;a[1].i=s->full_h;}
       wayland_send(o->p,2,a);
-      wayland_send(o->surface->p,6,0);
+      /* The canvas itself commits once, below, together with its new window
+       * geometry. An early commit acknowledges a maximize configure with the
+       * old geometry; KWin then centres that stale size in the work area and
+       * keeps the offset, pushing the maximized window off-screen. */
+      if(o->surface!=s)wayland_send(o->surface->p,6,0);
     }
     if(o->parent==s&&!strcmp(o->p->interface->name,"wl_subsurface")) {
       union argument a[2]={{.i=full_ui_scaled(s,o->x-display_projection.x,0,0)+ox},{.i=full_ui_scaled(s,o->y-display_projection.y,1,0)+oy}};
@@ -101,18 +105,20 @@ static void full_ui_apply(struct object *s) {
   }
   if(display_projection.w)for(struct object *o=objects;o;o=o->next)
     if(full_ui_owner(o)==s&&o!=s){full_ui_clip(o);wayland_send(o->p,6,0);}
+  /* Window geometry must precede every canvas commit below (csd_sync ends
+   * with one), so the commit acknowledging a maximize carries its size. */
   if(s->xdg) {
     union argument a[4];full_ui_geometry(s,a);
     wayland_send(s->xdg->p,3,a);
   }
-  wayland_send(s->p,6,0);
-  /* Track the frame with the new fitted extents immediately; the canvas
-   * HWC commits sparsely, so waiting for its next commit leaves the CSD
-   * pieces lagging behind a resize or maximize. */
+  /* Track the frame with the new fitted extents in this same commit; the
+   * canvas HWC commits sparsely, so waiting for its next commit leaves the
+   * CSD pieces lagging behind a resize or maximize. */
   keymap_canvas_bounds(s);
   keymap_overlay_sync(s,s->bx,s->by,s->bw,s->bh);
   csd_sync(s, 0, 0, s->full_w > 0 ? s->full_w : 1,
            s->full_h > 0 ? s->full_h : 1);
+  wayland_send(s->p,6,0); /* Also covers a canvas without client chrome. */
 }
 static void full_ui_request(struct object *o,const char *cls,const char *method,
                              union argument *a,struct proxy **temporary) {
