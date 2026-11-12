@@ -152,7 +152,7 @@ class AppInventory(unittest.TestCase):
         self.assertEqual([a['package'] for a in apps], ['com.android.settings', 'com.example.game'])
         self.assertEqual([a['label'] for a in apps], ['Settings', 'Game'])
         self.assertTrue(all(a['launchable'] for a in apps))
-        self.assertIn('query-activities', run.call_args.args)
+        self.assertTrue(any('query-activities' in call.args for call in run.call_args_list))
 
     def test_android16_reactivation_preserves_existing_freeform_bounds(self):
         tasks = ('RootTask id=16 bounds=[0,32][448,736]\n'
@@ -214,7 +214,13 @@ class AppInventory(unittest.TestCase):
         self.assertEqual(run.call_args.args[-5:], ('/system/bin/am', 'force-stop', '--user', '0', 'com.example.game'))
 
     def test_app_window_uninstall_keeps_system_app_protection(self):
-        with patch.object(self.worker, 'run', side_effect=['com.android.settings/.Settings\n', '']), \
+        # Answer by command: Settings is launchable but not a third-party package.
+        def android(*argv, **kwargs):
+            command = ' '.join(map(str, argv))
+            if '__ANVIL_USERS__' in command: return 'package:com.example.game\n__ANVIL_USERS__\nUsers:\n'
+            if 'resolve-activity' in command: return 'com.android.settings/.Settings\n'
+            return ''
+        with patch.object(self.worker, 'run', side_effect=android), \
              patch.object(self.worker.linux, 'run_bounded') as uninstall:
             with self.assertRaisesRegex(RuntimeError, 'system or protected'):
                 self.worker.app_action(Path('/unused'), 'test', 'uninstall', 'com.android.settings',
