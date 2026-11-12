@@ -6,6 +6,7 @@ target/native/framework-res.apk
 target/native/framework-res.apk.sha256
 target/native/overlay-key.p12
 target/native/AnvilDroidCaption.apk
+target/native/AnvilDroidUsers.apk
 target/native/libanvildroid-window.so
 target/native/libanvildroid-runtime-window.so
 target/native/libanvildroid-android-window.so

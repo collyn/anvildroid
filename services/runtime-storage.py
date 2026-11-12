@@ -190,6 +190,56 @@ def is_mountpoint(path):
     return any(unescape(line.split()[4]) == str(path) for line in Path('/proc/self/mountinfo').read_text().splitlines())
 
 
+def folder_identity(fd):
+    """Identity of a caller-owned folder, so a replaced or unmounted disk is noticed."""
+    return {'inode': os.fstat(fd).st_ino, 'fsid': os.fstatvfs(fd).f_fsid}
+
+
+def external_parent(destination, uid, root, allow_temporary=False):
+    """Open a permanent caller-owned folder outside the controller store."""
+    destination = Path(destination)
+    parent = open_directory(destination, uid)
+    try:
+        check_filesystem(parent, allow_temporary)
+        metadata = os.fstat(parent)
+        if metadata.st_uid != uid or not metadata.st_mode & stat.S_IWUSR:
+            raise RuntimeError('Choose a folder owned and writable by your Linux account')
+        if destination == root or root in destination.parents:
+            raise RuntimeError('Choose a folder outside the controller storage')
+        return parent
+    except Exception:
+        os.close(parent)
+        raise
+
+
+def private_child(parent, prefix, allow_temporary=False):
+    """Create a new root-owned 0700 directory; never adopt an existing one."""
+    name = prefix + uuid.uuid4().hex[:8]
+    os.mkdir(name, 0o700, dir_fd=parent)
+    fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+    try:
+        check_filesystem(fd, allow_temporary)
+        return name, fd
+    except Exception:
+        os.close(fd)
+        os.rmdir(name, dir_fd=parent)
+        raise
+
+
+def bind_anchor(anchor, fd, expected):
+    """Mount a verified private directory at a root-owned anchor (idempotent)."""
+    if not same_identity(identity(fd), expected):
+        raise RuntimeError('Storage disk/folder identity changed; refusing an empty or replacement location')
+    if is_mountpoint(anchor):
+        if same_identity(directory_identity(anchor), expected): return
+        subprocess.run(['umount', str(anchor)], check=True, capture_output=True)
+    if anchor.exists():
+        if anchor.is_symlink() or not anchor.is_dir(): raise RuntimeError('Unsafe storage anchor')
+        if any(anchor.iterdir()): raise RuntimeError('Unexpected data at storage anchor; retained for recovery')
+    anchor.mkdir(mode=0o700, exist_ok=True)
+    subprocess.run(['mount', '--bind', f'/proc/self/fd/{fd}', str(anchor)], pass_fds=(fd,), check=True, capture_output=True)
+
+
 class Storage:
     def __init__(self, root, allow_temporary=False):
         self.mutex = threading.RLock()
@@ -295,6 +345,37 @@ class Storage:
             subprocess.run(['mount', '--bind', f'/proc/self/fd/{fd}', str(anchor)], pass_fds=(fd,), check=True, capture_output=True)
         finally: os.close(fd)
 
+    def create_external(self, identifier, destination, uid, expected=None):
+        """New runtime storage that starts in a caller-owned folder.
+        Nothing is written below the controller store except the empty anchor."""
+        with self.mutex:
+            anchor = self.anchors / identifier
+            if identifier in self.entries or anchor.exists() or anchor.is_symlink():
+                raise RuntimeError('Runtime storage already exists')
+            parent = external_parent(destination, uid, self.root, self.allow_temporary)
+            name = fd = None
+            try:
+                if expected and not same_identity(folder_identity(parent), expected):
+                    raise RuntimeError('The data folder was replaced or its disk is not mounted. Choose it again in Settings > Storage.')
+                name, fd = private_child(parent, '.anvildroid-' + identifier + '-', self.allow_temporary)
+                active = dict(path=str(Path(destination) / name), **identity(fd))
+                entry = {'active': active, 'job': {'id': uuid.uuid4().hex, 'status': 'Succeeded', 'phase': 'complete', 'error': None}}
+                self.entries[identifier] = entry
+                self.save()
+                bind_anchor(anchor, fd, active)
+                return active['path']
+            except Exception:
+                if self.entries.pop(identifier, None) is not None: self.save()
+                if is_mountpoint(anchor): subprocess.run(['umount', str(anchor)], capture_output=True)
+                if anchor.is_dir() and not anchor.is_symlink() and not any(anchor.iterdir()): anchor.rmdir()
+                if name is not None:
+                    try: os.rmdir(name, dir_fd=parent)
+                    except OSError: pass
+                raise
+            finally:
+                if fd is not None: os.close(fd)
+                os.close(parent)
+
     def begin(self, identifier, destination, uid):
         self.ensure(identifier)
         if self.busy is not None or any(entry['job']['status'] == 'Running' for entry in self.entries.values()):
@@ -304,16 +385,12 @@ class Storage:
         if current.get('previous'): raise RuntimeError('A previous storage copy is retained. Remove it before moving again.')
         if current.get('active') and (Path(destination) == Path(current['active']['path']) or Path(current['active']['path']) in Path(destination).parents):
             raise RuntimeError('Destination cannot be inside this runtime')
-        parent = open_directory(destination, uid)
+        parent = external_parent(destination, uid, self.root, self.allow_temporary)
         destination_fd = None
         try:
-            check_filesystem(parent, self.allow_temporary)
-            metadata = os.fstat(parent)
-            if metadata.st_uid != uid or not metadata.st_mode & stat.S_IWUSR:
-                raise RuntimeError('Choose a folder owned and writable by your Linux account')
             anchor = self.anchors / identifier
             # Nested destinations would copy a runtime into itself.
-            if Path(destination) == anchor or anchor in Path(destination).parents or self.root == Path(destination) or self.root in Path(destination).parents:
+            if Path(destination) == anchor or anchor in Path(destination).parents:
                 raise RuntimeError('Choose a folder outside the controller storage')
             token = uuid.uuid4().hex
             name = '.anvildroid-' + identifier + '-' + token[:8]
@@ -512,3 +589,214 @@ def delete_location(location):
             if fd is not None: os.close(fd)
         os.fsync(parent)
     finally: os.close(parent)
+
+
+def clear_directory(fd):
+    """Delete children through a verified directory descriptor only."""
+    for name in os.listdir(fd):
+        info = os.stat(name, dir_fd=fd, follow_symlinks=False)
+        if stat.S_ISDIR(info.st_mode): shutil.rmtree(name, dir_fd=fd)
+        else: os.unlink(name, dir_fd=fd)
+    os.fsync(fd)
+
+
+def valid_location(location, name_pattern):
+    return (isinstance(location, dict) and isinstance(location.get('path'), str)
+            and Path(location['path']).is_absolute() and '..' not in Path(location['path']).parts
+            and re.fullmatch(name_pattern, Path(location['path']).name) is not None
+            and all(type(location.get(key)) is int and location[key] >= 0 for key in ('device', 'inode', 'fsid')))
+
+
+class DataLocations:
+    """Per-user folder where new runtimes are created; the controller store keeps only metadata."""
+    def __init__(self, root, allow_temporary=False):
+        self.root = root
+        self.allow_temporary = allow_temporary
+        self.path = root / 'data-locations.json'
+        self.users = {}
+        if self.path.exists():
+            info = self.path.lstat()
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o077 or info.st_size > 1 << 20:
+                raise RuntimeError('Unsafe data location metadata')
+            data = json.loads(self.path.read_text())
+            if not isinstance(data, dict) or data.get('version') != 1 or not isinstance(data.get('users'), dict):
+                raise RuntimeError('Unsupported data location metadata')
+            for key, entry in data['users'].items():
+                if (not re.fullmatch(r'[0-9]{1,10}', key) or not isinstance(entry, dict) or not isinstance(entry.get('path'), str)
+                        or not Path(entry['path']).is_absolute() or '..' in Path(entry['path']).parts
+                        or not all(type(entry.get(k)) is int and entry[k] >= 0 for k in ('inode', 'fsid'))):
+                    raise RuntimeError('Invalid data location metadata')
+            self.users = data['users']
+
+    def save(self):
+        atomic(self.path, {'version': 1, 'users': copy.deepcopy(self.users)})
+
+    def get(self, uid):
+        return copy.deepcopy(self.users.get(str(uid)))
+
+    def set(self, uid, path):
+        if path is None:
+            if self.users.pop(str(uid), None) is not None: self.save()
+            return None
+        if not isinstance(path, str) or not path or len(path) > 3500 or '\0' in path:
+            raise RuntimeError('Choose an absolute folder path')
+        parent = external_parent(path, uid, self.root, self.allow_temporary)
+        try: entry = dict(path=str(Path(path)), **folder_identity(parent))
+        finally: os.close(parent)
+        self.users[str(uid)] = entry
+        self.save()
+        return copy.deepcopy(entry)
+
+    def report(self, uid):
+        entry = self.users.get(str(uid))
+        if not entry: return {'path': None, 'available': True, 'error': None, 'free_bytes': shutil.disk_usage(self.root).free}
+        try:
+            parent = external_parent(entry['path'], uid, self.root, self.allow_temporary)
+            try:
+                if not same_identity(folder_identity(parent), entry):
+                    raise RuntimeError('The folder was replaced or its disk is not mounted')
+                free = os.fstatvfs(parent).f_bavail * os.fstatvfs(parent).f_frsize
+            finally: os.close(parent)
+            return {'path': entry['path'], 'available': True, 'error': None, 'free_bytes': free}
+        except (OSError, RuntimeError) as error:
+            return {'path': entry['path'], 'available': False, 'error': str(error), 'free_bytes': None}
+
+
+CACHE_PREFIX = '.anvildroid-image-cache-'
+CACHE_NAME = re.escape(CACHE_PREFIX) + r'[0-9a-f]{8}'
+
+
+class ImageCache:
+    """Optional relocation of the shared image cache, bind-mounted at root/image-cache."""
+    def __init__(self, root, allow_temporary=False):
+        self.root = root
+        self.allow_temporary = allow_temporary
+        self.anchor = root / 'image-cache'
+        self.retired = root / 'retired-storage'
+        self.retired.mkdir(mode=0o700, exist_ok=True)
+        self.path = root / 'image-cache-location.json'
+        self.state = {'version': 1, 'active': None}
+        self.error = None
+        self.cleanup_error = None
+        if self.path.exists():
+            info = self.path.lstat()
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o077 or info.st_size > 65536:
+                raise RuntimeError('Unsafe image cache location metadata')
+            data = json.loads(self.path.read_text())
+            active, previous = data.get('active'), data.get('previous')
+            if (data.get('version') != 1 or (active is not None and (not valid_location(active, CACHE_NAME) or type(active.get('owner_uid')) is not int))
+                    or (previous is not None and not (previous.get('anchor_original') is True and previous.get('path') is not None
+                        and Path(previous['path']).parent == self.retired and re.fullmatch(r'image-cache-[0-9a-f]{32}', Path(previous['path']).name))
+                        and not valid_location(previous, CACHE_NAME))
+                    or data.get('phase', 'complete') not in ('switch', 'complete')):
+                raise RuntimeError('Invalid image cache location metadata')
+            self.state = data
+        try: self.recover()
+        except (OSError, RuntimeError, subprocess.CalledProcessError) as error: self.error = str(error)
+
+    def save(self):
+        atomic(self.path, copy.deepcopy(self.state))
+
+    def recover(self):
+        active = self.state.get('active')
+        if not active: return
+        previous = self.state.get('previous')
+        fd = open_directory(active['path'])
+        try:
+            if (previous and previous.get('anchor_original') and self.anchor.is_dir() and not self.anchor.is_symlink()
+                    and not is_mountpoint(self.anchor) and any(self.anchor.iterdir())):
+                # A crash between commit and cutover: retire the original cache.
+                if Path(previous['path']).exists(): raise RuntimeError('Interrupted image cache move needs manual recovery')
+                os.rename(self.anchor, previous['path'])
+                sync_directory(self.root)
+                sync_directory(self.retired)
+            bind_anchor(self.anchor, fd, active)
+        finally: os.close(fd)
+        self.error = None
+        if self.state.get('phase') == 'switch':
+            self.state['phase'] = 'complete'
+            self.save()
+        if previous: self.discard_previous()
+
+    def discard_previous(self):
+        previous = self.state.get('previous')
+        if not previous: return
+        try:
+            if previous.get('anchor_original'):
+                path = Path(previous['path'])
+                if path.exists():
+                    if path.is_symlink() or not path.is_dir() or path.lstat().st_uid != 0: raise RuntimeError('Unsafe retired image cache')
+                    shutil.rmtree(path)
+                    sync_directory(self.retired)
+            else:
+                delete_location(previous)
+        except (OSError, RuntimeError) as error:
+            self.cleanup_error = 'The previous image cache copy was kept: ' + str(error)
+            return
+        self.cleanup_error = None
+        self.state.pop('previous', None)
+        self.save()
+
+    def report(self):
+        active = self.state.get('active')
+        return {'path': active['path'] if active else str(self.anchor), 'external': bool(active),
+                'error': self.error, 'cleanup_error': self.cleanup_error}
+
+    def move(self, destination, uid, progress=lambda phase: None):
+        """Copy, verify, commit, then switch the anchor; the old copy is deleted afterwards."""
+        if self.error: raise RuntimeError('Image cache is unavailable: ' + self.error)
+        self.discard_previous()
+        if self.state.get('previous'): raise RuntimeError(self.cleanup_error or 'A previous image cache copy is retained')
+        active = self.state.get('active')
+        if active and Path(active['path']).parent == Path(destination):
+            raise RuntimeError('Downloaded images are already in this folder')
+        parent = external_parent(destination, uid, self.root, self.allow_temporary)
+        name = fd = None
+        committed = False
+        try:
+            name, fd = private_child(parent, CACHE_PREFIX, self.allow_temporary)
+            source_fd = open_directory(self.anchor)
+            try:
+                source, target = Path(f'/proc/self/fd/{source_fd}'), Path(f'/proc/self/fd/{fd}')
+                size = sum(p.stat().st_size for p in self.anchor.rglob('*') if p.is_file() and not p.is_symlink())
+                if os.fstatvfs(fd).f_bavail * os.fstatvfs(fd).f_frsize < size + 64 * 1024 * 1024:
+                    raise RuntimeError('Not enough free space in the data folder for the downloaded images')
+                progress('copy')
+                subprocess.run(['cp', '-a', '--reflink=auto', '--sparse=always', str(source) + '/.', str(target)],
+                               pass_fds=(source_fd, fd), check=True, capture_output=True)
+                progress('verify')
+                if tree_manifest(source) != tree_manifest(target):
+                    raise RuntimeError('Image cache verification failed. The original copy is unchanged.')
+                for directory, _, files in os.walk(target):
+                    for file in files:
+                        with (Path(directory) / file).open('rb') as stream: os.fsync(stream.fileno())
+                os.fsync(fd)
+            finally: os.close(source_fd)
+            target_location = dict(path=str(Path(destination) / name), owner_uid=uid, **identity(fd))
+            previous = ({key: active[key] for key in ('path', 'device', 'inode', 'fsid')} if active else
+                        {'path': str(self.retired / ('image-cache-' + uuid.uuid4().hex)), 'anchor_original': True})
+            self.state = {'version': 1, 'active': target_location, 'previous': previous, 'phase': 'switch'}
+            self.save()  # durable commit; recover() completes an interrupted cutover
+            committed = True
+            progress('switch')
+            if previous.get('anchor_original'):
+                os.rename(self.anchor, previous['path'])
+                sync_directory(self.root)
+            bind_anchor(self.anchor, fd, target_location)
+            self.state['phase'] = 'complete'
+            self.save()
+        except Exception as error:
+            if committed:
+                self.error = str(error)
+                raise
+            if fd is not None:
+                try:
+                    clear_directory(fd)
+                    os.rmdir(name, dir_fd=parent)
+                except OSError: pass
+            raise
+        finally:
+            if fd is not None: os.close(fd)
+            os.close(parent)
+        progress('cleanup')
+        self.discard_previous()

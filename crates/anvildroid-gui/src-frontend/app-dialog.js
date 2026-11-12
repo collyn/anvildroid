@@ -15,7 +15,9 @@ const AppDialog = (() => {
       document.getElementById('app-dialog-submit').textContent = options.okLabel || (isPrompt ? 'Save' : 'Continue');
       cancel.textContent = options.cancelLabel || 'Cancel';
       input.value = isPrompt ? inputValue : '';
-      input.required = isPrompt;
+      // Optional prompts accept an empty answer (for example "number it automatically").
+      input.required = isPrompt && !options.optional;
+      input.maxLength = options.maxLength || 128;
       dialog.returnValue = '';
       let result = isPrompt ? null : false;
       const submit = event => { event.preventDefault(); result = isPrompt ? input.value : true; dialog.close(); };

@@ -18,6 +18,7 @@ REQUIRED = (
     'target/native/libanvildroid-path-guard.so', 'target/native/libanvildroid-runtime-window.so', 'target/native/libanvildroid-window.so',
     'target/native/overlay-key.p12', 'target/ime/AnvilDroidIme.apk',
     'target/shutdown/anvildroid-shutdown.jar', 'native/overlay/AndroidManifest.xml',
+    'native/lxc-templates/config_base', 'native/lxc-templates/config_3', 'native/lxc-templates/waydroid.seccomp',
     'native/anvildroid-apps.rc', 'native/anvildroid-apps.sh',
     'native/anvildroid-tasks.rc', 'native/anvildroid-tasks.sh',
     'usr/lib/gstreamer-1.0/libgstapp.so',

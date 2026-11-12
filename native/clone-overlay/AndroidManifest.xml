@@ -1,0 +1,7 @@
+<!-- Static framework overlay for app clones: stock Android allows only one
+     CLONE profile per user. Each AnvilDroid app clone is its own profile. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="org.anvildroid.users">
+    <uses-sdk android:minSdkVersion="33" android:targetSdkVersion="33" />
+    <overlay android:targetPackage="android" android:isStatic="true" android:priority="998" />
+    <application android:hasCode="false" android:label="AnvilDroid app clones" />
+</manifest>

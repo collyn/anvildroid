@@ -259,6 +259,16 @@
           <div class="section-heading"><h2>Start at login</h2></div>
           <div id="runtime-startup-list"><p class="hint">Loading devices…</p></div>
         </div>
+        <div class="settings-section" id="data-location-section">
+          <div class="section-heading"><h2>Storage</h2></div>
+          <p class="hint">New devices and downloaded Android images are stored in the data folder. Existing devices stay where they are; move one with Change location… in its Storage settings.</p>
+          <div id="data-location-panel" role="status" aria-live="polite"><p class="hint">Loading storage…</p></div>
+          <div class="runtime-actions">
+            <button id="btn-data-location-choose" class="btn btn-primary" type="button">Choose data folder…</button>
+            <button id="btn-data-location-default" class="btn btn-quiet" type="button" hidden>Use controller folder</button>
+            <button id="btn-image-cache-move" class="btn" type="button" hidden>Move downloaded images here</button>
+          </div>
+        </div>
         <div class="settings-section image-settings">
           <div class="section-heading"><h2>ARM packages</h2></div>
           <p class="hint">Download or import ARM translation packages.</p>

@@ -109,7 +109,10 @@ def payload(root, installed=False):
                 'anvildroid-shutdown.jar', 'scrcpy-server-cancel.jar',
                 'provision/overlay-key.p12', 'provision/system/etc/init/init.waydroid.rc',
                 'provision/vendor/overlay/AnvilDroidCaption/AnvilDroidCaption.apk',
-                'scripts/install-runtime-apparmor.py')
+                'provision/vendor/overlay/AnvilDroidUsers/AnvilDroidUsers.apk',
+                'scripts/install-runtime-apparmor.py', 'scripts/install-runtime-selinux.py',
+                'lxc-templates/config_base', 'lxc-templates/config_3',
+                'lxc-templates/config_4', 'lxc-templates/waydroid.seccomp')
     for relative in required:
         path = base / relative
         assert path.is_file() and path.stat().st_size, f'Missing payload: {path}'

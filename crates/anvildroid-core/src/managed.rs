@@ -79,6 +79,8 @@ fn launch_with(
         action: action.into(),
         package: package.into(),
         activation_token: None,
+        user: None,
+        name: None,
     })?;
     let job_id = job["id"]
         .as_str()

@@ -39,6 +39,9 @@ def make_fixture(root):
     for name in ('controller-payload.txt', 'start-runtime-controller.py', 'install-runtime-controller.py', 'apk-align.py'):
         write('scripts/' + name, (ROOT / 'scripts' / name).read_bytes(), 0o755)
     write('scripts/install-runtime-apparmor.py', b'def install(): raise AssertionError("host AppArmor must not be touched")\n')
+    write('scripts/install-runtime-selinux.py', b'def install(): raise AssertionError("host SELinux must not be touched")\n')
+    for name in ('config_base', 'config_3', 'config_4', 'waydroid.seccomp'):
+        write('native/lxc-templates/' + name, b'fixture ' + name.encode() + b'\n')
     elf = bytearray(64); elf[:6] = b'\x7fELF\x02\x01'; elf[18:20] = b'\x3e\x00'
     for name in ('libanvildroid-runtime-window.so', 'libanvildroid-path-guard.so'):
         write('target/native/' + name, bytes(elf), 0o755)
@@ -49,6 +52,7 @@ def make_fixture(root):
     for name in ('target/ime/AnvilDroidIme.apk', 'target/shutdown/anvildroid-shutdown.jar',
                  'target/input-diagnostic/scrcpy-server-cancel.jar'):
         write(name, archive.getvalue())
+    write('target/native/AnvilDroidUsers.apk', archive.getvalue())
     for name in ('anvildroid-apps.rc', 'anvildroid-tasks.rc', 'anvildroid-apps.sh', 'anvildroid-tasks.sh',
                  'anvildroid-keymap.rc', 'anvildroid-keymap.sh'):
         write('native/' + name, b'fixture ' + name.encode() + b'\n')
@@ -64,13 +68,15 @@ def install_from(stage):
     with tempfile.TemporaryDirectory(prefix='anvil-controller-dest-') as directory:
         destination = Path(directory) / 'controller'
         with patch.object(installer, 'trusted_directory', side_effect=lambda path, strict=True: path.mkdir(parents=True, exist_ok=True)), \
-                patch.object(installer, 'load_apparmor_installer', return_value=policy):
+                patch.object(installer, 'load_apparmor_installer', return_value=policy), \
+                patch.object(installer, 'load_selinux_installer', return_value=policy):
             installer.install_controller_files(stage, destination=destination)
         for name in installer.MODULES:
             assert (destination / name).read_bytes() == (stage / 'services' / name).read_bytes(), name
         for name in ('libanvildroid-window.so', 'libanvildroid-path-guard.so', 'AnvilDroidIme.apk',
                      'anvildroid-shutdown.jar', 'scrcpy-server-cancel.jar', 'provision/anvildroid-keymap.sh',
-                     'provision/menu-font-OFL.txt', 'provision/overlay/res/values/strings.xml'):
+                     'provision/menu-font-OFL.txt', 'provision/overlay/res/values/strings.xml',
+                     'lxc-templates/config_base', 'lxc-templates/waydroid.seccomp'):
             assert (destination / name).is_file(), f'Not installed: {name}'
     print('Controller stage installs without the original bundle: PASS')
 
@@ -97,7 +103,8 @@ class PayloadManifestTests(unittest.TestCase):
                     path = self.root / relative
                     shutil.rmtree(path) if tree else path.unlink()
                     with patch.object(self.installer, 'replace', side_effect=AssertionError('wrote before validation')), \
-                            patch.object(self.installer, 'load_apparmor_installer', side_effect=AssertionError('policy before validation')):
+                            patch.object(self.installer, 'load_apparmor_installer', side_effect=AssertionError('policy before validation')), \
+                            patch.object(self.installer, 'load_selinux_installer', side_effect=AssertionError('policy before validation')):
                         with self.assertRaisesRegex(RuntimeError, 'missing: .*' + relative.split('/')[-1]):
                             self.installer.install_controller_files(self.root, destination=self.root / 'unused')
                 finally:

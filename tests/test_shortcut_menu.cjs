@@ -11,7 +11,7 @@ function setup(){
   querySelector(){return {focus(){}};} remove(){this.removed=true;}
  }
  const ctx=vm.createContext({activeMenu:null,probeInstallBusy:false,pendingLaunch:false,pendingAppAction:false,preferenceBusy:false,
- allApps:[],library:{favorites:[]},managedPreferences:new Map(),window:{innerWidth:1200,innerHeight:800},console,
+ allApps:[],library:{favorites:[]},managedPreferences:new Map(),managedSnapshots:new Map(),window:{innerWidth:1200,innerHeight:800},console,
  document:{createElement:()=>new Element(),body:new Element()},
  tauriInvoke:(cmd,args)=>{calls.push({cmd,args});return new Promise((resolve,reject)=>pending.push({resolve,reject}));},
  showAppToast:(...args)=>toasts.push(args)});
@@ -50,4 +50,18 @@ test('Default removal needs no Android transition, suppresses duplicates, and re
  const retry=ctx.appMenuAction('remove-shortcut','com.example.game','Game');
  pending[1].resolve({success:false,message:'Foreign entry'});await retry;
  assert.equal(toasts[1][1],'error');assert.match(toasts[1][0],/Foreign entry/);
+});
+test('clone menus offer clone actions and never offer uninstall or shortcuts',async()=>{
+ const {ctx,calls,items}=setup();const runtime='r-'+'a'.repeat(32);
+ ctx.managedSnapshots.set(runtime,[{package:'com.example.game',label:'Game',launchable:true,third_party:true},
+  {package:'com.example.game',label:'Game (2)',launchable:true,clone:true,user:10,third_party:true},
+  {package:'com.android.settings',label:'Settings',launchable:true,third_party:false}]);
+ ctx.showContextMenu({clientX:10,clientY:10},'com.example.game','Game',runtime);
+ assert.ok(items().includes('Clone app…'));
+ ctx.showContextMenu({clientX:10,clientY:10},'com.android.settings','Settings',runtime);
+ assert.ok(!items().includes('Clone app…'),'system apps are never cloned');
+ const before=calls.length;
+ ctx.showContextMenu({clientX:10,clientY:10},'com.example.game','Game (2)',runtime,10);
+ assert.deepEqual(items(),['Open clone','Add favorite','Compatibility (shared with original)…','Force-stop…','Rename clone…','Delete clone…']);
+ assert.equal(calls.length,before,'clones do not query menu shortcuts');
 });

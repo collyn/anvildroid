@@ -188,6 +188,8 @@ class Downloads:
         if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o077 or self.root.resolve() != self.root:
             raise RuntimeError('Unsafe image cache directory')
         self.lock = threading.RLock()
+        # Set while the cache is moving or its relocated folder is missing.
+        self.blocked = None
         self.cancelled = threading.Event()
         self.thread = None
         self.state_path = self.root / 'download.json'
@@ -224,6 +226,7 @@ class Downloads:
             value.pop('owner_uid', None)
             value['cache_path'] = str(self.root)
             value['free_bytes'] = shutil.disk_usage(self.root).free
+            value['blocked'] = self.blocked
             value['available_images'] = [dict(copy.deepcopy(item), owner_uid=None) for item in self.library.values()
                                          if item['owner_uid'] == uid and self.available(item)]
             return value
@@ -244,6 +247,7 @@ class Downloads:
 
     def select(self, uid, identifier):
         with self.lock:
+            self.check_writable()
             if self.state['status'] in ACTIVE: raise RuntimeError('Wait for the current image operation to finish')
             item = self.library.get(identifier) if isinstance(identifier, str) else None
             if not item or item['owner_uid'] != uid: raise RuntimeError('Image not found for this user')
@@ -265,8 +269,18 @@ class Downloads:
             atomic(self.state_path, self.state)
             return self.status(uid)
 
+    def block(self, reason):
+        with self.lock:
+            if self.state['status'] in ACTIVE: raise RuntimeError('Wait for the current image download or import to finish')
+            if self.blocked: raise RuntimeError(self.blocked)
+            self.blocked = reason
+
+    def check_writable(self):
+        if self.blocked: raise RuntimeError(self.blocked)
+
     def start(self, uid, variant):
         with self.lock:
+            self.check_writable()
             if self.state['status'] in ACTIVE: raise RuntimeError('An image download is already in progress')
             missing = sum(variant[kind]['bytes'] for kind in ('system', 'vendor')
                           if not (self.root / (variant[kind]['sha256'] + '.zip')).exists())
@@ -294,6 +308,7 @@ class Downloads:
             sizes.append(info.st_size)
         size = sum(sizes)
         with self.lock:
+            self.check_writable()
             if self.state['status'] in ACTIVE: raise RuntimeError('An image download or import is already in progress')
             if shutil.disk_usage(self.root).free < size + MARGIN:
                 raise RuntimeError('Insufficient image cache space')

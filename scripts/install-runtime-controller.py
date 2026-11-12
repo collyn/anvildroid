@@ -105,6 +105,14 @@ def load_apparmor_installer(source_root):
     return policy
 
 
+def load_selinux_installer(source_root):
+    spec = importlib.util.spec_from_file_location(
+        'install_runtime_selinux', source_root / 'scripts/install-runtime-selinux.py')
+    policy = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(policy)
+    return policy
+
+
 def install_controller_files(source_root, destination=DESTINATION, arm_archive=None, x11_payload=None):
     """Validate the payload of source_root (a repo checkout or AppImage stage
     mirroring the portable release layout) and install it under destination.
@@ -154,9 +162,17 @@ def install_controller_files(source_root, destination=DESTINATION, arm_archive=N
         assets[name] = (source_root / 'native' / name).read_bytes()
     assets['menu-font-OFL.txt'] = (source_root / 'native/menu-font-OFL.txt').read_bytes()
     assets['overlay-key.p12'] = (source_root / 'target/native/overlay-key.p12').read_bytes()
+    clone_overlay = (source_root / 'target/native/AnvilDroidUsers.apk').read_bytes()
+    if clone_overlay[:4] != b'PK\x03\x04': raise RuntimeError('Build the app clone overlay first (scripts/build-native.sh)')
+    assets['vendor/overlay/AnvilDroidUsers/AnvilDroidUsers.apk'] = clone_overlay
     scrcpy = (source_root / 'target/input-diagnostic/scrcpy-server-cancel.jar').read_bytes()
+    # Bundled Waydroid LXC templates: managed runtimes work without a Waydroid package.
+    templates = {path.name: path.read_bytes() for path in (source_root / 'native/lxc-templates').iterdir() if path.is_file()}
+    if not {'config_base', 'config_3', 'waydroid.seccomp'} <= templates.keys():
+        raise RuntimeError('Controller payload is missing the bundled LXC templates')
     policy = load_apparmor_installer(source_root)
     print(policy.install())
+    print(load_selinux_installer(source_root).install())
     trusted_directory(destination.parent, strict=False)
     trusted_directory(destination)
     for name, data in sources.items():
@@ -174,6 +190,9 @@ def install_controller_files(source_root, destination=DESTINATION, arm_archive=N
     replace(destination / 'libanvildroid-path-guard.so', path_guard)
     replace(destination / 'AnvilDroidIme.apk', ime)
     replace(destination / 'anvildroid-shutdown.jar', shutdown)
+    trusted_directory(destination / 'lxc-templates')
+    for name, data in templates.items():
+        replace(destination / 'lxc-templates' / name, data)
     for name, data in assets.items():
         target = destination / 'provision' / name
         # Create each level through trusted_directory: mkdir(parents=True)

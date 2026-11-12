@@ -2053,7 +2053,7 @@ test('app inventory has no recurring or focus-triggered refresh registration', (
  assert.doesNotMatch(source,/addEventListener\('focus', syncLibrary\)/);
 });
 
-test('missing waydroid binary: confirm dialog gates the bundled installer, then polling completes', async () => {
+test('missing runtime tools: confirm dialog gates the bundled installer, then polling completes', async () => {
   const calls = [];
   let confirmations = 0;
   let statusCalls = 0;
@@ -2065,7 +2065,7 @@ test('missing waydroid binary: confirm dialog gates the bundled installer, then 
     if (command === 'waydroid_init_status') { statusCalls++; return statusCalls === 1 ? { state: 'none' } : { state: 'done', detail: 'Waydroid initialized.' }; }
     return undefined;
   }, async () => { confirmations++; return true; }, '?view=runtime',
-     { can_prepare: false, can_start: false, checks: [{ id: 'waydroid', label: 'Waydroid', available: false, detail: 'Install Waydroid for your Linux distribution first.' }] });
+     { can_prepare: false, can_start: false, checks: [{ id: 'tools', label: 'Runtime tools', available: false, detail: 'Missing: lxc-start' }] });
   await vm.runInContext('refreshController()', context);
   assert.equal(element('btn-init-waydroid').textContent, 'Install / repair runtime tools');
   assert.equal(element('waydroid-setup-actions').hidden, false);
@@ -2077,6 +2077,22 @@ test('missing waydroid binary: confirm dialog gates the bundled installer, then 
   await tick(); await tick();
   assert.equal(element('waydroid-init-status').textContent, '');
   assert.equal(element('app-toast-message').textContent, 'Waydroid initialized.');
+});
+
+test('Waydroid is optional: a missing package neither blocks setup nor offers the installer', async () => {
+  const { context, element } = gui(async (command, args) => {
+    if (command === 'runtime_controller' && args?.request?.op === 'list') return [];
+    if (command === 'waydroid_init_status') return { state: 'none' };
+  }, async () => true, '?view=runtime',
+     { can_prepare: true, can_start: true, checks: [
+       { id: 'waydroid', label: 'Waydroid', available: false, optional: true, detail: 'Not installed. Optional: only the System Waydroid device needs it.' },
+       { id: 'support', label: 'Waydroid runtime configuration', available: true, detail: 'Configuration available' },
+       { id: 'tools', label: 'Runtime tools', available: true, detail: 'Available' }],
+       desktop: { desktop: true, session: 'wayland' } });
+  await vm.runInContext('refreshController()', context);
+  assert.equal(element('waydroid-setup-actions').hidden, true);
+  assert.equal(element('controller-setup-help').hidden, true);
+  assert.doesNotMatch(element('controller-setup').innerHTML, /Setup required/);
 });
 
 test('missing host tools can be repaired without selecting or initializing images', async () => {

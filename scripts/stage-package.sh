@@ -28,6 +28,7 @@ install -m 0755 "$ROOT/scripts/migrate-package-source.py" "$DEST/usr/local/lib/a
 install -m 0755 "$ROOT/scripts/install-nvidia-payload.py" "$DEST/usr/local/lib/anvildroid-controller/scripts/install-nvidia-payload.py"
 install -m 0755 "$ROOT/scripts/prepare-nvidia-fork.py" "$DEST/usr/local/lib/anvildroid-controller/scripts/prepare-nvidia-fork.py"
 install -m 0755 "$ROOT/scripts/install-runtime-apparmor.py" "$DEST/usr/local/lib/anvildroid-controller/scripts/install-runtime-apparmor.py"
+install -m 0755 "$ROOT/scripts/install-runtime-selinux.py" "$DEST/usr/local/lib/anvildroid-controller/scripts/install-runtime-selinux.py"
 python3 "$ROOT/scripts/build-nvidia-payload.py" --stage-parent "$DEST/usr/local/lib/anvildroid-controller"
 python3 "$ROOT/scripts/build-x11-payload.py" --stage-parent "$DEST/usr/local/lib/anvildroid-controller"
 mkdir -p "$DEST/usr/share/doc/anvildroid-controller"
@@ -51,12 +52,15 @@ install -m 0644 "$ROOT/target/ime/AnvilDroidIme.apk" "$DEST/usr/local/lib/anvild
 install -m 0644 "$ROOT/target/shutdown/anvildroid-shutdown.jar" "$DEST/usr/local/lib/anvildroid-controller/anvildroid-shutdown.jar"
 install -m 0644 "$ROOT/target/input-diagnostic/scrcpy-server-cancel.jar" "$DEST/usr/local/lib/anvildroid-controller/scrcpy-server-cancel.jar"
 cp -a "$ROOT/native/overlay" "$DEST/usr/local/lib/anvildroid-controller/provision/"
+install -d -m 0755 "$DEST/usr/local/lib/anvildroid-controller/lxc-templates"
+install -m 0644 "$ROOT"/native/lxc-templates/* "$DEST/usr/local/lib/anvildroid-controller/lxc-templates/"
 for f in anvildroid-apps.rc anvildroid-tasks.rc anvildroid-apps.sh anvildroid-tasks.sh anvildroid-keymap.rc anvildroid-keymap.sh; do
   install -m 0755 "$ROOT/native/$f" "$DEST/usr/local/lib/anvildroid-controller/provision/$f"
 done
 install -m 0644 "$ROOT/target/native/overlay-key.p12" "$DEST/usr/local/lib/anvildroid-controller/provision/overlay-key.p12"
 install -D -m 0644 "$ROOT/target/native/init.waydroid.rc" "$DEST/usr/local/lib/anvildroid-controller/provision/system/etc/init/init.waydroid.rc"
 install -D -m 0644 "$ROOT/target/native/AnvilDroidCaption.apk" "$DEST/usr/local/lib/anvildroid-controller/provision/vendor/overlay/AnvilDroidCaption/AnvilDroidCaption.apk"
+install -D -m 0644 "$ROOT/target/native/AnvilDroidUsers.apk" "$DEST/usr/local/lib/anvildroid-controller/provision/vendor/overlay/AnvilDroidUsers/AnvilDroidUsers.apk"
 install -m 0644 "$ROOT/target/native/framework-res.apk.sha256" "$DEST/usr/local/lib/anvildroid-controller/provision/framework-res.apk.sha256"
 install -m 0644 "$ROOT/packaging/systemd/anvildroid-controller.service" "$DEST/usr/lib/systemd/system/anvildroid-controller.service"
 install -m 0644 "$ROOT/packaging/systemd/anvildroid-controller.socket" "$DEST/usr/lib/systemd/system/anvildroid-controller.socket"

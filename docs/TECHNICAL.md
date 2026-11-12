@@ -208,9 +208,15 @@ creates the release. `workflow_dispatch` validates packages without publishing.
 - Native X11 supports SDK 33-36 images that expose Waydroid's per-app composer
   with Mesa guest rendering (NVIDIA/Venus guest rendering needs SDK 33). See
   [native X11 requirements](../native/x11/README.md).
-- Waydroid, LXC, Binder/BinderFS, namespaces and cgroups. Managed runtimes use
-  the installed Waydroid package's LXC templates but do not need System Waydroid
-  to be initialized; System Waydroid itself does.
+- LXC, Binder/BinderFS, namespaces and cgroups. Waydroid is optional: managed
+  runtimes prefer an installed Waydroid package's LXC templates and otherwise use
+  the copy bundled with AnvilDroid (GPL-3.0, see `native/lxc-templates/NOTICE.txt`),
+  so they need neither the package nor an initialized System Waydroid. Only the
+  System Waydroid device needs Waydroid installed and initialized.
+- SELinux hosts (Fedora, RHEL, openSUSE): the package loads a small `anvildroid`
+  policy module that lets Android's service managers own their private Binder
+  context (`scripts/install-runtime-selinux.py`). Hosts whose LXC is built
+  without AppArmor get configs without `lxc.apparmor.*` keys.
 - Python 3.11+, systemd, polkit (pkexec) and the libraries declared by the
   package (WebKitGTK 4.1, GTK3, GLib, Soup 3, Pango, Cairo, GDK Pixbuf).
   Packages bundle private AOSP `aapt`/`apksigner` and depend on a headless Java

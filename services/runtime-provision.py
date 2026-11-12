@@ -20,8 +20,12 @@ _format_spec.loader.exec_module(image_format)
 ASSETS = Path('/usr/local/lib/anvildroid-controller')
 WAYDROID_ROOT = Path('/var/lib/waydroid')
 APPARMOR_PROFILES = Path('/sys/kernel/security/apparmor/profiles')
+ACTIVE_LSMS = Path('/sys/kernel/security/lsm')
+# An installed Waydroid package wins (its templates match its LXC/seccomp
+# expectations); the bundled copy lets managed runtimes work without Waydroid.
 LXC_TEMPLATE_DIRS = (Path('/usr/lib/waydroid/data/configs'),
-                     Path('/usr/share/waydroid/data/configs'))
+                     Path('/usr/share/waydroid/data/configs'),
+                     ASSETS / 'lxc-templates')
 spec = importlib.util.spec_from_file_location('images', Path(__file__).with_name('runtime-images.py'))
 images = importlib.util.module_from_spec(spec); spec.loader.exec_module(images)
 
@@ -91,6 +95,13 @@ def managed_support_available():
     return initialized or lxc_template_directory() is not None
 
 
+def apparmor_active():
+    try:
+        return 'apparmor' in ACTIVE_LSMS.read_text().strip().split(',')
+    except OSError:
+        return APPARMOR_PROFILES.parent.is_dir()
+
+
 def copy_lxc_support(destination):
     host = WAYDROID_ROOT / 'lxc/waydroid'
     if all((host / name).is_file() for name in ('config', 'waydroid.seccomp')):
@@ -99,7 +110,7 @@ def copy_lxc_support(destination):
         return
     templates = lxc_template_directory()
     if templates is None:
-        raise RuntimeError('Waydroid LXC templates are missing. Reinstall the Waydroid package, then retry Prepare.')
+        raise RuntimeError('Android runtime LXC templates are missing. Reinstall AnvilDroid, then retry Prepare.')
     version = re.match(r'^(\d+)\.', run('lxc-start', '--version'))
     if not version or int(version[1]) < 3:
         raise RuntimeError('Managed Android runtimes require LXC 3 or newer.')
@@ -117,6 +128,10 @@ def copy_lxc_support(destination):
     if loaded:
         config = re.sub(r'(?m)^(\s*lxc\.apparmor\.profile\s*=\s*)unconfined\s*$',
                         r'\1lxc-waydroid', config)
+    elif not apparmor_active():
+        # Fedora/openSUSE build LXC without AppArmor and reject any
+        # lxc.apparmor.* key; their Waydroid packages drop the line too.
+        config = re.sub(r'(?m)^\s*lxc\.(apparmor\.\S+|aa_profile)\s*=.*\n?', '', config)
     (destination / 'config').write_text(config.replace('LXCARCH', platform.machine()))
     shutil.copyfile(templates / 'waydroid.seccomp', destination / 'waydroid.seccomp')
 

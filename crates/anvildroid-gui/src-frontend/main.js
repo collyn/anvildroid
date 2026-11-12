@@ -565,6 +565,13 @@ libraryViewButtons.forEach(button => button.addEventListener('click', () => {
 }));
 applyLibraryView(libraryView, false);
 
+// App clones run the same package in their own Android user profile.
+function appStateKey(app) { return Number(app.user) > 0 ? `${app.package}@${Number(app.user)}` : app.package; }
+// Clones carry no icon of their own; show the original app's icon.
+function withCloneIcons(apps) {
+  const icons = new Map(apps.filter(app => !app.clone && app.icon_data).map(app => [app.package, app.icon_data]));
+  return apps.map(app => app.clone && !app.icon_data && icons.has(app.package) ? {...app, icon_data: icons.get(app.package)} : app);
+}
 function appPreferences(app) { return app.runtime_id && app.runtime_id !== 'default' ? managedPreferences.get(app.runtime_id) : library; }
 function isFavorite(app) { return appPreferences(app)?.favorites?.includes(app.package) || false; }
 function lastOpened(app) { return appPreferences(app)?.recent?.[app.package] || 0; }
@@ -718,7 +725,7 @@ function appAccessibleLabel(app) {
   const name = app.label || app.package.split('.').pop();
   const runtime = app.runtime_name || (app.runtime_id === 'default' ? 'System Waydroid' : 'Device');
   const execution = appExecutionLabel(app);
-  return `${name} · ${runtime} · ${execution}`;
+  return `${name}${app.clone ? ' · Clone' : ''} · ${runtime} · ${execution}`;
 }
 
 function appCategory(app) {
@@ -749,7 +756,7 @@ async function refreshAppStates() {
       const states = report?.state === 'Running' && report.states && typeof report.states === 'object' ? report.states : null;
       if (report?.state && report.state !== 'Running') record.state = report.state;
       managedSnapshots.set(record.id, (managedSnapshots.get(record.id)||[]).map(app=>({...app,
-        execution_state:states ? (states[app.package] || 'not_running') : 'unknown',
+        execution_state:states ? (states[appStateKey(app)] || 'not_running') : 'unknown',
         status_checked_at:states ? report.checked_at : 0})));
     }));
     renderManagedLibraryStatus();
@@ -785,7 +792,7 @@ function renderApps(apps) {
     return;
   }
   const unique = new Map();
-  apps.forEach(app => { const key = `${app.runtime_id || 'default'}\u0000${app.package}`; if (!unique.has(key)) unique.set(key, app); });
+  apps.forEach(app => { const key = `${app.runtime_id || 'default'}\u0000${appStateKey(app)}`; if (!unique.has(key)) unique.set(key, app); });
   apps = [...unique.values()];
   apps = apps.filter(app => libraryRuntimeSelected(app.runtime_id || 'default') && (!favoritesOnly || app.desktop_entry || isFavorite(app)) &&
     (currentCategory === 'all' || (currentCategory.startsWith('tag:') ? tagsForApp(app.package).includes(currentCategory.slice(4)) : appCategory(app) === currentCategory)) &&
@@ -823,9 +830,9 @@ function renderApps(apps) {
     return `<div class="app-group-heading"><strong>${escapeHtml(app.runtime_name || 'System Waydroid')}</strong><span>${label}</span></div>`;
   };
   const appInitial = app => escapeHtml(String(app.label || app.package.split('.').pop() || '?').trim().charAt(0).toUpperCase() || '?');
-  const structure = JSON.stringify(sorted.map(app => [app.runtime_id || 'default', app.package, app.label, app.runtime_name, libraryIconUrl(app), isFavorite(app), pendingWaydroidRuntime === (app.runtime_id || 'default') && !!app.desktop_entry]));
+  const structure = JSON.stringify(sorted.map(app => [app.runtime_id || 'default', app.package, app.user || 0, app.label, app.runtime_name, libraryIconUrl(app), isFavorite(app), pendingWaydroidRuntime === (app.runtime_id || 'default') && !!app.desktop_entry]));
   const markup = sorted.map((app, index) => `${groupHeading(app, index)}
-    <div class="app-card${pendingWaydroidRuntime === (app.runtime_id || 'default') && app.desktop_entry ? ' processing' : ''}" tabindex="${pendingWaydroidRuntime === (app.runtime_id || 'default') && app.desktop_entry ? '-1' : '0'}" role="button" aria-disabled="${pendingWaydroidRuntime === (app.runtime_id || 'default') && app.desktop_entry ? 'true' : 'false'}" data-package="${escapeHtml(app.package)}" data-runtime-id="${escapeHtml(app.runtime_id || 'default')}" data-app-status="${escapeHtml(appExecutionLabel(app))}" aria-label="${escapeHtml(appAccessibleLabel(app))}" title="${escapeHtml(`${app.package} · ${app.runtime_name || (app.runtime_id === 'default' ? 'System Waydroid' : 'Device')}`)}">
+    <div class="app-card${pendingWaydroidRuntime === (app.runtime_id || 'default') && app.desktop_entry ? ' processing' : ''}" tabindex="${pendingWaydroidRuntime === (app.runtime_id || 'default') && app.desktop_entry ? '-1' : '0'}" role="button" aria-disabled="${pendingWaydroidRuntime === (app.runtime_id || 'default') && app.desktop_entry ? 'true' : 'false'}" data-package="${escapeHtml(app.package)}" data-runtime-id="${escapeHtml(app.runtime_id || 'default')}" data-user="${Number(app.user) || 0}" data-app-status="${escapeHtml(appExecutionLabel(app))}" aria-label="${escapeHtml(appAccessibleLabel(app))}" title="${escapeHtml(`${app.package}${app.clone ? ` · Clone of ${app.original_label || app.package}` : ''} · ${app.runtime_name || (app.runtime_id === 'default' ? 'System Waydroid' : 'Device')}`)}">
       <button type="button" class="app-favorite-button favorite-mark${isFavorite(app) ? ' active' : ''}" aria-label="${isFavorite(app) ? 'Remove favorite' : 'Add favorite'}">♡</button>
       <div class="app-icon">
         ${pendingWaydroidRuntime === (app.runtime_id || 'default') && app.desktop_entry
@@ -834,7 +841,7 @@ function renderApps(apps) {
             ? `<img src="${libraryIconUrl(app)}" alt="" loading="lazy" decoding="async" data-initial="${appInitial(app)}" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'app-initial',textContent:this.dataset.initial}))">`
             : `<span class="app-initial">${appInitial(app)}</span>`}
       </div>
-      <div class="app-caption"><div class="app-name">${pendingWaydroidRuntime === (app.runtime_id || 'default') && app.desktop_entry ? 'Processing…' : escapeHtml(app.label || app.package.split('.').pop())}</div><div class="app-runtime-name" title="${escapeHtml(app.runtime_name || 'System Waydroid')}">${escapeHtml(app.runtime_name || 'System Waydroid')}</div></div>
+      <div class="app-caption"><div class="app-name">${pendingWaydroidRuntime === (app.runtime_id || 'default') && app.desktop_entry ? 'Processing…' : escapeHtml(app.label || app.package.split('.').pop())}</div><div class="app-runtime-name" title="${escapeHtml(app.runtime_name || 'System Waydroid')}">${app.clone ? 'Clone · ' : ''}${escapeHtml(app.runtime_name || 'System Waydroid')}</div></div>
       <span class="app-status-dot ${appExecutionLabel(app) === 'Foreground' || appExecutionLabel(app) === 'Background process' ? 'running' : ''}" aria-label="${escapeHtml(appExecutionLabel(app))}"></span>
     </div>
   `).join('');
@@ -865,25 +872,26 @@ function renderApps(apps) {
   appsGrid.scrollTop = scrollTop;
 
   appsGrid.querySelectorAll('.app-card').forEach(card => {
+    const user = Number(card.dataset.user) || 0;
     card.addEventListener('click', () => {
       if (card.getAttribute('aria-disabled') === 'true') return;
-      launchApp(card.dataset.package, card.dataset.runtimeId);
+      launchApp(card.dataset.package, card.dataset.runtimeId, user);
     });
     card.addEventListener('keydown', e => {
-      if (e.key === 'Enter') launchApp(card.dataset.package, card.dataset.runtimeId);
+      if (e.key === 'Enter') launchApp(card.dataset.package, card.dataset.runtimeId, user);
       if (e.key === ' ' || e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10')) {
         e.preventDefault();
         const r = card.getBoundingClientRect();
-        showContextMenu({clientX:r.left, clientY:r.bottom}, card.dataset.package, card.querySelector('.app-name')?.textContent, card.dataset.runtimeId);
+        showContextMenu({clientX:r.left, clientY:r.bottom}, card.dataset.package, card.querySelector('.app-name')?.textContent, card.dataset.runtimeId, user);
       }
     });
     card.addEventListener('contextmenu', (e) => {
       e.preventDefault();
-      showContextMenu(e, card.dataset.package, card.querySelector('.app-name')?.textContent, card.dataset.runtimeId);
+      showContextMenu(e, card.dataset.package, card.querySelector('.app-name')?.textContent, card.dataset.runtimeId, user);
     });
-    card.querySelector('.app-open-button')?.addEventListener('click', e => { e.stopPropagation(); launchApp(card.dataset.package, card.dataset.runtimeId); });
-    card.querySelector('.app-menu-button')?.addEventListener('click', e => { e.stopPropagation(); const r = card.getBoundingClientRect(); showContextMenu({clientX:r.right - 12, clientY:r.top + 34}, card.dataset.package, card.querySelector('.app-name')?.textContent, card.dataset.runtimeId); });
-    card.querySelector('.app-open-caret')?.addEventListener('click', e => { e.stopPropagation(); const r = card.getBoundingClientRect(); showContextMenu({clientX:r.right - 12, clientY:r.bottom}, card.dataset.package, card.querySelector('.app-name')?.textContent, card.dataset.runtimeId); });
+    card.querySelector('.app-open-button')?.addEventListener('click', e => { e.stopPropagation(); launchApp(card.dataset.package, card.dataset.runtimeId, user); });
+    card.querySelector('.app-menu-button')?.addEventListener('click', e => { e.stopPropagation(); const r = card.getBoundingClientRect(); showContextMenu({clientX:r.right - 12, clientY:r.top + 34}, card.dataset.package, card.querySelector('.app-name')?.textContent, card.dataset.runtimeId, user); });
+    card.querySelector('.app-open-caret')?.addEventListener('click', e => { e.stopPropagation(); const r = card.getBoundingClientRect(); showContextMenu({clientX:r.right - 12, clientY:r.bottom}, card.dataset.package, card.querySelector('.app-name')?.textContent, card.dataset.runtimeId, user); });
     card.querySelector('.app-favorite-button')?.addEventListener('click', e => { e.stopPropagation(); appMenuAction('favorite', card.dataset.package, card.querySelector('.app-name')?.textContent, null, card.dataset.runtimeId); });
   });
 }
@@ -1151,10 +1159,10 @@ async function pollLibraryStart(id, attempts = 0) {
   renderApps(allApps);
 }
 
-async function launchApp(pkg, runtimeId = 'default') {
+async function launchApp(pkg, runtimeId = 'default', user = 0) {
   if(pkg==='org.anvildroid.desktop')return openWaydroid(runtimeId);
   if(probeInstallBusy)return;
-  if (runtimeId !== 'default') return managedAppAction('launch', pkg, runtimeId);
+  if (runtimeId !== 'default') return managedAppAction('launch', pkg, runtimeId, user);
   if (pendingLaunch || pendingAppAction || controllerMutation || controllerRecords.some(record => record.import_status === 'pending' && record.state === 'Provisioning')) return;
   pendingLaunch = pkg;
   appsGrid.setAttribute('aria-busy', 'true');
@@ -1192,7 +1200,7 @@ btnRefreshApps.addEventListener('click', refreshApps);
 
 // --- Context menu ---
 let activeMenu = null;
-async function appMenuAction(action, pkg, label, blockReason, runtimeId = 'default') {
+async function appMenuAction(action, pkg, label, blockReason, runtimeId = 'default', user = 0) {
   if(probeInstallBusy)return;
   if(action==='compatibility')return featureTools().compatibility.open(runtimeId,pkg,label);
   if(action==='keymap')return openKeymapOverlay(runtimeId,pkg);
@@ -1223,7 +1231,10 @@ async function appMenuAction(action, pkg, label, blockReason, runtimeId = 'defau
       return;
     }
     if (action === 'favorite') return toggleManagedFavorite(pkg, runtimeId);
-    if (['launch', 'force-stop', 'uninstall'].includes(action)) return managedAppAction(action === 'force-stop' ? 'force_stop' : action, pkg, runtimeId);
+    if (action === 'clone') return cloneManagedApp(pkg, label, runtimeId);
+    if (action === 'rename-clone') return renameManagedClone(pkg, label, runtimeId, user);
+    if (action === 'remove-clone') return managedAppAction('clone_remove', pkg, runtimeId, user);
+    if (['launch', 'force-stop', 'uninstall'].includes(action)) return managedAppAction(action === 'force-stop' ? 'force_stop' : action, pkg, runtimeId, user);
     return;
   }
   if (pendingLaunch || pendingAppAction) return;
@@ -1275,19 +1286,30 @@ async function appMenuAction(action, pkg, label, blockReason, runtimeId = 'defau
   }
 }
 
-function showContextMenu(e, pkg, label, runtimeId = 'default') {
+function showContextMenu(e, pkg, label, runtimeId = 'default', user = 0) {
   removeContextMenu();
   const app = runtimeId === 'default' ? allApps.find(app => app.package === pkg) : null;
+  const managedApp = runtimeId === 'default' ? null : (managedSnapshots.get(runtimeId) || []).find(app => app.package === pkg && (Number(app.user) || 0) === user);
   const blockReason = app?.uninstall_block_reason;
   const menu = document.createElement('div');
   menu.className = 'context-menu';
   menu.setAttribute('role', 'menu');
-  const options = pkg === 'org.anvildroid.desktop' ? [['launch', 'Open Waydroid'], ['details', 'Device details'], ['favorite', library.favorites.includes(pkg) ? 'Remove favorite' : 'Add favorite']] : [
+  // Clones share the package (and so compatibility settings) with the original;
+  // they never offer uninstall or shortcuts, which act on the original app.
+  const options = managedApp?.clone ? [
+    ['launch', 'Open clone'],
+    ['favorite', managedPreferences.get(runtimeId)?.favorites?.includes(pkg) ? 'Remove favorite' : 'Add favorite'],
+    ['compatibility', 'Compatibility (shared with original)…'],
+    ['force-stop', 'Force-stop…'],
+    ['rename-clone', 'Rename clone…'],
+    ['remove-clone', 'Delete clone…'],
+  ] : pkg === 'org.anvildroid.desktop' ? [['launch', 'Open Waydroid'], ['details', 'Device details'], ['favorite', library.favorites.includes(pkg) ? 'Remove favorite' : 'Add favorite']] : [
     ['launch', 'Open app'],
     ['details', 'App details'],
     ['favorite', library.favorites.includes(pkg) ? 'Remove favorite' : 'Add favorite'],
     ['info', 'Android App Info'],
     ['compatibility', 'Compatibility…'],
+    ...(managedApp?.third_party ? [['clone', 'Clone app…']] : []),
     ['force-stop', blockReason ? 'Force-stop (protected component)' : 'Force-stop…'],
     ['shortcut', 'Create/update menu shortcut'],
     ['uninstall', blockReason ? 'Uninstall (protected component)' : 'Uninstall…'],
@@ -1295,14 +1317,14 @@ function showContextMenu(e, pkg, label, runtimeId = 'default') {
   for (const [action, title] of options) {
     const item = document.createElement('button');
     item.type = 'button';
-    item.className = `ctx-item${action === 'uninstall' ? ' ctx-danger' : ''}`;
+    item.className = `ctx-item${action === 'uninstall' || action === 'remove-clone' ? ' ctx-danger' : ''}`;
     item.textContent = title;
     item.setAttribute('role', 'menuitem');
     item.disabled = !!(((action==='details'||action==='info')&&runtimeId!=='default') || pendingLaunch || pendingAppAction || preferenceBusy || (action === 'favorite' && runtimeId !== 'default' && !managedPreferences.has(runtimeId)) || ((action === 'uninstall' || action === 'force-stop') && blockReason));
     if ((action === 'uninstall' || action === 'force-stop') && blockReason) item.title = blockReason;
     item.addEventListener('click', () => {
       removeContextMenu();
-      appMenuAction(action, pkg, label, blockReason, runtimeId);
+      appMenuAction(action, pkg, label, blockReason, runtimeId, user);
     });
     menu.appendChild(item);
   }
@@ -1312,7 +1334,7 @@ function showContextMenu(e, pkg, label, runtimeId = 'default') {
   menu.style.left = `${Math.max(4, Math.min(e.clientX, window.innerWidth - rect.width - 4))}px`;
   menu.style.top = `${Math.max(4, Math.min(e.clientY, window.innerHeight - rect.height - 4))}px`;
   menu.querySelector('button:not(:disabled)')?.focus();
-  if (pkg !== 'org.anvildroid.desktop') {
+  if (pkg !== 'org.anvildroid.desktop' && !managedApp?.clone) {
     tauriInvoke('has_app_shortcut', {runtimeId, package:pkg}).then(exists => {
       // A late reply must never add an action to a different app's menu.
       if (exists !== true || activeMenu !== menu) return;
@@ -1766,6 +1788,7 @@ async function refreshSettings() {
   refreshShortcutPreferences();
   refreshApplicationPreferences();
   refreshRuntimeStartupPreferences();
+  refreshDataLocation();
   renderUpdate();
   if (!updateInfo && !updateChecking) checkForUpdate({quiet:true});
   const armRefresh = refreshArmSources();
@@ -1906,6 +1929,94 @@ async function changeRuntimeStartupPreference(event) {
   } finally { runtimeStartupSaving.delete(id); renderRuntimeStartupPreferences(); }
 }
 document.getElementById('runtime-startup-list').addEventListener('change', changeRuntimeStartupPreference);
+
+// Settings > Storage: the data folder where new devices and downloaded images
+// live, so the root filesystem only keeps small controller metadata.
+let dataLocation = null, dataLocationError = '', dataLocationBusy = false, dataLocationTimer = null, dataLocationJob = null;
+const storageGib = bytes => typeof bytes === 'number' ? `${(bytes / 1024**3).toFixed(2)} GiB` : 'Unknown';
+const CACHE_PHASES = {copy:'Copying', verify:'Verifying', switch:'Switching', cleanup:'Removing the old copy', complete:'Finishing'};
+function renderDataLocation() {
+  const panel = document.getElementById('data-location-panel');
+  if (!panel) return;
+  const report = dataLocation, cache = report?.cache, job = cache?.job;
+  const moving = job?.status === 'Running';
+  const row = (label, value) => `<div class="status-row"><span class="status-label">${escapeHtml(label)}</span><span class="status-value">${escapeHtml(value)}</span></div>`;
+  let html = '';
+  if (report) {
+    html += row('Data folder', report.path || `Controller folder · ${report.default_path}`);
+    html += row('Free space', report.available ? storageGib(report.free_bytes) : 'Unavailable');
+    html += row('Downloaded images', `${cache.path} · ${storageGib(cache.used_bytes)}`);
+    if (report.path && !report.available) html += `<p class="runtime-feedback error" role="alert">The data folder is unavailable: ${escapeHtml(report.error)}. Reconnect its disk or choose another folder before creating a device.</p>`;
+    if (cache.error) html += `<p class="runtime-feedback error" role="alert">Downloaded images are unavailable: ${escapeHtml(cache.error)}</p>`;
+    if (moving) html += `<p role="status">Moving downloaded images… ${escapeHtml(CACHE_PHASES[job.phase] || job.phase)}</p>`;
+    else if (job?.status === 'Failed') html += `<p class="runtime-feedback error" role="alert">Could not move downloaded images: ${escapeHtml(job.error)}</p>`;
+    if (job?.warning) html += `<p class="runtime-feedback warning">${escapeHtml(job.warning)}</p>`;
+    if (report.path && cache.shared && !cache.in_data_folder) html += '<p class="hint">Other Linux accounts also use the downloaded images, so they stay in the controller folder.</p>';
+  }
+  if (dataLocationError) html += `<p class="runtime-feedback error" role="alert">${escapeHtml(dataLocationError)}</p>`;
+  if (!report && !dataLocationError) html = '<p class="hint">Loading storage…</p>';
+  if (panel._markup !== html) { panel.innerHTML = html; panel._markup = html; }
+  const busy = dataLocationBusy || moving;
+  document.getElementById('btn-data-location-choose').disabled = busy;
+  const reset = document.getElementById('btn-data-location-default');
+  reset.hidden = !report?.path; reset.disabled = busy;
+  const move = document.getElementById('btn-image-cache-move');
+  move.hidden = !canMoveImageCache(); move.disabled = busy;
+}
+function canMoveImageCache() {
+  const report = dataLocation, cache = report?.cache;
+  return Boolean(report?.path && report.available && cache && !cache.in_data_folder && !cache.shared && !cache.error && cache.used_bytes > 0);
+}
+function scheduleDataLocationPoll() {
+  clearTimeout(dataLocationTimer);
+  const status = dataLocation?.cache?.job?.status;
+  if (dataLocationJob === 'Running' && status === 'Succeeded') showAppToast('Downloaded images moved to the data folder.', 'success');
+  dataLocationJob = status || null;
+  if (status === 'Running') dataLocationTimer = setTimeout(refreshDataLocation, 1000);
+}
+function validDataLocation(report) {
+  if (!report || typeof report !== 'object' || !report.cache || typeof report.cache !== 'object' || typeof report.cache.path !== 'string') throw new Error('Invalid storage response');
+  return report;
+}
+async function refreshDataLocation() {
+  try { dataLocation = validDataLocation(await controllerRequest({op:'data_location'})); dataLocationError = ''; }
+  catch (error) { dataLocationError = `Cannot load storage settings: ${error.message || error}`; }
+  renderDataLocation();
+  scheduleDataLocationPoll();
+}
+async function dataLocationRequest(request, success) {
+  if (dataLocationBusy) return false;
+  dataLocationBusy = true; renderDataLocation();
+  try {
+    dataLocation = validDataLocation(await controllerRequest(request));
+    dataLocationError = '';
+    if (success) showAppToast(success, 'success');
+    return true;
+  } catch (error) {
+    showAppToast(`${request.op === 'image_cache_move' ? 'Cannot move downloaded images' : 'Cannot change the data folder'}: ${error.message || error}`, 'error');
+    return false;
+  } finally { dataLocationBusy = false; renderDataLocation(); scheduleDataLocationPoll(); }
+}
+async function moveImageCache() {
+  const size = storageGib(dataLocation?.cache?.used_bytes);
+  if (!await AppDialog.confirm(`Move downloaded Android images (${size}) to ${dataLocation.path}? They are copied and verified first; the old copy is then deleted. Downloads and device setup wait until the move finishes.`,
+    {title:'Move downloaded images', okLabel:'Move images'})) return;
+  await dataLocationRequest({op:'image_cache_move'});
+}
+document.getElementById('btn-data-location-choose').addEventListener('click', async () => {
+  let selected;
+  try { selected = await window.__TAURI__.dialog.open({ directory: true, multiple: false, title: 'Choose data folder' }); }
+  catch (error) { showAppToast(`Could not open folder picker: ${error}`, 'error'); return; }
+  if (typeof selected !== 'string' || !selected) return;
+  if (!await dataLocationRequest({op:'data_location_set', path:selected}, 'Data folder saved. New devices will be created there.')) return;
+  if (canMoveImageCache()) await moveImageCache();
+});
+document.getElementById('btn-data-location-default').addEventListener('click', async () => {
+  if (!await AppDialog.confirm(`Create new devices in the controller folder (${dataLocation?.default_path}) again? Existing devices and downloaded images stay where they are.`,
+    {title:'Use controller folder', okLabel:'Use controller folder'})) return;
+  await dataLocationRequest({op:'data_location_set', path:null}, 'New devices will be created in the controller folder.');
+});
+document.getElementById('btn-image-cache-move').addEventListener('click', moveImageCache);
 // The controller only runs on demand, so "start at login" needs a login entry
 // in this user's session; keep it present exactly while a device wants it.
 let loginStartSynced = null;
@@ -2701,10 +2812,11 @@ const systemImagesInstalled = () => controllerRequirements?.installed_images ===
 function updateWaydroidSetupActions() {
   const block = document.getElementById('waydroid-setup-actions');
   const button = document.getElementById('btn-init-waydroid');
-  // Managed runtimes need host tools, but never require System Waydroid init.
-  const show = controllerRequirements && ['waydroid', 'support', 'tools'].some(waydroidCheckMissing);
+  // Managed runtimes need host tools and the runtime configuration; the
+  // Waydroid package itself is optional (System Waydroid only).
+  const show = controllerRequirements && ['support', 'tools'].some(waydroidCheckMissing);
   block.hidden = !show;
-  document.getElementById('controller-setup-help').hidden = !(controllerRequirements && waydroidCheckMissing('waydroid'));
+  document.getElementById('controller-setup-help').hidden = !(show && waydroidCheckMissing('waydroid'));
   button.textContent = 'Install / repair runtime tools';
   button.disabled = waydroidInitBusy || controllerMutation || imageDownloadBusy || imageDownloadActive();
   renderRuntimeImageNotice();
@@ -2948,7 +3060,7 @@ function renderController() {
     if (blocked) {
       if (!controllerRequirements) blockedReasons.push('the runtime controller setup check is unavailable — start/update the controller, then refresh');
       else {
-        const missingCheck = (controllerRequirements.checks ?? []).find(check => check.id !== 'desktop' && !check.available);
+        const missingCheck = (controllerRequirements.checks ?? []).find(check => check.id !== 'desktop' && !check.available && !check.optional);
         if (missingCheck) blockedReasons.push(`${missingCheck.label}: ${missingCheck.detail}`);
         else if (needsImages) blockedReasons.push('Android images are not available for preparation');
         else if (!controllerRequirements.can_start) blockedReasons.push('start requirements are not met');
@@ -4218,14 +4330,14 @@ async function refreshManagedLibrary({poll = false} = {}) {
         if (!managedSnapshots.has(record.id)) {
           try {
             const saved = JSON.parse(localStorage.getItem(`anvildroid_managed_apps:${record.id}`) || 'null');
-            if (Array.isArray(saved) && saved.every(app => typeof app.package === 'string' && app.launchable === true)) managedSnapshots.set(record.id, saved);
+            if (Array.isArray(saved) && saved.every(app => typeof app.package === 'string' && app.launchable === true)) managedSnapshots.set(record.id, withCloneIcons(saved));
           } catch (_) { /* A corrupt cache is not an app inventory. */ }
         }
         if (['Running', 'Frozen'].includes(current.state) && !pendingAppAction && !pendingLaunch && (!poll || !managedSnapshots.has(record.id) || Date.now() - (managedInventoryChecked.get(record.id) || 0) >= 60000 || managedLibrary.find(r => r.id === record.id)?.state !== current.state)) {
           const report = await controllerRequest({op:'apps', id:record.id});
           if (report?.runtime_id !== record.id || !Array.isArray(report.apps)) throw new Error('Invalid app inventory');
           if (!report.apps.every(app => typeof app.package === 'string' && app.launchable === true)) throw new Error('Stop and start on the Device page to update launcher filtering.');
-          managedSnapshots.set(record.id, report.apps);
+          managedSnapshots.set(record.id, withCloneIcons(report.apps));
           managedInventoryChecked.set(record.id, Date.now());
           try { localStorage.setItem(`anvildroid_managed_apps:${record.id}`, JSON.stringify(report.apps)); } catch (_) {}
         }
@@ -4252,61 +4364,77 @@ async function refreshManagedLibrary({poll = false} = {}) {
 }
 let managedLaunchTail = null;
 const queuedManagedLaunches = new Map();
-async function managedAppAction(action, pkg, runtimeId) {
-  if (action !== 'launch') return runManagedAppAction(action, pkg, runtimeId);
-  const key = `${runtimeId}\u0000${pkg}`;
-  if (queuedManagedLaunches.has(key)) return queuedManagedLaunches.get(key);
-  const previous = managedLaunchTail;
-  const task = previous ? previous.then(() => {
-    queuedManagedLaunches.delete(key);
-    return runManagedAppAction(action, pkg, runtimeId);
-  }) : runManagedAppAction(action, pkg, runtimeId);
-  if (previous) queuedManagedLaunches.set(key, task);
-  managedLaunchTail = task;
-  try { return await task; }
-  finally { if (managedLaunchTail === task) managedLaunchTail = null; }
-}
-async function runManagedAppAction(action, pkg, runtimeId) {
+async function managedAppAction(action, pkg, runtimeId, user = 0, name) {
   if(probeInstallBusy)return;
   if (pendingLaunch || pendingAppAction) return;
   pendingAppAction = true;
   const record = managedLibrary.find(record => record.id === runtimeId);
   const notify = showAppToast;
-  const appName = (managedSnapshots.get(runtimeId) || []).find(app => app.package === pkg)?.label || pkg;
+  const sameApp = app => app.package === pkg && (Number(app.user) || 0) === user;
+  const appName = (managedSnapshots.get(runtimeId) || []).find(sameApp)?.label || pkg;
+  const cloneJob = action === 'clone' || action === 'clone_remove';
   try {
     if (!record || !['Running', 'Frozen'].includes(record.state) || record.error) throw new Error('Start this device on the Devices page, then refresh its apps.');
-    if (!(managedSnapshots.get(runtimeId) || []).some(app => app.package === pkg && app.launchable === true)) throw new Error('Refresh the app list before retrying.');
+    if (!(managedSnapshots.get(runtimeId) || []).some(app => sameApp(app) && app.launchable === true)) throw new Error('Refresh the app list before retrying.');
     if (action === 'uninstall' && !await AppDialog.confirm(`Uninstall ${appName} (${pkg}) from device ${record.name}? This removes its data in this runtime.`, {title:'Uninstall app',kind:'warning'})) return;
-    if (action === 'force_stop' && !await AppDialog.confirm(`Force-stop ${pkg} in runtime ${record.name}? Unsaved app work may be lost.`, {title:'Force-stop app',kind:'warning'})) return;
+    if (action === 'force_stop' && !await AppDialog.confirm(`Force-stop ${user ? appName : pkg} in runtime ${record.name}? Unsaved app work may be lost.`, {title:'Force-stop app',kind:'warning'})) return;
+    if (action === 'clone_remove' && !await AppDialog.confirm(`Delete ${appName} from device ${record.name}? This removes the clone and all of its data. The original app is not changed.`, {title:'Delete clone',kind:'warning',okLabel:'Delete clone'})) return;
     const display = await controllerRequest({op:'display_info',id:runtimeId});
     if (action === 'launch' && (display.effective_mode || display.mode) !== 'desktop') throw new Error('Restart this device from your desktop session to open app windows.');
-    notify(`${action === 'launch' ? 'Opening' : action === 'uninstall' ? 'Uninstalling' : 'Stopping'} ${appName} · ${record.name}…`, 'info');
-    let job = await controllerRequest({op:'app_action',id:runtimeId,action,package:pkg});
+    notify(`${({launch:'Opening', uninstall:'Uninstalling', clone:'Cloning', clone_remove:'Deleting'})[action] || 'Stopping'} ${appName} · ${record.name}…`, 'info');
+    let job = await controllerRequest({op:'app_action',id:runtimeId,action,package:pkg,...(user ? {user} : {}),...(name !== undefined ? {name} : {})});
     const jobId = job?.id;
-    if (!jobId || job.runtime_id !== runtimeId || job.package !== pkg || job.action !== action) throw new Error('Invalid app job');
-    for (let attempt = 0; job.status === 'Running' && attempt < 90; attempt++) {
+    const sameJob = job => job?.id === jobId && job.runtime_id === runtimeId && job.package === pkg && job.action === action && (Number(job.user) || 0) === user;
+    if (!jobId || !sameJob(job)) throw new Error('Invalid app job');
+    // Creating a clone profile takes longer than a launch.
+    for (let attempt = 0; job.status === 'Running' && attempt < (cloneJob ? 240 : 90); attempt++) {
       await new Promise(resolve => setTimeout(resolve, 500));
       job = await controllerRequest({op:'app_job',id:runtimeId});
-      if (job?.id !== jobId || job.runtime_id !== runtimeId || job.package !== pkg || job.action !== action) throw new Error('App job changed; check this device on the Device page.');
+      if (!sameJob(job)) throw new Error('App job changed; check this device on the Device page.');
     }
     if (job.status !== 'Succeeded') throw new Error(job.error || 'App action is still pending. Check its result on the Device page.');
-    if (action === 'uninstall') {
-      const remaining = (managedSnapshots.get(runtimeId) || []).filter(app => app.package !== pkg);
+    if (action === 'uninstall' || action === 'clone_remove') {
+      const remaining = (managedSnapshots.get(runtimeId) || []).filter(app => action === 'uninstall' ? app.package !== pkg : !sameApp(app));
       managedSnapshots.set(runtimeId, remaining);
       try { localStorage.setItem(`anvildroid_managed_apps:${runtimeId}`, JSON.stringify(remaining)); } catch (_) {}
       renderApps(allApps);
-      await refreshManagedLibrary();
     }
+    if (action === 'uninstall' || cloneJob) await refreshManagedLibrary();
     let historyError = '';
-    if (action === 'launch') {
+    if (action === 'launch' && !user) {
       managedPreferenceVersions.set(runtimeId, (managedPreferenceVersions.get(runtimeId) || 0) + 1);
       try {
         saveManagedPreferences(runtimeId, await tauriInvoke('record_runtime_launch', {runtimeId,package:pkg,jobId}));
         renderApps(allApps);
       } catch (error) { historyError = ` App opened, but recent history could not be saved: ${error}`; }
     }
-    notify(action === 'launch' ? `Launch requested: ${appName} · ${record.name}${historyError}` : `${record.name} · ${pkg}: ${job.result?.message || 'Done'}${historyError}`, historyError ? 'info' : 'success');
+    const done = action === 'launch' ? `Launch requested: ${appName} · ${record.name}`
+      : action === 'clone' ? `Clone created: ${job.result?.name || appName} · ${record.name}. It has its own data and shares this app's compatibility settings.`
+      : `${record.name} · ${user ? appName : pkg}: ${job.result?.message || 'Done'}`;
+    notify(done + historyError, historyError ? 'info' : 'success');
   } catch (error) { notify(`${record?.name || runtimeId} · ${appName}: ${error.message || error}`, 'error'); }
+  finally { pendingAppAction = false; }
+}
+
+async function cloneManagedApp(pkg, label, runtimeId) {
+  const name = await AppDialog.prompt(`Create a copy of ${label || pkg} with its own data. Leave the name empty to number it automatically, like "${label || pkg} (2)".`, '', {title:'Clone app', inputLabel:'Clone name (optional)', okLabel:'Clone', optional:true, maxLength:64});
+  if (name === null) return;
+  return managedAppAction('clone', pkg, runtimeId, 0, name.trim());
+}
+
+async function renameManagedClone(pkg, label, runtimeId, user) {
+  if (pendingLaunch || pendingAppAction || !user) return;
+  const name = await AppDialog.prompt('Enter a new name for this clone. Leave it empty to number it automatically.', label || '', {title:'Rename clone', inputLabel:'Clone name', okLabel:'Rename', optional:true, maxLength:64});
+  if (name === null) return;
+  pendingAppAction = true;
+  try {
+    const result = await controllerRequest({op:'app_action', id:runtimeId, action:'clone_rename', package:pkg, user, name:name.trim()});
+    if (result?.action !== 'clone_rename' || result.user !== user || typeof result.name !== 'string') throw new Error('Invalid rename result');
+    const apps = (managedSnapshots.get(runtimeId) || []).map(app => app.package === pkg && (Number(app.user) || 0) === user ? {...app, label: result.name} : app);
+    managedSnapshots.set(runtimeId, apps);
+    renderApps(allApps);
+    showAppToast(`Clone renamed: ${result.name}`, 'success');
+  } catch (error) { showAppToast(`Cannot rename clone: ${error.message || error}`, 'error'); }
   finally { pendingAppAction = false; }
 }
 

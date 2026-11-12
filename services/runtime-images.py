@@ -64,7 +64,7 @@ class ImageBackend:
                 total += info.st_size
             return {'available': True, 'bytes': total, 'detail': 'Installed Android images found'}
         except FileNotFoundError:
-            return {'available': False, 'bytes': 0, 'detail': 'Android images are missing. Install Waydroid and complete its initial image download first.'}
+            return {'available': False, 'bytes': 0, 'detail': 'No Android images yet. Download or import one in Images.'}
         except (OSError, RuntimeError):
             return {'available': False, 'bytes': 0, 'detail': 'Android images cannot be read safely. Check the Waydroid installation and image permissions.'}
 

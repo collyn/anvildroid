@@ -70,7 +70,7 @@ def attach_app_icons(instance, identifier, apps):
         for app in result:
             if 'icon_data' in app: continue
             package = app.get('package')
-            if app.get('launchable') is not True or not isinstance(package, str) or not re.fullmatch(r'[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)+', package):
+            if app.get('launchable') is not True or app.get('clone') or not isinstance(package, str) or not re.fullmatch(r'[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)+', package):
                 continue
             try:
                 fd = os.open(package + '.png', os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
@@ -239,7 +239,7 @@ class AndroidBackend:
             raise RuntimeError('Runtime changed during app status sampling')
         states = report.get('app_states')
         if states is not None and (not isinstance(states, dict) or len(states) > 10000 or
-            any(not isinstance(k, str) or not re.fullmatch(r'[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)+', k) or
+            any(not isinstance(k, str) or not re.fullmatch(r'[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)+(?:@[1-9][0-9]{0,6})?', k) or
                 v not in ('foreground', 'background') for k, v in states.items())):
             raise RuntimeError('Invalid app status snapshot')
         return {'runtime_id': identifier, 'state': 'Running', 'generation': report['generation'],
@@ -307,7 +307,7 @@ class AndroidBackend:
             raise RuntimeError('Invalid installation result; outcome unknown')
         return result
 
-    def app_action(self, identifier, action, package, activation_token=None):
+    def app_action(self, identifier, action, package, activation_token=None, user=0):
         status = self.status(identifier)
         if status['state'] not in ('Running', 'Frozen'): raise RuntimeError('Start this runtime before using app actions')
         if 'app_actions' not in status.get('capabilities', []):
@@ -318,7 +318,12 @@ class AndroidBackend:
             raise RuntimeError('Update the controller and restart this runtime in Desktop mode to open Waydroid.')
         if action == 'uninstall' and 'uninstall_app' not in status.get('capabilities', []):
             raise RuntimeError('Stop and start this runtime once to enable Uninstall, then retry.')
+        clone_request = user or action in ('clone', 'clone_remove')
+        if clone_request and 'app_clones' not in status.get('capabilities', []):
+            raise RuntimeError('Stop and start this runtime once to enable app clones, then retry.')
         request = {'op': 'app_action', 'generation': status['generation'], 'action': action, 'package': package}
+        if clone_request:
+            request['user'] = user
         if activation_token and 'window_activation' in status.get('capabilities', []):
             request['activation_token'] = activation_token
         report = self.status(identifier, 'app_action', request)
@@ -328,6 +333,9 @@ class AndroidBackend:
         result = report.get('app_result')
         if not isinstance(result, dict) or result.get('action') != action or result.get('package') != package:
             raise RuntimeError('Invalid app action response; outcome unknown')
+        if (action == 'clone' and (type(result.get('user')) is not int or result['user'] <= 0) or
+                action != 'clone' and user and result.get('user') != user):
+            raise RuntimeError('Invalid app clone response; outcome unknown')
         return result
 
     def snapshot_support(self, identifier):

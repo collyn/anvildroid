@@ -399,11 +399,16 @@ def app_execution_states(instance, identifier):
                 continue
             seen = True
             foreground = bool(re.search(r'(?m)^\s*foregroundActivities=true\b', block))
+            # App clones run the same package in another Android user; keep
+            # their state apart so a clone never marks the original running.
+            user = re.search(r'(?m)^\s*user #(\d+) uid=', block)
+            suffix = '' if user is None or user[1] == '0' else '@' + user[1]
             for package in match.group(1).split(','):
                 package = package.strip()
                 require(re.fullmatch(r'[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)+', package), 'Invalid process package')
-                if foreground or package not in states:
-                    states[package] = 'foreground' if foreground else 'background'
+                key = package + suffix
+                if foreground or key not in states:
+                    states[key] = 'foreground' if foreground else 'background'
         require(seen, 'Incomplete process snapshot')
         return states
     except (OSError, RuntimeError, subprocess.TimeoutExpired):
@@ -431,9 +436,54 @@ def list_apps(instance, identifier, single_display=False):
     require(len(packages) <= 10000, 'Android launcher list too large')
     catalog = launcher_catalog(instance, identifier, packages) if packages else {}
     labels = launcher_labels(instance, identifier) if packages - catalog.keys() else {}
-    return [dict(package=package, launchable=True,
-                 **catalog.get(package, {'label': labels[package]} if package in labels else {}))
+    try:
+        third_party, clones = app_inventory(instance, identifier)
+    except (RuntimeError, OSError, subprocess.TimeoutExpired):
+        third_party, clones = None, {}  # Clone controls degrade; the launcher list stays usable.
+    def entry(package, **extra):
+        info = catalog.get(package, {'label': labels[package]} if package in labels else {})
+        return dict(package=package, launchable=True, **extra, **info)
+    apps = [entry(package, **({} if third_party is None else {'third_party': package in third_party}))
             for package in sorted(packages)]
+    # Clones share the original's icon in the GUI; omit it here so many
+    # clones cannot push the bounded worker response over its size limit.
+    apps.extend({key: value for key, value in entry(package, user=user, clone=True, third_party=True).items() if key != 'icon_data'}
+                for user, package in sorted(clones.items()) if package in packages)
+    return apps
+
+
+CLONE_USER_TYPE = 'android.os.usertype.profile.CLONE'
+CLONE_PREFIX = 'anvilclone:'
+CLONE_LIMIT = 32
+PACKAGE_PATTERN = r'[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)+'
+
+
+def parse_clone_profiles(output):
+    """Map clone profile user ids to the one package each was created for.
+
+    Only AnvilDroid-named CLONE profiles of the owner are app clones; other
+    profiles (work profiles, user-created clones) are never touched.
+    """
+    clones = {}
+    for line in output.splitlines():
+        match = re.search(r'\bid=(\d+), name=' + re.escape(CLONE_PREFIX) + '(' + PACKAGE_PATTERN +
+                          r'), type=profile\.CLONE, .*\(parentId=0\)', line)
+        if match: clones[int(match[1])] = match[2]
+    return clones
+
+
+def app_inventory(instance, identifier):
+    """Third-party packages of user 0 plus AnvilDroid clone profiles, one attach."""
+    output = run('lxc-attach', '-P', instance / 'android', '-n', identifier, '--',
+                 '/system/bin/sh', '-c', 'pm list packages -3 --user 0 && echo __ANVIL_USERS__ && cmd user list -v',
+                 timeout=4, umask=0o022)
+    require(output.count('__ANVIL_USERS__') == 1, 'Android returned an invalid user inventory')
+    packages, users = output.split('__ANVIL_USERS__')
+    third_party = set()
+    for line in packages.splitlines():
+        match = re.fullmatch(r'package:(' + PACKAGE_PATTERN + ')', line.strip())
+        if match: third_party.add(match[1])
+    return third_party, parse_clone_profiles(users)
 
 
 GOOGLE_PACKAGES = ('com.android.vending', 'com.google.android.gms', 'com.google.android.gsf')
@@ -531,33 +581,33 @@ def open_keymap(instance, identifier, generation, package, android):
     return keymap.open_keymap(instance/'android', identifier, generation, package, android, run=run)
 
 
-def app_exit_snapshot(instance, identifier, package):
+def app_exit_snapshot(instance, identifier, package, user=0):
     try:
         output = linux.run_bounded('lxc-attach', '-P', instance / 'android', '-n', identifier,
                                    '--', '/system/bin/dumpsys', 'activity', 'exit-info', package,
                                    timeout=1.5, output_limit=128 * 1024, full_output=True,
                                    operation='App exit status')
         require('ACTIVITY MANAGER PROCESS EXIT INFO' in output, 'Exit status unavailable')
-        return parse_app_exits(output, package)
+        return parse_app_exits(output, package, user)
     except (OSError, RuntimeError, subprocess.TimeoutExpired):
         return None
 
 
-def parse_app_exits(output, package):
+def parse_app_exits(output, package, user=0):
     entries = {}
     for block in re.split(r'ApplicationExitInfo #\d+:', output)[1:]:
         identity = re.search(r'timestamp=(\S+ \S+) pid=(\d+).*?\buser=(\d+)', block)
         reason = re.search(r'process=(\S+) reason=(\d+) \([^)]*\).*?status=(\d+)', block)
-        if not identity or not reason or identity[3] != '0' or reason[1] != package:
+        if not identity or not reason or identity[3] != str(user) or reason[1] != package:
             continue
         entries[(identity[1], identity[2])] = (int(reason[2]), int(reason[3]))
     return entries
 
 
-def check_app_startup(instance, identifier, package, before):
+def check_app_startup(instance, identifier, package, before, user=0):
     if before is None: return
     time.sleep(3)
-    after = app_exit_snapshot(instance, identifier, package)
+    after = app_exit_snapshot(instance, identifier, package, user)
     if after is None: return
     for identity in after.keys() - before.keys():
         reason, status = after[identity]
@@ -653,10 +703,15 @@ def freeform_launch_arguments(task_listing, package):
     return ['--windowingMode', '5']
 
 
-def app_action(instance, identifier, action, package, desktop=False, generation=None, single_display=False, activation_token=None):
-    require(action in ('launch', 'force_stop', 'uninstall', 'keymap_edit', 'full_ui'), 'Unsupported app action')
+def app_action(instance, identifier, action, package, desktop=False, generation=None, single_display=False, activation_token=None, user=0):
+    require(action in ('launch', 'force_stop', 'uninstall', 'keymap_edit', 'full_ui', 'clone', 'clone_remove'), 'Unsupported app action')
     require(isinstance(package, str) and len(package) <= 255 and
             re.fullmatch(r'[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)+', package), 'Invalid package')
+    require(type(user) is int and 0 <= user <= 1000000, 'Invalid Android user')
+    require(user == 0 or action in ('launch', 'force_stop', 'clone_remove'), 'This action is not available for app clones')
+    require((action == 'clone_remove') == (user > 0) or action in ('launch', 'force_stop'), 'Invalid app clone request')
+    require(not single_display or action not in ('clone', 'clone_remove') and user == 0,
+            'This image uses one Android window; app clones need app-window mode.')
     require(not (desktop and single_display) or action == 'full_ui',
             'This image uses one Android window. Open Android to manage and launch its apps.')
     require(activation_token is None or (action == 'full_ui' and isinstance(activation_token, str) and 0 < len(activation_token) <= 512 and all(32 < ord(c) < 127 for c in activation_token)), 'Invalid activation token')
@@ -733,6 +788,21 @@ def app_action(instance, identifier, action, package, desktop=False, generation=
         window = wait_window_feedback(android, nonce, lambda: refresh_single_display(force=True, settle_seconds=0.1 if nonce else 0.5), await_activation=bool(activation_token))
         timing_stage('window_feedback')
         return {'action': action, 'package': package, 'window': window, 'timings': {'stages': stage_timings, 'commands': command_timings, 'total_ms': round((time.monotonic() - started) * 1000)}, 'message': ('Full Android window requested for this runtime.' if single_display else 'Full Android window requested for this runtime. Close this window to restore app-window mode.')}
+    def android_slow(*args, operation):
+        return linux.run_bounded('lxc-attach', '-P', instance / 'android', '-n', identifier, '--',
+                                 '/system/bin/' + args[0], *args[1:], timeout=60, umask=0o022,
+                                 operation=operation, full_output=True)
+    clones = {}
+    if action in ('clone', 'clone_remove', 'uninstall') or user:
+        third_party, clones = app_inventory(instance, identifier)
+        require(user == 0 or clones.get(user) == package, 'This app clone no longer exists; refresh the app list')
+    if action == 'clone_remove':
+        # Removing the profile deletes exactly this clone's data. It runs
+        # before the launcher check so a clone stays removable on its own.
+        output = android_slow('pm', 'remove-user', str(user), operation='Remove app clone')
+        require('Success' in output, 'Android could not remove the app clone: ' + output[-512:])
+        return {'action': action, 'package': package, 'user': user,
+                'message': 'App clone and its data were removed from this runtime.'}
     # Only launcher apps are actionable here; framework/service packages are excluded.
     resolved = android('cmd', 'package', 'resolve-activity', '--brief', '--user', '0',
                        '-a', 'android.intent.action.MAIN', '-c', 'android.intent.category.LAUNCHER', '-p', package)
@@ -742,9 +812,39 @@ def app_action(instance, identifier, action, package, desktop=False, generation=
     if action=='keymap_edit':
         require(desktop,'Keymap overlay requires Desktop mode')
         return open_keymap(instance,identifier,generation,package,android)
+    if action == 'clone':
+        # System apps are never cloned: only third-party packages of user 0.
+        require(package in third_party, 'Only installed third-party apps can be cloned')
+        require(len(clones) < CLONE_LIMIT, f'This runtime already has {CLONE_LIMIT} app clones')
+        try:
+            output = android_slow('pm', 'create-user', '--user-type', CLONE_USER_TYPE, '--profileOf', '0',
+                                  CLONE_PREFIX + package, operation='Create app clone')
+        except RuntimeError as error:
+            if 'Cannot add more profiles' in str(error) or 'Cannot add more users' in str(error):
+                raise RuntimeError('Android refused another clone profile. Stop and start this runtime to load the app clone support, then retry.') from error
+            raise
+        created = re.search(r'Success: created user id (\d+)', output)
+        require(created is not None, 'Android could not create the app clone: ' + output[-512:])
+        clone = int(created[1])
+        try:
+            output = android_slow('am', 'start-user', '-w', str(clone), operation='Start app clone')
+            require('Success' in output, 'Android could not start the app clone: ' + output[-512:])
+            output = android_slow('pm', 'install-existing', '--user', str(clone), package, operation='Install app clone')
+            require(f'installed for user: {clone}' in output, 'Android could not add the app to its clone: ' + output[-512:])
+        except (RuntimeError, OSError, subprocess.TimeoutExpired):
+            try: android_slow('pm', 'remove-user', str(clone), operation='Discard incomplete app clone')
+            except (RuntimeError, OSError, subprocess.TimeoutExpired): pass  # Report the original failure.
+            raise
+        _catalog_cache.pop(str(instance), None)
+        return {'action': action, 'package': package, 'user': clone,
+                'message': 'App clone created with its own data.'}
+    if user and action == 'launch':
+        # Clone profiles may be stopped after a reboot or memory pressure.
+        output = android_slow('am', 'start-user', '-w', str(user), operation='Start app clone')
+        require('Success' in output, 'Android could not start the app clone: ' + output[-512:])
     if action == 'uninstall':
-        third_party = android('pm', 'list', 'packages', '-3', '--user', '0')
-        require('package:' + package in third_party.splitlines(), 'Cannot uninstall a system or protected app')
+        require(package in third_party, 'Cannot uninstall a system or protected app')
+        require(package not in clones.values(), 'Delete the clones of this app before uninstalling it')
         output = linux.run_bounded('lxc-attach', '-P', instance / 'android', '-n', identifier,
                                    '--', '/system/bin/pm', 'uninstall', '--user', '0', package,
                                    timeout=15, umask=0o022, operation='APK uninstall')
@@ -764,7 +864,7 @@ def app_action(instance, identifier, action, package, desktop=False, generation=
         android('setprop', 'waydroid.active_apps', 'Waydroid' if single_display else package)
         android('setprop', 'waydroid.background_start', 'false')
     if action == 'launch':
-        exits_before = app_exit_snapshot(instance, identifier, package)
+        exits_before = app_exit_snapshot(instance, identifier, package, user)
         window_args = []
         if desktop and not single_display:
             sdk = android('getprop', 'ro.build.version.sdk').strip()
@@ -772,7 +872,7 @@ def app_action(instance, identifier, action, package, desktop=False, generation=
                 # Android 16 otherwise launches fullscreen tasks, whose bounds
                 # cannot be changed by the host-window resize bridge.
                 window_args = freeform_launch_arguments(android('cmd', 'activity', 'stack', 'list'), package)
-        output = android('am', 'start', '--user', '0', *window_args, '-n', components[0])
+        output = android('am', 'start', '--user', str(user), *window_args, '-n', components[0])
         # The task helper slows its snapshot when idle; ask for one now so the
         # new window gets its Android bounds without waiting for the next tick.
         try: android('sh', '-c', ': > /data/waydroid_tmp/anvildroid/wake')
@@ -784,15 +884,15 @@ def app_action(instance, identifier, action, package, desktop=False, generation=
         android('settings', 'put', 'secure', 'policy_control', policy)
         refresh_single_display()
     else:
-        output = android('am', 'force-stop', '--user', '0', package)
+        output = android('am', 'force-stop', '--user', str(user), package)
     # Preserve the beginning of ActivityManager's diagnostic; it contains the
     # actual exception (the old tail-only slice often started mid stack trace).
     diagnostic = output.strip()
     require(not re.search(r'(?im)^(?:error|exception|securityexception|java\.).*', diagnostic),
             'Android rejected app action: ' + diagnostic[:2048])
     if action == 'launch':
-        check_app_startup(instance, identifier, package, exits_before)
-    return {'action': action, 'package': package, 'message': 'Android accepted launch on desktop.' if action == 'launch' else 'Android accepted force-stop.'}
+        check_app_startup(instance, identifier, package, exits_before, user)
+    return {'action': action, 'package': package, **({'user': user} if user else {}), 'message': 'Android accepted launch on desktop.' if action == 'launch' else 'Android accepted force-stop.'}
 
 
 class ControlReceiver:
@@ -1202,6 +1302,36 @@ def shutdown_environment(lxc, identifier):
                 and '..' not in path.split('/') for path in dex[0].split(':')), 'Invalid Android compiler classpath')
         environment['DEX2OATBOOTCLASSPATH'] = dex[0]
     return ['--clear-env'] + [argument for key, value in environment.items() for argument in ('--set-var', key + '=' + value)]
+
+
+CLONE_OVERLAY = Path(__file__).parent / 'provision/vendor/overlay/AnvilDroidUsers/AnvilDroidUsers.apk'
+
+
+def install_clone_overlay(vendor, source=CLONE_OVERLAY):
+    """Place the static framework overlay that allows many clone profiles.
+
+    Stock Android allows one CLONE profile per user. The overlay is applied
+    on every boot (also for runtimes provisioned before it existed) into this
+    worker's vendor overlay upper layer, never into the shared images.
+    """
+    try:
+        data = source.read_bytes()
+    except OSError:
+        return False  # Older packages ship no overlay: clones stay unavailable.
+    if data[:4] != b'PK\x03\x04': return False
+    directory = vendor / 'overlay'
+    for part in (directory, directory / 'AnvilDroidUsers'):
+        require(not part.is_symlink(), 'Invalid vendor overlay directory')
+        part.mkdir(mode=0o755, exist_ok=True)
+    target = directory / 'AnvilDroidUsers/AnvilDroidUsers.apk'
+    require(not target.is_symlink(), 'Invalid vendor overlay target')
+    if not target.exists() or target.read_bytes() != data:
+        temporary = target.with_name('.AnvilDroidUsers.apk.tmp')
+        temporary.unlink(missing_ok=True)
+        temporary.write_bytes(data)
+        temporary.chmod(0o644)
+        os.replace(temporary, target)
+    return True
 
 
 def stop_android(lxc, identifier, boot_completed):
@@ -1683,6 +1813,8 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
             camera_module.gralloc_alias(fs / 'vendor', 'ro.hardware.gralloc=' + camera_module.GRALLOC_ALIAS in props)
             camera_module.vendor_files(fs / 'vendor', (patches / 'vendor', work / 'vendor-lower'), camera_nodes)
             (fs / 'vendor/waydroid.prop').write_text('\n'.join(props) + '\n')
+            if install_clone_overlay(fs / 'vendor') and state.get('presentation_mode') != 'android-display':
+                state['capabilities'].append('app_clones')
             ensure_binder_filesystem()
             mount('-t', 'binder', 'binder', work / 'binder')
             prepare_binder_devices(work / 'binder')
@@ -1706,6 +1838,10 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
                 mount('--bind', audio_pin, pulse / 'native')
             xdg.chmod(0o777)
             original = (instance / 'support/config').read_text().splitlines()
+            # LXC built without AppArmor (Fedora, openSUSE) rejects the key;
+            # runtimes prepared before the provisioning fix still carry it.
+            try: apparmor = 'apparmor' in Path('/sys/kernel/security/lsm').read_text().strip().split(',')
+            except OSError: apparmor = Path('/sys/kernel/security/apparmor').is_dir()
             keep = ('lxc.arch', 'lxc.apparmor.profile', 'lxc.cap.keep', 'lxc.mount.auto', 'lxc.no_new_privs', 'lxc.seccomp.allow_nesting')
             # Android init writes its per-uid cgroup dirs at boot; the host
             # config mounts the cgroup read-only, which is fatal for newer
@@ -1720,7 +1856,8 @@ def boot(instance, identifier, generation, state, stopping, done, desktop=None, 
             # hierarchy; systemd-owned cgroups reject that operation with
             # __cgfsng_delegate_controllers("Device or resource busy").
             config = [line for line in original
-                      if line.startswith(keep) and not line.startswith('lxc.mount.auto')]
+                      if line.startswith(keep) and not line.startswith('lxc.mount.auto')
+                      and (apparmor or not line.startswith('lxc.apparmor.'))]
             config.append('lxc.mount.auto = sys:ro proc')
             config += host_control_mounts()
             # Cap Android LP32 thread IDs on kernels with namespaced pid_max.
@@ -2277,7 +2414,9 @@ def main(instance, identifier, generation, original_mnt, original_net, desktop=N
                     elif isinstance(request, dict) and request.get('op') == 'app_action':
                         response = dict(state)
                         try:
-                            require(set(request) in ({'op', 'generation', 'action', 'package'}, {'op', 'generation', 'action', 'package', 'activation_token'}), 'Invalid app action request')
+                            require(set(request) in ({'op', 'generation', 'action', 'package'}, {'op', 'generation', 'action', 'package', 'activation_token'},
+                                                     {'op', 'generation', 'action', 'package', 'user'}), 'Invalid app action request')
+                            require('user' not in request or 'app_clones' in state['capabilities'], 'Stop and start this runtime to enable app clones')
                             require(request['generation'] == generation, 'Worker generation changed; action refused')
                             idle.resume()
                             require(state['state'] == 'Running' and not stopping.is_set(), 'Android is not running')
@@ -2291,7 +2430,8 @@ def main(instance, identifier, generation, original_mnt, original_net, desktop=N
                                                              operation='Android desktop input check')
                                 recover_desktop_input(input_lxc, identifier, state)
                             response['app_result'] = app_action(instance, identifier, request['action'], request['package'], desktop=bool(desktop), generation=generation,
-                                                               single_display=state.get('presentation_mode') == 'android-display', activation_token=request.get('activation_token'))
+                                                               single_display=state.get('presentation_mode') == 'android-display', activation_token=request.get('activation_token'),
+                                                               user=request.get('user', 0))
                         except (RuntimeError, OSError, subprocess.TimeoutExpired) as error:
                             response['app_error'] = str(error)[-1024:]
                         connection.sendall(json.dumps(dict(response, state=state['state'])).encode() + b'\n')

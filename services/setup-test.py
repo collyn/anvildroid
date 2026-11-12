@@ -71,21 +71,66 @@ class SetupTests(unittest.TestCase):
         process.assert_not_called()
         self.assertEqual(status.call_args.args[1], 'done')
 
-    def test_template_repair_is_only_done_when_needed(self):
+    def test_missing_templates_never_reinstall_waydroid(self):
         for available in (True, False):
             with self.subTest(available=available):
-                provision = SimpleNamespace(managed_support_available=Mock(side_effect=[available, True]))
+                provision = SimpleNamespace(managed_support_available=Mock(return_value=available))
                 spec = SimpleNamespace(loader=Mock())
                 with patch.object(helper.importlib.util, 'spec_from_file_location', return_value=spec), \
                         patch.object(helper.importlib.util, 'module_from_spec', return_value=provision), \
-                        patch.object(helper.Path, 'read_text', return_value='ID=ubuntu\n'), \
-                        patch.object(helper.shutil, 'which', return_value='/usr/bin/apt-get'), \
-                        patch.object(helper, 'write_status'), patch.object(helper, 'apt') as apt:
-                    helper.ensure_managed_support()
-                if available:
-                    apt.assert_not_called()
-                else:
-                    self.assertEqual(apt.call_args.args, ('install', '-y', '--no-install-recommends', '--reinstall', 'waydroid'))
+                        patch.object(helper, 'apt') as apt, patch.object(helper, 'run_logged') as run:
+                    if available:
+                        helper.ensure_managed_support()
+                    else:
+                        with self.assertRaisesRegex(RuntimeError, 'Reinstall AnvilDroid'):
+                            helper.ensure_managed_support()
+                apt.assert_not_called()
+                run.assert_not_called()
+
+    def test_package_manager_detection(self):
+        cases = (({'ID': 'ubuntu', 'ID_LIKE': 'debian'}, 'apt-get', False, 'apt'),
+                 ({'ID': 'fedora'}, 'dnf', False, 'dnf'),
+                 ({'ID': 'nobara', 'ID_LIKE': 'rhel centos fedora'}, 'dnf', False, 'dnf'),
+                 ({'ID': 'fedora'}, 'dnf', True, None),
+                 ({'ID': 'bazzite', 'ID_LIKE': 'fedora'}, 'dnf', True, None),
+                 ({'ID': 'opensuse-tumbleweed', 'ID_LIKE': 'opensuse suse'}, 'zypper', False, 'zypper'),
+                 ({'ID': 'arch'}, 'pacman', False, 'pacman'),
+                 ({'ID': 'cachyos', 'ID_LIKE': 'arch'}, 'pacman', False, 'pacman'),
+                 ({'ID': 'gentoo'}, 'emerge', False, None))
+        for release, tool, atomic, expected in cases:
+            with self.subTest(release=release, atomic=atomic), \
+                    patch.object(helper, 'OSTREE_MARKER', Mock(exists=Mock(return_value=atomic))), \
+                    patch.object(helper.shutil, 'which', side_effect=lambda name: '/usr/bin/' + name if name == tool else None):
+                self.assertEqual(helper.package_manager(release), (expected, atomic))
+
+    def test_fedora_installs_mapped_packages_without_release_numbers(self):
+        commands = {'lxc-start': 'lxc', 'mount': 'mount', 'ip': 'iproute2', 'java': 'default-jre-headless', 'aapt': 'aapt'}
+        with patch.object(helper.host, 'COMMAND_PACKAGES', commands), \
+                patch.object(helper.host, 'missing_commands', side_effect=[list(commands), list(commands), []]), \
+                patch.object(helper, 'package_manager', return_value=('dnf', False)), \
+                patch.object(helper, 'install_waydroid', return_value=''), \
+                patch.object(helper, 'write_status'), patch.object(helper, 'run_logged', return_value=True) as run:
+            helper.ensure_host_packages()
+        command = run.call_args.args[0]
+        self.assertEqual(command[:3], ['dnf', '-y', 'install'])
+        self.assertEqual(sorted(command[3:]), ['iproute', 'java-headless', 'lxc', 'util-linux-core'])
+        self.assertFalse(any(char.isdigit() for char in ' '.join(command)))
+
+    def test_waydroid_is_optional_and_never_fails_setup(self):
+        with patch.object(helper.shutil, 'which', return_value=None), patch.object(helper, 'write_status'), \
+                patch.object(helper, 'INIT_LOG', Path(tempfile.mkdtemp()) / 'init.log'), \
+                patch.object(helper, 'run_logged', return_value=False) as run:
+            note = helper.install_waydroid('dnf', False)
+        self.assertEqual(run.call_args.args[0], ['dnf', '-y', 'install', 'waydroid'])
+        self.assertIn('optional', note)
+        with patch.object(helper.shutil, 'which', return_value=None):
+            self.assertIn('rpm-ostree install waydroid', helper.install_waydroid(None, True))
+
+    def test_atomic_host_reports_rpm_ostree_for_missing_tools(self):
+        with patch.object(helper.host, 'missing_commands', return_value=['lxc-start']), \
+                patch.object(helper, 'package_manager', return_value=(None, True)):
+            with self.assertRaisesRegex(RuntimeError, 'rpm-ostree install'):
+                helper.ensure_host_packages()
 
     def test_missing_dependency_never_starts_a_partial_helper(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -106,6 +151,30 @@ class SetupTests(unittest.TestCase):
                     helper.main()
                 self.assertEqual(error.exception.code, 2)
                 directory.assert_not_called()
+
+class SelinuxPolicyTests(unittest.TestCase):
+    policy = load(ROOT / 'scripts/install-runtime-selinux.py', 'selinux_policy_test')
+
+    def test_hosts_without_selinux_are_untouched(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run = Mock()
+            self.assertIn('not active', self.policy.install(Path(directory), '/usr/sbin/semodule', run))
+            run.assert_not_called()
+
+    def test_selinux_hosts_load_only_the_binder_rule(self):
+        with tempfile.TemporaryDirectory() as directory:
+            (Path(directory) / 'enforce').write_text('1')
+            loaded = []
+            def run(command, **kwargs):
+                loaded.append(Path(command[2]).read_text())
+                self.assertEqual(command[:2], ['/usr/sbin/semodule', '-i'])
+                self.assertTrue(command[2].endswith('/anvildroid.cil'))
+            self.policy.install(Path(directory), '/usr/sbin/semodule', run)
+        rules = [line.strip() for line in loaded[0].splitlines() if 'allow' in line]
+        self.assertEqual(len(rules), 2)
+        self.assertTrue(all(' self (binder (' in rule for rule in rules))
+        self.assertTrue(all(line.startswith(('(optional', '    (allow', ';')) for line in loaded[0].splitlines()))
+
 
 if __name__ == '__main__':
     if len(sys.argv) == 3 and sys.argv[1] == '--stage':

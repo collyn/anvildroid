@@ -18,7 +18,7 @@ fi
 # not build the Java IME/shutdown helpers, and cached native outputs may be old.
 gui_bin="${CARGO_TARGET_DIR:-target}/release/anvildroid-gui"
 cli_bin="${CARGO_TARGET_DIR:-target}/release/anvildroid"
-for f in "$gui_bin" "$cli_bin" target/native/libanvildroid-path-guard.so target/native/libanvildroid-runtime-window.so target/native/libanvildroid-window.so target/native/overlay-key.p12 target/ime/AnvilDroidIme.apk target/shutdown/anvildroid-shutdown.jar target/input-diagnostic/scrcpy-server-cancel.jar; do
+for f in "$gui_bin" "$cli_bin" target/native/libanvildroid-path-guard.so target/native/libanvildroid-runtime-window.so target/native/libanvildroid-window.so target/native/overlay-key.p12 target/native/AnvilDroidUsers.apk target/ime/AnvilDroidIme.apk target/shutdown/anvildroid-shutdown.jar target/input-diagnostic/scrcpy-server-cancel.jar; do
   [ -s "$f" ] || { echo "Missing or empty release artifact: $f" >&2; exit 1; }
 done
 cmp -s target/native/libanvildroid-window.so target/native/libanvildroid-runtime-window.so || {
@@ -29,7 +29,7 @@ stage="$(mktemp -d "$(pwd)/target/.portable.XXXXXX")"
 trap 'rm -rf "$stage"' EXIT
 mkdir -p "$stage/bin" "$stage/scripts" "$stage/services" "$stage/packaging/systemd" "$stage/target/native" "$stage/target/ime" "$stage/target/shutdown" "$stage/native"
 cp "$gui_bin" "$cli_bin" "$stage/bin/"
-cp scripts/install-portable.sh scripts/apk-align.py scripts/controller-payload.txt scripts/install-runtime-controller.py scripts/install-runtime-apparmor.py scripts/start-runtime-controller.py scripts/setup-waydroid.py "$stage/scripts/"
+cp scripts/install-portable.sh scripts/apk-align.py scripts/controller-payload.txt scripts/install-runtime-controller.py scripts/install-runtime-apparmor.py scripts/install-runtime-selinux.py scripts/start-runtime-controller.py scripts/setup-waydroid.py "$stage/scripts/"
 cp packaging/systemd/anvildroid-controller.service packaging/systemd/anvildroid-controller.socket packaging/systemd/50-anvildroid.conf "$stage/packaging/systemd/"
 # Validate source identity, manifest hashes and release-build provenance before
 # staging the payload automatically consumed by the controller installer.
@@ -37,10 +37,11 @@ python3 scripts/build-x11-payload.py --stage-parent "$stage"
 cp services/*.py "$stage/services/"
 cp native/anvildroid-*.rc native/anvildroid-*.sh "$stage/native/"
 cp -a native/overlay "$stage/native/"
+cp -a native/lxc-templates "$stage/native/"
 cp native/menu-font-OFL.txt "$stage/native/"
 mkdir -p "$stage/target/input-diagnostic"
 cp target/input-diagnostic/scrcpy-server-cancel.jar "$stage/target/input-diagnostic/"
-for f in target/native/libanvildroid-path-guard.so target/native/libanvildroid-runtime-window.so target/native/overlay-key.p12 target/ime/AnvilDroidIme.apk target/shutdown/anvildroid-shutdown.jar; do
+for f in target/native/libanvildroid-path-guard.so target/native/libanvildroid-runtime-window.so target/native/overlay-key.p12 target/native/AnvilDroidUsers.apk target/ime/AnvilDroidIme.apk target/shutdown/anvildroid-shutdown.jar; do
   cp "$f" "$stage/$f"
 done
 cp target/native/libanvildroid-window.so "$stage/target/native/"

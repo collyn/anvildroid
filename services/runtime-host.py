@@ -18,8 +18,22 @@ def missing_commands():
     return [command for command in COMMAND_PACKAGES if shutil.which(command) is None]
 
 
-def missing_packages():
-    return sorted({COMMAND_PACKAGES[command] for command in missing_commands()})
+# Package names on other package managers, keyed by the Debian name above.
+# None: the distribution has no package for it; AnvilDroid's own package
+# bundles that tool (aapt, apksigner). Names are release-independent so one
+# table serves every Fedora release (43 onwards), openSUSE and Arch.
+DISTRO_PACKAGES = {
+    'dnf': {'mount': 'util-linux-core', 'iproute2': 'iproute', 'default-jre-headless': 'java-headless',
+            'aapt': None, 'apksigner': None},
+    'zypper': {'mount': 'util-linux', 'default-jre-headless': 'java-headless>=17', 'aapt': None, 'apksigner': None},
+    'pacman': {'mount': 'util-linux', 'default-jre-headless': 'jre-openjdk-headless', 'aapt': None, 'apksigner': None},
+}
+
+
+def missing_packages(manager='apt'):
+    names = DISTRO_PACKAGES.get(manager, {})
+    return sorted({package for package in (names.get(COMMAND_PACKAGES[command], COMMAND_PACKAGES[command])
+                                           for command in missing_commands()) if package})
 
 
 # Android's system_server runs as AID_SYSTEM (1000) without a user namespace,

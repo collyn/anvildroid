@@ -136,6 +136,15 @@ pub enum Request {
     },
     #[serde(rename = "image_download_status")]
     ImageDownloadStatus {},
+    #[serde(rename = "data_location")]
+    DataLocation {},
+    /// `path: None` returns new devices to the controller folder.
+    #[serde(rename = "data_location_set")]
+    DataLocationSet {
+        path: Option<String>,
+    },
+    #[serde(rename = "image_cache_move")]
+    ImageCacheMove {},
     #[serde(rename = "image_select")]
     ImageSelect {
         image_id: String,
@@ -160,6 +169,12 @@ pub enum Request {
         package: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         activation_token: Option<String>,
+        /// Android user of an app clone profile; absent for the original app.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        user: Option<u32>,
+        /// Clone display name for `clone`/`clone_rename`; empty picks "Label (n)".
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
     },
     #[serde(rename = "app_job")]
     AppJob {
@@ -641,6 +656,32 @@ mod tests {
         token_request["activation_token"] = serde_json::json!("source-token");
         let request: Request = serde_json::from_value(token_request.clone()).unwrap();
         assert_eq!(serde_json::to_value(request).unwrap(), token_request);
+    }
+    #[test]
+    fn app_clone_fields_round_trip_exactly() {
+        for value in [
+            serde_json::json!({"op":"app_action","id":"r-test","action":"clone","package":"com.example.game","name":""}),
+            serde_json::json!({"op":"app_action","id":"r-test","action":"launch","package":"com.example.game","user":10}),
+            serde_json::json!({"op":"app_action","id":"r-test","action":"clone_rename","package":"com.example.game","user":10,"name":"Alt"}),
+        ] {
+            let request: Request = serde_json::from_value(value.clone()).unwrap();
+            assert_eq!(serde_json::to_value(request).unwrap(), value);
+        }
+        let negative = serde_json::json!({"op":"app_action","id":"r-test","action":"launch","package":"com.example.game","user":-1});
+        assert!(serde_json::from_value::<Request>(negative).is_err());
+    }
+    #[test]
+    fn data_location_requests_round_trip_exactly() {
+        for value in [
+            serde_json::json!({"op":"data_location"}),
+            serde_json::json!({"op":"data_location_set","path":"/mnt/data/AnvilDroid"}),
+            serde_json::json!({"op":"data_location_set","path":null}),
+            serde_json::json!({"op":"image_cache_move"}),
+        ] {
+            let request: Request = serde_json::from_value(value.clone()).unwrap();
+            assert_eq!(serde_json::to_value(request).unwrap(), value);
+        }
+        assert!(serde_json::from_str::<Request>(r#"{"op":"image_cache_move","destination":"/etc"}"#).is_err());
     }
     #[test]
     fn custom_import_uses_descriptor_not_privileged_path() {

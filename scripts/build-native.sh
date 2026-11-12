@@ -36,3 +36,8 @@ if [ ! -f "$out/overlay-key.p12" ]; then
 fi
 apksigner sign --ks "$out/overlay-key.p12" --ks-pass pass:anvildroid \
   --out "$out/AnvilDroidCaption.apk" "$out/caption-unsigned.apk"
+# App clone overlay: resources are matched by name, so one build serves every SDK 33+ image.
+aapt package -f -M native/clone-overlay/AndroidManifest.xml -S native/clone-overlay/res \
+  -I "$out/framework-res.apk" -F "$out/clone-overlay-unsigned.apk"
+apksigner sign --ks "$out/overlay-key.p12" --ks-pass pass:anvildroid \
+  --out "$out/AnvilDroidUsers.apk" "$out/clone-overlay-unsigned.apk"

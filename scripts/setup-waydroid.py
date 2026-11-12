@@ -16,6 +16,7 @@ import shutil
 import stat
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 PYTHON = '/usr/bin/python3'
@@ -118,33 +119,116 @@ def tail(text, maximum=400):
     return text[-maximum:]
 
 
+OSTREE_MARKER = Path('/run/ostree-booted')
+# Install commands besides apt (see apt()). Fedora uses whatever `dnf` is (dnf5 from
+# Fedora 41), so no release number appears anywhere: 43 through 55 and later
+# resolve packages from their own official repositories.
+PACKAGE_COMMANDS = {
+    'dnf': ('dnf', '-y', 'install'),
+    'zypper': ('zypper', '--non-interactive', 'install', '--no-recommends'),
+    'pacman': ('pacman', '-S', '--needed', '--noconfirm'),
+}
+
+
+def os_release(path=Path('/etc/os-release')):
+    try:
+        text = path.read_text()
+    except OSError:
+        return {}
+    return {key: value.strip().strip('"') for key, value in
+            (line.split('=', 1) for line in text.splitlines() if '=' in line)}
+
+
+def package_manager(release=None):
+    """Return (manager, atomic) for this host; manager is None when unsupported."""
+    release = os_release() if release is None else release
+    family = set((release.get('ID', '') + ' ' + release.get('ID_LIKE', '')).split())
+    # Fedora Atomic (Silverblue, Kinoite, Bazzite…) has a read-only /usr:
+    # packages are layered with rpm-ostree and need a reboot.
+    atomic = OSTREE_MARKER.exists()
+    for manager, distros, tool in (('apt', {'ubuntu', 'debian'}, 'apt-get'),
+                                   ('dnf', {'fedora', 'rhel', 'centos'}, 'dnf'),
+                                   ('zypper', {'opensuse', 'suse', 'opensuse-tumbleweed', 'opensuse-leap', 'sles'}, 'zypper'),
+                                   ('pacman', {'arch', 'archlinux', 'manjaro', 'endeavouros', 'cachyos'}, 'pacman')):
+        if family & distros and shutil.which(tool):
+            return (None if atomic else manager), atomic
+    return None, atomic
+
+
+def run_logged(command, extra_env=None, attempts=1):
+    """Run a package command, logging output; retry while another tool holds the lock."""
+    for attempt in range(attempts):
+        with open(INIT_LOG, 'ab') as log:
+            result = subprocess.run(command, preexec_fn=system_umask, stdout=log, stderr=subprocess.STDOUT,
+                                    env={**ENV, **(extra_env or {})}, timeout=1800)
+        if result.returncode == 0:
+            return True
+        if attempt + 1 < attempts:
+            time.sleep(15)
+    return False
+
+
 def apt(*args):
-    with open(INIT_LOG, 'ab') as log:
-        repair_apt_sources()
-        result = subprocess.run(['apt-get', '-o', 'DPkg::Lock::Timeout=120', *args], preexec_fn=system_umask,
-                                stdout=log, stderr=subprocess.STDOUT,
-                                env={**ENV, 'DEBIAN_FRONTEND': 'noninteractive'}, timeout=1800)
-    if result.returncode:
-        raise RuntimeError(f'Package installation failed (exit {result.returncode}); see {INIT_LOG}')
+    repair_apt_sources()
+    if not run_logged(['apt-get', '-o', 'DPkg::Lock::Timeout=120', *args], {'DEBIAN_FRONTEND': 'noninteractive'}):
+        raise RuntimeError(f'Package installation failed; see {INIT_LOG}')
+
+
+def install_packages(manager, packages):
+    if not packages:
+        return
+    if manager == 'apt':
+        apt('update')
+        apt('install', '-y', '--no-install-recommends', 'ca-certificates', *packages)
+        return
+    # dnf/zypper/pacman refresh metadata themselves. Retry: PackageKit or an
+    # automatic update may briefly hold the package database lock.
+    if not run_logged([*PACKAGE_COMMANDS[manager], *packages], attempts=3):
+        # Arch forbids partial upgrades, so the helper never runs -Sy itself;
+        # a stale package database is fixed by a full system upgrade.
+        hint = ' Run "sudo pacman -Syu" first, then retry.' if manager == 'pacman' else ''
+        raise RuntimeError(f'Package installation failed ({" ".join(packages)}); see {INIT_LOG}.{hint}')
 
 
 def ensure_host_packages():
-    packages = host.missing_packages()
-    if not packages and shutil.which('waydroid'):
-        return
-    os_release = Path('/etc/os-release').read_text()
-    distro = dict(line.split('=', 1) for line in os_release.splitlines() if '=' in line)
-    family = (distro.get('ID', '') + ' ' + distro.get('ID_LIKE', '')).replace('"', '').split()
-    if not {'ubuntu', 'debian'}.intersection(family) or not shutil.which('apt-get'):
-        raise RuntimeError('Automatic host setup requires Ubuntu/Debian. Install Waydroid and the missing runtime tools for your distribution, then refresh.')
-    write_status(STATUS_FILE, 'installing', detail='Installing Android runtime tools…', pid=os.getpid())
-    apt('update')
-    apt('install', '-y', '--no-install-recommends', 'ca-certificates', *packages)
-    if shutil.which('waydroid') is None:
-        run_installer()
+    """Install the tools managed runtimes need. Returns a note for the final status."""
     missing = host.missing_commands()
-    if missing or shutil.which('waydroid') is None:
-        raise RuntimeError('Host setup incomplete: ' + ', '.join(missing + ([] if shutil.which('waydroid') else ['waydroid'])))
+    manager, atomic = package_manager()
+    if missing:
+        if manager is None:
+            names = ', '.join(missing)
+            if atomic:
+                raise RuntimeError(f'Missing runtime tools: {names}. On Fedora Atomic, run '
+                                   f'"rpm-ostree install lxc slirp4netns nftables patchelf", reboot, then refresh.')
+            raise RuntimeError(f'Missing runtime tools: {names}. Install them with your distribution\'s '
+                               'package manager, then refresh.')
+        write_status(STATUS_FILE, 'installing', detail='Installing Android runtime tools…', pid=os.getpid())
+        install_packages(manager, host.missing_packages(manager))
+        missing = host.missing_commands()
+        if missing:
+            raise RuntimeError('Host setup incomplete: ' + ', '.join(missing))
+    return install_waydroid(manager, atomic)
+
+
+def install_waydroid(manager, atomic):
+    """Best effort: managed devices do not need Waydroid; System Waydroid does."""
+    if shutil.which('waydroid'):
+        return ''
+    optional = ' Waydroid is optional: Android devices work without it.'
+    if manager is None:
+        return ('Install Waydroid with "rpm-ostree install waydroid" for System Waydroid.' if atomic
+                else 'Waydroid is not installed (System Waydroid only).') + optional
+    write_status(STATUS_FILE, 'installing', detail='Installing Waydroid…', pid=os.getpid())
+    try:
+        if manager == 'apt':
+            run_installer()
+        elif not run_logged([*PACKAGE_COMMANDS[manager], 'waydroid'], attempts=2):
+            raise RuntimeError('waydroid is not available from the configured repositories')
+    except (RuntimeError, OSError, subprocess.SubprocessError) as error:
+        with open(INIT_LOG, 'a') as log:
+            log.write(f'Waydroid installation skipped: {error}\n')
+        return 'Waydroid could not be installed from your distribution repositories.' + optional
+    return ''
 
 
 def run_installer(status_path=STATUS_FILE, log_path=INIT_LOG):
@@ -169,30 +253,22 @@ def run_installer(status_path=STATUS_FILE, log_path=INIT_LOG):
 
 
 def ensure_managed_support():
-    """Repair package templates without initializing System Waydroid images."""
+    """Managed runtimes use Waydroid's templates or the bundled copy."""
     spec = importlib.util.spec_from_file_location('setup_provision', HOST_MODULE.with_name('runtime-provision.py'))
     provision = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(provision)
-    if provision.managed_support_available():
-        return
-    distro = dict(line.split('=', 1) for line in Path('/etc/os-release').read_text().splitlines() if '=' in line)
-    family = (distro.get('ID', '') + ' ' + distro.get('ID_LIKE', '')).replace('"', '').split()
-    if not {'ubuntu', 'debian'}.intersection(family) or not shutil.which('apt-get'):
-        raise RuntimeError('Reinstall the Waydroid package for your distribution to restore its LXC templates, then refresh.')
-    write_status(STATUS_FILE, 'installing', detail='Repairing Waydroid runtime tools…', pid=os.getpid())
-    apt('update')
-    apt('install', '-y', '--no-install-recommends', '--reinstall', 'waydroid')
     if not provision.managed_support_available():
-        raise RuntimeError('The Waydroid package did not provide the required LXC templates; see ' + str(INIT_LOG))
+        raise RuntimeError('Android runtime configuration files are missing. Reinstall AnvilDroid, then refresh.')
 
 
 def run_init():
     # Body of the --run-init subcommand; runs detached as root.
     if os.geteuid() != 0:
         raise SystemExit('The init subcommand must run as root.')
-    ensure_host_packages()
+    note = ensure_host_packages()
     ensure_managed_support()
-    write_status(STATUS_FILE, 'done', detail='Runtime tools are ready. Choose an image in Images and create a runtime.', pid=os.getpid())
+    detail = 'Runtime tools are ready. Choose an image in Images and create a runtime.'
+    write_status(STATUS_FILE, 'done', detail=(detail + ' ' + note).strip(), pid=os.getpid())
 
 
 def spawn_init(lock_fd):

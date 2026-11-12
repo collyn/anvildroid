@@ -100,6 +100,77 @@ def secure_directory(path, private):
                 'CONFIG', 'Service path has an untrusted ancestor')
 
 
+CLONE_ACTIONS = ('clone', 'clone_remove', 'clone_rename')
+CLONE_NAME_LIMIT = 64
+
+
+def clean_clone_name(name):
+    require(isinstance(name, str) and len(name) <= 256, 'INVALID_REQUEST', 'Invalid clone name')
+    name = ' '.join(name.split())
+    require(len(name) <= CLONE_NAME_LIMIT and all(ord(c) >= 32 and c != '\x7f' for c in name),
+            'INVALID_REQUEST', f'Clone names are limited to {CLONE_NAME_LIMIT} printable characters')
+    return name
+
+
+def validate_clone_request(request):
+    """Return (user, name) for an app_action; name is None when absent."""
+    action = request['action']
+    user = request.get('user', 0)
+    require(type(user) is int and 0 <= user <= 1000000, 'INVALID_REQUEST', 'Invalid Android user')
+    require(('user' in request and user > 0) == (action in ('clone_remove', 'clone_rename') or
+            ('user' in request and action in ('launch', 'force_stop'))), 'INVALID_REQUEST', 'Invalid app clone target')
+    require(('name' in request) == (action in ('clone', 'clone_rename')), 'INVALID_REQUEST', 'Unexpected clone name')
+    return user, (clean_clone_name(request['name']) if 'name' in request else None)
+
+
+def default_clone_name(label, package, clones, user=None):
+    """Smallest free "Label (n)", n >= 2; the original app counts as (1)."""
+    used = {entry['name'] for key, entry in clones.items() if entry.get('package') == package and key != str(user)}
+    label = ' '.join(str(label).split())[:CLONE_NAME_LIMIT - 8] or package
+    number = 2
+    while f'{label} ({number})' in used: number += 1
+    return f'{label} ({number})'
+
+
+def load_app_clones(data, runtimes):
+    """Clone names are cosmetic: drop malformed entries instead of failing."""
+    result = {}
+    if not isinstance(data, dict): return result
+    for identifier, clones in data.items():
+        if identifier not in runtimes or not isinstance(clones, dict): continue
+        valid = {}
+        for key, entry in clones.items():
+            if (isinstance(key, str) and re.fullmatch(r'[1-9][0-9]{0,6}', key) and isinstance(entry, dict) and
+                    isinstance(entry.get('package'), str) and re.fullmatch(r'[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)+', entry['package']) and
+                    isinstance(entry.get('name'), str) and 0 < len(entry['name']) <= CLONE_NAME_LIMIT):
+                valid[key] = {k: entry[k] for k in ('package', 'name', 'label') if isinstance(entry.get(k), str)}
+        if valid: result[identifier] = valid
+    return result
+
+
+def name_app_clones(apps, clones):
+    """Attach saved names to clone entries; forget clones Android no longer has.
+
+    Without an Android user inventory (no third_party flags) saved names are
+    kept: a failed query must not erase every clone name.
+    """
+    result, kept = [], {}
+    inventory = any('third_party' in app for app in apps)
+    labels = {app['package']: app.get('label') for app in apps if not app.get('clone') and isinstance(app.get('package'), str)}
+    for app in apps:
+        if not app.get('clone') or type(app.get('user')) is not int:
+            result.append(app)
+            continue
+        key = str(app['user'])
+        entry = clones.get(key)
+        if not entry or entry.get('package') != app['package']:
+            label = labels.get(app['package']) or app.get('label') or app['package'].split('.')[-1]
+            entry = {'package': app['package'], 'name': default_clone_name(label, app['package'], dict(clones, **kept), key), 'label': label}
+        kept[key] = entry
+        result.append(dict(app, label=entry['name'], original_label=labels.get(app['package']) or entry.get('label')))
+    return result, (kept if inventory else dict(clones, **kept))
+
+
 def read_file(path):
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     with os.fdopen(fd) as stream:
@@ -131,7 +202,12 @@ class Store:
         require(stat.S_ISREG(info.st_mode) and info.st_uid == 0 and not info.st_mode & 0o077 and info.st_nlink == 1,
                 'CONFIG', 'Unsafe service lock')
         fcntl.flock(self.lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        # Relocated image cache is bind-mounted before Downloads reads it.
+        self.image_cache = storage_module.ImageCache(root, allow_temporary_storage)
+        self.cache_job = None
+        self.data_locations = storage_module.DataLocations(root, allow_temporary_storage)
         self.downloads = download_module.Downloads(root)
+        if self.image_cache.error: self.downloads.blocked = self.cache_unavailable()
         self.arm_sources_root = root / 'arm-sources'
         if not self.arm_sources_root.exists():
             self.arm_sources_root.mkdir(mode=0o700)
@@ -182,6 +258,9 @@ class Store:
         if any(mode == 'headless' for mode in self.displays.values()):
             self.displays = {key: 'desktop' for key in self.displays}
             storage_module.atomic(self.display_path, self.displays)
+        self.app_clones_path = root / 'app-clones.json'
+        self.app_clones = load_app_clones(read_file(self.app_clones_path) if self.app_clones_path.exists() else {},
+                                          {r['id'] for r in self.data['runtimes']})
         self.app_jobs_path = root / 'app-jobs.json'
         self.app_jobs = read_file(self.app_jobs_path) if self.app_jobs_path.exists() else {}
         require(isinstance(self.app_jobs, dict), 'CONFIG', 'Invalid app job metadata')
@@ -252,7 +331,7 @@ class Store:
     def idle(self):
         """True when nothing in this process needs the controller to stay up."""
         with self.mutex:
-            if self.active_jobs or self.reservations or self.adb_relays or self.storage.busy is not None:
+            if self.active_jobs or self.reservations or self.adb_relays or self.storage.busy is not None or self.cache_moving():
                 return False
             if any(r['state'] in ('Provisioning', 'Starting', 'Running', 'Frozen', 'Stopping') for r in self.data['runtimes']):
                 return False
@@ -514,6 +593,63 @@ class Store:
         finally:
             with self.mutex: self.active_jobs.discard(identifier)
 
+    def cache_unavailable(self):
+        return ('Downloaded Android images are unavailable: ' + str(self.image_cache.error)
+                + '. Reconnect the disk with your data folder, then restart AnvilDroid.')
+
+    def cache_moving(self):
+        return bool(self.cache_job and self.cache_job['status'] == 'Running')
+
+    def cache_owners(self):
+        owners = {item.get('owner_uid') for item in self.downloads.library.values()}
+        if self.downloads.state.get('owner_uid') is not None: owners.add(self.downloads.state['owner_uid'])
+        return owners
+
+    def data_location_report(self, uid):
+        report = self.data_locations.report(uid)
+        report['default_path'] = str(self.backend.root)
+        cache = self.image_cache.report()
+        active = self.image_cache.state.get('active')
+        if active and active.get('owner_uid') != uid: cache['path'] = 'Data folder of another Linux account'
+        try:
+            cache['used_bytes'] = sum(entry.stat(follow_symlinks=False).st_blocks * 512 for entry in os.scandir(self.downloads.root)
+                                      if entry.is_file(follow_symlinks=False))
+        except OSError: cache['used_bytes'] = None
+        cache['job'] = copy.deepcopy(self.cache_job)
+        cache['shared'] = bool(self.cache_owners() - {uid})
+        cache['in_data_folder'] = bool(active and report['path'] and Path(active['path']).parent == Path(report['path']))
+        report['cache'] = cache
+        return report
+
+    def start_cache_move(self, uid):
+        location = self.data_locations.get(uid)
+        require(location is not None, 'INVALID_REQUEST', 'Choose a data folder first')
+        require(not self.cache_moving(), 'BUSY', 'Downloaded images are already being moved')
+        require(not self.active_jobs and self.storage.busy is None, 'BUSY', 'Wait for device operations to finish before moving downloaded images')
+        require(not self.cache_owners() - {uid}, 'FORBIDDEN', 'Other Linux accounts have downloaded images here, so the image cache stays in the controller folder')
+        try: self.downloads.block('Downloaded Android images are being moved. Try again when the move finishes.')
+        except RuntimeError as error: raise RequestError('BUSY', str(error))
+        self.cache_job = {'status': 'Running', 'phase': 'copy', 'error': None}
+        self.pool.submit(self.cache_move_job, uid, location['path'])
+
+    def cache_move_job(self, uid, destination):
+        def progress(phase):
+            with self.mutex: self.cache_job['phase'] = phase
+        error = None
+        try:
+            self.image_cache.move(destination, uid, progress)
+        except subprocess.CalledProcessError as failure:
+            error = 'Copy failed: ' + (failure.stderr or b'').decode(errors='replace').strip()[-400:]
+        except (OSError, RuntimeError) as failure:
+            error = str(failure)
+        if self.image_cache.error:
+            try: self.image_cache.recover()  # committed: finish the switch
+            except (OSError, RuntimeError, subprocess.CalledProcessError) as failure: self.image_cache.error = str(failure)
+        with self.mutex:
+            self.cache_job = {'status': 'Failed' if error else 'Succeeded', 'phase': 'complete',
+                              'error': error, 'warning': self.image_cache.cleanup_error}
+            self.downloads.blocked = self.cache_unavailable() if self.image_cache.error else None
+
     def move_storage_job(self, identifier, destination_fd):
         def progress(phase):
             self.storage.entries[identifier]['job']['phase'] = phase
@@ -555,6 +691,8 @@ class Store:
                 self.storage.save()
                 self.displays.pop(identifier, None)
                 storage_module.atomic(self.display_path, self.displays)
+                if self.app_clones.pop(identifier, None) is not None:
+                    storage_module.atomic(self.app_clones_path, self.app_clones)
                 self.app_jobs.pop(identifier, None)
                 storage_module.atomic(self.app_jobs_path, self.app_jobs)
                 self.selections.pop(identifier, None)
@@ -588,13 +726,41 @@ class Store:
                 storage_module.atomic(self.app_jobs_path, self.app_jobs)
             finally: self.active_jobs.discard(identifier)
 
+    def save_app_clones(self, identifier, clones):
+        updated = dict(self.app_clones)
+        if clones: updated[identifier] = clones
+        else: updated.pop(identifier, None)
+        storage_module.atomic(self.app_clones_path, updated)
+        self.app_clones = updated
+
     def app_action_job(self, identifier, job, activation_token=None):
+        label = None
         try:
-            result = self.android.app_action(identifier, job['action'], job['package'], activation_token=activation_token) if activation_token else self.android.app_action(identifier, job['action'], job['package'])
+            if job.get('user'):
+                result = self.android.app_action(identifier, job['action'], job['package'], user=job['user'])
+            else:
+                result = self.android.app_action(identifier, job['action'], job['package'], activation_token=activation_token) if activation_token else self.android.app_action(identifier, job['action'], job['package'])
+            if job['action'] == 'clone' and not job.get('name'):
+                try:
+                    label = next((app.get('label') for app in self.android.apps(identifier)['apps']
+                                  if app.get('package') == job['package'] and not app.get('clone')), None)
+                except (OSError, RuntimeError, ValueError): pass  # Fall back to the package name.
             finished = dict(job, status='Succeeded', result=result)
         except Exception as error:
             finished = dict(job, status='Failed', error=str(error)[-1024:])
         with self.mutex:
+            if finished['status'] == 'Succeeded' and job['action'] in ('clone', 'clone_remove'):
+                clones = dict(self.app_clones.get(identifier, {}))
+                if job['action'] == 'clone':
+                    user = finished['result']['user']
+                    label = label if isinstance(label, str) and label.strip() else job['package'].split('.')[-1]
+                    name = job.get('name') or default_clone_name(label, job['package'], clones, user)
+                    clones[str(user)] = {'package': job['package'], 'name': name, 'label': label[:128]}
+                    finished['result'] = dict(finished['result'], name=name)
+                else:
+                    clones.pop(str(job['user']), None)
+                try: self.save_app_clones(identifier, clones)
+                except OSError: pass  # The clone exists; it gets a default name on the next listing.
             try:
                 self.app_jobs[identifier] = finished
                 storage_module.atomic(self.app_jobs_path, self.app_jobs)
@@ -693,8 +859,10 @@ class Store:
         support = android_module.provision.managed_support_available()
         desktop_info = desktop_module.capabilities(uid)
         checks = [
-            {'id': 'waydroid', 'label': 'Waydroid', 'available': waydroid,
-             'detail': 'Installed' if waydroid else 'Install Waydroid for your Linux distribution first.'},
+            # Managed devices use the bundled LXC templates; the Waydroid
+            # package is only needed for the System Waydroid device.
+            {'id': 'waydroid', 'label': 'Waydroid', 'available': waydroid, 'optional': True,
+             'detail': 'Installed' if waydroid else 'Not installed. Optional: only the System Waydroid device needs it.'},
             {'id': 'images', 'label': 'Android images', **images},
             {'id': 'tools', 'label': 'Runtime tools', 'available': not missing,
              'detail': 'Available' if not missing else 'Missing: ' + ', '.join(missing)},
@@ -702,12 +870,12 @@ class Store:
              'available': worker_module.arm.ARCHIVE.is_file(), 'optional': True,
              'detail': 'Downloaded automatically during Prepare or setup.'},
             {'id': 'support', 'label': 'Waydroid runtime configuration', 'available': support,
-             'detail': 'Configuration available' if support else 'Install or repair the Waydroid package to provide its LXC templates.'},
+             'detail': 'Configuration available' if support else 'Runtime configuration files are missing. Use Install / repair runtime tools or reinstall AnvilDroid.'},
             {'id': 'desktop', 'label': 'Desktop session', 'available': desktop_info['desktop'], 'detail': desktop_info['detail']}]
         watches = host_module.inotify_check()
         checks.append(watches)
-        return {'checks': checks, 'can_prepare': waydroid and images['available'],
-                'can_start': waydroid and not missing and support and desktop_info['desktop'] and watches['available'],
+        return {'checks': checks, 'can_prepare': support and images['available'],
+                'can_start': not missing and support and desktop_info['desktop'] and watches['available'],
                 'image_bytes': images['bytes'], 'installed_images': installed_images, 'desktop': desktop_info,
                 'system_runtime': self.existing.initialized()}
 
@@ -998,6 +1166,18 @@ class Store:
             self.displays[identifier] = 'desktop'
             storage_module.atomic(self.display_path, self.displays)
             return self._dispatch({'op': 'prepare', 'id': identifier}, uid)
+        if operation in ('data_location', 'data_location_set', 'image_cache_move'):
+            expected = {'data_location': {'op'}, 'data_location_set': {'op', 'path'}, 'image_cache_move': {'op'}}[operation]
+            require(set(request) == expected and apk_fd is None, 'INVALID_REQUEST', 'Unexpected data location fields')
+            if operation == 'data_location_set':
+                require(request['path'] is None or isinstance(request['path'], str), 'INVALID_REQUEST', 'Expected a folder path or null')
+                try: self.data_locations.set(uid, request['path'])
+                except (OSError, RuntimeError) as error: raise RequestError('STORAGE', str(error))
+            elif operation == 'image_cache_move':
+                self.start_cache_move(uid)
+            return self.data_location_report(uid)
+        require(operation not in ('prepare', 'reinstall', 'existing_import', 'image_rename', 'create_image') or not self.cache_moving(),
+                'BUSY', 'Downloaded Android images are being moved. Try again when the move finishes.')
         if operation == 'image_select':
             require(set(request) == {'op', 'image_id'} and apk_fd is None, 'INVALID_REQUEST', 'Expected image ID')
             return self.downloads.select(uid, request['image_id'])
@@ -1065,7 +1245,7 @@ class Store:
         arm_fields = ({'op', 'id', 'enabled'}, {'op', 'id', 'enabled', 'archive_sha256'})
         reinstall_fields = ({'op', 'id', 'flavor', 'confirmed_name'}, {'op', 'id', 'flavor', 'confirmed_name', 'system_sha256', 'vendor_sha256'})
         require(set(request) in reinstall_fields if operation == 'reinstall' else set(request) in arm_fields if operation == 'arm_set' else
-                (set(request) == fields[operation] or (operation == 'start' and set(request) == {'op', 'id', 'display'}) or (operation == 'app_action' and set(request) == fields[operation] | {'activation_token'})),
+                (set(request) == fields[operation] or (operation == 'start' and set(request) == {'op', 'id', 'display'}) or (operation == 'app_action' and set(request) - fields[operation] in ({'activation_token'}, {'user'}, {'name'}, {'user', 'name'}) and fields[operation] <= set(request))),
                 'INVALID_REQUEST', 'Unexpected or missing fields')
         if 'activation_token' in request:
             token = request['activation_token']
@@ -1093,6 +1273,8 @@ class Store:
             if operation in ('adb_info', 'adb_set'):
                 self.existing.authorize(uid)
                 return self.adb_request(request, uid)
+            require(operation != 'app_action' or not ({'user', 'name'} & set(request)) and request['action'] not in CLONE_ACTIONS,
+                    'INVALID_REQUEST', 'App clones are available on AnvilDroid devices, not System Waydroid')
             return self.existing.dispatch(request, uid)
         require(operation != 'existing_claim', 'INVALID_REQUEST', 'Only System Waydroid can be registered for system management')
         require(operation != 'system_integration', 'INVALID_REQUEST', 'System integration applies only to System Waydroid')
@@ -1108,6 +1290,12 @@ class Store:
                     'LIMIT', 'Per-user runtime metadata capacity reached')
             record = {'id': 'r-' + uuid.uuid4().hex, 'owner_uid': uid,
                       'name': request['name'].strip(), 'state': 'Allocated', 'job': None, 'start_on_boot': False}
+            location = self.data_locations.get(uid)
+            if location:
+                # Images and Android data go straight to the user's data folder.
+                try: self.storage.create_external(record['id'], location['path'], uid, location)
+                except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
+                    raise RequestError('STORAGE', 'Cannot use data folder ' + location['path'] + ': ' + str(error))
             if selection:
                 self.selections[record['id']] = selection
                 storage_module.atomic(self.selections_path, self.selections)
@@ -1295,12 +1483,25 @@ class Store:
             require(record['id'] not in self.active_jobs, 'BUSY', 'Runtime already has an operation')
             require(len(self.active_jobs) < 4, 'BUSY', 'Controller operation capacity reached; retry when a job completes')
             require(record['state'] in ('Running', 'Frozen'), 'INVALID_STATE', 'Start this runtime before using app actions')
-            require(request['action'] in ('launch', 'force_stop', 'uninstall', 'keymap_edit', 'full_ui'), 'INVALID_REQUEST', 'Unsupported app action')
+            require(request['action'] in ('launch', 'force_stop', 'uninstall', 'keymap_edit', 'full_ui') + CLONE_ACTIONS, 'INVALID_REQUEST', 'Unsupported app action')
             require(isinstance(request['package'], str) and len(request['package']) <= 255 and
                     re.fullmatch(r'[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)+', request['package']), 'INVALID_REQUEST', 'Invalid package')
+            user, name = validate_clone_request(request)
+            if request['action'] == 'clone_rename':
+                # Names are AnvilDroid metadata only; Android is not involved.
+                clones = dict(self.app_clones.get(record['id'], {}))
+                entry = clones.get(str(user))
+                require(entry is None or entry['package'] == request['package'], 'INVALID_REQUEST', 'App clone does not match this package')
+                clones[str(user)] = {'package': request['package'], 'name': name or default_clone_name(
+                    (entry or {}).get('label') or request['package'].split('.')[-1], request['package'], clones, user)}
+                if entry and entry.get('label'): clones[str(user)]['label'] = entry['label']
+                self.save_app_clones(record['id'], clones)
+                return {'action': 'clone_rename', 'package': request['package'], 'user': user, 'name': clones[str(user)]['name']}
             self.storage.ensure(record['id'])
             job = {'id': uuid.uuid4().hex, 'runtime_id': record['id'], 'action': request['action'],
                    'package': request['package'], 'status': 'Running', 'error': None}
+            if user: job['user'] = user
+            if name is not None: job['name'] = name
             self.app_jobs[record['id']] = job
             storage_module.atomic(self.app_jobs_path, self.app_jobs)
             self.active_jobs.add(record['id'])
@@ -1336,9 +1537,12 @@ class Store:
             self.storage.ensure(record['id'])
             try:
                 with self.worker_rpc(record['id']):
-                    return self.android.apps(record['id'])
+                    report = self.android.apps(record['id'])
             except (OSError, RuntimeError, ValueError) as error:
                 raise RequestError('APPS', str(error))
+            apps, clones = name_app_clones(report['apps'], self.app_clones.get(record['id'], {}))
+            if clones != self.app_clones.get(record['id'], {}): self.save_app_clones(record['id'], clones)
+            return dict(report, apps=apps)
         if operation == 'health':
             return self.health(record)
         if operation == 'storage_info':

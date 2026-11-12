@@ -65,14 +65,14 @@ target_dir=${CARGO_TARGET_DIR:-"$root/target"}
 gui="$target_dir/release/anvildroid-gui"
 cli="$target_dir/release/anvildroid"
 [ -x "$gui" ] || { echo "Missing GUI binary: $gui" >&2; exit 1; }
-for artifact in "$cli" target/native/libanvildroid-path-guard.so target/native/libanvildroid-runtime-window.so target/native/libanvildroid-window.so target/native/overlay-key.p12 target/ime/AnvilDroidIme.apk target/shutdown/anvildroid-shutdown.jar; do
+for artifact in "$cli" target/native/libanvildroid-path-guard.so target/native/libanvildroid-runtime-window.so target/native/libanvildroid-window.so target/native/overlay-key.p12 target/native/AnvilDroidUsers.apk target/ime/AnvilDroidIme.apk target/shutdown/anvildroid-shutdown.jar; do
   [ -s "$artifact" ] || { echo "Missing portable artifact: $artifact" >&2; exit 1; }
 done
 cmp -s target/native/libanvildroid-window.so target/native/libanvildroid-runtime-window.so || {
   echo 'Native bridge artifacts differ; rebuild runtime desktop first.' >&2
   exit 1
 }
-python3 -m py_compile scripts/bootstrap-appimage.py scripts/start-runtime-controller.py scripts/setup-waydroid.py scripts/install-runtime-controller.py scripts/install-runtime-apparmor.py || {
+python3 -m py_compile scripts/bootstrap-appimage.py scripts/start-runtime-controller.py scripts/setup-waydroid.py scripts/install-runtime-controller.py scripts/install-runtime-apparmor.py scripts/install-runtime-selinux.py || {
   echo 'Controller launcher scripts failed to compile' >&2
   exit 1
 }
@@ -129,15 +129,16 @@ chmod 755 "$appdir/AppRun.wrapped"
 mkdir -p "$appdir/scripts" "$appdir/services" "$appdir/target/native" \
   "$appdir/target/ime" "$appdir/target/shutdown" "$appdir/native" \
   "$appdir/packaging/systemd"
-cp scripts/bootstrap-appimage.py scripts/controller-payload.txt scripts/install-runtime-controller.py scripts/install-runtime-apparmor.py scripts/apk-align.py scripts/start-runtime-controller.py scripts/setup-waydroid.py "$appdir/scripts/"
+cp scripts/bootstrap-appimage.py scripts/controller-payload.txt scripts/install-runtime-controller.py scripts/install-runtime-apparmor.py scripts/install-runtime-selinux.py scripts/apk-align.py scripts/start-runtime-controller.py scripts/setup-waydroid.py "$appdir/scripts/"
 cp services/*.py "$appdir/services/"
 cp native/anvildroid-*.rc native/anvildroid-*.sh "$appdir/native/"
 cp -a native/overlay "$appdir/native/"
+cp -a native/lxc-templates "$appdir/native/"
 cp native/menu-font-OFL.txt "$appdir/native/"
 mkdir -p "$appdir/target/input-diagnostic"
 cp target/input-diagnostic/scrcpy-server-cancel.jar "$appdir/target/input-diagnostic/"
 cp target/native/libanvildroid-path-guard.so target/native/libanvildroid-runtime-window.so target/native/libanvildroid-window.so \
-  target/native/overlay-key.p12 "$appdir/target/native/"
+  target/native/overlay-key.p12 target/native/AnvilDroidUsers.apk "$appdir/target/native/"
 cp target/ime/AnvilDroidIme.apk "$appdir/target/ime/"
 cp target/shutdown/anvildroid-shutdown.jar "$appdir/target/shutdown/"
 cp packaging/systemd/anvildroid-controller.service packaging/systemd/anvildroid-controller.socket "$appdir/packaging/systemd/"
@@ -183,10 +184,10 @@ for helper in WebKitWebProcess WebKitNetworkProcess WebKitGPUProcess injected-bu
   }
 done
 squash="$stage/inspect/squashfs-root"
-for bundled in scripts/bootstrap-appimage.py scripts/controller-payload.txt scripts/start-runtime-controller.py scripts/setup-waydroid.py scripts/install-runtime-controller.py scripts/install-runtime-apparmor.py scripts/apk-align.py \
-    target/native/libanvildroid-runtime-window.so target/native/overlay-key.p12 \
+for bundled in scripts/bootstrap-appimage.py scripts/controller-payload.txt scripts/start-runtime-controller.py scripts/setup-waydroid.py scripts/install-runtime-controller.py scripts/install-runtime-apparmor.py scripts/install-runtime-selinux.py scripts/apk-align.py \
+    target/native/libanvildroid-runtime-window.so target/native/overlay-key.p12 target/native/AnvilDroidUsers.apk \
     target/ime/AnvilDroidIme.apk target/shutdown/anvildroid-shutdown.jar \
-    native/anvildroid-apps.sh native/overlay/AndroidManifest.xml \
+    native/anvildroid-apps.sh native/overlay/AndroidManifest.xml native/lxc-templates/config_base \
     packaging/systemd/anvildroid-controller.service packaging/systemd/anvildroid-controller.socket; do
   [ -s "$squash/$bundled" ] || {
     echo "AppImage is missing controller payload: $bundled" >&2

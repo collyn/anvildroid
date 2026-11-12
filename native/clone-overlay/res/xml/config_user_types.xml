@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Matches CLONE_LIMIT in services/runtime-worker.py. -->
+<user-types>
+    <profile-type name="android.os.usertype.profile.CLONE" max-allowed-per-parent="32" />
+</user-types>

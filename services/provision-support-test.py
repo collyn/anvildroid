@@ -24,7 +24,9 @@ class StandaloneSupportTests(unittest.TestCase):
                            'config_4': 'lxc.seccomp.allow_nesting = 1\n',
                            'waydroid.seccomp': '2\nblacklist\nreboot\n'}.items():
             (self.templates / name).write_text(text)
-        for name, value in [('WAYDROID_ROOT', self.host), ('APPARMOR_PROFILES', self.root / 'loaded-profiles'), ('LXC_TEMPLATE_DIRS', (self.templates,))]:
+        (self.root / 'lsm').write_text('lockdown,capability,yama,apparmor\n')
+        for name, value in [('WAYDROID_ROOT', self.host), ('APPARMOR_PROFILES', self.root / 'loaded-profiles'),
+                            ('ACTIVE_LSMS', self.root / 'lsm'), ('LXC_TEMPLATE_DIRS', (self.templates,))]:
             manager = patch.object(p, name, value)
             manager.start()
             self.addCleanup(manager.stop)
@@ -92,6 +94,19 @@ class StandaloneSupportTests(unittest.TestCase):
         self.assertIn('lxc.apparmor.profile = lxc-waydroid', (target / 'config').read_text())
         self.assertNotIn('unconfined', (target / 'config').read_text())
 
+    def test_apparmor_keys_are_dropped_when_apparmor_is_inactive(self):
+        # Fedora: SELinux host, LXC built without AppArmor rejects the key.
+        target = self.root / 'support'
+        target.mkdir()
+        with patch.object(p, 'run', return_value='6.0.6'):
+            p.copy_lxc_support(target)
+            self.assertIn('lxc.apparmor.profile = unconfined', (target / 'config').read_text())
+            (self.root / 'lsm').write_text('lockdown,capability,yama,selinux,bpf,landlock\n')
+            p.copy_lxc_support(target)
+        config = (target / 'config').read_text()
+        self.assertNotIn('apparmor', config)
+        self.assertIn('lxc.cap.keep = setuid setgid', config)
+
     def test_existing_lxc_configuration_is_preserved(self):
         source = self.host / 'lxc/waydroid'
         source.mkdir(parents=True)
@@ -109,11 +124,36 @@ class StandaloneSupportTests(unittest.TestCase):
         target.mkdir()
         with patch.object(p, 'LXC_TEMPLATE_DIRS', ()):
             self.assertFalse(p.managed_support_available())
-            with self.assertRaisesRegex(RuntimeError, 'Reinstall the Waydroid package'):
+            with self.assertRaisesRegex(RuntimeError, 'Reinstall AnvilDroid'):
                 p.copy_lxc_support(target)
         with patch.object(p, 'run', return_value='2.0.0'):
             with self.assertRaisesRegex(RuntimeError, 'LXC 3 or newer'):
                 p.copy_lxc_support(target)
+
+    def test_bundled_templates_are_the_last_fallback(self):
+        bundled = Path(__file__).resolve().parents[1] / 'native/lxc-templates'
+        fresh_spec = importlib.util.spec_from_file_location('fresh_provision', Path(__file__).with_name('runtime-provision.py'))
+        fresh = importlib.util.module_from_spec(fresh_spec)
+        fresh_spec.loader.exec_module(fresh)
+        self.assertEqual(fresh.LXC_TEMPLATE_DIRS[0], Path('/usr/lib/waydroid/data/configs'))
+        self.assertEqual(fresh.LXC_TEMPLATE_DIRS[-1], fresh.ASSETS / 'lxc-templates')
+        partial = self.root / 'partial-waydroid'
+        partial.mkdir()
+        (partial / 'config_base').write_text('incomplete package')
+        with patch.object(p, 'LXC_TEMPLATE_DIRS', (partial, bundled)):
+            self.assertEqual(p.lxc_template_directory(), bundled)
+        with patch.object(p, 'LXC_TEMPLATE_DIRS', (bundled,)), \
+                patch.object(p, 'WAYDROID_ROOT', self.root / 'no-waydroid'), \
+                patch.object(p, 'APPARMOR_PROFILES', self.root / 'no-profiles'), \
+                patch.object(p, 'run', return_value='6.0.4'):
+            self.assertTrue(p.managed_support_available())
+            target = self.root / 'bundled-support'
+            target.mkdir()
+            p.copy_lxc_support(target)
+        config = (target / 'config').read_text()
+        self.assertIn('lxc.init.cmd = /init', config)
+        self.assertNotIn('LXCARCH', config)
+        self.assertTrue((target / 'waydroid.seccomp').is_file())
 
     def test_controller_allows_start_with_packaged_templates_only(self):
         spec = importlib.util.spec_from_file_location('fresh_controller', Path(__file__).with_name('runtime-controller.py'))

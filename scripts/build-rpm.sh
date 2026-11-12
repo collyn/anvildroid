@@ -44,6 +44,7 @@ cp -a $STAGE/. %{buildroot}/
 
 %post
 python3 /usr/local/lib/anvildroid-controller/scripts/install-runtime-apparmor.py || exit 1
+python3 /usr/local/lib/anvildroid-controller/scripts/install-runtime-selinux.py || exit 1
 python3 /usr/local/lib/anvildroid-controller/scripts/patch-waydroid.py >/dev/null 2>&1 || :
 python3 /usr/local/lib/anvildroid-controller/scripts/migrate-package-source.py || :
 # Prefer nftables when this kernel has no legacy iptables tables.
@@ -65,6 +66,7 @@ fi
 fi
 
 %preun
+if [ "\$1" -eq 0 ]; then python3 /usr/local/lib/anvildroid-controller/scripts/install-runtime-selinux.py --remove >/dev/null 2>&1 || :; fi
 if [ "\$1" -eq 0 ] && [ -d /run/systemd/system ]; then systemctl disable --now anvildroid-controller.socket anvildroid-controller.service >/dev/null 2>&1 || :; fi
 
 %files

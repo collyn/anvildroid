@@ -10,11 +10,13 @@ scripts/controller-payload.txt
 scripts/start-runtime-controller.py
 scripts/install-runtime-controller.py
 scripts/install-runtime-apparmor.py
+scripts/install-runtime-selinux.py
 scripts/apk-align.py
 services/
 target/native/libanvildroid-runtime-window.so
 target/native/libanvildroid-path-guard.so
 target/native/overlay-key.p12
+target/native/AnvilDroidUsers.apk
 target/ime/AnvilDroidIme.apk
 target/shutdown/anvildroid-shutdown.jar
 target/input-diagnostic/scrcpy-server-cancel.jar
@@ -26,4 +28,5 @@ native/anvildroid-keymap.rc
 native/anvildroid-keymap.sh
 native/menu-font-OFL.txt
 native/overlay/
+native/lxc-templates/
 ?native-x11/

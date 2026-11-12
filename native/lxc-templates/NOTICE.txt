@@ -1,0 +1,10 @@
+LXC configuration templates for managed Android runtimes.
+
+config_base, config_3, config_4 and waydroid.seccomp are copied unmodified from
+Waydroid 1.6.3 (data/configs/), https://github.com/waydroid/waydroid
+Copyright 2021 Erfan Abdi <erfangplus@gmail.com>
+License: GPL-3.0-or-later (https://www.gnu.org/licenses/gpl-3.0.html)
+
+AnvilDroid prefers the templates of an installed Waydroid package. These copies
+are only used when no Waydroid package (or an incomplete one) is installed, so
+Android devices can be prepared and started without installing Waydroid.

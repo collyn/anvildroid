@@ -34,6 +34,7 @@ class PortablePackagingTest(unittest.TestCase):
             self.write('scripts/' + name, (ROOT / 'scripts' / name).read_bytes())
         # Pure fixture policy: the file-copy installer must never inspect host AppArmor.
         self.write('scripts/install-runtime-apparmor.py', b'def install(): return "Fixture AppArmor: no host changes"\n')
+        self.write('scripts/install-runtime-selinux.py', b'def install(): return "Fixture SELinux: no host changes"\n')
         for name in ('anvildroid-controller.service', 'anvildroid-controller.socket', '50-anvildroid.conf'):
             self.write('packaging/systemd/' + name, (ROOT / 'packaging/systemd' / name).read_bytes())
         for name in ('anvildroid-apps.rc', 'anvildroid-apps.sh', 'anvildroid-tasks.rc',
@@ -41,6 +42,8 @@ class PortablePackagingTest(unittest.TestCase):
             self.write('native/' + name, b'fixture provision asset\n')
         self.write('native/overlay/AndroidManifest.xml', b'<manifest/>\n')
         self.write('native/menu-font-OFL.txt', b'Fixture license\n')
+        for name in ('config_base', 'config_3', 'config_4', 'waydroid.seccomp'):
+            self.write('native/lxc-templates/' + name, b'fixture template\n')
         self.write('native/x11/fixture.cpp', b'// fixture build source\n')
         self.write('target/release/anvildroid-gui', b'fixture GUI\n', 0o755)
         self.write('target/release/anvildroid', b'fixture CLI\n', 0o755)
@@ -48,6 +51,7 @@ class PortablePackagingTest(unittest.TestCase):
         for name in ('libanvildroid-path-guard.so', 'libanvildroid-runtime-window.so', 'libanvildroid-window.so'):
             self.write('target/native/' + name, elf)
         self.write('target/native/overlay-key.p12', b'fixture key')
+        self.write('target/native/AnvilDroidUsers.apk', b'PK\x03\x04fixture overlay')
         archive = io.BytesIO()
         with zipfile.ZipFile(archive, 'w') as z: z.writestr('classes.dex', b'dex\nfixture')
         for name in ('target/ime/AnvilDroidIme.apk', 'target/shutdown/anvildroid-shutdown.jar',
@@ -135,6 +139,9 @@ class PortablePackagingTest(unittest.TestCase):
         installed = self.file_install()
         for name in ('manifest.json','runtime-x11.py','source-manifest.json','anvildroid-x11-host','NOTICE','menu-font-OFL.txt'):
             self.assertEqual((installed/'native-x11'/name).read_bytes(), (self.root/'native-x11'/name).read_bytes())
+        # Bundled LXC templates let managed runtimes start without a Waydroid package.
+        for name in ('config_base', 'config_3', 'config_4', 'waydroid.seccomp'):
+            self.assertEqual((installed/'lxc-templates'/name).read_bytes(), b'fixture template\n')
 
     @unittest.skipIf(os.getuid()==0, 'Native payload development fixtures require an unprivileged owner')
     def test_invalid_bundled_payload_fails_before_controller_destination_is_written(self):
