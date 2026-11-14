@@ -161,3 +161,14 @@
 #page-controls .controls-table th:last-child { width: auto; text-align: left; }
 #page-controls .controls-table td:last-child { text-align: left; }
 #page-controls .controls-edit-hint { margin: 10px 2px 0; }
+
+/* About page */
+.about-brand { display:flex; align-items:center; gap:16px; margin-bottom:12px; }
+.about-brand img { flex:0 0 auto; border-radius:var(--radius); }
+.about-brand h2 { margin:0 0 4px; font-size:var(--font-xl); }
+.about-brand .hint { margin:0; }
+.about-section > .runtime-actions { margin-top:12px; }
+.update-notify { margin-top:12px; }
+.about-people { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:4px 14px; }
+.about-person { padding:0; border:0; background:none; font:inherit; color:var(--accent-text); cursor:pointer; }
+.about-person:hover { text-decoration:underline; }

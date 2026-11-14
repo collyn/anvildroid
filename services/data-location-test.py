@@ -179,6 +179,8 @@ class ControllerDataLocationTest(unittest.TestCase):
         report = self.store.dispatch({'op': 'data_location_set', 'path': str(self.disk)}, 0)
         self.assertEqual(report['path'], str(self.disk))
         self.assertTrue(report['available'])
+        self.assertEqual(self.store.dispatch({'op': 'image_download_status'}, 0)['cache_path'],
+                         str(self.store_path / 'image-cache'))
         record = self.store.dispatch({'op': 'create', 'name': 'Phone'}, 0)
         path = Path(self.store.dispatch({'op': 'storage_info', 'id': record['id']}, 0)['path'])
         self.assertEqual(path.parent, self.disk)
@@ -192,10 +194,28 @@ class ControllerDataLocationTest(unittest.TestCase):
         self.assertEqual(report['cache']['job']['status'], 'Succeeded', report)
         self.assertTrue(report['cache']['external'] and report['cache']['in_data_folder'])
         self.assertIsNone(self.store.downloads.blocked)
+        shown = Path(self.store.dispatch({'op': 'image_download_status'}, 0)['cache_path'])
+        self.assertEqual((shown, shown.parent), (Path(report['cache']['path']), self.disk))
+        self.assertEqual(self.store.dispatch({'op': 'image_download_status'}, 12345)['cache_path'],
+                         'Data folder of another Linux account')
         self.store.dispatch({'op': 'data_location_set', 'path': None}, 0)
         second = self.store.dispatch({'op': 'create', 'name': 'Tablet'}, 0)
         self.assertEqual(self.store.dispatch({'op': 'storage_info', 'id': second['id']}, 0)['path'],
                          str(self.store_path / 'instances' / second['id']))
+
+    def test_clearing_unfinished_downloads_frees_them_and_reports_storage(self):
+        orphan = self.store_path / 'image-cache' / ('a' * 64 + '.zip')
+        orphan.write_bytes(b'zip' * 4000)
+        orphan.chmod(0o600)
+        before = self.store.dispatch({'op': 'data_location'}, 0)['cache']
+        self.assertGreaterEqual(before['unfinished_bytes'], 12000)
+        with self.assertRaises(Exception): self.store.dispatch({'op': 'image_cache_clear', 'path': '/etc'}, 0)
+        with self.assertRaises(Exception): self.store.dispatch({'op': 'image_delete', 'image_id': 'missing'}, 0)
+        self.assertTrue(orphan.exists())
+        report = self.store.dispatch({'op': 'image_cache_clear'}, 0)
+        self.assertFalse(orphan.exists())
+        self.assertEqual(self.store.awaited_images(), {})
+        self.assertEqual(report['cache']['unfinished_bytes'], 0)
 
     def test_unavailable_data_folder_fails_create_without_a_record(self):
         self.store.dispatch({'op': 'data_location_set', 'path': str(self.disk)}, 0)

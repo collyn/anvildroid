@@ -210,6 +210,41 @@ test('Controls is enabled in sidebar and reachable through navigation and direct
   vm.runInContext("navigatePage('controls')",fromSettings.context);
   assert.equal(fromSettings.element('page-controls').classList.contains('active'),true);
 });
+test('About is a sidebar page that holds the version, project details and updates', async () => {
+  const html=fs.readFileSync('crates/anvildroid-gui/src-frontend/index.html','utf8');
+  assert.ok(html.match(/<li\b[^>]*data-page="about"[^>]*>/));
+  const about=html.split('id="page-about"')[1].split('<section')[0];
+  for (const text of ['id="about-version"','Author &amp; contributors','id="about-people"','github.com/anvildroid/anvildroid','id="btn-open-project"','id="btn-report-issue"',
+    'id="update-section"','id="btn-check-update"','id="btn-install-update"','id="update-repo-command"']) assert.ok(about.includes(text), text);
+  assert.doesNotMatch(html.split('id="page-settings"')[1].split('<section')[0], /update-section|btn-check-update/);
+  const calls=[];
+  const opened=[];
+  const {context,element}=gui(async (command,args)=>{calls.push(command); if(command==='open_project_page')opened.push(args.target); if(command==='get_app_version')return '1.2.3'; if(command==='check_update')return {current:'1.2.3',update_available:false,kind:'deb',pages:'https://example.invalid'};});
+  await tick();
+  assert.equal(element('about-version').textContent,'1.2.3');
+  assert.equal(calls.includes('check_update'),false);
+  vm.runInContext("navigatePage('about')",context);
+  await tick(); await tick(); await tick();
+  assert.equal(element('page-about').classList.contains('active'),true);
+  assert.equal(calls.filter(command=>command==='check_update').length,1);
+  assert.equal(element('update-status').textContent,'AnvilDroid is up to date.');
+  await element('btn-open-project').listeners.click();
+  await element('btn-report-issue').listeners.click();
+  const click=target=>element('page-about').listeners.click({target});
+  await click({closest:selector=>selector==='[data-github-user]'?{dataset:{githubUser:'VoidThrum'}}:null});
+  await click({closest:()=>null});
+  assert.deepEqual(opened,['repository','issues','user:VoidThrum']);
+});
+test('the web view menu is suppressed except in text fields', () => {
+  const source=fs.readFileSync('crates/anvildroid-gui/src-frontend/main.js','utf8');
+  const start=source.indexOf("document.addEventListener('contextmenu'");
+  let handler;
+  vm.runInNewContext(source.slice(start, source.indexOf('\n// --- Navigation ---', start)), {document:{addEventListener:(name,fn)=>{assert.equal(name,'contextmenu');handler=fn;}}});
+  const fire=inField=>{let prevented=false;handler({target:{closest:selector=>inField&&/input, textarea/.test(selector)?{}:null},preventDefault(){prevented=true;}});return prevented;};
+  assert.equal(fire(false),true);
+  assert.equal(fire(true),false);
+  let prevented=false; handler({target:null,preventDefault(){prevented=true;}}); assert.equal(prevented,true);
+});
 test('Edit keymap routes only to the selected managed app and waits for matching job',async()=>{
   const id='r-'+'a'.repeat(32),calls=[];
   const {context,banner}=gui(async(command,args)=>{
@@ -333,7 +368,7 @@ test('image download pins displayed checksums, suppresses repeats and targets ca
   const first=vm.runInContext("startImageDownload('GAPPS')",context);
   await vm.runInContext("startImageDownload('GAPPS')",context);
   assert.equal(calls.length,1);
-  assert.deepEqual(JSON.parse(JSON.stringify(calls[0])),{op:'image_download',flavor:'GAPPS',system_sha256:'system-hash',vendor_sha256:'vendor-hash'});
+  assert.deepEqual(JSON.parse(JSON.stringify(calls[0])),{op:'image_download',flavor:'GAPPS',system_sha256:'system-hash',vendor_sha256:'vendor-hash',connections:8});
   pending.resolve(running);await first;
   assert.match(element('settings-image-download').innerHTML,/Downloading system/);
   await vm.runInContext('cancelImageDownload()',context);
@@ -3177,6 +3212,67 @@ test('image download progress stays in a toast until it finishes', async () => {
   vm.runInContext(`renderImageDownload(${JSON.stringify({...base, status:'Ready', image_bytes:1})})`, context);
   assert.equal(element('progress-toasts').hidden, true);
   assert.match(element('app-toast-message').textContent, /Waydroid GAPPS is ready/);
+});
+
+test('download speed averages recent polls and starts over for a new download', () => {
+  const { context } = gui(async () => undefined);
+  const speed = (bytes, at) => vm.runInContext(`downloadSpeed('t', ${bytes}, ${at})`, context);
+  assert.equal(speed(50 * 1024 ** 2, 0), '');            // resumed bytes are the baseline, not speed
+  assert.equal(speed(52 * 1024 ** 2, 500), '');          // too little time to say
+  assert.equal(speed(56 * 1024 ** 2, 2000), '3.0 MiB/s');
+  assert.equal(speed(56 * 1024 ** 2 + 512 * 1024, 4000), '1.6 MiB/s');
+  assert.equal(speed(56 * 1024 ** 2 + 512 * 1024, 9000), '0 KiB/s');  // older polls left the window
+  assert.equal(speed(1024, 9500), '');                   // fewer bytes: another download
+  assert.equal(speed(1024 + 300 * 1024, 10500), '300 KiB/s');
+  assert.equal(speed(NaN, 11000), '');
+  assert.equal(speed(5000, 12000), '');
+});
+
+test('image and custom URL progress show the download speed', async () => {
+  const { context, element } = gui(async () => undefined, undefined, '?view=images');
+  await tick();
+  const state = {id:'job-1', flavor:'GAPPS', cache_path:'/cache', free_bytes:0, available_images:[], status:'Downloading',
+    phase:'Downloading system', download_bytes:4*1024**3, can_cancel:true};
+  vm.runInContext(`downloadSpeed('image', ${1024**3}, Date.now() - 2000)`, context);
+  vm.runInContext(`renderImageDownload(${JSON.stringify({...state, received_bytes:1024**3 + 10*1024**2})})`, context);
+  assert.match(element('progress-toasts').innerHTML, /GiB · \d\.\d MiB\/s/);
+  assert.match(element('settings-image-download').innerHTML, /GiB downloaded · \d\.\d MiB\/s/);
+  vm.runInContext(`renderImageDownload(${JSON.stringify({...state, status:'Verifying', received_bytes:4*1024**3})})`, context);
+  assert.doesNotMatch(element('progress-toasts').innerHTML, /iB\/s/);
+  vm.runInContext(`downloadSpeed('custom-url', 0, Date.now() - 2000);
+    customUrlState={status:'Downloading', phase:'Downloading ZIP over 8 connections', total_bytes:${100*1024**2}, received_bytes:${4*1024**2}, percent:4, can_cancel:true};
+    renderCustomUrlProgress()`, context);
+  assert.match(element('progress-toasts').innerHTML, /received · \d\.\d MiB\/s/);
+  assert.match(element('custom-image-status').innerHTML, /received · \d\.\d MiB\/s/);
+  vm.runInContext("customUrlState={...customUrlState, phase:'Assembling ZIP'};renderCustomUrlProgress()", context);
+  assert.doesNotMatch(element('progress-toasts').innerHTML, /iB\/s/);
+});
+
+test('deleting a downloaded image asks first, then drops its row', async () => {
+  const sent = [], asked = [];
+  let agree = false;
+  const image = {library_id:'one', status:'Ready', flavor:'VANILLA', image_bytes:2*1024**3,
+    images:{system:{filename:'s.zip', sha256:'s'}, vendor:{filename:'v.zip', sha256:'v'}}};
+  const idle = {status:'Idle', cache_path:'/cache', free_bytes:1, available_images:[]};
+  const { context, element } = gui(async (command, args) => {
+    if (command !== 'runtime_controller') return undefined;
+    sent.push(args.request);
+    if (args.request.op === 'image_delete') return idle;
+    return undefined;
+  }, async message => { asked.push(message); return agree; }, '?view=images');
+  await tick();
+  vm.runInContext(`renderImageDownload(${JSON.stringify({...idle, available_images:[image]})})`, context);
+  assert.match(element('available-runtime-images').innerHTML, /data-image-delete="one" title="Delete · Waydroid VANILLA"/);
+  const click = () => element('available-runtime-images').listeners.click(
+    {target:{closest:selector => selector === '[data-image-delete]' ? {dataset:{imageDelete:'one'}} : null}});
+  await click(); await tick();
+  assert.match(asked[0], /Delete Waydroid VANILLA \(2\.00 GiB unpacked\).*keep working.*download it again/);
+  assert.equal(sent.some(request => request.op === 'image_delete'), false);
+  agree = true;
+  await click(); await tick(); await tick();
+  assert.deepEqual(JSON.parse(JSON.stringify(sent.filter(request => request.op === 'image_delete'))), [{op:'image_delete', image_id:'one'}]);
+  assert.doesNotMatch(element('available-runtime-images').innerHTML, /data-image-delete/);
+  assert.match(element('app-toast-message').textContent, /Waydroid VANILLA deleted/);
 });
 
 test('custom URL progress toast offers cancel only while downloading', async () => {

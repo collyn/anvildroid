@@ -111,6 +111,10 @@ jobs:
         env:
           ANVILDROID_DEFAULT_X11_SOFTWARE: '1'
         run: python3 services/default-x11-test.py
+      - name: Refresh the About page contributor list
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/update-contributors.py --output target/contributors.js
       - name: Prepare pinned NVIDIA archives
         env:
           GH_TOKEN: ${{ secrets.NVIDIA_ARTIFACT_TOKEN || github.token }}
@@ -127,6 +131,7 @@ jobs:
             target/input-diagnostic/scrcpy-server-cancel.jar
             target/input-diagnostic/scrcpy-LICENSE
             target/input-diagnostic/scrcpy-build.json
+            target/contributors.js
           if-no-files-found: error
 
   # Rust tests and lints run once, in parallel with the builds below.
@@ -150,6 +155,7 @@ jobs:
           cp -a tools/nvidia target/tools/nvidia
           cp -a native-x11/package target/native-x11/package
           cp input-diagnostic/scrcpy-server-cancel.jar input-diagnostic/scrcpy-LICENSE input-diagnostic/scrcpy-build.json target/input-diagnostic/
+          cp contributors.js crates/anvildroid-gui/src-frontend/contributors.js
       - name: Install build dependencies
         run: |
           sudo apt-get update
@@ -195,6 +201,7 @@ jobs:
           cp -a tools/nvidia target/tools/nvidia
           cp -a native-x11/package target/native-x11/package
           cp input-diagnostic/scrcpy-server-cancel.jar input-diagnostic/scrcpy-LICENSE input-diagnostic/scrcpy-build.json target/input-diagnostic/
+          cp contributors.js crates/anvildroid-gui/src-frontend/contributors.js
       - name: Install build dependencies
         run: |
           sudo apt-get update
@@ -253,6 +260,7 @@ jobs:
           cp -a tools/nvidia target/tools/nvidia
           cp -a native-x11/package target/native-x11/package
           cp input-diagnostic/scrcpy-server-cancel.jar input-diagnostic/scrcpy-LICENSE input-diagnostic/scrcpy-build.json target/input-diagnostic/
+          cp contributors.js crates/anvildroid-gui/src-frontend/contributors.js
       - uses: actions/download-artifact@v4
         with: {name: runtime-payload, path: .}
       - name: Unpack the shared runtime payload
@@ -330,6 +338,7 @@ jobs:
           cp -a tools/nvidia target/tools/nvidia
           cp -a native-x11/package target/native-x11/package
           cp input-diagnostic/scrcpy-server-cancel.jar input-diagnostic/scrcpy-LICENSE input-diagnostic/scrcpy-build.json target/input-diagnostic/
+          cp contributors.js crates/anvildroid-gui/src-frontend/contributors.js
       - uses: actions/download-artifact@v4
         with: {name: runtime-payload, path: .}
       - name: Unpack the shared runtime payload

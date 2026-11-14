@@ -241,11 +241,11 @@ test('controller watch only runs while a runtime page is visible', async () => {
   assert.equal(sent.length, 1);                                         // hidden after one round: loop ends
   assert.deepEqual({...sent[0]}, {op:'watch', since:null, timeout:20});
 });
-function updateContext({confirm = true, invokeImpl} = {}) {
+function updateContext({confirm = true, invokeImpl, stored} = {}) {
   const nodes = new Map(), toasts = [], progress = [], invoked = [];
   const node = id => { if (!nodes.has(id)) nodes.set(id, {id, hidden:false, disabled:false, textContent:'', listeners:{},
     addEventListener(type, fn) { this.listeners[type] = fn; }, querySelector() { return node(id + ':pre'); }}); return nodes.get(id); };
-  const store = new Map();
+  const store = stored || new Map();
   const ctx = vm.createContext({document:{getElementById:node}, setTimeout:(fn) => { ctx.pending = fn; return 1; }, clearTimeout(){},
     localStorage:{getItem:k => store.get(k) ?? null, setItem:(k, v) => store.set(k, v)}, Date,
     showAppToast:(text, kind) => toasts.push([kind, text]), showProgressToast:(key, item) => progress.push(item), clearProgressToast(){},
@@ -266,7 +266,6 @@ test('update section shows the available release, the matching repository comman
   assert.equal(node('update-summary').textContent, 'AnvilDroid 0.1.6 · Debian/Ubuntu package');
   assert.equal(node('update-repo-command').textContent, 'curl -fsSL https://collyn.github.io/anvildroid/install.sh | sudo bash');
   assert.equal(node('update-notes').hidden, false);
-  assert.ok(Number(store.get('anvildroid.updateCheckedAt')) > 0);
   ctx.updateInfo = {...RELEASE, update_available:false};
   vm.runInContext('updateInfo = ' + JSON.stringify({...RELEASE, update_available:false}) + '; renderUpdate()', ctx);
   assert.equal(node('btn-install-update').hidden, true);
@@ -294,16 +293,27 @@ test('installing asks first, polls progress and offers a restart only after succ
   await declined.ctx.installUpdate();
   assert.ok(!declined.invoked.includes('install_update'));
 });
-test('automatic update checks run at most once a day and tolerate clock changes', () => {
-  const {ctx, store} = updateContext();
-  const now = 1_800_000_000_000;
-  assert.equal(ctx.updateCheckDue(now), true);
-  store.set('anvildroid.updateCheckedAt', String(now - 3600 * 1000));
-  assert.equal(ctx.updateCheckDue(now), false);
-  store.set('anvildroid.updateCheckedAt', String(now - 25 * 3600 * 1000));
-  assert.equal(ctx.updateCheckDue(now), true);
-  store.set('anvildroid.updateCheckedAt', String(now + 3600 * 1000));  // clock moved back
-  assert.equal(ctx.updateCheckDue(now), true);
+test('opening the app announces a new version unless that is switched off in About', async () => {
+  const release = command => command === 'check_update' ? RELEASE : null;
+  const on = updateContext({invokeImpl:release});
+  assert.equal(on.node('update-notify').checked, true);
+  await on.ctx.pending();
+  assert.deepEqual(on.toasts, [['info', 'AnvilDroid 0.1.7 is available. Open About to install it.']]);
+
+  const current = updateContext({invokeImpl:command => command === 'check_update' ? {...RELEASE, update_available:false} : null});
+  await current.ctx.pending();
+  assert.deepEqual(current.toasts, []);
+
+  // Unticking is remembered: the next launch neither checks nor announces.
+  const box = on.node('update-notify');
+  box.checked = false; box.listeners.change();
+  assert.equal(on.store.get('anvildroid.updateNotify'), '0');
+  const off = updateContext({invokeImpl:release, stored:on.store});
+  assert.equal(off.node('update-notify').checked, false);
+  await off.ctx.pending();
+  assert.deepEqual([off.toasts, off.invoked], [[], []]);
+  off.node('update-notify').checked = true; off.node('update-notify').listeners.change();
+  assert.equal(off.store.get('anvildroid.updateNotify'), '1');
 });
 function cameraContext(camera, state = 'Stopped') {
   const record = {id:'r-cam', state, camera}, sent = [], toasts = [];

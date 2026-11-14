@@ -2,6 +2,8 @@
 const { invoke: tauriInvoke } = window.__TAURI__.core;
 tauriInvoke('get_app_version').then(version => {
   document.getElementById('app-version').textContent = `v${version}`;
+  const about = document.getElementById('about-version');
+  if (about) about.textContent = version;
   document.title = `AnvilDroid ${version}`;
 }).catch(() => {
   document.getElementById('app-version').textContent = 'Version unavailable';
@@ -18,6 +20,12 @@ function invoke(command, args = {}) {
     ? args : { ...args, runtimeId: activeRuntimeId });
 }
 
+// The web view's own menu (Back, Forward, Stop, Reload) has no place in the
+// app. Text fields keep theirs for cut, copy and paste.
+document.addEventListener('contextmenu', event => {
+  if (!event.target?.closest?.('input, textarea, [contenteditable]')) event.preventDefault();
+});
+
 // --- Navigation ---
 const navItems = document.querySelectorAll('.nav-item:not(.disabled)');
 const pages = document.querySelectorAll('.page');
@@ -27,7 +35,7 @@ let adbPage = null;
 let currentPage = openSettingsOnLaunch || openControlsOnLaunch ? null : 'apps';
 
 function navigatePage(target, refresh = true) {
-  if (!['apps', 'runtime', 'runtime-settings', 'images', 'settings', 'controls', 'adb'].includes(target)) return;
+  if (!['apps', 'runtime', 'runtime-settings', 'images', 'settings', 'controls', 'adb', 'about'].includes(target)) return;
   if (currentPage === target && (target !== 'controls' || window.AnvilKeymapLibrary) && (target !== 'adb' || adbPage)) return;
   if (target !== 'adb') adbPage?.stop();
   currentPage = target;
@@ -52,6 +60,10 @@ function navigatePage(target, refresh = true) {
     if (target === 'runtime') await refreshRuntimePage({light:true});
     if (target === 'images') await refreshImagesPage({online:false});
     if (target === 'settings') await refreshSettings();
+    if (target === 'about') {
+      renderUpdate();
+      if (!updateInfo && !updateChecking) await checkForUpdate({quiet:true});
+    }
     if (target === 'adb') {
       try { await lazyFeatures.ensure('adb'); }
       catch (error) { document.getElementById('adb-status').textContent = String(error); showAppToast(String(error), 'error'); throw error; }
@@ -1684,7 +1696,7 @@ function initializeAppLibrary() {
 
 // P5.3.0: configured file values are deliberately distinct from live readings.
 // --- Updates (GitHub Releases, installed like this copy was) ---
-const UPDATE_CHECK_KEY = 'anvildroid.updateCheckedAt';
+const UPDATE_NOTIFY_KEY = 'anvildroid.updateNotify';
 const UPDATE_KIND_LABELS = {deb:'Debian/Ubuntu package', rpm:'RPM package', pacman:'Arch Linux package', appimage:'AppImage', portable:'portable copy'};
 const UPDATE_REPO_SCRIPTS = {deb:'install.sh', rpm:'install-fedora.sh', pacman:'install-arch.sh'};
 let updateInfo = null, updateJob = null, updateChecking = false, updatePollTimer = null;
@@ -1731,7 +1743,6 @@ async function checkForUpdate({quiet = false} = {}) {
   updateChecking = true; renderUpdate();
   try {
     updateInfo = await tauriInvoke('check_update');
-    try { localStorage.setItem(UPDATE_CHECK_KEY, String(Date.now())); } catch (_) {}
   } catch (error) {
     updateInfo = quiet ? updateInfo : {...(updateInfo || {}), error: String(error), update_available: false};
   } finally { updateChecking = false; renderUpdate(); }
@@ -1765,20 +1776,46 @@ async function installUpdate() {
   try { updateJob = await tauriInvoke('install_update'); renderUpdate(); pollUpdate(); }
   catch (error) { updateJob = {status:'Failed', error:String(error)}; renderUpdate(); }
 }
+// About links open in the desktop browser; the backend only accepts the
+// project pages and a GitHub user name.
+function openProjectPage(target) {
+  return tauriInvoke('open_project_page', {target}).catch(error => showAppToast(`Cannot open GitHub: ${error}`, 'error'));
+}
+document.getElementById('btn-open-project')?.addEventListener('click', () => openProjectPage('repository'));
+document.getElementById('btn-report-issue')?.addEventListener('click', () => openProjectPage('issues'));
+// The list is written into contributors.js when a release is built.
+{
+  const people = document.getElementById('about-people');
+  const names = typeof ANVIL_CONTRIBUTORS !== 'undefined' && Array.isArray(ANVIL_CONTRIBUTORS) ? ANVIL_CONTRIBUTORS : [];
+  if (people) people.innerHTML = names.map(name =>
+    `<button type="button" class="about-person" data-github-user="${escapeHtml(name)}" title="Open ${escapeHtml(name)} on GitHub">${escapeHtml(name)}</button>`).join('');
+}
+document.getElementById('page-about')?.addEventListener('click', event => {
+  const person = event.target?.closest?.('[data-github-user]');
+  if (person) openProjectPage('user:' + person.dataset.githubUser);
+});
 document.getElementById('btn-check-update')?.addEventListener('click', () => checkForUpdate());
 document.getElementById('btn-install-update')?.addEventListener('click', installUpdate);
 document.getElementById('btn-restart-update')?.addEventListener('click', () =>
   tauriInvoke('restart_after_update').catch(error => showAppToast(`Cannot restart: ${error}`, 'error')));
-// Once a day, quietly: a new release is announced, never installed unasked.
-function updateCheckDue(now = Date.now()) {
-  let last = 0;
-  try { last = Number(localStorage.getItem(UPDATE_CHECK_KEY)) || 0; } catch (_) {}
-  return !(now - last < 24 * 3600 * 1000 && now >= last);
+// Shortly after the app opens, unless switched off in About: a new release
+// is announced, never installed unasked.
+function updateNotifyEnabled() {
+  try { return localStorage.getItem(UPDATE_NOTIFY_KEY) !== '0'; } catch (_) { return true; }
+}
+{
+  const notify = document.getElementById('update-notify');
+  if (notify) {
+    notify.checked = updateNotifyEnabled();
+    notify.addEventListener('change', () => {
+      try { localStorage.setItem(UPDATE_NOTIFY_KEY, notify.checked ? '1' : '0'); } catch (_) {}
+    });
+  }
 }
 setTimeout(async () => {
-  if (!updateCheckDue()) return;
+  if (!updateNotifyEnabled()) return;
   const info = await checkForUpdate({quiet:true});
-  if (info?.update_available) showAppToast(`AnvilDroid ${info.latest} is available. Open Settings → Updates to install it.`, 'info');
+  if (info?.update_available) showAppToast(`AnvilDroid ${info.latest} is available. Open About to install it.`, 'info');
 }, 8000);
 
 async function refreshSettings() {
@@ -1789,8 +1826,6 @@ async function refreshSettings() {
   refreshApplicationPreferences();
   refreshRuntimeStartupPreferences();
   refreshDataLocation();
-  renderUpdate();
-  if (!updateInfo && !updateChecking) checkForUpdate({quiet:true});
   const armRefresh = refreshArmSources();
   try {
     const report = await invoke('get_runtime_catalog');
@@ -1946,6 +1981,7 @@ function renderDataLocation() {
     html += row('Data folder', report.path || `Controller folder · ${report.default_path}`);
     html += row('Free space', report.available ? storageGib(report.free_bytes) : 'Unavailable');
     html += row('Downloaded images', `${cache.path} · ${storageGib(cache.used_bytes)}`);
+    if (cache.unfinished_bytes > 0) html += row('Unfinished downloads', storageGib(cache.unfinished_bytes));
     if (report.path && !report.available) html += `<p class="runtime-feedback error" role="alert">The data folder is unavailable: ${escapeHtml(report.error)}. Reconnect its disk or choose another folder before creating a device.</p>`;
     if (cache.error) html += `<p class="runtime-feedback error" role="alert">Downloaded images are unavailable: ${escapeHtml(cache.error)}</p>`;
     if (moving) html += `<p role="status">Moving downloaded images… ${escapeHtml(CACHE_PHASES[job.phase] || job.phase)}</p>`;
@@ -1962,6 +1998,8 @@ function renderDataLocation() {
   reset.hidden = !report?.path; reset.disabled = busy;
   const move = document.getElementById('btn-image-cache-move');
   move.hidden = !canMoveImageCache(); move.disabled = busy;
+  const clear = document.getElementById('btn-image-cache-clear');
+  clear.hidden = !(cache && !cache.error && cache.unfinished_bytes > 0); clear.disabled = busy;
 }
 function canMoveImageCache() {
   const report = dataLocation, cache = report?.cache;
@@ -1993,7 +2031,8 @@ async function dataLocationRequest(request, success) {
     if (success) showAppToast(success, 'success');
     return true;
   } catch (error) {
-    showAppToast(`${request.op === 'image_cache_move' ? 'Cannot move downloaded images' : 'Cannot change the data folder'}: ${error.message || error}`, 'error');
+    const failed = {image_cache_move:'Cannot move downloaded images', image_cache_clear:'Cannot clear unfinished downloads'}[request.op] || 'Cannot change the data folder';
+    showAppToast(`${failed}: ${error.message || error}`, 'error');
     return false;
   } finally { dataLocationBusy = false; renderDataLocation(); scheduleDataLocationPoll(); }
 }
@@ -2015,6 +2054,13 @@ document.getElementById('btn-data-location-default').addEventListener('click', a
   if (!await AppDialog.confirm(`Create new devices in the controller folder (${dataLocation?.default_path}) again? Existing devices and downloaded images stay where they are.`,
     {title:'Use controller folder', okLabel:'Use controller folder'})) return;
   await dataLocationRequest({op:'data_location_set', path:null}, 'New devices will be created in the controller folder.');
+});
+document.getElementById('btn-image-cache-clear').addEventListener('click', async () => {
+  const cache = dataLocation?.cache;
+  if (!await AppDialog.confirm(`Delete unfinished image downloads (${storageGib(cache?.unfinished_bytes)})? Downloaded images stay. A download you start again begins from zero.`,
+    {title:'Clear unfinished downloads', okLabel:'Clear downloads'})) return;
+  if (!await dataLocationRequest({op:'image_cache_clear'}, 'Unfinished downloads cleared.')) return;
+  if (typeof refreshImageDownload === 'function') refreshImageDownload();
 });
 document.getElementById('btn-image-cache-move').addEventListener('click', moveImageCache);
 // The controller only runs on demand, so "start at login" needs a login entry
@@ -2279,6 +2325,22 @@ function refreshArmSources({light = false} = {}) {
 let customUrlState = null;
 let customUrlTimer = null;
 const CUSTOM_URL_BUSY = ['Connecting', 'Downloading', 'Cancelling', 'Importing'];
+// Download speed is the gain over the last few status polls, so one slow or
+// fast poll does not make the number jump. A non-number forgets the samples.
+const DOWNLOAD_SPEED_WINDOW = 5000;
+const downloadSpeedSamples = new Map();
+function downloadSpeed(key, bytes, now = Date.now()) {
+  if (!Number.isFinite(bytes)) { downloadSpeedSamples.delete(key); return ''; }
+  let samples = downloadSpeedSamples.get(key) || [];
+  if (samples.length && bytes < samples[samples.length - 1].bytes) samples = [];
+  samples.push({at:now, bytes});
+  while (samples.length > 2 && now - samples[1].at >= DOWNLOAD_SPEED_WINDOW) samples.shift();
+  downloadSpeedSamples.set(key, samples);
+  const seconds = (now - samples[0].at) / 1000;
+  if (seconds < 1) return '';
+  const rate = (bytes - samples[0].bytes) / seconds;
+  return rate >= 1024 ** 2 ? `${(rate / 1024 ** 2).toFixed(1)} MiB/s` : `${Math.round(rate / 1024)} KiB/s`;
+}
 const imageDownloadActive = () => CUSTOM_URL_BUSY.includes(customUrlState?.status) || ['Downloading', 'Verifying', 'Cancelling'].includes(imageDownloadState?.status);
 const IMAGE_FLAVOR_NOTE = flavor => flavor === 'GAPPS'
   ? 'Includes Play Store, Google Play services and Google Services Framework.'
@@ -2332,11 +2394,12 @@ function renderImageDownload(state) {
   const wasActive = ['Downloading', 'Verifying', 'Cancelling'].includes(imageDownloadState?.status) && imageDownloadState?.id === state.id;
   imageDownloadState = state;
   const imageLabel = state.flavor === 'CUSTOM' ? (state.custom_name || 'Custom image') : 'Waydroid ' + state.flavor;
+  const speed = downloadSpeed('image', state.status === 'Downloading' && state.flavor !== 'CUSTOM' ? Number(state.received_bytes) : NaN);
   if (['Downloading', 'Verifying', 'Cancelling'].includes(state.status)) {
     const total = Number(state.download_bytes) || 0, received = Math.max(0, Number(state.received_bytes) || 0);
     showProgressToast('image-download', {
       title: `${state.flavor === 'CUSTOM' ? 'Importing' : 'Downloading'} ${imageLabel}`,
-      detail: `${state.phase || state.status}${total > 0 ? ` · ${(received / 1024**3).toFixed(2)} / ${(total / 1024**3).toFixed(2)} GiB` : ''}`,
+      detail: `${state.phase || state.status}${total > 0 ? ` · ${(received / 1024**3).toFixed(2)} / ${(total / 1024**3).toFixed(2)} GiB` : ''}${speed ? ' · ' + speed : ''}`,
       percent: total > 0 ? received / total * 100 : null,
       cancel: state.can_cancel && state.status !== 'Cancelling' ? cancelImageDownload : null,
     });
@@ -2355,7 +2418,7 @@ function renderImageDownload(state) {
   let message = `<p class="hint">Image cache: ${escapeHtml(state.cache_path)} · ${gib(state.free_bytes)} GiB free</p>`;
   if (state.status !== 'Idle') {
     message += `<p><strong>${escapeHtml(state.flavor)} · ${state.status === 'Ready' ? 'Ready' : escapeHtml(state.status)}</strong></p>`;
-    if (imageDownloadActive()) message += `<p>${escapeHtml(state.phase)}</p>${progress}<p class="hint">${percent}${gib(state.received_bytes)} / ${gib(state.download_bytes)} GiB downloaded</p>`;
+    if (imageDownloadActive()) message += `<p>${escapeHtml(state.phase)}</p>${progress}<p class="hint">${percent}${gib(state.received_bytes)} / ${gib(state.download_bytes)} GiB downloaded${speed ? ' · ' + speed : ''}</p>`;
     if (state.status === 'Ready') message += `<p class="setup-ready">System and vendor archives downloaded and SHA-256 verified.</p><p class="hint">Unpacked images: ${gib(state.image_bytes)} GiB, plus device data and preparation space. Create a device from it; images are prepared and Android starts automatically. New compatible devices enable ARM translation during preparation.</p>`;
     if (state.error) message += `<p class="runtime-feedback ${state.status === 'Failed' ? 'error' : 'warning'}">${escapeHtml(state.error)}</p><p class="hint">Completed archives stay cached. Download again to verify and reuse them; partial files are removed.</p>`;
   }
@@ -2415,8 +2478,9 @@ function imageActionButton(action, attribute, icon, disabled, primary = false) {
     reinstall: '<path d="M3 11a9 9 0 1 1 2.6 7M3 4v7h7"/>',
     rename: '<path d="m16 3 5 5-12 12-6 1 1-6zM14 5l5 5"/>',
     download: '<path d="M12 3v12m-5-5 5 5 5-5M3 16v5h18v-5"/>',
+    delete: '<path d="M4 7h16M9 7V4h6v3m-9 0 1 13h10l1-13M10 11v6m4-6v6"/>',
   };
-  return `<button type="button" class="btn runtime-action-icon${primary ? ' btn-primary' : ''}" ${attribute} title="${escapeHtml(action)}" aria-label="${escapeHtml(action)}" ${disabled ? 'disabled' : ''}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[icon]}</svg></button>`;
+  return `<button type="button" class="btn runtime-action-icon${primary ? ' btn-primary' : ''}${icon === 'delete' ? ' btn-danger' : ''}" ${attribute} title="${escapeHtml(action)}" aria-label="${escapeHtml(action)}" ${disabled ? 'disabled' : ''}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[icon]}</svg></button>`;
 }
 function renderAvailableImages() {
   const images = imageDownloadState?.available_images || [];
@@ -2435,14 +2499,36 @@ function renderAvailableImages() {
       return `<tr class="image-not-cached"><td><strong>Waydroid ${escapeHtml(variant.flavor)}</strong><br><span class="hint">${escapeHtml(variant.system.version)} · ${escapeHtml(imageCatalogState.report.architecture)}</span></td><td>Official<br><span class="hint">Not downloaded</span></td><td>${(variant.download_bytes / 1024**3).toFixed(2)} GiB</td><td>${imageActionButton('Download Waydroid ' + variant.flavor, `data-download-flavor="${escapeHtml(variant.flavor)}"`, 'download', busy || imageDownloadBusy || imageDownloadActive() || !variant.matching_versions, true)}</td></tr>`;
     }
     const label = item.flavor === 'CUSTOM' ? (item.custom_name || 'Custom image ' + item.library_id.slice(0, 8)) : 'Waydroid ' + item.flavor;
-    return `<tr><td><strong>${escapeHtml(label)}</strong><details><summary>Image details</summary>${['system', 'vendor'].map(kind => `<p class="hint">${kind}: ${escapeHtml(item.images[kind].filename)}<br>SHA-256: <code>${escapeHtml(item.images[kind].sha256)}</code></p>`).join('')}</details></td><td>${item.flavor === 'CUSTOM' ? 'Imported' : 'Official'}</td><td>${(item.image_bytes / 1024**3).toFixed(2)} GiB</td><td><div class="runtime-actions">${imageActionButton('Create device · ' + label, `data-image-use="${escapeHtml(item.library_id)}"`, 'create', busy, true)}${imageActionButton(canReinstall ? 'Reinstall ' + target.name + ' · ' + label : 'Select a stopped device to reinstall', `data-image-reinstall="${escapeHtml(item.library_id)}"`, 'reinstall', busy || !canReinstall)}${item.flavor === 'CUSTOM' ? imageActionButton('Rename · ' + label, `data-image-rename="${escapeHtml(item.library_id)}"`, 'rename', busy) : ''}</div></td></tr>`;
+    return `<tr><td><strong>${escapeHtml(label)}</strong><details><summary>Image details</summary>${['system', 'vendor'].map(kind => `<p class="hint">${kind}: ${escapeHtml(item.images[kind].filename)}<br>SHA-256: <code>${escapeHtml(item.images[kind].sha256)}</code></p>`).join('')}</details></td><td>${item.flavor === 'CUSTOM' ? 'Imported' : 'Official'}</td><td>${(item.image_bytes / 1024**3).toFixed(2)} GiB</td><td><div class="runtime-actions">${imageActionButton('Create device · ' + label, `data-image-use="${escapeHtml(item.library_id)}"`, 'create', busy, true)}${imageActionButton(canReinstall ? 'Reinstall ' + target.name + ' · ' + label : 'Select a stopped device to reinstall', `data-image-reinstall="${escapeHtml(item.library_id)}"`, 'reinstall', busy || !canReinstall)}${item.flavor === 'CUSTOM' ? imageActionButton('Rename · ' + label, `data-image-rename="${escapeHtml(item.library_id)}"`, 'rename', busy) : ''}${imageActionButton('Delete · ' + label, `data-image-delete="${escapeHtml(item.library_id)}"`, 'delete', busy || imageDownloadBusy || imageDownloadActive())}</div></td></tr>`;
   }).join('')}</tbody></table></div>`;
+}
+// Deleting an image only frees its downloaded archives; devices set up from
+// it keep their own copy.
+async function deleteCachedImage(libraryId) {
+  const item = (imageDownloadState?.available_images || []).find(entry => entry.library_id === libraryId);
+  if (!item || imageDownloadBusy || imageDownloadActive()) return;
+  const label = item.flavor === 'CUSTOM' ? (item.custom_name || 'Custom image ' + item.library_id.slice(0, 8)) : 'Waydroid ' + item.flavor;
+  if (!await AppDialog.confirm(`Delete ${label} (${(item.image_bytes / 1024**3).toFixed(2)} GiB unpacked) from the downloaded images? Devices already set up from it keep working. To create or reinstall a device from it later, ${item.flavor === 'CUSTOM' ? 'import' : 'download'} it again.`,
+    {title:'Delete image', okLabel:'Delete image'})) return;
+  imageDownloadBusy = true;
+  renderAvailableImages();
+  try {
+    const state = await controllerRequest({op:'image_delete', image_id:libraryId});
+    imageDownloadBusy = false;
+    renderImageDownload(state);
+    showAppToast(`${label} deleted.`, 'success');
+    if (typeof refreshDataLocation === 'function') refreshDataLocation();
+  } catch (error) {
+    showAppToast(`Cannot delete ${label}: ${error.message || error}`, 'error');
+  } finally { imageDownloadBusy = false; renderAvailableImages(); }
 }
 document.getElementById('available-runtime-images').addEventListener('click', async event => {
   const download = event.target.closest('[data-download-flavor]');
   if (download && !download.disabled) { startImageDownload(download.dataset.downloadFlavor); return; }
   const button = event.target.closest('[data-image-use], [data-image-reinstall]');
   const rename = event.target.closest('[data-image-rename]');
+  const remove = event.target.closest('[data-image-delete]');
+  if (remove && !remove.disabled) { deleteCachedImage(remove.dataset.imageDelete); return; }
   if (rename && !rename.disabled) {
     const item = (imageDownloadState?.available_images || []).find(entry => entry.library_id === rename.dataset.imageRename);
     const name = await AppDialog.prompt('Custom image name', item?.custom_name || 'Custom image', {title:'Rename image', okLabel:'Save name'});
@@ -2614,15 +2700,17 @@ function renderCustomUrlProgress() {
   const importing = state.status === 'Importing';
   const known = state.total_bytes > 0;
   const received = `${((state.received_bytes || 0) / 1024 ** 2).toFixed(1)}${known ? ' / ' + (state.total_bytes / 1024 ** 2).toFixed(1) : ''} MiB`;
+  const speed = downloadSpeed('custom-url', state.status === 'Downloading' && !/^Assembling/.test(state.phase || '') ? Number(state.received_bytes) : NaN);
+  const rate = speed ? ' · ' + speed : '';
   status.className = failed ? 'custom-import-feedback error' : 'custom-import-feedback';
   status.setAttribute('role', failed ? 'alert' : 'status');
   if (busy) {
     const percent = known ? `${state.percent}%` : 'Waiting for total size';
     const title = state.status === 'Connecting' ? 'Connecting...' : state.status === 'Cancelling' ? 'Cancelling download...' : importing ? escapeHtml(state.phase) : `Downloading custom ZIP... ${percent}`;
-    status.innerHTML = `<strong>${title}</strong>${importing ? '<progress class="runtime-progress" aria-label="Importing custom image"></progress><span>The ZIP is complete; validating images and running Waydroid CLI import. This step may take several minutes and cannot be cancelled.</span>' : `<progress class="runtime-progress" aria-label="Custom ZIP download" ${known ? `max="100" value="${Number(state.percent) || 0}"` : ''}></progress><span>${received} received</span>`}`;
+    status.innerHTML = `<strong>${title}</strong>${importing ? '<progress class="runtime-progress" aria-label="Importing custom image"></progress><span>The ZIP is complete; validating images and running Waydroid CLI import. This step may take several minutes and cannot be cancelled.</span>' : `<progress class="runtime-progress" aria-label="Custom ZIP download" ${known ? `max="100" value="${Number(state.percent) || 0}"` : ''}></progress><span>${received} received${rate}</span>`}`;
     showProgressToast('custom-url', {
       title: importing ? 'Importing custom image' : state.status === 'Cancelling' ? 'Cancelling custom download' : 'Downloading custom image',
-      detail: importing ? 'Validating images and importing; this cannot be cancelled.' : received + ' received',
+      detail: importing ? 'Validating images and importing; this cannot be cancelled.' : received + ' received' + rate,
       percent: importing || !known ? null : Number(state.percent) || 0,
       cancel: state.can_cancel ? cancelCustomImageUrl : null,
     });
@@ -2661,7 +2749,7 @@ async function importCustomImageUrl() {
   customUrlState = {status:'Connecting'};
   renderCreateImageHint();
   try {
-    customUrlState = await tauriInvoke('import_runtime_image_url', {url, name});
+    customUrlState = await tauriInvoke('import_runtime_image_url', {url, name, connections:imageDownloadConnections()});
   } catch (error) {
     customUrlState = {status:'Failed', error:String(error)};
   } finally {
@@ -2734,6 +2822,16 @@ async function refreshImageDownload() {
     if (document.getElementById('controller-image').value === 'CUSTOM') document.getElementById('custom-image-status').textContent = `Cannot read import status: ${error}. Refresh Images to retry.`;
   }
 }
+const IMAGE_CONNECTIONS_KEY = 'anvildroid.imageDownloadConnections';
+function imageDownloadConnections() {
+  let value = 8;
+  try { value = Number(localStorage.getItem(IMAGE_CONNECTIONS_KEY) ?? 8); } catch (_) { /* ignore */ }
+  return Number.isInteger(value) && value >= 1 && value <= 16 ? value : 8;
+}
+document.getElementById('image-download-connections').value = String(imageDownloadConnections());
+document.getElementById('image-download-connections').addEventListener('change', event => {
+  try { localStorage.setItem(IMAGE_CONNECTIONS_KEY, event.target.value); } catch (_) { /* ignore */ }
+});
 async function startImageDownload(flavor) {
   if (runtimeBatchBusy || imageDownloadBusy || imageDownloadActive() || imageCatalogState?.status !== 'Ready') return;
   const variant = imageCatalogState.report.variants.find(item => item.flavor === flavor);
@@ -2743,7 +2841,7 @@ async function startImageDownload(flavor) {
   renderImageCatalog(imageCatalogState);
   document.getElementById('settings-image-download').textContent = `Starting ${flavor} download…`;
   try {
-    renderImageDownload(await controllerRequest({op:'image_download', flavor, system_sha256:variant.system.sha256, vendor_sha256:variant.vendor.sha256}));
+    renderImageDownload(await controllerRequest({op:'image_download', flavor, system_sha256:variant.system.sha256, vendor_sha256:variant.vendor.sha256, connections:imageDownloadConnections()}));
   } catch (error) {
     document.getElementById('settings-image-download').textContent = `Cannot download images: ${error}`;
   } finally {

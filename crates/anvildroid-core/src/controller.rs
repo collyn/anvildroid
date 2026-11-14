@@ -133,6 +133,7 @@ pub enum Request {
         flavor: String,
         system_sha256: String,
         vendor_sha256: String,
+        connections: u8,
     },
     #[serde(rename = "image_download_status")]
     ImageDownloadStatus {},
@@ -149,6 +150,12 @@ pub enum Request {
     ImageSelect {
         image_id: String,
     },
+    #[serde(rename = "image_delete")]
+    ImageDelete {
+        image_id: String,
+    },
+    #[serde(rename = "image_cache_clear")]
+    ImageCacheClear {},
     #[serde(rename = "image_rename")]
     ImageRename {
         image_id: String,
@@ -671,12 +678,22 @@ mod tests {
         assert!(serde_json::from_value::<Request>(negative).is_err());
     }
     #[test]
+    fn image_download_carries_the_connection_count() {
+        let wire = serde_json::json!({"op":"image_download","flavor":"VANILLA","system_sha256":"a","vendor_sha256":"b","connections":8});
+        let request: Request = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(serde_json::to_value(request).unwrap(), wire);
+        assert!(serde_json::from_str::<Request>(r#"{"op":"image_download","flavor":"VANILLA","system_sha256":"a","vendor_sha256":"b"}"#).is_err());
+    }
+
+    #[test]
     fn data_location_requests_round_trip_exactly() {
         for value in [
             serde_json::json!({"op":"data_location"}),
             serde_json::json!({"op":"data_location_set","path":"/mnt/data/AnvilDroid"}),
             serde_json::json!({"op":"data_location_set","path":null}),
             serde_json::json!({"op":"image_cache_move"}),
+            serde_json::json!({"op":"image_cache_clear"}),
+            serde_json::json!({"op":"image_delete","image_id":"abc"}),
         ] {
             let request: Request = serde_json::from_value(value.clone()).unwrap();
             assert_eq!(serde_json::to_value(request).unwrap(), value);
