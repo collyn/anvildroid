@@ -654,6 +654,38 @@ fn open_waydroid_setup_guide() -> Result<(), String> {
         .map_err(|error| format!("Cannot open browser: {error}"))
 }
 
+/// The only pages About may open: the project, its issue form, or a GitHub
+/// profile whose name is checked so nothing else can reach the browser.
+fn project_page_url(target: &str) -> Option<String> {
+    const PROJECT: &str = "https://github.com/anvildroid/anvildroid";
+    match target {
+        "repository" => Some(PROJECT.to_string()),
+        "issues" => Some(format!("{PROJECT}/issues/new")),
+        _ => target
+            .strip_prefix("user:")
+            .filter(|name| {
+                (1..=39).contains(&name.len())
+                    && name.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+                    && !name.starts_with('-')
+                    && !name.ends_with('-')
+            })
+            .map(|name| format!("https://github.com/{name}")),
+    }
+}
+
+#[tauri::command]
+fn open_project_page(target: String) -> Result<(), String> {
+    let url = project_page_url(&target).ok_or("Unknown page")?;
+    std::process::Command::new("xdg-open")
+        .arg(url)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("Cannot open browser: {error}"))
+}
+
 #[tauri::command]
 fn open_google_play_guide() -> Result<(), String> {
     std::process::Command::new("xdg-open")
@@ -967,8 +999,8 @@ fn restart_after_update(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn import_runtime_image_url(url: String, name: String) -> Result<serde_json::Value, String> {
-    blocking(move || custom_download::start(url, name)).await
+async fn import_runtime_image_url(url: String, name: String, connections: u8) -> Result<serde_json::Value, String> {
+    blocking(move || custom_download::start(url, name, connections)).await
 }
 
 #[tauri::command]
@@ -1279,6 +1311,7 @@ fn main() {
             waydroid_init_status,
             open_waydroid_setup_guide,
             open_google_play_guide,
+            open_project_page,
             open_google_device_registration,
             set_favorite,
             record_runtime_launch,
@@ -1362,6 +1395,17 @@ fn hex_val(b: u8) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn about_links_open_only_project_pages_and_plain_github_names() {
+        assert_eq!(project_page_url("repository").unwrap(), "https://github.com/anvildroid/anvildroid");
+        assert_eq!(project_page_url("issues").unwrap(), "https://github.com/anvildroid/anvildroid/issues/new");
+        assert_eq!(project_page_url("user:VoidThrum").unwrap(), "https://github.com/VoidThrum");
+        for refused in ["", "user:", "user:a/b", "user:a?b", "user:-a", "user:a-", "user:a b", "user:../x", "https://example.com", "user:évil"] {
+            assert!(project_page_url(refused).is_none(), "{refused}");
+        }
+        assert!(project_page_url(&format!("user:{}", "a".repeat(40))).is_none());
+    }
+
     #[test]
     fn new_default_mutations_share_the_legacy_operation_guard() {
         use anvildroid_core::controller::Request;

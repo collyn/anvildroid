@@ -18,7 +18,8 @@ function element() {
 }
 
 function setup({responses, confirm = true, picked = '/mnt/data'}) {
-  const ids = ['data-location-panel', 'btn-data-location-choose', 'btn-data-location-default', 'btn-image-cache-move'];
+  const ids = ['data-location-panel', 'btn-data-location-choose', 'btn-data-location-default', 'btn-image-cache-move',
+               'btn-image-cache-clear'];
   const elements = Object.fromEntries(ids.map(id => [id, element()]));
   const requests = [], toasts = [], confirms = [];
   const context = {
@@ -86,4 +87,38 @@ test('invalid storage responses and controller errors are reported without break
   await failing.elements['btn-data-location-choose'].listeners.click();
   assert.deepEqual(failing.toasts, [['error', 'Cannot change the data folder: Choose a folder owned and writable by your Linux account']]);
   assert.equal(failing.elements['btn-data-location-choose'].disabled, false);
+});
+
+test('clearing unfinished downloads asks first and is only offered when some exist', async () => {
+  const partial = {unfinished_bytes: 512 * 1024 ** 2};
+  const responses = request => request.op === 'image_cache_clear' ? report({}, {unfinished_bytes: 0}) : report({}, partial);
+  const declined = setup({responses, confirm: false});
+  await declined.context.refreshDataLocation();
+  assert.equal(declined.elements['btn-image-cache-clear'].hidden, false);
+  assert.match(declined.elements['data-location-panel'].innerHTML, /Unfinished downloads<\/span>.*0\.50 GiB/);
+  await declined.elements['btn-image-cache-clear'].listeners.click();
+  assert.deepEqual(declined.requests.map(r => r.op), ['data_location']);
+  assert.match(declined.confirms[0], /unfinished image downloads \(0\.50 GiB\)\? Downloaded images stay/);
+
+  const view = setup({responses});
+  await view.context.refreshDataLocation();
+  await view.elements['btn-image-cache-clear'].listeners.click();
+  assert.deepEqual(view.requests.map(r => r.op), ['data_location', 'image_cache_clear']);
+  assert.deepEqual(view.toasts, [['success', 'Unfinished downloads cleared.']]);
+  assert.equal(view.elements['btn-image-cache-clear'].hidden, true);
+  assert.doesNotMatch(view.elements['data-location-panel'].innerHTML, /Unfinished downloads/);
+
+  const refused = setup({responses: request => {
+    if (request.op === 'image_cache_clear') throw new Error('Wait for the current image download or import to finish');
+    return report({}, partial);
+  }});
+  await refused.context.refreshDataLocation();
+  await refused.elements['btn-image-cache-clear'].listeners.click();
+  assert.match(refused.toasts[0][1], /Cannot clear unfinished downloads: Wait for/);
+  // Complete images alone never offer the button.
+  for (const cache of [{}, {unfinished_bytes: 0}, {unfinished_bytes: null}, {...partial, error: 'gone'}]) {
+    const hidden = setup({responses: () => report({}, cache)});
+    await hidden.context.refreshDataLocation();
+    assert.equal(hidden.elements['btn-image-cache-clear'].hidden, true, JSON.stringify(cache));
+  }
 });

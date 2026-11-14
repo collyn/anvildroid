@@ -569,6 +569,8 @@ select,input[type=search],input:not([type]) { font: inherit; color: var(--text-p
 .form-field { display: grid; gap: 6px; min-width: 0; }
 .form-field label { font-size: 12px; font-weight: 600; color: var(--text-secondary); }
 .form-field input,.form-field select { width: 100%; }
+/* A short choice inside a settings section, followed by its hint. */
+.settings-section > .form-field { max-width: 240px; margin-bottom: 6px; }
 #controller-image-hint { padding: 0 16px 16px; margin: 0; overflow-wrap: anywhere; }
 #controller-message:empty { display: none; }
 #controller-message:not(:empty) { padding: 10px 14px; background: var(--bg-hover); border-radius: 6px; margin-bottom: 12px; }
@@ -696,6 +698,6 @@ details[open] > summary::after { content: 'Hide'; }
 /* Keep diagnostic/code output monospace while controls inherit the UI font. */
 code, pre { font-family: monospace; }
 .shortcut-preference { display: flex; align-items: center; gap: 10px; }
-#page-settings .shortcut-preference input { appearance: none; -webkit-appearance: none; width: 16px; height: 16px; min-width: 16px; margin: 0; padding: 0; border: 1px solid var(--border-strong); border-radius: 4px; background: var(--bg-panel); cursor: pointer; }
-#page-settings .shortcut-preference input:checked { border-color: var(--accent); background: var(--accent) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='m3.5 8 3 3 6-6' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / 14px 14px no-repeat; }
-#page-settings .shortcut-preference input:disabled { opacity: .5; cursor: default; }
+#page-settings .shortcut-preference input , #page-about .shortcut-preference input { appearance: none; -webkit-appearance: none; width: 16px; height: 16px; min-width: 16px; margin: 0; padding: 0; border: 1px solid var(--border-strong); border-radius: 4px; background: var(--bg-panel); cursor: pointer; }
+#page-settings .shortcut-preference input:checked , #page-about .shortcut-preference input:checked { border-color: var(--accent); background: var(--accent) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='m3.5 8 3 3 6-6' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / 14px 14px no-repeat; }
+#page-settings .shortcut-preference input:disabled , #page-about .shortcut-preference input:disabled { opacity: .5; cursor: default; }

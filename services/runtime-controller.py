@@ -605,6 +605,24 @@ class Store:
         if self.downloads.state.get('owner_uid') is not None: owners.add(self.downloads.state['owner_uid'])
         return owners
 
+    def awaited_images(self):
+        """Archive hashes a device was created from but not yet set up with, mapped to its name."""
+        awaited = {}
+        for record in self.data['runtimes']:
+            selection = self.selections.get(record['id'])
+            if not selection or record['state'] not in ('Allocated', 'Provisioning', 'Error'): continue
+            # A device that failed after its images were extracted no longer needs the archives.
+            if record['state'] == 'Error' and (self.backend.location(record['id']) / 'support/images.json').exists(): continue
+            for image in selection['images'].values(): awaited[image['sha256']] = record['name']
+        return awaited
+
+    def shown_download(self, uid, status):
+        """Name the folder that really holds a moved image cache, not its mount point."""
+        active = self.image_cache.state.get('active')
+        if active and 'cache_path' in status:
+            status['cache_path'] = active['path'] if active.get('owner_uid') == uid else 'Data folder of another Linux account'
+        return status
+
     def data_location_report(self, uid):
         report = self.data_locations.report(uid)
         report['default_path'] = str(self.backend.root)
@@ -615,6 +633,10 @@ class Store:
             cache['used_bytes'] = sum(entry.stat(follow_symlinks=False).st_blocks * 512 for entry in os.scandir(self.downloads.root)
                                       if entry.is_file(follow_symlinks=False))
         except OSError: cache['used_bytes'] = None
+        try:
+            with self.downloads.lock:
+                cache['unfinished_bytes'] = sum(path.lstat().st_blocks * 512 for path in self.downloads.unfinished(self.awaited_images()))
+        except OSError: cache['unfinished_bytes'] = None
         cache['job'] = copy.deepcopy(self.cache_job)
         cache['shared'] = bool(self.cache_owners() - {uid})
         cache['in_data_folder'] = bool(active and report['path'] and Path(active['path']).parent == Path(report['path']))
@@ -1176,11 +1198,19 @@ class Store:
             elif operation == 'image_cache_move':
                 self.start_cache_move(uid)
             return self.data_location_report(uid)
-        require(operation not in ('prepare', 'reinstall', 'existing_import', 'image_rename', 'create_image') or not self.cache_moving(),
+        require(operation not in ('prepare', 'reinstall', 'existing_import', 'image_rename', 'image_delete', 'image_cache_clear',
+                                  'create_image') or not self.cache_moving(),
                 'BUSY', 'Downloaded Android images are being moved. Try again when the move finishes.')
         if operation == 'image_select':
             require(set(request) == {'op', 'image_id'} and apk_fd is None, 'INVALID_REQUEST', 'Expected image ID')
             return self.downloads.select(uid, request['image_id'])
+        if operation == 'image_delete':
+            require(set(request) == {'op', 'image_id'} and apk_fd is None, 'INVALID_REQUEST', 'Expected image ID')
+            return self.shown_download(uid, self.downloads.delete(uid, request['image_id'], self.awaited_images()))
+        if operation == 'image_cache_clear':
+            require(set(request) == {'op'} and apk_fd is None, 'INVALID_REQUEST', 'Expected no fields')
+            self.downloads.clear(uid, self.awaited_images())
+            return self.data_location_report(uid)
         if operation == 'image_rename':
             require(set(request) == {'op', 'image_id', 'name'} and isinstance(request['name'], str) and apk_fd is None,
                     'INVALID_REQUEST', 'Expected image ID and name')
@@ -1217,13 +1247,17 @@ class Store:
             operation = 'create'
             request = {'op': 'create', 'name': request['name']}
         if operation in ('image_download', 'image_download_status', 'image_download_cancel'):
-            expected = {'image_download': {'op', 'flavor', 'system_sha256', 'vendor_sha256'},
+            expected = {'image_download': {'op', 'flavor', 'system_sha256', 'vendor_sha256', 'connections'},
                         'image_download_status': {'op'}, 'image_download_cancel': {'op', 'job_id'}}[operation]
             require(set(request) == expected and apk_fd is None, 'INVALID_REQUEST', 'Unexpected image download fields')
-            if operation == 'image_download_status': return self.downloads.status(uid)
-            if operation == 'image_download_cancel': return self.downloads.cancel(uid, request['job_id'])
+            if operation == 'image_download_status': return self.shown_download(uid, self.downloads.status(uid))
+            if operation == 'image_download_cancel':
+                return self.shown_download(uid, self.downloads.cancel(uid, request['job_id']))
+            connections = request['connections']
+            require(type(connections) is int and 1 <= connections <= download_module.MAX_SEGMENTS,
+                    'INVALID_REQUEST', f'connections must be between 1 and {download_module.MAX_SEGMENTS}')
             variant = self.catalog.selection(request['flavor'], request['system_sha256'], request['vendor_sha256'])
-            return self.downloads.start(uid, variant)
+            return self.shown_download(uid, self.downloads.start(uid, variant, connections))
         if operation == 'login_start':
             require(set(request) == {'op'} and apk_fd is None, 'INVALID_REQUEST', 'Expected no fields')
             return self.login_start(uid)

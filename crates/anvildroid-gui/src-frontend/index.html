@@ -34,6 +34,9 @@
         <li class="nav-item" data-page="settings">
           <span class="nav-icon"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.38a2 2 0 0 0-.73-2.73l-.15-.09a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg></span><span>Settings</span>
         </li>
+        <li class="nav-item" data-page="about">
+          <span class="nav-icon"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5h.01"/></svg></span><span>About</span>
+        </li>
       </ul>
       </div>
       <div class="sidebar-footer">
@@ -232,21 +235,6 @@
           <div class="accent-choice" role="group" aria-label="Accent colour"><button type="button" class="accent-option" data-accent-choice="blue" aria-pressed="false"><span class="accent-swatch" data-swatch="blue" aria-hidden="true"></span><span>Blue</span></button><button type="button" class="accent-option" data-accent-choice="forge" aria-pressed="false"><span class="accent-swatch" data-swatch="forge" aria-hidden="true"></span><span>Forge</span></button><button type="button" class="accent-option" data-accent-choice="toxic" aria-pressed="false"><span class="accent-swatch" data-swatch="toxic" aria-hidden="true"></span><span>Toxic</span></button><button type="button" class="accent-option" data-accent-choice="crimson" aria-pressed="false"><span class="accent-swatch" data-swatch="crimson" aria-hidden="true"></span><span>Crimson</span></button><button type="button" class="accent-option" data-accent-choice="synthwave" aria-pressed="false"><span class="accent-swatch" data-swatch="synthwave" aria-hidden="true"></span><span>Synthwave</span></button><button type="button" class="accent-option" data-accent-choice="ice" aria-pressed="false"><span class="accent-swatch" data-swatch="ice" aria-hidden="true"></span><span>Ice</span></button></div>
           <p class="hint">Blue is the default. Every theme and accent works in light and dark.</p>
         </div>
-        <div class="settings-section" id="update-section">
-          <div class="section-heading"><h2>Updates</h2></div>
-          <p id="update-summary" class="hint">AnvilDroid <span id="update-current">—</span></p>
-          <div class="runtime-actions">
-            <button id="btn-check-update" class="btn" type="button">Check for updates</button>
-            <button id="btn-install-update" class="btn btn-primary" type="button" hidden>Install update</button>
-            <button id="btn-restart-update" class="btn btn-primary" type="button" hidden>Restart AnvilDroid</button>
-          </div>
-          <p id="update-status" class="hint" role="status" aria-live="polite"></p>
-          <details id="update-notes" hidden><summary>Release notes</summary><pre class="update-notes-text"></pre></details>
-          <details id="update-repo" hidden><summary>Update with your package manager</summary>
-            <p class="hint">Add the signed AnvilDroid repository once; system updates then include AnvilDroid.</p>
-            <code id="update-repo-command" class="update-repo-command"></code>
-          </details>
-        </div>
         <div class="settings-section">
           <div class="application-preferences">
           <label class="shortcut-preference"><input id="minimize-to-panel" type="checkbox" disabled> Minimize to panel</label>
@@ -267,7 +255,12 @@
             <button id="btn-data-location-choose" class="btn btn-primary" type="button">Choose data folder…</button>
             <button id="btn-data-location-default" class="btn btn-quiet" type="button" hidden>Use controller folder</button>
             <button id="btn-image-cache-move" class="btn" type="button" hidden>Move downloaded images here</button>
+            <button id="btn-image-cache-clear" class="btn" type="button" hidden>Clear unfinished downloads…</button>
           </div>
+          <h3 class="settings-subheading">Image downloads</h3>
+          <div class="form-field"><label for="image-download-connections">Download connections</label>
+          <select id="image-download-connections" class="select-control" aria-describedby="image-download-connections-hint"><option value="1">1</option><option value="2">2</option><option value="4">4</option><option value="8" selected>8 (default)</option><option value="12">12</option><option value="16">16</option></select></div>
+          <p class="hint" id="image-download-connections-hint">Android images download over up to this many connections at once. A custom image URL uses them when its server supports partial downloads. An interrupted download resumes when you start it again. Choose fewer connections if downloads keep failing on your network.</p>
         </div>
         <div class="settings-section image-settings">
           <div class="section-heading"><h2>ARM packages</h2></div>
@@ -280,6 +273,39 @@
         </details>
       </section>
 
+      <section id="page-about" class="page">
+        <div class="page-header"><h1 class="page-title">About</h1></div>
+        <div class="settings-section about-section">
+          <div class="about-brand">
+            <img src="brand.png" alt="" width="56" height="56" decoding="async">
+            <div><h2>AnvilDroid</h2><p class="hint">Waydroid manager for Linux: Android devices, apps and game controls on your desktop.</p></div>
+          </div>
+          <div class="status-row"><span class="status-label">Version</span><span class="status-value" id="about-version">—</span></div>
+          <div class="status-row"><span class="status-label">Author &amp; contributors</span><span class="status-value about-people" id="about-people"></span></div>
+          <div class="status-row"><span class="status-label">License</span><span class="status-value">MIT</span></div>
+          <div class="status-row"><span class="status-label">Source code</span><span class="status-value">github.com/anvildroid/anvildroid</span></div>
+          <div class="runtime-actions">
+            <button id="btn-open-project" class="btn" type="button">Open GitHub</button>
+            <button id="btn-report-issue" class="btn" type="button">Report a problem</button>
+          </div>
+        </div>
+        <div class="settings-section" id="update-section">
+          <div class="section-heading"><h2>Updates</h2></div>
+          <p id="update-summary" class="hint">AnvilDroid <span id="update-current">—</span></p>
+          <div class="runtime-actions">
+            <button id="btn-check-update" class="btn" type="button">Check for updates</button>
+            <button id="btn-install-update" class="btn btn-primary" type="button" hidden>Install update</button>
+            <button id="btn-restart-update" class="btn btn-primary" type="button" hidden>Restart AnvilDroid</button>
+          </div>
+          <p id="update-status" class="hint" role="status" aria-live="polite"></p>
+          <label class="shortcut-preference update-notify"><input id="update-notify" type="checkbox" checked> Tell me about a new version when AnvilDroid opens</label>
+          <details id="update-notes" hidden><summary>Release notes</summary><pre class="update-notes-text"></pre></details>
+          <details id="update-repo" hidden><summary>Update with your package manager</summary>
+            <p class="hint">Add the signed AnvilDroid repository once; system updates then include AnvilDroid.</p>
+            <code id="update-repo-command" class="update-repo-command"></code>
+          </details>
+        </div>
+      </section>
       <section id="page-controls" class="page">
         <div class="page-header controls-header">
           <h1 class="page-title">Game Controls</h1>
@@ -408,6 +434,7 @@
   <script src="runtime-tools.js" defer></script>
   <script src="quick-start.js" defer></script>
   <script src="settings-tabs.js" defer></script>
+  <script src="contributors.js" defer></script>
   <script src="main.js" defer></script>
 </body>
 </html>

@@ -1,10 +1,13 @@
 """Verified image archive cache. Never mounts, extracts or activates an image."""
 import copy
+from collections import deque
 from contextlib import ExitStack
 from types import SimpleNamespace
 import hashlib
+import http.client
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import stat
@@ -27,6 +30,25 @@ MARGIN = 256 * 1024**2
 MAX_IMAGE = 16 * 1024**3
 ACTIVE = ('Downloading', 'Verifying', 'Cancelling')
 CLI_IMPORT_MIN_BYTES = 64 * 1024**2
+# Mirrors throttle each connection, so an archive is fetched as fixed-size
+# chunks over several connections. Completed chunks are recorded beside the
+# partial file, which lets a later attempt continue instead of starting over.
+SEGMENTS = 8
+MAX_SEGMENTS = 16
+CHUNK = 8 * 1024**2
+RETRIES = 5
+BACKOFF = 1.0
+STALL = 120
+# Mirrors of the official image host. A name the host no longer knows falls
+# back to its default mirror, which the comparison then counts once.
+MIRRORS = ('twds', 'sitsa', 'phoenixnap', 'cytranet', 'pilotfiber', 'gigenet', 'netix', 'altushost-swe', 'unlimited',
+           'cfhcable', 'psychz', 'yer', 'excellmedia', 'deac-riga', 'deac-fra', 'deac-ams', 'sinalbr', 'ixpeering')
+PROBE_SECONDS = 3
+PROBE_BYTES = 8 * 1024**2
+MIRROR_POOL = 3
+RESUME_SECONDS = 7 * 86400
+ARCHIVE = re.compile(r'[0-9a-f]{64}\.zip')
+RESUMABLE = re.compile(r'\.partial-[0-9a-f]{64}(\.json)?')
 
 
 def waydroid_cli_import(images):
@@ -131,11 +153,253 @@ def archive_info(path, expected, kind, cancel):
                 'image_bytes': item.file_size, 'filename': expected['filename']}
 
 
+class RangeUnsupported(RuntimeError):
+    pass
+
+
+class WriteFailed(RuntimeError):
+    pass
+
+
+def sidecar_path(partial):
+    return partial.with_name(partial.name + '.json')
+
+
+def resume_state(partial, total):
+    """What a previous attempt saved: finished chunks, and how far each
+    unfinished chunk got. Both are empty when the download must start over."""
+    sidecar = sidecar_path(partial)
+    fresh = set(), {}
+    try:
+        for path in (partial, sidecar): Downloads.check_file(path)
+        if partial.stat().st_size != total or sidecar.stat().st_size > 65536: return fresh
+        state = json.loads(sidecar.read_text())
+        done, started = state['done'], state['started']
+        count = -(-total // CHUNK)
+        if (state['bytes'] != total or state['chunk'] != CHUNK or not isinstance(done, list)
+                or any(type(index) is not int or not 0 <= index < count for index in done)):
+            return fresh
+        done, reached = set(done), {}
+        for key, position in started.items():
+            index = int(key)
+            if (index in done or not 0 <= index < count or type(position) is not int
+                    or not index * CHUNK < position < min(total, (index + 1) * CHUNK)):
+                return fresh
+            reached[index] = position
+        return done, reached
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return fresh
+
+
+def chunk_bytes(index, total):
+    return min(total, (index + 1) * CHUNK) - index * CHUNK
+
+
+def resumed_bytes(partial, total):
+    done, reached = resume_state(partial, total)
+    return (sum(chunk_bytes(index, total) for index in done)
+            + sum(position - index * CHUNK for index, position in reached.items()))
+
+
+def discard_partial(partial):
+    partial.unlink(missing_ok=True)
+    sidecar_path(partial).unlink(missing_ok=True)
+
+
+def open_range(opener, url, start, end, total, timeout=20):
+    request = urllib.request.Request(trusted_url(url), headers={
+        'User-Agent': 'AnvilDroid/0.1', 'Range': f'bytes={start}-{end}'})
+    response = opener.open(request, timeout=timeout)
+    try:
+        if response.status == 200:
+            raise RangeUnsupported('Image mirror does not support partial downloads')
+        described = ' '.join((response.headers.get('Content-Range') or '').split())
+        if response.status != 206 or described != f'bytes {start}-{end}/{total}':
+            raise RuntimeError('Image mirror returned an unexpected byte range')
+        trusted_url(response.geturl())
+    except BaseException:
+        response.close()
+        raise
+    return response
+
+
+def mirror_candidates(url):
+    """The official link as given, plus the same link pinned to each known mirror."""
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.hostname != 'sourceforge.net' or parsed.query: return [url]
+    return [url] + [urllib.parse.urlunsplit(parsed._replace(query='use_mirror=' + name)) for name in MIRRORS]
+
+
+def fastest_mirrors(opener, entry, cancel):
+    """Direct mirror links worth using, fastest first; empty when nothing compares.
+
+    The official site often hands every client the same mirror even when it
+    is slow, so each known mirror serves the same short range for a moment
+    and the download uses the ones that delivered the most.
+    """
+    candidates = mirror_candidates(entry['url'])
+    if len(candidates) < 2: return []
+    last = min(entry['bytes'], PROBE_BYTES) - 1
+    lock, stop, speeds = threading.Lock(), threading.Event(), {}
+
+    def probe(url):
+        try:
+            started = time.monotonic()
+            with open_range(opener, url, 0, last, entry['bytes'], timeout=PROBE_SECONDS) as response:
+                mirror, got = response.geturl(), 0
+                while not stop.is_set():
+                    block = response.read1(256 * 1024)
+                    if not block: break
+                    got += len(block)
+                    with lock: speeds[mirror] = max(speeds.get(mirror, 0), got / max(time.monotonic() - started, 0.05))
+        except (OSError, http.client.HTTPException, RuntimeError):
+            pass  # an unreachable or odd mirror is simply not chosen
+
+    threads = [threading.Thread(target=probe, args=(url,), daemon=True, name='image-mirror-probe') for url in candidates]
+    for thread in threads: thread.start()
+    deadline = time.monotonic() + PROBE_SECONDS
+    try:
+        while time.monotonic() < deadline and any(thread.is_alive() for thread in threads):
+            check_cancel(cancel)
+            stop.wait(0.1)
+    finally:
+        stop.set()
+    for thread in threads: thread.join(PROBE_SECONDS + 1)
+    with lock: ranked = sorted(speeds.items(), key=lambda item: -item[1])
+    if not ranked: return []
+    return [mirror for mirror, speed in ranked[:MIRROR_POOL] if speed * 2 >= ranked[0][1]]
+
+
+def download_segmented(entry, partial, cancel, progress, segments=SEGMENTS):
+    """Fetch an archive over several connections, resuming finished chunks.
+
+    The partial file and its chunk record stay on disk on any failure so the
+    next attempt continues. Bytes are only trusted after the caller's SHA-256
+    check, so it does not matter which mirror served which chunk.
+    """
+    total = entry['bytes']
+    count = -(-total // CHUNK)
+    sidecar = sidecar_path(partial)
+    done, reached = resume_state(partial, total)
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), MirrorRedirect())
+    fd = os.open(partial, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    try:
+        if not done and not reached:
+            sidecar.unlink(missing_ok=True)
+            os.ftruncate(fd, 0)
+            os.ftruncate(fd, total)
+        lock = threading.Lock()
+        stop = threading.Event()
+        pending = deque((index, reached.get(index, index * CHUNK)) for index in range(count) if index not in done)
+        # Connections are shared out over the fastest mirrors; one that fails
+        # leaves the list, and an empty list means the official link decides.
+        mirrors = fastest_mirrors(opener, entry, cancel) if pending and total > CHUNK else []
+        shared = {'received': resumed_bytes(partial, total) if done or reached else 0, 'mirror': None,
+                  'error': None, 'fatal': None, 'moved': time.monotonic()}
+
+        def write(block, offset):
+            view = memoryview(block)
+            try:
+                while view:
+                    written = os.pwrite(fd, view, offset)
+                    view, offset = view[written:], offset + written
+            except OSError as error:
+                raise WriteFailed(f'Cannot write the image cache: {error}') from error
+
+        def worker(slot):
+            failures = 0
+            while not stop.is_set():
+                with lock:
+                    if not pending: return
+                    index, position = pending.popleft()
+                end = min(total, (index + 1) * CHUNK)
+                while position < end and not stop.is_set():
+                    with lock: url = mirrors[slot % len(mirrors)] if mirrors else shared['mirror'] or entry['url']
+                    got = 0
+                    try:
+                        with open_range(opener, url, position, end - 1, total) as response:
+                            with lock: shared['mirror'] = shared['mirror'] or response.geturl()
+                            while position < end and not stop.is_set():
+                                block = response.read1(min(1024**2, end - position))
+                                if not block: break
+                                write(block, position)
+                                position += len(block)
+                                got += len(block)
+                                with lock:
+                                    shared['received'] += len(block)
+                                    shared['moved'] = time.monotonic()
+                                    reached[index] = position
+                    except (RangeUnsupported, WriteFailed) as error:
+                        with lock:
+                            shared['fatal'] = error
+                            pending.appendleft((index, position))
+                        stop.set()
+                        return
+                    except (OSError, http.client.HTTPException, RuntimeError) as error:
+                        # A failing or expired mirror link is dropped so the
+                        # next request asks the official site for a mirror again.
+                        with lock:
+                            shared['error'] = error
+                            if shared['mirror'] == url: shared['mirror'] = None
+                            if not got and url in mirrors: mirrors.remove(url)
+                    failures = 0 if got else failures + 1
+                    if position < end and failures > RETRIES: break
+                    if position < end and not got: stop.wait(min(BACKOFF * 2 ** failures, 15))
+                with lock:
+                    if position >= end:
+                        done.add(index)
+                        reached.pop(index, None)
+                    else:
+                        pending.appendleft((index, position))
+                        return
+
+        saved, saved_at = shared['received'], time.monotonic()
+
+        def save():
+            nonlocal saved, saved_at
+            with lock:
+                record = {'bytes': total, 'chunk': CHUNK, 'done': sorted(done),
+                          'started': {str(index): position for index, position in reached.items()}}
+                mark = shared['received']
+            # Data reaches the disk before the record that vouches for it.
+            os.fsync(fd)
+            atomic(sidecar, record)
+            saved, saved_at = mark, time.monotonic()
+
+        threads = [threading.Thread(target=worker, args=(slot,), daemon=True, name='image-segment')
+                   for slot in range(min(max(1, segments), len(pending)))]
+        for thread in threads: thread.start()
+        try:
+            while True:
+                stop.wait(0.2)
+                check_cancel(cancel)
+                with lock:
+                    received, finished = shared['received'], len(done)
+                    fatal, error, moved = shared['fatal'], shared['error'], shared['moved']
+                if fatal is not None: raise fatal
+                progress(received)
+                now = time.monotonic()
+                if received != saved and (finished == count or now - saved_at > 5): save()
+                if finished == count: break
+                if not any(thread.is_alive() for thread in threads):
+                    raise RuntimeError('Image download was interrupted' + (f' ({error})' if error else '')
+                                       + '; retry to resume')
+                if now - moved > STALL:
+                    raise RuntimeError('Image download stalled; retry to resume')
+        finally:
+            stop.set()
+            for thread in threads: thread.join()
+            if shared['received'] != saved: save()
+    finally:
+        os.close(fd)
+
+
 def download_archive(entry, destination, cancel, progress):
+    """Single-connection fallback for mirrors without byte-range support."""
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), MirrorRedirect())
     request = urllib.request.Request(trusted_url(entry['url']), headers={'User-Agent': 'AnvilDroid/0.1'})
-    deadline = time.monotonic() + 3600
-    with opener.open(request, timeout=20) as response, destination.open('xb') as stream:
+    sidecar_path(destination).unlink(missing_ok=True)
+    with opener.open(request, timeout=20) as response, destination.open('wb') as stream:
         os.chmod(destination, 0o600)
         if response.status != 200:
             raise RuntimeError('Image server did not return a complete archive')
@@ -145,8 +409,6 @@ def download_archive(entry, destination, cancel, progress):
         received = 0
         while True:
             check_cancel(cancel)
-            if time.monotonic() > deadline:
-                raise RuntimeError('Image download exceeded its time limit; retry')
             block = response.read1(min(1024**2, entry['bytes'] - received + 1))
             if not block:
                 break
@@ -209,9 +471,19 @@ class Downloads:
             if not isinstance(self.library, dict): raise RuntimeError('Invalid image library')
         self.remember()
         # Only unpublished files in this root-owned cache, never runtime data.
+        # Recent partial downloads stay so the next attempt can resume them.
+        self.prune_partials(set(), time.time() - RESUME_SECONDS)
+
+    def partial(self, entry):
+        return self.root / ('.partial-' + entry['sha256'])
+
+    def prune_partials(self, keep, older_than=None):
         for path in self.root.glob('.partial-*'):
             self.check_file(path)
-            path.unlink()
+            if RESUMABLE.fullmatch(path.name):
+                if path.name[9:73] in keep: continue
+                if older_than is not None and path.stat().st_mtime >= older_than: continue
+            path.unlink(missing_ok=True)
 
     @staticmethod
     def check_file(path):
@@ -269,6 +541,52 @@ class Downloads:
             atomic(self.state_path, self.state)
             return self.status(uid)
 
+    def delete(self, uid, identifier, awaited):
+        """Forget one image of this user; its archives go unless another image shares them."""
+        with self.lock:
+            item = self.library.get(identifier) if isinstance(identifier, str) else None
+            if not item or item['owner_uid'] != uid: raise RuntimeError('Image not found for this user')
+            self.discard({identifier}, awaited)
+            return self.status(uid)
+
+    def unfinished(self, awaited=()):
+        """Files left by downloads that never completed: partial archives, and
+        finished archives whose image pair was never completed."""
+        listed = self.archives() | set(awaited)
+        return [path for path in self.root.iterdir()
+                if path.name.startswith('.partial-') or ARCHIVE.fullmatch(path.name) and path.name[:64] not in listed]
+
+    def clear(self, uid, awaited):
+        """Delete unfinished downloads. Complete images stay."""
+        with self.lock:
+            self.check_writable()
+            if self.state['status'] in ACTIVE: raise RuntimeError('Wait for the current image download or import to finish')
+            for path in self.unfinished(awaited): path.unlink(missing_ok=True)
+            if self.state.get('owner_uid') == uid and self.state['status'] in ('Failed', 'Cancelled'):
+                self.state = {'status': 'Idle', 'owner_uid': None}
+                atomic(self.state_path, self.state)
+
+    def archives(self):
+        return {image['sha256'] for item in self.library.values() for image in item['images'].values()}
+
+    def discard(self, identifiers, awaited):
+        """`awaited` maps archive hashes to the device that still has to be set up from them."""
+        self.check_writable()
+        if self.state['status'] in ACTIVE: raise RuntimeError('Wait for the current image download or import to finish')
+        kept = {image['sha256'] for key, item in self.library.items() if key not in identifiers
+                for image in item['images'].values()}
+        unused = self.archives() - kept
+        waiting = sorted({awaited[sha] for sha in unused if sha in awaited})
+        if waiting:
+            raise RuntimeError(', '.join(waiting) + ' still has to be set up from this image. Set it up or delete it first.')
+        # The record goes first: a leftover archive is harmless, a listed image without one is not.
+        for key in identifiers: del self.library[key]
+        atomic(self.library_path, self.library)
+        if self.state.get('library_id') in identifiers:
+            self.state = {'status': 'Idle', 'owner_uid': None}
+            atomic(self.state_path, self.state)
+        for sha in unused: (self.root / (sha + '.zip')).unlink(missing_ok=True)
+
     def block(self, reason):
         with self.lock:
             if self.state['status'] in ACTIVE: raise RuntimeError('Wait for the current image download or import to finish')
@@ -278,11 +596,12 @@ class Downloads:
     def check_writable(self):
         if self.blocked: raise RuntimeError(self.blocked)
 
-    def start(self, uid, variant):
+    def start(self, uid, variant, segments=SEGMENTS):
         with self.lock:
             self.check_writable()
             if self.state['status'] in ACTIVE: raise RuntimeError('An image download is already in progress')
-            missing = sum(variant[kind]['bytes'] for kind in ('system', 'vendor')
+            missing = sum(variant[kind]['bytes'] - resumed_bytes(self.partial(variant[kind]), variant[kind]['bytes'])
+                          for kind in ('system', 'vendor')
                           if not (self.root / (variant[kind]['sha256'] + '.zip')).exists())
             free = shutil.disk_usage(self.root).free
             if free < missing + MARGIN:
@@ -292,7 +611,7 @@ class Downloads:
                           'flavor': variant['flavor'], 'download_bytes': variant['download_bytes'],
                           'received_bytes': 0, 'phase': 'Starting download', 'error': None, 'images': {}}
             atomic(self.state_path, self.state)
-            self.thread = threading.Thread(target=self.run, args=(copy.deepcopy(variant),), daemon=True, name='image-download')
+            self.thread = threading.Thread(target=self.run, args=(copy.deepcopy(variant), segments), daemon=True, name='image-download')
             self.thread.start()
             return self.status(uid)
 
@@ -474,10 +793,11 @@ class Downloads:
             check_cancel(self.cancelled)
             self.state.update(fields)
 
-    def run(self, variant):
-        temporary = None
+    def run(self, variant, segments=SEGMENTS):
         try:
             completed, images = 0, {}
+            # At most one unfinished image pair is kept for resuming.
+            self.prune_partials({variant[kind]['sha256'] for kind in ('system', 'vendor')})
             for kind in ('system', 'vendor'):
                 check_cancel(self.cancelled)
                 entry = variant[kind]
@@ -491,18 +811,30 @@ class Downloads:
                     except (RuntimeError, zipfile.BadZipFile):
                         destination.unlink()
                 if kind not in images:
+                    partial = self.partial(entry)
+                    resumed = resumed_bytes(partial, entry['bytes'])
                     free = shutil.disk_usage(self.root).free
-                    if free < entry['bytes'] + MARGIN: raise RuntimeError('Insufficient image cache space; free space and retry')
-                    temporary = self.root / ('.partial-' + uuid.uuid4().hex)
-                    self.update(status='Downloading', phase=f'Downloading {kind} archive')
-                    download_archive(entry, temporary, self.cancelled,
-                                     lambda size: self.update(received_bytes=completed + size))
+                    if free < entry['bytes'] - resumed + MARGIN: raise RuntimeError('Insufficient image cache space; free space and retry')
+                    self.update(status='Downloading', received_bytes=completed + resumed,
+                                phase=f'Resuming {kind} archive download' if resumed else f'Downloading {kind} archive')
+                    report = lambda size: self.update(received_bytes=completed + size)
+                    try:
+                        download_segmented(entry, partial, self.cancelled, report, segments)
+                    except RangeUnsupported:
+                        self.update(phase=f'Downloading {kind} archive')
+                        download_archive(entry, partial, self.cancelled, report)
                     self.update(status='Verifying', phase=f'Verifying {kind} SHA-256 and archive layout')
-                    images[kind] = archive_info(temporary, entry, kind, self.cancelled)
+                    try:
+                        images[kind] = archive_info(partial, entry, kind, self.cancelled)
+                    except Cancelled: raise
+                    except (RuntimeError, zipfile.BadZipFile):
+                        # Corrupt bytes cannot be resumed; the next attempt starts clean.
+                        discard_partial(partial)
+                        raise
                     check_cancel(self.cancelled)
-                    os.replace(temporary, destination)
+                    os.replace(partial, destination)
+                    sidecar_path(partial).unlink(missing_ok=True)
                     sync(self.root)
-                    temporary = None
                 completed += entry['bytes']
                 self.update(received_bytes=completed)
             with self.lock:
@@ -515,5 +847,3 @@ class Downloads:
             with self.lock:
                 self.state.update(status='Cancelled' if isinstance(error, Cancelled) else 'Failed', error=str(error)[-1024:])
                 atomic(self.state_path, self.state)
-        finally:
-            if temporary is not None: temporary.unlink(missing_ok=True)

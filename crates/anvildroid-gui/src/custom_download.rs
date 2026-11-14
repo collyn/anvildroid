@@ -12,6 +12,15 @@
 //! produced those bytes. A partial is resumed only with a strong validator
 //! (strong ETag or Last-Modified) sent as If-Range; otherwise it is discarded,
 //! so bytes from two different server versions are never joined.
+//!
+//! Several connections: a one-byte range request shows whether the server
+//! serves byte ranges and names the object with a strong validator. If so, the
+//! ZIP is fetched as fixed-size chunks by one parallel curl into `parts/`, each
+//! chunk guarded by If-Range, then appended to `image.zip` in order. `segments`
+//! records which object the chunks belong to, so a later attempt keeps what
+//! arrived, including unfinished chunks: curl writes each request to
+//! `<chunk>.at-<offset>`, which is then joined onto `<chunk>` at that offset.
+//! Without range support the single-connection path is used.
 
 use std::os::unix::fs::{DirBuilderExt, MetadataExt};
 use std::path::{Path, PathBuf};
@@ -25,6 +34,8 @@ const ACTIVE: [&str; 3] = ["Downloading", "Cancelling", "Importing"];
 /// curl: "HTTP server doesn't seem to support byte ranges", also returned when
 /// If-Range no longer matches and the server answers with the full body.
 const CURL_CANNOT_RESUME: i32 = 33;
+const CHUNK: u64 = 8 * 1024 * 1024;
+pub const MAX_CONNECTIONS: u8 = 16;
 
 #[derive(Clone)]
 pub struct Job {
@@ -144,8 +155,77 @@ pub fn resume_validator(headers: &str) -> Option<String> {
         .or_else(|| field("last-modified").filter(|value| !value.is_empty()))
 }
 
+/// Total size and validator when the last response answered a `bytes=0-0`
+/// request with exactly that byte: the server serves ranges of one known object.
+pub fn range_support(headers: &str) -> Option<(u64, String)> {
+    let last = headers.rsplit("HTTP/").next().unwrap_or("");
+    if last.split_whitespace().nth(1) != Some("206") { return None; }
+    let total = last.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        if !name.trim().eq_ignore_ascii_case("content-range") { return None; }
+        value.trim().strip_prefix("bytes 0-0/")?.parse::<u64>().ok()
+    })?;
+    Some((total, resume_validator(headers)?))
+}
+
+/// Double-quoted curl config value. Control characters would end the line and
+/// let a URL or header smuggle in further options, so they are refused.
+fn quoted(value: &str) -> Option<String> {
+    if value.chars().any(char::is_control) { return None; }
+    Some(format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\"")))
+}
+
+fn part_path(parts: &Path, index: u64) -> PathBuf {
+    parts.join(format!("{index:06}"))
+}
+
+/// Join every `<chunk>.at-<offset>` download onto its chunk file. The chunk is
+/// first cut back to that offset, so repeating an interrupted join is harmless.
+fn join_fetched(parts: &Path) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(parts)?.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some((chunk, offset)) = name.split_once(".at-") else { continue };
+        if let Ok(offset) = offset.parse::<u64>() {
+            let part = parts.join(chunk);
+            if std::fs::metadata(&part).map(|m| m.len()).unwrap_or(0) >= offset {
+                let mut output = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(&part)?;
+                output.set_len(offset)?;
+                use std::io::Seek;
+                output.seek(std::io::SeekFrom::End(0))?;
+                std::io::copy(&mut std::fs::File::open(entry.path())?, &mut output)?;
+                output.sync_data()?;
+            }
+        }
+        std::fs::remove_file(entry.path())?;
+    }
+    Ok(())
+}
+
+/// curl config fetching the rest of each listed (chunk, bytes already held)
+/// into `parts`. A server that ignores the range or no longer has the same
+/// object answers with the whole file, which exceeds the request's size limit
+/// and fails instead of being stored.
+pub fn segment_config(url: &str, validator: &str, parts: &Path, total: u64, chunks: &[(u64, u64)]) -> Option<String> {
+    let (url, condition) = (quoted(url)?, quoted(&format!("If-Range: {validator}"))?);
+    let mut config = String::new();
+    for (position, &(index, held)) in chunks.iter().enumerate() {
+        let start = index * CHUNK + held;
+        let end = total.min((index + 1) * CHUNK) - 1;
+        if position > 0 { config.push_str("next\n"); }
+        config.push_str(&format!(
+            "url = {url}\noutput = {}\nrange = \"{start}-{end}\"\nheader = {condition}\nmax-filesize = {}\n\
+             fail\nsilent\nshow-error\nlocation\nproto = \"=https\"\nproto-redir = \"=https\"\nconnect-timeout = 15\n\
+             retry = 5\nretry-delay = 2\nspeed-limit = 1024\nspeed-time = 60\n",
+            quoted(&format!("{}.at-{held}", part_path(parts, index).to_str()?))?, end - start + 1));
+    }
+    Some(config)
+}
+
 /// Start a download job. Returns immediately; poll `status`.
-pub fn start(url: String, name: String) -> Result<serde_json::Value, String> {
+pub fn start(url: String, name: String, connections: u8) -> Result<serde_json::Value, String> {
+    if !(1..=MAX_CONNECTIONS).contains(&connections) {
+        return Err(format!("Download connections must be between 1 and {MAX_CONNECTIONS}"));
+    }
     if !url.starts_with("https://") || url.len() > 2048 {
         return Err("Custom image URL must be an HTTPS URL up to 2048 characters".into());
     }
@@ -173,7 +253,7 @@ pub fn start(url: String, name: String) -> Result<serde_json::Value, String> {
     };
     let path = directory.join("image.zip");
     publish(&shared, id, |job| job.path = path.clone());
-    std::thread::spawn(move || run(shared, id, url, name, path));
+    std::thread::spawn(move || run(shared, id, url, name, path, connections));
     Ok(serde_json::json!({"status":"Downloading","phase":"Connecting","total_bytes":0,"received_bytes":0,"percent":0}))
 }
 
@@ -233,28 +313,128 @@ fn curl(args: &[&str]) -> Command {
     command
 }
 
-fn run(shared: Arc<Mutex<State>>, id: u64, url: String, name: String, path: PathBuf) {
+fn remove_segments(path: &Path) {
+    let _ = std::fs::remove_dir_all(path.with_file_name("parts"));
+    let _ = std::fs::remove_file(path.with_file_name("segments"));
+    let _ = std::fs::remove_file(path.with_file_name("segments.curl"));
+}
+
+/// Download `path` as chunks over several connections. `Ok(false)` means the
+/// server would not serve chunks at all and nothing is kept, so the caller
+/// falls back to one connection. Errors keep the finished chunks for a resume.
+fn segmented(shared: &Mutex<State>, id: u64, url: &str, path: &Path, total: u64, validator: &str,
+        connections: u8) -> Result<bool, String> {
+    let (parts, marker) = (path.with_file_name("parts"), path.with_file_name("segments"));
+    let (config_path, headers) = (path.with_file_name("segments.curl"), path.with_file_name("response-headers"));
+    let count = total.div_ceil(CHUNK);
+    let length = |index: u64| CHUNK.min(total - index * CHUNK);
+    let held = |index: u64| std::fs::metadata(part_path(&parts, index)).map(|m| m.len()).unwrap_or(0);
+    if segment_config(url, validator, &parts, total, &[(0, 0)]).is_none() { return Ok(false); }
+
+    // Keep earlier bytes only when they provably belong to this same object.
+    let identity = format!("{total}\n{validator}");
+    if std::fs::read_to_string(&marker).ok().as_deref() != Some(identity.as_str()) {
+        let _ = std::fs::remove_dir_all(&parts);
+        let single = std::fs::read_to_string(&headers).ok().and_then(|text| resume_validator(&text));
+        if single.as_deref() != Some(validator) { let _ = std::fs::remove_file(path); }
+    }
+    let _ = std::fs::remove_file(&headers);
+    match std::fs::DirBuilder::new().mode(0o700).create(&parts) {
+        Err(error) if error.kind() != std::io::ErrorKind::AlreadyExists => return Err(error.to_string()),
+        _ => (),
+    }
+    std::fs::write(&marker, &identity).map_err(|e| e.to_string())?;
+
+    // `image.zip` holds the chunks already appended, cut back to a whole chunk.
+    let have = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    let assembled = if have == total { count } else if have > total { 0 } else { have / CHUNK };
+    if have != total && have != assembled * CHUNK {
+        std::fs::OpenOptions::new().write(true).open(path).and_then(|file| file.set_len(assembled * CHUNK))
+            .map_err(|e| e.to_string())?;
+    }
+
+    let mut stalled = 0;
+    loop {
+        join_fetched(&parts).map_err(|e| e.to_string())?;
+        let mut pending = Vec::new();
+        for index in assembled..count {
+            let size = held(index);
+            if size > length(index) { let _ = std::fs::remove_file(part_path(&parts, index)); }
+            if size != length(index) { pending.push((index, if size > length(index) { 0 } else { size })); }
+        }
+        if pending.is_empty() { break; }
+        let before: u64 = pending.iter().map(|(_, size)| size).sum();
+        let config = segment_config(url, validator, &parts, total, &pending).ok_or("Unsupported download location")?;
+        std::fs::write(&config_path, config).map_err(|e| e.to_string())?;
+        let mut command = Command::new("curl");
+        command.args(["--parallel", "--parallel-max", &connections.to_string(), "--config"]).arg(&config_path);
+        let (_, stderr) = supervise(shared, id, command)?;
+        join_fetched(&parts).map_err(|e| e.to_string())?;
+        if cancelled(shared, id) { return Err("cancelled".into()); }
+        let after: u64 = pending.iter().map(|(index, _)| held(*index)).sum();
+        stalled = if after > before { 0 } else { stalled + 1 };
+        if stalled >= 2 {
+            if assembled == 0 && (0..count).all(|index| held(index) == 0) {
+                remove_segments(path);
+                let _ = std::fs::remove_file(path);
+                return Ok(false);
+            }
+            let detail = stderr.lines().last().unwrap_or("").trim();
+            return Err(format!("Download interrupted{}. Start it again to resume.",
+                if detail.is_empty() { String::new() } else { format!(" ({detail})") }));
+        }
+    }
+
+    publish(shared, id, |job| job.phase = "Assembling ZIP".into());
+    let mut output = std::fs::OpenOptions::new().create(true).append(true).open(path).map_err(|e| e.to_string())?;
+    for index in assembled..count {
+        if cancelled(shared, id) { return Err("cancelled".into()); }
+        let part = part_path(&parts, index);
+        let mut input = std::fs::File::open(&part).map_err(|e| e.to_string())?;
+        std::io::copy(&mut input, &mut output).map_err(|e| e.to_string())?;
+        // A chunk leaves `parts` only once `image.zip` durably contains it.
+        output.sync_data().map_err(|e| e.to_string())?;
+        let _ = std::fs::remove_file(&part);
+    }
+    if std::fs::metadata(path).map(|m| m.len()).ok() != Some(total) {
+        return Err("Downloaded ZIP has an unexpected size; start the download again".into());
+    }
+    remove_segments(path);
+    Ok(true)
+}
+
+fn run(shared: Arc<Mutex<State>>, id: u64, url: String, name: String, path: PathBuf, connections: u8) {
     let headers = path.with_file_name("response-headers");
     let head = path.with_file_name("head-headers");
     let outcome = (|| -> Result<serde_json::Value, String> {
-        // Size probe for progress only; it never replaces the resume validator.
-        let mut probe = curl(&["-I", "--max-time", "30", "--dump-header"]);
+        // One-byte range request: gives the size for progress and shows whether
+        // the server can serve chunks. A server without range support answers
+        // with the whole file, which the size limit refuses.
+        let mut probe = curl(&["--range", "0-0", "--max-filesize", "1", "--max-time", "20", "-o", "/dev/null", "--dump-header"]);
         probe.arg(&head).arg("--").arg(&url);
-        if let Ok((Some(0), _)) = supervise(&shared, id, probe) {
-            let total = std::fs::read_to_string(&head).ok().and_then(|text| download_total(&text)).unwrap_or(0);
-            publish(&shared, id, |job| job.total = total);
-        }
+        let _ = supervise(&shared, id, probe);
+        let probed = std::fs::read_to_string(&head).unwrap_or_default();
         let _ = std::fs::remove_file(&head);
+        publish(&shared, id, |job| job.total = download_total(&probed).unwrap_or(0));
         if cancelled(&shared, id) { return Err("cancelled".into()); }
-        publish(&shared, id, |job| job.phase = "Downloading ZIP".into());
-        for attempt in 0..2 {
+        let mut complete = false;
+        if let Some((total, validator)) = range_support(&probed).filter(|(total, _)| connections > 1 && *total > CHUNK) {
+            publish(&shared, id, |job| job.phase = format!("Downloading ZIP over {connections} connections"));
+            complete = segmented(&shared, id, &url, &path, total, &validator, connections)?;
+        }
+        if !complete {
+            remove_segments(&path);
+            publish(&shared, id, |job| job.phase = "Downloading ZIP".into());
+        }
+        for attempt in 0..(if complete { 0 } else { 2 }) {
             let partial = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0) > 0;
             let validator = partial.then(|| std::fs::read_to_string(&headers).ok().and_then(|t| resume_validator(&t))).flatten();
             if partial && validator.is_none() {
                 // Cannot prove the partial matches the current server object.
                 let _ = std::fs::remove_file(&path);
             }
-            let mut command = curl(&["--retry", "5", "--retry-delay", "2", "--max-time", "1800",
+            // No overall time limit: only a connection that stops moving is given up.
+            let mut command = curl(&["--retry", "5", "--retry-delay", "2", "--speed-limit", "1024", "--speed-time", "60",
                 "--max-filesize", "34359738368", "--dump-header"]);
             command.arg(&headers);
             if let Some(value) = &validator {
@@ -326,7 +506,9 @@ pub fn cancel() -> Result<serde_json::Value, String> {
 pub fn status() -> Result<serde_json::Value, String> {
     let guard = lock(state())?;
     let Some(job) = guard.job.as_ref() else { return Ok(serde_json::json!({"status":"Idle","percent":0})); };
-    let received = std::fs::metadata(&job.path).map(|m| m.len()).unwrap_or(0);
+    let chunks = std::fs::read_dir(job.path.with_file_name("parts")).map(|entries| entries.flatten()
+        .filter_map(|entry| entry.metadata().ok()).map(|info| info.len()).sum::<u64>()).unwrap_or(0);
+    let received = std::fs::metadata(&job.path).map(|m| m.len()).unwrap_or(0) + chunks;
     let headers = std::fs::read_to_string(job.path.with_file_name("response-headers")).unwrap_or_default();
     let total = download_total(&headers).unwrap_or(job.total);
     let percent = if total > 0 { Some(((received.min(total) as f64 / total as f64) * 100.0).floor() as u64) } else { None };
@@ -384,6 +566,51 @@ mod tests {
         assert_eq!(resume_validator("HTTP/1.1 200 OK\r\nETag: W/\"weak\"\r\n"), None);
         assert_eq!(download_total("HTTP/1.1 206 Partial\r\nContent-Range: bytes 5-9/10\r\nContent-Length: 5\r\n"), Some(10));
         assert_eq!(download_total("HTTP/1.1 404 Not Found\r\nContent-Length: 5\r\n"), None);
+    }
+
+    #[test]
+    fn chunked_download_needs_a_ranged_reply_with_a_strong_validator() {
+        let ranged = "HTTP/2 302 \r\ncontent-length: 7\r\n\r\nHTTP/1.1 206 Partial Content\r\nContent-Length: 1\r\n\
+                      etag: \"6ad9-b5\"\r\nContent-Range: bytes 0-0/189818691\r\n";
+        assert_eq!(range_support(ranged), Some((189818691, "\"6ad9-b5\"".to_string())));
+        assert_eq!(download_total(ranged), Some(189818691));
+        assert_eq!(range_support("HTTP/1.1 200 OK\r\nContent-Length: 10\r\nETag: \"v\"\r\n"), None);
+        assert_eq!(range_support("HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 0-0/10\r\nETag: W/\"weak\"\r\n"), None);
+        assert_eq!(range_support("HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 0-9/10\r\nETag: \"v\"\r\n"), None);
+    }
+
+    #[test]
+    fn chunk_config_covers_the_file_and_cannot_be_extended_by_its_inputs() {
+        let total = CHUNK * 2 + 5;
+        let config = segment_config("https://example.com/a \"b\".zip", "\"v1\"", Path::new("/cache/parts"), total, &[(0, 100), (2, 0)]).unwrap();
+        assert_eq!(config.matches("\nnext\n").count(), 1);
+        assert!(config.contains("url = \"https://example.com/a \\\"b\\\".zip\"\n"));
+        assert!(config.contains("header = \"If-Range: \\\"v1\\\"\"\n"));
+        assert!(config.contains(&format!("output = \"/cache/parts/000000.at-100\"\nrange = \"100-{}\"", CHUNK - 1)));
+        assert!(config.contains(&format!("max-filesize = {}\n", CHUNK - 100)));
+        assert!(config.contains(&format!("output = \"/cache/parts/000002.at-0\"\nrange = \"{}-{}\"", CHUNK * 2, total - 1)));
+        assert!(config.contains("max-filesize = 5\n"));
+        assert!(segment_config("https://example.com/a\noutput = \"/etc/x\"", "\"v\"", Path::new("/p"), total, &[(0, 0)]).is_none());
+        assert!(segment_config("https://example.com/a", "v\r\nnext", Path::new("/p"), total, &[(0, 0)]).is_none());
+    }
+
+    #[test]
+    fn fetched_pieces_join_their_chunk_and_a_repeated_join_adds_nothing_twice() {
+        let parts = temp("join");
+        std::fs::create_dir_all(&parts).unwrap();
+        std::fs::write(parts.join("000001.at-0"), b"abc").unwrap();
+        join_fetched(&parts).unwrap();
+        assert_eq!(std::fs::read(parts.join("000001")).unwrap(), b"abc");
+        // A join that stopped half way left extra bytes after offset 3.
+        std::fs::write(parts.join("000001"), b"abcde").unwrap();
+        std::fs::write(parts.join("000001.at-3"), b"defg").unwrap();
+        // A piece that does not connect to what is held is dropped.
+        std::fs::write(parts.join("000002.at-9"), b"zz").unwrap();
+        join_fetched(&parts).unwrap();
+        assert_eq!(std::fs::read(parts.join("000001")).unwrap(), b"abcdefg");
+        assert!(!parts.join("000002").exists());
+        assert_eq!(std::fs::read_dir(&parts).unwrap().count(), 1);
+        std::fs::remove_dir_all(parts).unwrap();
     }
 
     #[test]
