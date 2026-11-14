@@ -316,6 +316,11 @@ class Integration:
             # Waydroid width/height and the base properties remain untouched.
             props, report = workarea.boot_props(props, session['wayland_display'], int(session['user_id']))
             logging.info('Default desktop canvas: %s', report)
+            # App windows follow their host window only as freeform tasks.
+            # Android keeps a user's own choice in /data, which overrides this
+            # default; erased data (reinstall, first setup) has none.
+            if not any(p.startswith('persist.waydroid.multi_windows=') for p in props):
+                props.append('persist.waydroid.multi_windows=true')
         if self.nvidia:
             # make_prop precedes its bind mount; base properties are kept for
             # the next Intel/AMD boot, including all user's other settings.

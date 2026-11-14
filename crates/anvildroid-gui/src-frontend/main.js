@@ -3452,7 +3452,7 @@ async function mutateController(request) {
       'Copy System Waydroid images, apps and Android data into a new managed device? This requires extra disk space. Keep System Waydroid stopped until copying and verification finish. The original is retained. App logins and device-bound credentials may require signing in again.',
       {title:'Import System Waydroid',kind:'info'})) return;
     if (request.op === 'reinstall' && !await AppDialog.confirm(
-      `Reinstall this device with ${imageForRequest(request)?.custom_name || (request.flavor === 'installed' ? 'Existing Waydroid image' : 'Waydroid ' + request.flavor)}?\nSystem SHA-256: ${request.system_sha256 || 'installed source'}\n\nAndroid will stop first if running. All apps, data and settings will be erased. This cannot be undone.`,
+      `Reinstall this device with ${imageForRequest(request)?.custom_name || (request.flavor === 'installed' ? 'Existing Waydroid image' : 'Waydroid ' + request.flavor)}?\nSystem SHA-256: ${request.system_sha256 || 'installed source'}\n\nAndroid will stop first if running. All apps, data and settings will be erased, then Android starts again. This cannot be undone.`,
       {title:'Reinstall device',kind:'warning'})) return;
     if (request.op === 'app_action') {
       controllerPending.phase = 'confirm'; renderController();
@@ -3513,6 +3513,35 @@ async function mutateController(request) {
           renderController();
         },
       });
+    }
+    if (request.op === 'reinstall') {
+      // A reinstalled device boots on its own, like a new one.
+      const name = runtimeRecord(request.id)?.name || request.id;
+      const step = phase => {
+        controllerPending.phase = phase;
+        const text = phase === 'preparing' ? 'Step 1 of 2 · Preparing Android images' : 'Starting Android';
+        message.textContent = `${text}… Keep AnvilDroid open until this finishes.`;
+        showProgressToast('runtime-prepare', {title:`Reinstalling ${name}`, detail:`${text}. Keep AnvilDroid open.`, percent:null});
+        renderController();
+      };
+      if (request.id === 'default') {
+        if (result?.id !== 'default' || result.state !== 'Stopped') throw new Error('Could not verify System Waydroid reinstall.');
+        existingRuntime = {...existingRuntime, ...result};
+        step('booting');
+        try { result = await executeBatchOperation(runtimeRecord('default'), 'start'); }
+        catch (error) { throw new Error(`Reinstall finished, but the automatic start failed: ${error}. Check its status, then press Start.`); }
+      } else {
+        const publish = updated => {
+          const index = controllerRecords.findIndex(record => record.id === updated.id);
+          if (index >= 0) controllerRecords[index] = {...controllerRecords[index], ...updated};
+          renderController();
+        };
+        publish(result);
+        result = await RuntimeSettings.prepareAndStart(result, {
+          send: controllerRequest, update: publish,
+          progress: phase => step(phase === 'preparing' ? 'preparing' : 'booting'),
+        });
+      }
     }
     if (request.op === 'existing_import' && result?.id) {
       selectedRuntimeId = result.id;
@@ -3589,7 +3618,7 @@ async function mutateController(request) {
     if (request.op === 'reinstall') {
       cancelReinstall();
       document.getElementById('runtime-create-panel').open = false;
-      completionNotice = 'Device reinstall started. Wait for image preparation to finish before starting it.';
+      completionNotice = 'Device reinstalled. Android is running.';
     }
   } catch (error) { failure = String(error); }
   finally {
@@ -4809,14 +4838,20 @@ async function executeBatchOperation(record, op, imageRequest, activationToken) 
     throw new Error('Timed out waiting for deletion; check status before retrying.');
   } else if (op === 'reinstall' && id === 'default') {
     if (result?.id !== id || result.state !== 'Stopped') throw new Error('Could not verify System Waydroid reinstall.');
+    return startReinstalled(record);
   } else {
     if (result?.id !== id || !result.job?.id) throw new Error('Invalid device operation response.');
     Object.assign(runtimeRecord(id), result);
     renderController();
     const updated = await RuntimeSettings.wait(controllerRequest, id, result.job.id, op === 'start' ? 'Running' : op === 'stop' ? 'Stopped' : 'Prepared');
     Object.assign(runtimeRecord(id), updated);
-    return updated;
+    return op === 'reinstall' ? startReinstalled(runtimeRecord(id)) : updated;
   }
+}
+// A reinstalled device boots on its own, like a new one.
+async function startReinstalled(record) {
+  try { return await executeBatchOperation(record, 'start'); }
+  catch (error) { throw new Error(`Reinstall finished, but the automatic start failed: ${error}. Check its status, then press Start.`); }
 }
 document.getElementById('runtime-batch-form').addEventListener('submit', async event => {
   event.preventDefault();

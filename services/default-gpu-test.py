@@ -197,6 +197,42 @@ class DefaultRendererSelectionTests(unittest.TestCase):
         self.runtime.apply_defaults()
         self.assert_mesa_config()
 
+    def test_reinstall_defaults_keep_a_usable_gpu_choice(self):
+        chosen = '/dev/dri/renderD129'
+        before = [(self.work / name).read_text() for name in ('waydroid.cfg', 'lxc/waydroid/config_nodes')]
+        with patch.object(system.existing.gpu, 'choose', return_value=dict(self.device, node=chosen)), \
+                patch.object(system.existing.gpu, 'automatic_device') as automatic:
+            self.runtime.apply_defaults(keep_gpu=True)
+        automatic.assert_not_called()
+        self.assertEqual([(self.work / name).read_text() for name in ('waydroid.cfg', 'lxc/waydroid/config_nodes')], before)
+
+    def test_reinstall_defaults_replace_a_gpu_that_is_gone(self):
+        with patch.object(system.existing.gpu, 'choose', side_effect=RuntimeError('GPU is unavailable')):
+            self.runtime.apply_defaults(keep_gpu=True)
+        self.assert_mesa_config()
+
+    def test_nvidia_choice_is_kept_only_with_the_service_integration(self):
+        nvidia = dict(self.device, driver='nvidia', vendor_id='0x10de')
+        with patch.object(system.existing.gpu, 'choose', return_value=nvidia):
+            self.assertTrue(self.runtime.usable_gpu(self.node))
+            with patch.object(system.existing.gpu.nvidia, 'system_integration_available', return_value=False):
+                self.assertFalse(self.runtime.usable_gpu(self.node))
+
+    def test_defaults_enable_freeform_windows_for_the_desktop_bridge_only(self):
+        key = 'persist.waydroid.multi_windows'
+        sources = lambda: [dict(self.runtime.config()['properties'])] + [
+            system.existing.properties((self.work / name).read_text()) for name in ('waydroid.prop', 'waydroid_base.prop')]
+        self.runtime.apply_defaults(keep_gpu=True)
+        self.assertTrue(all(key not in values for values in sources()))
+        with patch.object(self.runtime, 'desktop_overlay', return_value=True):
+            self.runtime.apply_defaults(keep_gpu=True)
+            self.assertEqual([values.get(key) for values in sources()], ['true'] * 3)
+            # A value the user set afterwards is not overwritten.
+            cfg = self.runtime.config(); cfg.set('properties', key, 'false')
+            with (self.work / 'waydroid.cfg').open('w') as stream: cfg.write(stream)
+            self.runtime.apply_defaults(keep_gpu=True)
+            self.assertEqual(self.runtime.config()['properties'][key], 'false')
+
     def test_nvidia_renderer_remains_session_only(self):
         self.device.update(driver='nvidia', vendor_id='0x10de')
         self.runtime._dispatch({'op': 'gpu_set', 'node': self.node}, 1000, {}, {'owner_uid': 1000})

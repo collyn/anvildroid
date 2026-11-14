@@ -58,5 +58,30 @@ class ShaderCacheTests(unittest.TestCase):
                     self.assertEqual(target.read_text(), original)
 
 
+    def test_desktop_session_defaults_to_freeform_app_windows(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / 'waydroid.prop'
+            content = ['keep=yes\n']
+            tools = SimpleNamespace(
+                actions=SimpleNamespace(container_manager=SimpleNamespace(do_start=Mock(), freeze=Mock(), stop=Mock())),
+                helpers=SimpleNamespace(images=SimpleNamespace(mount_rootfs=Mock(),
+                    make_prop=lambda args, session, path: Path(path).write_text(content[0]))))
+            integration = system.Integration(tools, Mock())
+            session = {'wayland_display': 'wayland-0', 'user_id': '1000'}
+            with patch.object(system.existing, 'ExistingRuntime') as adapter, \
+                    patch.object(system.workarea, 'boot_props', side_effect=lambda props, *_: (props, {})):
+                adapter.return_value.desktop_overlay.return_value = True
+                integration.props({}, session, target)
+                self.assertEqual(target.read_text().splitlines(), ['keep=yes', 'persist.waydroid.multi_windows=true'])
+                # A value Waydroid itself was given stays.
+                content[0] = 'persist.waydroid.multi_windows=false\n'
+                integration.props({}, session, target)
+                self.assertEqual(target.read_text().splitlines(), ['persist.waydroid.multi_windows=false'])
+                # Without the desktop bridge the session stays stock.
+                content[0] = 'keep=yes\n'
+                adapter.return_value.desktop_overlay.return_value = False
+                integration.props({}, session, target)
+                self.assertEqual(target.read_text(), 'keep=yes\n')
+
 if __name__ == '__main__':
     unittest.main()

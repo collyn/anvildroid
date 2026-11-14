@@ -2561,27 +2561,30 @@ test('runtime settings opens important sections and enables running reinstall',(
 });
 for (const mode of ['success','cancel','stop-failure','name-change','double-click','default-success','default-failure']) {
  test(`confirmed running reinstall integration: ${mode}`,async()=>{
-  const id=mode.startsWith('default')?'default':'r-test';let state='Running',name='Test';const calls=[];
+  const id=mode.startsWith('default')?'default':'r-'+'a'.repeat(32);let state='Running',name='Test',job={id:'stop-job',status:'Succeeded'};const calls=[];
   const gate=deferred();let waiting=false;
   const {context}=gui(async(command,args)=>{
    if(command==='stop_runtime') {calls.push('stop');if(mode==='default-failure')return {success:false,message:'Shutdown failed'};state='Stopped';return {success:true};}
+   if(command==='start_runtime') {calls.push('start');state='Running';return {success:true};}
    if(command!=='runtime_controller')return {};
    const r=args.request;
-   if(r.op==='refresh')return {id,name,state,managed:true,job:{id:'stop-job',status:'Succeeded'}};
+   if(r.op==='refresh')return {id,name,state,managed:true,job};
    if(r.op==='stop'){calls.push('stop');if(mode==='stop-failure')throw Error('Shutdown failed');if(mode==='double-click'){waiting=true;await gate.promise;}state='Stopped';if(mode==='name-change')name='Changed';return {id,job:{id:'stop-job'}};}
-   if(r.op==='reinstall'){calls.push('reinstall');assert.equal(state,'Stopped');return {id,name,state:'Stopped'};}
+   if(r.op==='reinstall'){calls.push('reinstall');assert.equal(state,'Stopped');if(id==='default')return {id,name,state:'Stopped'};
+    state='Prepared';job={id:'prepare-job',operation:'prepare',status:'Succeeded'};return {id,name,state:'Provisioning',job:{id:'prepare-job',operation:'prepare',status:'Running'}};}
+   if(r.op==='start'){calls.push('start');state='Running';job={id:'start-job',operation:'start',status:'Succeeded'};return {id,job:{id:'start-job',operation:'start'}};}
    if(r.op==='list')return id==='default'?[]:[{id,name,state}];
    if(r.op==='app_job')return null;
    if(r.op==='display_info')return {mode:'desktop'};
    return {};
   },async()=>mode!=='cancel', '?view=settings');
   await tick();
-  vm.runInContext(id==='default'?"existingRuntime={id:'default',name:'Test',state:'Running',managed:true}":"controllerRecords=[{id:'r-test',name:'Test',state:'Running'}]",context);
+  vm.runInContext(id==='default'?"existingRuntime={id:'default',name:'Test',state:'Running',managed:true}":`controllerRecords=[{id:'${id}',name:'Test',state:'Running'}]`,context);
   const run=()=>vm.runInContext(`mutateController({op:'reinstall',id:'${id}',confirmed_name:'Test',flavor:'installed'})`,context);
   const task=run();
   if(mode==='double-click'){await tick();assert.ok(waiting);await run();gate.resolve();}
   await task;
-  assert.deepEqual(calls,mode==='cancel'?[]:['stop-failure','name-change','default-failure'].includes(mode)?['stop']:['stop','reinstall']);
+  assert.deepEqual(calls,mode==='cancel'?[]:['stop-failure','name-change','default-failure'].includes(mode)?['stop']:['stop','reinstall','start']);
  });
 }
 
