@@ -86,6 +86,21 @@ def require(condition, code, message):
         raise RequestError(code, message)
 
 
+KEPT_ON_REINSTALL = ('gpu.json', 'resources.json', 'notifications.json', 'display-backend.json')
+
+
+def kept_on_reinstall(path):
+    """A device's host-side settings outlive its Android images and data."""
+    try:
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o022 or info.st_size > 65536:
+            return False
+        # Software rendering depends on the image; the new one picks again.
+        return path.name != 'gpu.json' or json.loads(path.read_text()).get('node') not in ('software', None)
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
 def secure_directory(path, private):
     require(path.is_absolute(), 'CONFIG', 'Absolute service paths required')
     info = path.lstat()
@@ -432,6 +447,9 @@ class Store:
                 # Preserve the mount anchor/inode used by relocated storage.
                 for child in instance.iterdir():
                     if child.name in ('reinstall.json', 'worker.lock'): continue
+                    # Host-side choices survive; Android images, data and the
+                    # image-bound ARM setup do not.
+                    if child.name in KEPT_ON_REINSTALL and kept_on_reinstall(child): continue
                     if child.is_dir() and not child.is_symlink(): shutil.rmtree(child)
                     else: child.unlink()
                 with self.mutex:

@@ -255,6 +255,8 @@ class ArmPayloadTests(unittest.TestCase):
                 configure.assert_not_called()
                 self.assertEqual(controller.worker_module.arm.read_config(instance)['enabled'], enabled)
             marker = instance / 'app-data'; marker.write_bytes(b'preserve until preflight passes')
+            controller.storage_module.atomic(instance / 'gpu.json', {'node': '/dev/dri/renderD129'})
+            controller.storage_module.atomic(instance / 'resources.json', {'memory_mib': 4096, 'cpu_count': 4})
             controller.storage_module.atomic(instance / 'reinstall.json', {'selection': store.selections[identifier]})
             download.side_effect = RuntimeError('ARM package download failed')
             store.prepare_job(identifier, job['id'])
@@ -264,6 +266,12 @@ class ArmPayloadTests(unittest.TestCase):
             with patch.object(store.android, 'quiescent', return_value=True):
                 store.prepare_job(identifier, job['id'])
             self.assertFalse(marker.exists())
+            # Host-side choices outlive the erased images and data.
+            self.assertEqual(json.loads((instance / 'gpu.json').read_text()), {'node': '/dev/dri/renderD129'})
+            self.assertEqual(json.loads((instance / 'resources.json').read_text()), {'memory_mib': 4096, 'cpu_count': 4})
+            controller.storage_module.atomic(instance / 'gpu.json', {'node': 'software'})
+            self.assertFalse(controller.kept_on_reinstall(instance / 'gpu.json'))
+            self.assertFalse(controller.kept_on_reinstall(instance / 'missing.json'))
             configure.assert_called_once()
             self.assertEqual(configure.call_args.kwargs['archive'], self.archive)
             self.assertEqual(store.data['runtimes'][0]['state'], 'Prepared')

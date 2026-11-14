@@ -501,14 +501,27 @@ class ExistingRuntime:
                 'experimental': True, 'inherited': False, 'abis': ['armeabi-v7a', 'arm64-v8a'],
                 'detail': 'Uses installed ARM libraries. AnvilDroid does not replace an unknown native bridge.'}
 
-    def apply_defaults(self, *, reset_arm=False):
+    def usable_gpu(self, node):
+        """True while the configured render node can still serve System Waydroid."""
+        try:
+            device = gpu.choose(node)
+        except (OSError, RuntimeError):
+            return False
+        return (device.get('node') == node and node.startswith('/dev/dri/') and
+                (gpu.nvidia.system_integration_available() or
+                 (device.get('driver') != 'nvidia' and device.get('vendor_id') != '0x10de')))
+
+    def apply_defaults(self, *, reset_arm=False, keep_gpu=False):
         """Set fresh defaults; preserve an active ARM provider unless reinstalling."""
         self.stopped()
         cfg = self.config()
         if not cfg.has_section('properties'): cfg.add_section('properties')
         values, changes = {}, {}
+        # A reinstall replaces Android, not the host: the chosen GPU stays
+        # while it is still usable.
+        kept = keep_gpu and self.usable_gpu(cfg.get('waydroid', 'drm_device', fallback=''))
         # Prefer Mesa; NVIDIA is eligible only with the live service hooks.
-        device = gpu.automatic_device(include_nvidia=gpu.nvidia.system_integration_available())
+        device = None if kept else gpu.automatic_device(include_nvidia=gpu.nvidia.system_integration_available())
         if device:
             node = device['node']
             cfg.set('waydroid', 'drm_device', node)
@@ -518,6 +531,10 @@ class ExistingRuntime:
                      if not re.match(r'^\s*lxc\.mount\.entry\s*=\s*/dev/dri/renderD\d+\s', line)]
             nodes.append(f'lxc.mount.entry = {node} {node[1:]} none bind,create=file 0 0')
             changes[nodes_path] = '\n'.join(nodes) + '\n'
+        # App windows follow their host window only as freeform tasks. Erased
+        # Android data no longer holds this; an explicit value here stays.
+        if self.desktop_overlay() and not cfg.has_option('properties', 'persist.waydroid.multi_windows'):
+            values['persist.waydroid.multi_windows'] = 'true'
         bridge = properties(self.read(self.work / 'waydroid.prop')).get('ro.dalvik.vm.native.bridge', '')
         if platform.machine() == 'x86_64' and (reset_arm or bridge in ('', '0')):
             archive = arm.ensure_default_archive()
@@ -593,7 +610,7 @@ class ExistingRuntime:
             os.fsync(fd)
         finally:
             os.close(fd)
-        self.apply_defaults(reset_arm=True)
+        self.apply_defaults(reset_arm=True, keep_gpu=True)
         storage.atomic(self.metadata, {key: value for key, value in saved.items() if key != 'arm_properties'})
         return self.record({}, self.saved())
 
